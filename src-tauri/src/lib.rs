@@ -5,6 +5,7 @@ mod claude_adapter;
 mod codex_adapter;
 mod git;
 mod model;
+mod orchestrator;
 mod store;
 
 use chrono::Utc;
@@ -115,11 +116,11 @@ fn add_project(path: String, state: State<AppState>) -> Result<BridgeState, Brid
 fn create_workspace(
     project_id: String,
     title: String,
-    harness: Harness,
+    _harness: Harness,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
     if title.trim().is_empty() {
-        return Err(BridgeError::Invalid("Task title is required".into()));
+        return Err(BridgeError::Invalid("Workspace name is required".into()));
     }
     let db = state.db.lock().unwrap();
     let (project_name, repo): (String, String) = db.query_row(
@@ -150,7 +151,16 @@ fn create_workspace(
     git::create_worktree(Path::new(&repo), &path, &branch)?;
     db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,'idle',?7)",params![id,project_id,city,title,branch,path.to_string_lossy(),Utc::now().to_rfc3339()])?;
     let sid = Uuid::new_v4().to_string();
-    db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,?2,?3,?4,'idle','estimated')",params![sid,id,store::harness_name(&harness),harness.label()])?;
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model) VALUES(?1,?2,?3,?4,'idle','estimated',?5)",
+        params![
+            sid,
+            id,
+            orchestrator::HARNESS,
+            orchestrator::SESSION_LABEL,
+            orchestrator::MODEL
+        ],
+    )?;
     store::event(
         &db,
         "supervisor",
@@ -164,25 +174,16 @@ fn create_workspace(
 #[tauri::command]
 fn start_session(
     workspace_id: String,
-    harness: Harness,
-    model: Option<String>,
+    _harness: Option<Harness>,
+    _model: Option<String>,
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    let adapter_id = store::harness_name(&harness);
-    let chosen_model = model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            state
-                .adapter_registry
-                .descriptors()
-                .into_iter()
-                .find(|adapter| adapter.id == adapter_id)
-                .and_then(|adapter| adapter.default_model)
-        });
+    // Starter path: never let the UI pick harness/model. Always open Bridge's
+    // Codex orchestrator on GPT Luna. Worker routing comes later.
+    let adapter_id = orchestrator::HARNESS;
+    let session_label = orchestrator::SESSION_LABEL;
+    let chosen_model = Some(orchestrator::MODEL.to_owned());
     let db = state.db.lock().unwrap();
     let path: String = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
@@ -227,8 +228,14 @@ fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4 WHERE id=?1",
-            params![session_id, Utc::now().to_rfc3339(), thread_id, chosen_model],
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,label=?5 WHERE id=?1",
+            params![
+                session_id,
+                Utc::now().to_rfc3339(),
+                thread_id,
+                chosen_model,
+                session_label
+            ],
         )?;
     } else {
         db.execute(
@@ -237,7 +244,7 @@ fn start_session(
                 session_id,
                 workspace_id,
                 adapter_id,
-                harness.label(),
+                session_label,
                 Utc::now().to_rfc3339(),
                 thread_id,
                 chosen_model
@@ -253,8 +260,29 @@ fn start_session(
         "adapter",
         "session.started",
         &session_id,
-        &format!("Started {} structured adapter session", harness.label()),
+        &format!("Started {session_label} on {}", chosen_model.as_deref().unwrap_or("default")),
     )?;
+    if adapter_id == orchestrator::HARNESS {
+        let context = agent::NormalizedEvent {
+            kind: "session.context".into(),
+            item_id: Some("orchestrator-briefing".into()),
+            role: Some("system".into()),
+            status: Some("ready".into()),
+            title: Some("Orchestrator routing policy".into()),
+            text: Some(orchestrator::briefing()),
+            data: serde_json::json!({
+                "source": "hardcoded-benchmarks",
+                "benchmarks": ["swe-bench-pro", "routing-heuristics"],
+                "defaultModel": orchestrator::MODEL
+            }),
+        };
+        let _ = store::agent_event(
+            &db,
+            &session_id,
+            &context,
+            &serde_json::json!({"adapter": adapter_id, "hidden": true}),
+        );
+    }
     for message in &started.startup_messages {
         persist_agent_value(
             &db,

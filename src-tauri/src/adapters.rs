@@ -1,5 +1,5 @@
 use crate::{
-    agent, binary, claude_adapter, codex_adapter,
+    agent, binary, claude_adapter, codex_adapter, orchestrator,
     model::{AdapterDescriptor, ModelOption},
     BridgeError,
 };
@@ -27,7 +27,12 @@ pub struct StartedAdapter {
 
 pub trait HarnessAdapter: Send + Sync {
     fn descriptor(&self) -> AdapterDescriptor;
-    fn start(&self, cwd: &str, model: Option<&str>) -> Result<StartedAdapter, BridgeError>;
+    fn start(
+        &self,
+        cwd: &str,
+        model: Option<&str>,
+        instructions: Option<&str>,
+    ) -> Result<StartedAdapter, BridgeError>;
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
 }
 
@@ -99,7 +104,8 @@ impl AdapterRegistry {
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        adapter.start(cwd, model)
+        let briefing = (id == orchestrator::HARNESS).then(orchestrator::briefing);
+        adapter.start(cwd, model, briefing.as_deref())
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -116,7 +122,7 @@ impl HarnessAdapter for CodexAdapter {
         let version = codex_adapter::binary_version();
         AdapterDescriptor {
             id: "codex".into(),
-            label: "Codex".into(),
+            label: "Orchestrator".into(),
             available: version.is_some(),
             version,
             capabilities: [
@@ -139,16 +145,21 @@ impl HarnessAdapter for CodexAdapter {
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
             models: model_options(&[
-                ("gpt-5.6-sol", "GPT-5.6 Sol"),
+                ("gpt-5.6-luna", "GPT Luna"),
+                ("gpt-5.6-terra", "GPT Terra"),
+                ("gpt-5.6-sol", "GPT Sol"),
                 ("gpt-5.3-codex", "GPT-5.3 Codex"),
-                ("o3", "o3"),
-                ("o4-mini", "o4-mini"),
             ]),
-            default_model: Some("gpt-5.6-sol".into()),
+            default_model: Some(orchestrator::MODEL.into()),
         }
     }
-    fn start(&self, cwd: &str, model: Option<&str>) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::start(cwd, model)?;
+    fn start(
+        &self,
+        cwd: &str,
+        model: Option<&str>,
+        instructions: Option<&str>,
+    ) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::start(cwd, model, instructions)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -200,7 +211,12 @@ impl HarnessAdapter for ClaudeAdapter {
             default_model: Some("sonnet".into()),
         }
     }
-    fn start(&self, cwd: &str, model: Option<&str>) -> Result<StartedAdapter, BridgeError> {
+    fn start(
+        &self,
+        cwd: &str,
+        model: Option<&str>,
+        _instructions: Option<&str>,
+    ) -> Result<StartedAdapter, BridgeError> {
         let started = claude_adapter::start(cwd, model)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
@@ -237,7 +253,12 @@ mod tests {
                 default_model: None,
             }
         }
-        fn start(&self, _cwd: &str, _model: Option<&str>) -> Result<StartedAdapter, BridgeError> {
+        fn start(
+            &self,
+            _cwd: &str,
+            _model: Option<&str>,
+            _instructions: Option<&str>,
+        ) -> Result<StartedAdapter, BridgeError> {
             Err(BridgeError::Invalid("not launched in registry test".into()))
         }
         fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {

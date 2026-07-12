@@ -5,7 +5,7 @@ import type { AgentEvent, Session } from "../types";
 export function AgentConversation({ session, events, onResolve }: { session?: Session; events: AgentEvent[]; onResolve: (eventId:number,decision:string)=>void }) {
   const items = reduceConversation(events);
   if (!session) return <div className="conversation-empty"><Bot size={24}/><h2>Choose a structured agent</h2><p>Harness adapters turn their native event streams into one Bridge conversation protocol.</p></div>;
-  if (!items.length) return <div className="conversation-empty"><div className={`harness-icon ${session.harness}`}><Bot size={15}/></div><h2>Start with a task</h2><p>{session.label} is connected through a structured adapter. Messages, tools, approvals, plans, and diffs will appear here—never its terminal UI.</p><div className="primitive-row"><span>MESSAGES</span><span>TOOLS</span><span>PLANS</span><span>APPROVALS</span><span>DIFFS</span></div></div>;
+  if (!items.length) return <div className="conversation-empty"><div className={`harness-icon ${session.harness}`}><Bot size={15}/></div><h2>What should we build?</h2><p>{session.label} is ready on GPT Luna. Describe the work—Bridge owns harness routing so you never pick Claude vs Codex.</p><div className="primitive-row"><span>MESSAGES</span><span>TOOLS</span><span>PLANS</span><span>APPROVALS</span><span>DIFFS</span></div></div>;
   return <div className="conversation-scroll"><div className="adapter-banner"><Sparkles size={12}/><span>{session.label} · STRUCTURED ADAPTER</span><i/>Protocol v1</div>{items.map(item=><ConversationItemView key={item.key} item={item} onResolve={onResolve}/>)}</div>;
 }
 
