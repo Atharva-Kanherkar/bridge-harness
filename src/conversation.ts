@@ -1,9 +1,96 @@
-import type { AgentEvent } from "./types";
+import type { AgentEvent, SessionEntry } from "./types";
 
-export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "error" | "diff" | "artifact" | "delegation";
+export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "error" | "diff" | "artifact" | "delegation" | "checkpoint" | "compaction" | "branch-summary" | "raw";
 export interface ConversationItem {
   key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
-  title?: string; text: string; data: Record<string, unknown>; sequence: number;
+  title?: string; text: string; data: Record<string, unknown>; sequence: number; entryId?: string;
+}
+
+/** Select one root-to-leaf path without relying on input array order. */
+export function selectActiveBranch(entries: SessionEntry[], activeLeafId: string | null): SessionEntry[] {
+  if (!activeLeafId) return [];
+  const leaf = entries.find((entry) => entry.id === activeLeafId);
+  if (!leaf) return [];
+  const byId = new Map(
+    entries
+      .filter((entry) => entry.sessionId === leaf.sessionId)
+      .map((entry) => [entry.id, entry] as const),
+  );
+  const branch: SessionEntry[] = [];
+  const visited = new Set<string>();
+  let current: SessionEntry | undefined = byId.get(activeLeafId);
+  while (current && !visited.has(current.id)) {
+    branch.push(current);
+    visited.add(current.id);
+    current = current.parentEntryId ? byId.get(current.parentEntryId) : undefined;
+  }
+  return branch.reverse();
+}
+
+/** Project immutable forest entries into UI items with entry-derived, branch-stable keys. */
+export function projectSessionConversation(entries: SessionEntry[], activeLeafId: string | null): ConversationItem[] {
+  return selectActiveBranch(entries, activeLeafId).map(projectSessionEntry);
+}
+
+function projectSessionEntry(entry: SessionEntry): ConversationItem {
+  const payload = entry.payload;
+  const base = {
+    key: `entry:${entry.id}`,
+    entryId: entry.id,
+    eventId: entry.sequence,
+    sequence: entry.sequence,
+    status: stringValue(payload.status),
+    data: payload,
+  };
+  if (isRawProviderEntry(entry)) {
+    return {
+      ...base,
+      type: "raw",
+      title: stringValue(payload.title) ?? "Raw provider event",
+      text: stringValue(payload.text) ?? "",
+      data: { ...payload, collapsed: true, inspectable: true },
+    };
+  }
+  switch (entry.kind) {
+    case "user.message":
+    case "assistant.message":
+      return {
+        ...base,
+        type: "message",
+        role: entry.kind === "user.message" ? "user" : stringValue(payload.role) ?? "assistant",
+        text: stringValue(payload.text) ?? "",
+      };
+    case "checkpoint":
+      return { ...base, type: "checkpoint", title: "Checkpoint", text: stringValue(payload.summary) ?? "" };
+    case "compaction":
+      return { ...base, type: "compaction", title: "Context compacted", text: stringValue(payload.summary) ?? "" };
+    case "compaction.requested":
+      return { ...base, type: "compaction", title: "Compaction requested", text: stringValue(payload.reason) ?? "" };
+    case "compaction.failed":
+      return { ...base, type: "compaction", status: "failed", title: "Compaction failed", text: stringValue(payload.reason) ?? "" };
+    case "branch.summary":
+      return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
+    default:
+      return {
+        ...base,
+        type: entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : "activity",
+        role: stringValue(payload.role),
+        title: stringValue(payload.title) ?? humanizeKind(entry.kind),
+        text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",
+      };
+  }
+}
+
+function isRawProviderEntry(entry: SessionEntry): boolean {
+  return entry.kind.startsWith("provider.") || entry.kind.startsWith("raw.") || entry.contextVisibility.toLowerCase().includes("raw");
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function humanizeKind(kind: string): string {
+  return kind.replace(/[._-]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
 }
 
 export function reduceConversation(events: AgentEvent[]): ConversationItem[] {

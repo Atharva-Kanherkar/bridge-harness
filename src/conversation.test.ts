@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { reduceConversation } from "./conversation";
-import type { AgentEvent } from "./types";
+import { projectSessionConversation, reduceConversation, selectActiveBranch } from "./conversation";
+import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
+const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>={},sequence=Number(id.replace(/\D/g,""))||1,overrides:Partial<SessionEntry>={}):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,kind,payload,providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now",...overrides });
 
 describe("normalized conversation reducer",()=>{
   it("assembles streaming assistant messages",()=>{const items=reduceConversation([event(1,"message.delta",{itemId:"m",role:"assistant",text:"hel"}),event(2,"message.delta",{itemId:"m",role:"assistant",text:"lo"}),event(3,"message.completed",{itemId:"m",role:"assistant",text:"hello",status:"completed"})]);expect(items).toHaveLength(1);expect(items[0].text).toBe("hello");expect(items[0].status).toBe("completed");});
@@ -28,5 +29,49 @@ describe("normalized conversation reducer",()=>{
     expect(items[0].text).toBe("Finished the work.\nReview the summary.");
     expect(items[0].text).not.toContain("bridge-worker-result");
     expect(source.text).toBe(raw);
+  });
+});
+
+describe("session forest conversation projection",()=>{
+  const root=entry("e1",null,"user.message",{text:"start"},1);
+  const fork=entry("e2","e1","assistant.message",{text:"shared"},2);
+  const left=entry("e3","e2","assistant.message",{text:"left"},3);
+  const right=entry("e4","e2","assistant.message",{text:"right"},4);
+  const rightTail=entry("e5","e4","assistant.message",{text:"right tail"},5);
+  const forest=[rightTail,left,root,right,fork];
+
+  it("selects the root-to-active-leaf path and excludes inactive descendants",()=>{
+    expect(selectActiveBranch(forest,"e5").map(({id})=>id)).toEqual(["e1","e2","e4","e5"]);
+    expect(projectSessionConversation(forest,"e3").map(({text})=>text)).toEqual(["start","shared","left"]);
+  });
+
+  it("preserves entry-derived keys when the selected leaf changes",()=>{
+    const leftKeys=projectSessionConversation(forest,"e3").map(({key})=>key);
+    const rightKeys=projectSessionConversation(forest,"e5").map(({key})=>key);
+    expect(leftKeys.slice(0,2)).toEqual(["entry:e1","entry:e2"]);
+    expect(rightKeys.slice(0,2)).toEqual(leftKeys.slice(0,2));
+  });
+
+  it("maps checkpoint, compaction, and branch summary entries to dedicated cards",()=>{
+    const cards=[
+      entry("e1",null,"checkpoint",{summary:"Saved state"},1),
+      entry("e2","e1","compaction",{summary:"Reduced context"},2),
+      entry("e3","e2","branch.summary",{summary:"Retained boundary"},3),
+    ];
+    const items=projectSessionConversation(cards,"e3");
+    expect(items.map(({type})=>type)).toEqual(["checkpoint","compaction","branch-summary"]);
+    expect(items.map(({text})=>text)).toEqual(["Saved state","Reduced context","Retained boundary"]);
+  });
+
+  it("keeps raw provider entries collapsed and inspectable",()=>{
+    const raw=entry("e2","e1","provider.unknown",{title:"provider frame",text:"opaque",providerMeta:{requestId:"r"}},2,{contextVisibility:"worker_raw"});
+    const items=projectSessionConversation([root,raw],"e2");
+    expect(items[1]).toMatchObject({key:"entry:e2",type:"raw",title:"provider frame",text:"opaque",data:{collapsed:true,inspectable:true}});
+    expect(items[1].data.providerMeta).toEqual({requestId:"r"});
+  });
+
+  it("returns an empty projection when the active leaf is unavailable",()=>{
+    expect(projectSessionConversation(forest,"missing")).toEqual([]);
+    expect(projectSessionConversation(forest,null)).toEqual([]);
   });
 });
