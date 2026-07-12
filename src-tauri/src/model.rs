@@ -74,6 +74,8 @@ pub struct Session {
     pub context_percent: Option<i64>,
     pub usage_percent: Option<i64>,
     pub metric_source: String,
+    pub provider_session_id: Option<String>,
+    pub active_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

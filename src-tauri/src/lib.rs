@@ -1,4 +1,5 @@
 mod agent;
+mod codex_adapter;
 mod git;
 mod metrics;
 mod model;
@@ -11,7 +12,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
     thread,
@@ -50,6 +51,7 @@ struct RuntimeSession {
 struct AppState {
     db: Mutex<Connection>,
     runtimes: Mutex<HashMap<String, RuntimeSession>>,
+    adapters: Mutex<HashMap<String, codex_adapter::CodexRuntime>>,
     worktrees: PathBuf,
     database_path: PathBuf,
 }
@@ -60,6 +62,7 @@ struct Health {
     version: &'static str,
     harnesses: HashMap<&'static str, bool>,
     database: String,
+    adapters: Vec<AdapterDescriptor>,
 }
 
 #[tauri::command]
@@ -73,7 +76,23 @@ fn health(state: State<AppState>) -> Health {
             ("shell", true),
         ]),
         database: state.database_path.to_string_lossy().into(),
+        adapters: adapter_descriptors(),
     }
+}
+
+fn adapter_descriptors() -> Vec<AdapterDescriptor> {
+    let codex_version = codex_adapter::binary_version();
+    vec![
+        AdapterDescriptor {
+            id: "codex".into(), label: "Codex".into(), available: codex_version.is_some(), version: codex_version,
+            capabilities: ["messages","streaming","reasoning","plans","tools","commands","file_changes","approvals","usage","history","interrupt"].into_iter().map(str::to_owned).collect(),
+            unavailable_reason: which::which("codex").is_err().then(|| "Codex binary is not installed".into()),
+        },
+        AdapterDescriptor {
+            id: "claude".into(), label: "Claude Code".into(), available: false, version: None, capabilities: vec![],
+            unavailable_reason: Some("Structured Claude adapter is not installed; Bridge will never fall back to its TUI".into()),
+        },
+    ]
 }
 #[tauri::command]
 fn get_state(state: State<AppState>) -> Result<BridgeState, BridgeError> {
@@ -161,6 +180,204 @@ fn start_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    if harness != Harness::Codex {
+        let label = harness.label();
+        return Err(BridgeError::Invalid(format!(
+            "{label} has no structured adapter. Bridge will not open its TUI"
+        )));
+    }
+    let db = state.db.lock().unwrap();
+    let path: String = db.query_row(
+        "SELECT path FROM workspaces WHERE id=?1",
+        params![workspace_id],
+        |r| r.get(0),
+    )?;
+    let existing: Option<String> = db.query_row("SELECT id FROM sessions WHERE workspace_id=?1 AND harness='codex' AND status IN ('idle','stopped','failed','ready') ORDER BY rowid DESC LIMIT 1", params![workspace_id], |r| r.get(0)).ok();
+    let session_id = existing
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    drop(db);
+
+    let started = codex_adapter::start(&path)?;
+    let thread_id = started.runtime.thread_id.clone();
+    let current_turn = started.runtime.current_turn.clone();
+    let mut reader = started.reader;
+    let db = state.db.lock().unwrap();
+    if existing.is_some() {
+        db.execute("UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported' WHERE id=?1", params![session_id,Utc::now().to_rfc3339(),thread_id])?;
+    } else {
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id) VALUES(?1,?2,'codex','Codex','working',?3,'reported',?4)", params![session_id,workspace_id,Utc::now().to_rfc3339(),thread_id])?;
+    }
+    db.execute(
+        "UPDATE workspaces SET status='working' WHERE id=?1",
+        params![workspace_id],
+    )?;
+    store::event(
+        &db,
+        "adapter",
+        "session.started",
+        &session_id,
+        "Started Codex structured app-server session",
+    )?;
+    for message in &started.startup_messages {
+        persist_agent_value(&db, &session_id, message)?;
+    }
+    drop(db);
+    state
+        .adapters
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), started.runtime);
+
+    let app_reader = app.clone();
+    let sid_reader = session_id.clone();
+    thread::spawn(move || {
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        handle_agent_value(&app_reader, &sid_reader, &current_turn, &value);
+                    }
+                }
+            }
+        }
+        let state = app_reader.state::<AppState>();
+        state.adapters.lock().unwrap().remove(&sid_reader);
+        let db = state.db.lock().unwrap();
+        let workspace: Option<String> = db
+            .query_row(
+                "SELECT workspace_id FROM sessions WHERE id=?1",
+                params![sid_reader],
+                |r| r.get(0),
+            )
+            .ok();
+        let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![sid_reader,Utc::now().to_rfc3339()]);
+        if let Some(workspace) = workspace {
+            let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
+        }
+        let _ = app_reader.emit("state-changed", ());
+    });
+    let _ = app.emit("state-changed", ());
+    store::state(&state.db.lock().unwrap())
+}
+
+fn persist_agent_value(
+    db: &Connection,
+    session_id: &str,
+    value: &serde_json::Value,
+) -> Result<Vec<AgentEvent>, BridgeError> {
+    let normalized = if value.get("id").is_some() && value.get("method").is_some() {
+        agent::normalize_codex_request(value).into_iter().collect()
+    } else {
+        agent::normalize_codex_message(value)
+    };
+    normalized
+        .iter()
+        .map(|event| {
+            store::agent_event(
+                db,
+                session_id,
+                event,
+                &serde_json::json!({"adapter":"codex","method":value.get("method")}),
+            )
+        })
+        .collect()
+}
+
+fn handle_agent_value(
+    app: &AppHandle,
+    session_id: &str,
+    current_turn: &std::sync::Arc<Mutex<Option<String>>>,
+    value: &serde_json::Value,
+) {
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    let method = value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let workspace_id: Option<String> = db
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .ok();
+    match method {
+        "turn/started" => {
+            let turn_id = value
+                .pointer("/params/turn/id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            *current_turn.lock().unwrap() = turn_id.clone();
+            let _ = db.execute(
+                "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
+                params![session_id, turn_id],
+            );
+        }
+        "turn/completed" => {
+            *current_turn.lock().unwrap() = None;
+            let _ = db.execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
+                params![session_id],
+            );
+            if let Some(workspace_id) = &workspace_id {
+                let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
+            }
+        }
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            let _ = db.execute(
+                "UPDATE sessions SET status='waiting' WHERE id=?1",
+                params![session_id],
+            );
+            if let Some(workspace_id) = &workspace_id {
+                let _ = db.execute(
+                    "UPDATE workspaces SET status='waiting' WHERE id=?1",
+                    params![workspace_id],
+                );
+            }
+        }
+        "error"
+            if !value
+                .pointer("/params/willRetry")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            let _ = db.execute(
+                "UPDATE sessions SET status='failed' WHERE id=?1",
+                params![session_id],
+            );
+            if let Some(workspace_id) = &workspace_id {
+                let _ = db.execute(
+                    "UPDATE workspaces SET status='failed' WHERE id=?1",
+                    params![workspace_id],
+                );
+            }
+        }
+        _ => {}
+    }
+    if let Ok(events) = persist_agent_value(&db, session_id, value) {
+        for event in events {
+            let _ = app.emit("agent-event", event);
+        }
+    }
+    let _ = app.emit("state-changed", ());
+}
+
+#[tauri::command]
+fn start_terminal(
+    workspace_id: String,
+    harness: Harness,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    if harness != Harness::Shell {
+        return Err(BridgeError::Invalid(
+            "Terminal only supports the workspace shell".into(),
+        ));
+    }
     let db = state.db.lock().unwrap();
     let path: String = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
@@ -288,6 +505,88 @@ fn write_session(
     runtime.writer.flush()?;
     Ok(())
 }
+
+#[tauri::command]
+fn send_turn(session_id: String, text: String, state: State<AppState>) -> Result<(), BridgeError> {
+    if text.trim().is_empty() {
+        return Err(BridgeError::Invalid("Message cannot be empty".into()));
+    }
+    let adapters = state.adapters.lock().unwrap();
+    let runtime = adapters
+        .get(&session_id)
+        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+    runtime.start_turn(&text)
+}
+
+#[tauri::command]
+fn interrupt_turn(session_id: String, state: State<AppState>) -> Result<(), BridgeError> {
+    let adapters = state.adapters.lock().unwrap();
+    let runtime = adapters
+        .get(&session_id)
+        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+    runtime.interrupt()
+}
+
+#[tauri::command]
+fn resolve_approval(
+    event_id: i64,
+    decision: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), BridgeError> {
+    if !matches!(
+        decision.as_str(),
+        "accept" | "acceptForSession" | "decline" | "cancel"
+    ) {
+        return Err(BridgeError::Invalid("Unsupported approval decision".into()));
+    }
+    let db = state.db.lock().unwrap();
+    let (session_id, data): (String, String) = db.query_row(
+        "SELECT session_id,data FROM agent_events WHERE id=?1 AND kind='approval.requested'",
+        params![event_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let data: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
+    let request_id = data
+        .get("requestId")
+        .cloned()
+        .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
+    drop(db);
+    let adapters = state.adapters.lock().unwrap();
+    let runtime = adapters
+        .get(&session_id)
+        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+    runtime.respond(request_id, &decision)?;
+    drop(adapters);
+    let mut normalized = agent::NormalizedEvent {
+        kind: "approval.resolved".into(),
+        item_id: None,
+        role: None,
+        status: Some(decision.clone()),
+        title: Some("Approval resolved".into()),
+        text: None,
+        data: serde_json::json!({"requestEventId":event_id,"decision":decision}),
+    };
+    normalized.item_id = data
+        .get("itemId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let db = state.db.lock().unwrap();
+    let event = store::agent_event(
+        &db,
+        &session_id,
+        &normalized,
+        &serde_json::json!({"adapter":"codex"}),
+    )?;
+    db.execute(
+        "UPDATE sessions SET status='working' WHERE id=?1",
+        params![session_id],
+    )?;
+    let _ = app.emit("agent-event", event);
+    let _ = app.emit("state-changed", ());
+    Ok(())
+}
 #[tauri::command]
 fn resize_session(
     session_id: String,
@@ -314,6 +613,10 @@ fn stop_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
     if let Some(mut runtime) = state.runtimes.lock().unwrap().remove(&session_id) {
         runtime
             .child
@@ -454,6 +757,7 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(connection),
                 runtimes: Mutex::new(HashMap::new()),
+                adapters: Mutex::new(HashMap::new()),
                 worktrees: data.join("worktrees"),
                 database_path: db_path,
             });
@@ -465,8 +769,12 @@ pub fn run() {
             add_project,
             create_workspace,
             start_session,
+            start_terminal,
             write_session,
             resize_session,
+            send_turn,
+            interrupt_turn,
+            resolve_approval,
             stop_session,
             refresh_workspace,
             archive_workspace
