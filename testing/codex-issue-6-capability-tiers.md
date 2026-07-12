@@ -8,7 +8,7 @@
 - Unknown or tier-mismatched model hints fall back to the adapter's tier default and append a queryable warning event.
 - Worker sessions persist `requested_tier` independently from the actual provider `model`; spawn events expose both.
 - Existing databases migrate transactionally and idempotently to the new session audit column.
-- The orchestrator briefing uses role/tier/effort and the typed v1 request envelope, preserves the rule against delegating trivial actions, enforces flat topology, and contains no provider/model branding as routing guidance.
+- The orchestrator briefing uses role/tier/effort and the existing typed v1 `bridge-delegate` request envelope, preserves the rule against delegating trivial actions, enforces flat topology, and contains no provider/model branding as routing guidance.
 - The orchestrator relays typed worker-result summaries and never asks for or forwards raw worker transcripts.
 - UI session copy presents tier as the routing semantic and actual model as secondary runtime detail; user-facing policy copy does not name a routing model.
 

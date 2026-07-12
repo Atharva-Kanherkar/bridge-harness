@@ -174,13 +174,13 @@ fn create_workspace(
     db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,'idle',?7)",params![id,project_id,city,title,branch,path.to_string_lossy(),Utc::now().to_rfc3339()])?;
     let sid = Uuid::new_v4().to_string();
     db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model) VALUES(?1,?2,?3,?4,'idle','estimated',?5)",
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,requested_tier) VALUES(?1,?2,?3,?4,'idle','estimated',?5)",
         params![
             sid,
             id,
             orchestrator::HARNESS,
             orchestrator::SESSION_LABEL,
-            orchestrator::MODEL
+            orchestrator::TIER.as_str()
         ],
     )?;
     store::event(
@@ -201,11 +201,14 @@ fn start_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    // Starter path: never let the UI pick harness/model. Always open Bridge's
-    // Codex orchestrator on GPT Luna. Worker routing comes later.
+    // The user chooses neither harness nor model. Bridge starts its fast-tier
+    // orchestrator and resolves the provider model through adapter inventory.
     let adapter_id = orchestrator::HARNESS;
     let session_label = orchestrator::SESSION_LABEL;
-    let chosen_model = Some(orchestrator::MODEL.to_owned());
+    let resolution = state
+        .adapter_registry
+        .resolve_model(adapter_id, orchestrator::TIER, None)?;
+    let chosen_model = Some(resolution.actual_model);
     let db = state.db.lock().unwrap();
     let path: String = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
@@ -258,18 +261,19 @@ fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,label=?5,depth=0,parent_session_id=NULL WHERE id=?1",
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,requested_tier=?5,label=?6,depth=0,parent_session_id=NULL WHERE id=?1",
             params![
                 session_id,
                 Utc::now().to_rfc3339(),
                 thread_id,
                 chosen_model,
+                orchestrator::TIER.as_str(),
                 session_label
             ],
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,depth) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,0)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,depth) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,0)",
             params![
                 session_id,
                 workspace_id,
@@ -277,7 +281,8 @@ fn start_session(
                 session_label,
                 Utc::now().to_rfc3339(),
                 thread_id,
-                chosen_model
+                chosen_model,
+                orchestrator::TIER.as_str()
             ],
         )?;
     }
@@ -301,9 +306,9 @@ fn start_session(
             title: Some("Orchestrator routing policy".into()),
             text: Some(orchestrator::briefing()),
             data: serde_json::json!({
-                "source": "hardcoded-benchmarks",
-                "benchmarks": ["swe-bench-pro", "routing-heuristics"],
-                "defaultModel": orchestrator::MODEL
+                "source": "capability-policy",
+                "requestedTier": orchestrator::TIER,
+                "runtimeModel": chosen_model
             }),
         };
         let _ = store::agent_event(
@@ -648,7 +653,25 @@ struct WorkerLaunchReservation {
     depth: i64,
     path: String,
     branch: String,
+    actual_model: String,
     outcome: policy::PolicyOutcome,
+}
+
+fn record_model_resolution_warning(
+    db: &Connection,
+    parent_session_id: &str,
+    resolution: &adapters::ModelResolution,
+) -> Result<(), BridgeError> {
+    if let Some(warning) = &resolution.warning {
+        store::event(
+            db,
+            "capability",
+            "capability.model_fallback",
+            parent_session_id,
+            warning,
+        )?;
+    }
+    Ok(())
 }
 
 fn reserve_worker_launch(
@@ -656,6 +679,7 @@ fn reserve_worker_launch(
     parent_session_id: &str,
     turn_id: &str,
     directive: &delegation::DelegationRequest,
+    actual_model: &str,
 ) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
     let (workspace_id, parent_depth, path, branch): (String, i64, String, String) = db
         .query_row(
@@ -701,19 +725,19 @@ fn reserve_worker_launch(
     let session_id = Uuid::new_v4().to_string();
     let depth = parent_depth + 1;
     let harness = directive.runtime_harness();
-    let model = directive.runtime_model();
     let effort = directive.effort.as_str();
     let now = Utc::now().to_rfc3339();
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,model,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'starting',?5,'reported',?6,?7,?8,?9)",
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,model,requested_tier,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'starting',?5,'reported',?6,?7,?8,?9,?10)",
         params![
             session_id,
             workspace_id,
             harness,
             directive.label(),
             now,
-            model,
+            actual_model,
+            directive.capability_tier.as_str(),
             effort,
             parent_session_id,
             depth,
@@ -749,6 +773,7 @@ fn reserve_worker_launch(
         depth,
         path,
         branch,
+        actual_model: actual_model.into(),
         outcome,
     }))
 }
@@ -760,9 +785,37 @@ fn launch_worker(
     directive: &delegation::DelegationRequest,
 ) {
     let state = app.state::<AppState>();
+    let harness = directive.runtime_harness();
+    let resolution = match state.adapter_registry.resolve_model(
+        &harness,
+        directive.capability_tier,
+        directive.model.as_deref(),
+    ) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "capability",
+                "capability.resolution_failed",
+                parent_session_id,
+                &error.to_string(),
+            );
+            drop(db);
+            let _ = app.emit("state-changed", ());
+            return;
+        }
+    };
     let reservation = {
         let db = state.db.lock().unwrap();
-        reserve_worker_launch(&db, parent_session_id, turn_id, directive)
+        let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
+        reserve_worker_launch(
+            &db,
+            parent_session_id,
+            turn_id,
+            directive,
+            &resolution.actual_model,
+        )
     };
     let reservation = match reservation {
         Ok(Some(reservation)) => reservation,
@@ -784,8 +837,7 @@ fn launch_worker(
             return;
         }
     };
-    let harness = directive.runtime_harness();
-    let model = directive.runtime_model();
+    let model = reservation.actual_model.clone();
     let effort = directive.effort.as_str().to_owned();
     let label = directive.label();
     let instructions =
@@ -857,6 +909,7 @@ fn launch_worker(
                 "childSessionId": session_id,
                 "request": directive,
                 "harness": harness,
+                "requestedTier": directive.capability_tier,
                 "model": model,
                 "modelLabel": delegation::model_display(&model),
                 "effort": effort,
@@ -998,7 +1051,7 @@ fn process_worker_result_output(
             )?;
             Ok(None)
         }
-        delegation::WorkerOutputAction::Unstructured { raw, reason } => {
+        delegation::WorkerOutputAction::Unstructured { raw: _, reason } => {
             store::event(
                 db,
                 "delegation",
@@ -1006,7 +1059,9 @@ fn process_worker_result_output(
                 child_session_id,
                 &reason,
             )?;
-            Ok(Some(format!("[unstructured — {reason}]\n{raw}")))
+            Ok(Some(format!(
+                "[worker result unavailable] The worker did not return a valid typed result after one repair attempt: {reason}"
+            )))
         }
     }
 }
@@ -1707,9 +1762,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fallback.contains("[unstructured"));
-        assert!(fallback.contains("Initial invalid output:\ninvalid first output"));
-        assert!(fallback.contains("Invalid repair output:\ninvalid repair output"));
+        assert!(fallback.contains("[worker result unavailable]"));
+        assert!(!fallback.contains("invalid first output"));
+        assert!(!fallback.contains("invalid repair output"));
         assert_eq!(
             db.query_row(
                 "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
@@ -1756,7 +1811,7 @@ mod tests {
     fn policy_reservation_precedes_spawn_and_queues_overlapping_writer() {
         let db = policy_fixture();
         let request = policy_request(&["src/auth/**"]);
-        let first = reserve_worker_launch(&db, "parent", "turn-1", &request)
+        let first = reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra")
             .unwrap()
             .expect("first writer should reserve");
         assert!(matches!(
@@ -1781,8 +1836,24 @@ mod tests {
             .unwrap(),
             "turn-1"
         );
+        assert_eq!(
+            db.query_row(
+                "SELECT requested_tier || ':' || model FROM sessions WHERE id=?1",
+                params![first.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "standard:gpt-5.6-terra"
+        );
 
-        let second = reserve_worker_launch(&db, "parent", "turn-1", &request).unwrap();
+        let second = reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-1",
+            &request,
+            "gpt-5.6-terra",
+        )
+        .unwrap();
         assert!(second.is_none());
         assert_eq!(
             db.query_row(
@@ -1798,6 +1869,31 @@ mod tests {
         assert_eq!(entries[1].kind, "delegation.requested");
         assert_eq!(entries[1].payload["decision"], "queue");
         assert_eq!(entries[1].payload["reason"], "writer_conflict");
+    }
+
+    #[test]
+    fn unknown_model_hint_falls_back_and_records_warning_event() {
+        let db = policy_fixture();
+        let registry = adapters::AdapterRegistry::built_in().unwrap();
+        let resolution = registry
+            .resolve_model(
+                "codex",
+                CapabilityTier::Standard,
+                Some("not-an-advertised-model"),
+            )
+            .unwrap();
+        assert_eq!(resolution.actual_model, "gpt-5.6-terra");
+        record_model_resolution_warning(&db, "parent", &resolution).unwrap();
+        let (kind, body): (String, String) = db
+            .query_row(
+                "SELECT kind,body FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "capability.model_fallback");
+        assert!(body.contains("not-an-advertised-model"));
+        assert!(body.contains("gpt-5.6-terra"));
     }
 
     #[test]
@@ -1833,10 +1929,10 @@ mod tests {
             .unwrap();
             assert!(index < 3);
         }
-        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request)
+        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra")
             .unwrap()
             .is_none());
-        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request)
+        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra")
             .unwrap()
             .expect("new turn should reset request counters");
         assert!(matches!(

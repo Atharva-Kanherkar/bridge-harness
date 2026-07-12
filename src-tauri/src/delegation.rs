@@ -4,6 +4,7 @@
 //! immediately produces [`DelegationRequest`]. No free-form task/context object
 //! crosses that boundary. Workers return a versioned [`WorkerResult`].
 
+pub use crate::model::CapabilityTier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -29,14 +30,6 @@ pub enum WriteMode {
     Shared,
     Isolated,
     Full,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CapabilityTier {
-    Fast,
-    Standard,
-    Strong,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,25 +121,18 @@ impl DelegationRequest {
             .unwrap_or_else(|| "codex".into())
     }
 
-    pub fn runtime_model(&self) -> String {
-        let harness = self.runtime_harness();
-        self.model
-            .as_deref()
-            .map(|model| normalize_model(&harness, model))
-            .unwrap_or_else(|| default_model(&harness).to_owned())
-    }
-
     pub fn label(&self) -> String {
-        let harness = self.runtime_harness();
-        format!(
-            "{} · {}",
-            if harness == "claude" {
-                "Claude"
-            } else {
-                "Codex"
-            },
-            model_display(&self.runtime_model())
-        )
+        format!("{} · {}", role_label(self.role), self.capability_tier.as_str())
+    }
+}
+
+fn role_label(role: WorkerRole) -> &'static str {
+    match role {
+        WorkerRole::Research => "Research",
+        WorkerRole::Implementation => "Implementation",
+        WorkerRole::Verification => "Verification",
+        WorkerRole::Planning => "Planning",
+        WorkerRole::Documentation => "Documentation",
     }
 }
 
@@ -372,7 +358,7 @@ impl LegacyDirective {
             effort: parse_effort(effort.as_deref().unwrap_or("medium")),
             verification: Vec::new(),
             output_contract: OutputContract::ImplementationResult,
-            model: model.map(|model| normalize_model(&harness, &model)),
+            model: model.map(|model| model.trim().to_ascii_lowercase()),
             harness: Some(harness),
         };
         request.validate()?;
@@ -742,35 +728,6 @@ pub fn normalize_harness(value: &str) -> Option<String> {
     }
 }
 
-fn default_model(harness: &str) -> &'static str {
-    match harness {
-        "claude" => "sonnet",
-        _ => "gpt-5.6-luna",
-    }
-}
-
-fn normalize_model(harness: &str, model: &str) -> String {
-    let value = model.trim().to_ascii_lowercase();
-    if harness == "claude" {
-        return match value.as_str() {
-            "sonnet" | "claude-sonnet" => "sonnet",
-            "opus" | "claude-opus" => "opus",
-            "haiku" | "claude-haiku" => "haiku",
-            "fable" | "claude-fable" => "fable",
-            _ => "sonnet",
-        }
-        .to_owned();
-    }
-    match value.as_str() {
-        "luna" | "gpt-luna" | "gpt-5.6-luna" => "gpt-5.6-luna",
-        "terra" | "gpt-terra" | "gpt-5.6-terra" => "gpt-5.6-terra",
-        "sol" | "gpt-sol" | "gpt-5.6-sol" => "gpt-5.6-sol",
-        "codex" | "gpt-5.3-codex" => "gpt-5.3-codex",
-        _ => "gpt-5.6-luna",
-    }
-    .to_owned()
-}
-
 pub fn model_display(model: &str) -> String {
     match model {
         "sonnet" => "Sonnet",
@@ -865,7 +822,7 @@ mod tests {
         assert_eq!(requests, vec![expected.clone()]);
         assert_eq!(requests[0].schema_version, 1);
         assert_eq!(requests[0].runtime_harness(), "claude");
-        assert_eq!(requests[0].runtime_model(), "fable");
+        assert_eq!(requests[0].model.as_deref(), Some("fable"));
         assert!(requests[0].validate().is_ok());
     }
 
@@ -931,7 +888,7 @@ mod tests {
         assert_eq!(typed.capability_tier, CapabilityTier::Standard);
         assert_eq!(typed.effort, Effort::Xhigh);
         assert_eq!(typed.runtime_harness(), "claude");
-        assert_eq!(typed.runtime_model(), "fable");
+        assert_eq!(typed.model.as_deref(), Some("fable"));
     }
 
     #[test]

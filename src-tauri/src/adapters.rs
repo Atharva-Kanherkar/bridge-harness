@@ -1,6 +1,6 @@
 use crate::{
-    agent, binary, claude_adapter, codex_adapter, orchestrator,
-    model::{AdapterDescriptor, ModelOption},
+    agent, binary, claude_adapter, codex_adapter,
+    model::{AdapterDescriptor, CapabilityTier, ModelOption},
     BridgeError,
 };
 use serde_json::Value;
@@ -41,14 +41,23 @@ pub struct AdapterRegistry {
     adapters: HashMap<String, Box<dyn HarnessAdapter>>,
 }
 
-fn model_options(items: &[(&str, &str)]) -> Vec<ModelOption> {
+fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOption> {
     items
         .iter()
-        .map(|(id, label)| ModelOption {
+        .map(|(id, label, tier, default_for_tier)| ModelOption {
             id: (*id).into(),
             label: (*label).into(),
+            tier: *tier,
+            default_for_tier: *default_for_tier,
         })
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelResolution {
+    pub requested_tier: CapabilityTier,
+    pub actual_model: String,
+    pub warning: Option<String>,
 }
 
 impl AdapterRegistry {
@@ -116,6 +125,53 @@ impl AdapterRegistry {
             .map(|adapter| adapter.normalize(value))
             .unwrap_or_default()
     }
+
+    pub fn resolve_model(
+        &self,
+        id: &str,
+        tier: CapabilityTier,
+        model_hint: Option<&str>,
+    ) -> Result<ModelResolution, BridgeError> {
+        let descriptor = self
+            .adapters
+            .get(id)
+            .ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?
+            .descriptor();
+        let tier_default = descriptor
+            .models
+            .iter()
+            .find(|model| model.tier == tier && model.default_for_tier)
+            .or_else(|| descriptor.models.iter().find(|model| model.tier == tier))
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!(
+                    "Adapter {id} does not advertise a {} capability model",
+                    tier.as_str()
+                ))
+            })?;
+        let hinted = model_hint.and_then(|hint| {
+            descriptor
+                .models
+                .iter()
+                .find(|model| model.id.eq_ignore_ascii_case(hint.trim()))
+        });
+        let selected = hinted
+            .filter(|model| model.tier == tier)
+            .unwrap_or(tier_default);
+        let warning = model_hint.and_then(|hint| {
+            (hinted.is_none() || hinted.is_some_and(|model| model.tier != tier)).then(|| {
+                format!(
+                    "Model hint {hint:?} is unknown or outside tier {}; using {}",
+                    tier.as_str(),
+                    tier_default.id
+                )
+            })
+        });
+        Ok(ModelResolution {
+            requested_tier: tier,
+            actual_model: selected.id.clone(),
+            warning,
+        })
+    }
 }
 
 struct CodexAdapter;
@@ -147,12 +203,12 @@ impl HarnessAdapter for CodexAdapter {
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
             models: model_options(&[
-                ("gpt-5.6-luna", "GPT Luna"),
-                ("gpt-5.6-terra", "GPT Terra"),
-                ("gpt-5.6-sol", "GPT Sol"),
-                ("gpt-5.3-codex", "GPT-5.3 Codex"),
+                ("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, true),
+                ("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, true),
+                ("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, true),
+                ("gpt-5.3-codex", "GPT-5.3 Codex", CapabilityTier::Standard, false),
             ]),
-            default_model: Some(orchestrator::MODEL.into()),
+            default_model: Some("gpt-5.6-luna".into()),
         }
     }
     fn start(
@@ -206,10 +262,10 @@ impl HarnessAdapter for ClaudeAdapter {
                 .is_none()
                 .then(|| "Claude Code binary is not installed".into()),
             models: model_options(&[
-                ("sonnet", "Claude Sonnet"),
-                ("opus", "Claude Opus"),
-                ("haiku", "Claude Haiku"),
-                ("fable", "Claude Fable"),
+                ("haiku", "Claude Haiku", CapabilityTier::Fast, true),
+                ("sonnet", "Claude Sonnet", CapabilityTier::Standard, true),
+                ("opus", "Claude Opus", CapabilityTier::Strong, false),
+                ("fable", "Claude Fable", CapabilityTier::Strong, true),
             ]),
             default_model: Some("sonnet".into()),
         }
@@ -286,5 +342,56 @@ mod tests {
         };
         registry.register(Box::new(Fake)).unwrap();
         assert_eq!(registry.descriptors()[0].capabilities, vec!["messages"]);
+    }
+
+    #[test]
+    fn every_advertised_model_has_one_tier_and_each_tier_has_one_default() {
+        let registry = AdapterRegistry::built_in().unwrap();
+        for descriptor in registry.descriptors() {
+            assert!(!descriptor.models.is_empty());
+            for tier in [
+                CapabilityTier::Fast,
+                CapabilityTier::Standard,
+                CapabilityTier::Strong,
+            ] {
+                let models = descriptor
+                    .models
+                    .iter()
+                    .filter(|model| model.tier == tier)
+                    .collect::<Vec<_>>();
+                assert!(!models.is_empty(), "{} lacks {}", descriptor.id, tier.as_str());
+                assert_eq!(
+                    models.iter().filter(|model| model.default_for_tier).count(),
+                    1,
+                    "{} must have exactly one {} default",
+                    descriptor.id,
+                    tier.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tier_resolution_is_deterministic_and_falls_back_safely() {
+        let registry = AdapterRegistry::built_in().unwrap();
+        let default = registry
+            .resolve_model("claude", CapabilityTier::Strong, None)
+            .unwrap();
+        assert_eq!(default.actual_model, "fable");
+        assert!(default.warning.is_none());
+
+        let known = registry
+            .resolve_model("claude", CapabilityTier::Strong, Some("opus"))
+            .unwrap();
+        assert_eq!(known.actual_model, "opus");
+        assert!(known.warning.is_none());
+
+        for hint in ["not-installed", "haiku"] {
+            let fallback = registry
+                .resolve_model("claude", CapabilityTier::Strong, Some(hint))
+                .unwrap();
+            assert_eq!(fallback.actual_model, "fable");
+            assert!(fallback.warning.as_deref().is_some_and(|text| text.contains(hint)));
+        }
     }
 }
