@@ -12,6 +12,7 @@ mod restoration;
 mod session_forest;
 mod store;
 mod worker_guard;
+mod worker_lifecycle;
 
 use chrono::Utc;
 use model::*;
