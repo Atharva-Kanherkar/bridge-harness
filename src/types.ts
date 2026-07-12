@@ -11,6 +11,7 @@ export interface Session {
   startedAt: string | null; endedAt: string | null; contextPercent: number | null;
   usagePercent: number | null; metricSource: "reported" | "measured" | "estimated";
   providerSessionId?: string | null; activeTurnId?: string | null; model?: string | null;
+  effort?: string | null; parentSessionId?: string | null; depth?: number | null;
 }
 export interface BridgeEvent { id: number; source: string; kind: string; entityId: string; body: string; createdAt: string }
 export interface AgentEvent {

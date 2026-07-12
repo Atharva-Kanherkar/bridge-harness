@@ -1,6 +1,6 @@
 import type { AgentEvent } from "./types";
 
-export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "error" | "diff" | "artifact";
+export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "error" | "diff" | "artifact" | "delegation";
 export interface ConversationItem {
   key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
   title?: string; text: string; data: Record<string, unknown>; sequence: number;
@@ -24,6 +24,9 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     }
     if (event.kind === "plan.updated" || event.kind.startsWith("plan.")) {
       items.set("current-plan", { key:"current-plan", type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
+    }
+    if (event.kind === "delegation.spawned" || event.kind === "delegation.result") {
+      items.set(itemKey, { key:itemKey, type:"delegation", eventId:event.id, role:"system", status:event.status ?? undefined, title:event.title ?? undefined, text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
     if (event.kind === "approval.requested") {
       items.set(`approval:${event.id}`, { key:`approval:${event.id}`, type:"approval", eventId:event.id, status:"pending", title:event.title ?? "Approval required", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;

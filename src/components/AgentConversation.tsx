@@ -1,4 +1,4 @@
-import { AlertTriangle, Bot, Check, ChevronRight, Circle, FileDiff, FileText, LoaderCircle, LockKeyhole, Search, Sparkles, TerminalSquare, Wrench, X } from "lucide-react";
+import { AlertTriangle, Bot, Check, ChevronRight, Circle, CornerDownRight, FileDiff, FileText, GitFork, LoaderCircle, LockKeyhole, Search, Sparkles, TerminalSquare, Wrench, X } from "lucide-react";
 import { reduceConversation, type ConversationItem } from "../conversation";
 import type { AgentEvent, Session } from "../types";
 
@@ -18,6 +18,12 @@ function ConversationItemView({ item, onResolve }: { item: ConversationItem; onR
   if (item.type === "plan") return <article className="plan-card"><header><FileText size={14}/><div><b>{item.title || "Plan"}</b><small>LIVE PLAN</small></div></header>{planSteps(item.data).map((step,index)=><div className="plan-step" key={`${step.step}-${index}`}>{step.status === "completed" ? <Check size={12}/> : step.status === "inProgress" ? <LoaderCircle className="spin" size={12}/> : <Circle size={9}/>}<span>{step.step}</span><small>{step.status}</small></div>)}</article>;
   if (item.type === "approval") return <article className="approval-card"><header><LockKeyhole size={15}/><div><b>{item.title}</b><small>NEEDS YOUR DECISION</small></div></header>{item.text && <p>{item.text}</p>}<ApprovalDetails data={item.data}/>{item.status === "pending" ? <div className="approval-actions"><button onClick={()=>onResolve(item.eventId,"decline")}><X size={12}/> Decline</button><button onClick={()=>onResolve(item.eventId,"acceptForSession")}>Allow for session</button><button className="approve" onClick={()=>onResolve(item.eventId,"accept")}><Check size={12}/> Allow once</button></div> : <div className="approval-resolved"><Check size={12}/> Resolved · {item.status}</div>}</article>;
   if (item.type === "error") return <article className="error-card"><AlertTriangle size={15}/><div><b>Agent error</b><p>{item.text || "The adapter reported an error."}</p></div></article>;
+  if (item.type === "delegation") {
+    const isResult = "delivered" in item.data;
+    const model = item.data.modelLabel ?? item.data.model;
+    const effort = item.data.effort;
+    return <article className={`delegation-card ${isResult ? "result" : "spawn"}`}><header>{isResult ? <CornerDownRight size={14}/> : <GitFork size={14}/>}<div><small>{isResult ? "WORKER RESULT" : "DELEGATION"}</small><b>{item.title || (isResult ? "Worker result" : "Delegated task")}</b></div>{model ? <em>{String(model)}{effort ? ` · ${String(effort)}` : ""}</em> : null}</header>{item.text && <p>{item.text}</p>}</article>;
+  }
   if (item.type === "diff") return <ActivityCard item={item} icon={<FileDiff size={14}/>} label="FILE CHANGES"/>;
   if (item.type === "artifact") return <ActivityCard item={item} icon={<FileText size={14}/>} label="ARTIFACT"/>;
   const isCommand = item.data.type === "commandExecution" || item.title?.includes("/");

@@ -3,6 +3,7 @@ mod agent;
 mod binary;
 mod claude_adapter;
 mod codex_adapter;
+mod delegation;
 mod git;
 mod model;
 mod orchestrator;
@@ -14,10 +15,10 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -56,8 +57,22 @@ struct AppState {
     runtimes: Mutex<HashMap<String, RuntimeSession>>,
     adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
     adapter_registry: adapters::AdapterRegistry,
+    delegations: Mutex<DelegationState>,
     worktrees: PathBuf,
     database_path: PathBuf,
+}
+
+/// Bookkeeping for the multi-agent delegation tree.
+#[derive(Default)]
+struct DelegationState {
+    /// `{session}::{item_id}` of assistant messages already turned into spawns,
+    /// so re-observing the same message never double-spawns workers.
+    spawned: HashSet<String>,
+    /// Parent session id → count of child workers that have not yet reported a
+    /// first result. A parent forwards its own result only when this is zero.
+    outstanding: HashMap<String, i64>,
+    /// Child sessions that have reported to their parent at least once.
+    reported: HashSet<String>,
 }
 
 #[derive(Serialize)]
@@ -219,16 +234,24 @@ fn start_session(
         }
     }
 
-    let started = state
-        .adapter_registry
-        .start(adapter_id, &path, chosen_model.as_deref())?;
+    // The orchestrator is depth 0. It gets the routing briefing plus the shared
+    // delegation protocol so it can spawn workers itself.
+    let orchestrator_instructions =
+        format!("{}\n\n{}", orchestrator::briefing(), delegation::protocol(0));
+    let started = state.adapter_registry.start(
+        adapter_id,
+        &path,
+        chosen_model.as_deref(),
+        None,
+        Some(orchestrator_instructions.as_str()),
+    )?;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
-    let mut reader = started.reader;
+    let reader = started.reader;
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,label=?5 WHERE id=?1",
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,label=?5,depth=0,parent_session_id=NULL WHERE id=?1",
             params![
                 session_id,
                 Utc::now().to_rfc3339(),
@@ -239,7 +262,7 @@ fn start_session(
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,depth) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,0)",
             params![
                 session_id,
                 workspace_id,
@@ -299,8 +322,19 @@ fn start_session(
         .unwrap()
         .insert(session_id.clone(), started.runtime);
 
-    let app_reader = app.clone();
-    let sid_reader = session_id.clone();
+    spawn_reader_thread(app.clone(), session_id.clone(), current_turn, reader);
+    let _ = app.emit("state-changed", ());
+    store::state(&state.db.lock().unwrap())
+}
+
+/// Drive one structured session's stdout: normalize every frame, then on exit
+/// mark the session stopped and unblock any parent that was waiting on it.
+fn spawn_reader_thread(
+    app: AppHandle,
+    session_id: String,
+    current_turn: Arc<Mutex<Option<String>>>,
+    mut reader: Box<dyn BufRead + Send>,
+) {
     thread::spawn(move || {
         loop {
             let mut line = String::new();
@@ -308,29 +342,29 @@ fn start_session(
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-                        handle_agent_value(&app_reader, &sid_reader, &current_turn, &value);
+                        handle_agent_value(&app, &session_id, &current_turn, &value);
                     }
                 }
             }
         }
-        let state = app_reader.state::<AppState>();
-        state.adapters.lock().unwrap().remove(&sid_reader);
+        let state = app.state::<AppState>();
+        state.adapters.lock().unwrap().remove(&session_id);
+        notify_parent_on_worker_exit(&app, &session_id);
         let db = state.db.lock().unwrap();
         let workspace: Option<String> = db
             .query_row(
                 "SELECT workspace_id FROM sessions WHERE id=?1",
-                params![sid_reader],
+                params![session_id],
                 |r| r.get(0),
             )
             .ok();
-        let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![sid_reader,Utc::now().to_rfc3339()]);
+        let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
         if let Some(workspace) = workspace {
             let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
         }
-        let _ = app_reader.emit("state-changed", ());
+        drop(db);
+        let _ = app.emit("state-changed", ());
     });
-    let _ = app.emit("state-changed", ());
-    store::state(&state.db.lock().unwrap())
 }
 
 fn persist_agent_value(
@@ -357,76 +391,382 @@ fn persist_agent_value(
 fn handle_agent_value(
     app: &AppHandle,
     session_id: &str,
-    current_turn: &std::sync::Arc<Mutex<Option<String>>>,
+    current_turn: &Arc<Mutex<Option<String>>>,
     value: &serde_json::Value,
 ) {
     let state = app.state::<AppState>();
-    let db = state.db.lock().unwrap();
-    let session_context: Option<(String, String)> = db
-        .query_row(
-            "SELECT workspace_id,harness FROM sessions WHERE id=?1",
-            params![session_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let Some((workspace_id, adapter_id)) = session_context else {
-        return;
-    };
-    let normalized = state.adapter_registry.normalize(&adapter_id, value);
-    for event in &normalized {
-        match event.kind.as_str() {
-            "turn.started" => {
-                let turn_id = event
-                    .data
-                    .pointer("/turn/id")
-                    .or_else(|| event.data.get("turnId"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
-                *current_turn.lock().unwrap() = turn_id.clone();
-                let _ = db.execute(
-                    "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
-                    params![session_id, turn_id],
-                );
+    let mut pending_directives: Vec<delegation::Directive> = Vec::new();
+    let mut turn_completed = false;
+
+    {
+        let db = state.db.lock().unwrap();
+        let session_context: Option<(String, String, i64)> = db
+            .query_row(
+                "SELECT workspace_id,harness,COALESCE(depth,0) FROM sessions WHERE id=?1",
+                params![session_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        let Some((workspace_id, adapter_id, own_depth)) = session_context else {
+            return;
+        };
+        let normalized = state.adapter_registry.normalize(&adapter_id, value);
+        for event in &normalized {
+            match event.kind.as_str() {
+                "turn.started" => {
+                    let turn_id = event
+                        .data
+                        .pointer("/turn/id")
+                        .or_else(|| event.data.get("turnId"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                    *current_turn.lock().unwrap() = turn_id.clone();
+                    let _ = db.execute(
+                        "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
+                        params![session_id, turn_id],
+                    );
+                }
+                "turn.completed" => {
+                    turn_completed = true;
+                    *current_turn.lock().unwrap() = None;
+                    let _ = db.execute(
+                        "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
+                        params![session_id],
+                    );
+                    let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
+                }
+                "approval.requested" => {
+                    let _ = db.execute(
+                        "UPDATE sessions SET status='waiting' WHERE id=?1",
+                        params![session_id],
+                    );
+                    let _ = db.execute(
+                        "UPDATE workspaces SET status='waiting' WHERE id=?1",
+                        params![workspace_id],
+                    );
+                }
+                "error" if event.status.as_deref() == Some("failed") => {
+                    let _ = db.execute(
+                        "UPDATE sessions SET status='failed' WHERE id=?1",
+                        params![session_id],
+                    );
+                    let _ = db.execute(
+                        "UPDATE workspaces SET status='failed' WHERE id=?1",
+                        params![workspace_id],
+                    );
+                }
+                _ => {}
             }
-            "turn.completed" => {
-                *current_turn.lock().unwrap() = None;
-                let _ = db.execute(
-                    "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
-                    params![session_id],
-                );
-                let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
+        }
+        for mut normalized_event in normalized {
+            // A completed assistant message may carry delegation directives.
+            // Spawn the workers (after the lock is released) and strip the raw
+            // directive block so the conversation shows prose, not machine JSON.
+            if normalized_event.kind == "message.completed"
+                && normalized_event.role.as_deref() == Some("assistant")
+            {
+                if let Some(text) = normalized_event.text.clone() {
+                    let directives = delegation::parse_directives(&text);
+                    if !directives.is_empty() {
+                        let key = format!(
+                            "{session_id}::{}",
+                            normalized_event.item_id.clone().unwrap_or_default()
+                        );
+                        let is_new = state.delegations.lock().unwrap().spawned.insert(key);
+                        if is_new && own_depth < delegation::MAX_DEPTH {
+                            for directive in directives.into_iter().take(delegation::MAX_FANOUT) {
+                                pending_directives.push(directive);
+                            }
+                        }
+                        let stripped = delegation::strip_directives(&text);
+                        normalized_event.text = Some(if stripped.is_empty() {
+                            "_Delegating to a worker…_".to_owned()
+                        } else {
+                            stripped
+                        });
+                    }
+                }
             }
-            "approval.requested" => {
-                let _ = db.execute(
-                    "UPDATE sessions SET status='waiting' WHERE id=?1",
-                    params![session_id],
-                );
-                let _ = db.execute(
-                    "UPDATE workspaces SET status='waiting' WHERE id=?1",
-                    params![workspace_id],
-                );
+            if let Ok(event) = store::agent_event(
+                &db,
+                session_id,
+                &normalized_event,
+                &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
+            ) {
+                let _ = app.emit("agent-event", event);
             }
-            "error" if event.status.as_deref() == Some("failed") => {
-                let _ = db.execute(
-                    "UPDATE sessions SET status='failed' WHERE id=?1",
-                    params![session_id],
-                );
-                let _ = db.execute(
-                    "UPDATE workspaces SET status='failed' WHERE id=?1",
-                    params![workspace_id],
-                );
-            }
-            _ => {}
         }
     }
-    for normalized_event in normalized {
-        if let Ok(event) = store::agent_event(
+
+    for directive in &pending_directives {
+        launch_worker(app, session_id, directive);
+    }
+    // When this session's own turn ends and it is not waiting on any child
+    // worker, hand its result up to its parent (no-op if it has no parent).
+    if turn_completed {
+        let idle = state
+            .delegations
+            .lock()
+            .unwrap()
+            .outstanding
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+            == 0;
+        if idle {
+            forward_turn_result(app, session_id);
+        }
+    }
+    let _ = app.emit("state-changed", ());
+}
+
+/// Spawn a child worker session in the parent's workspace and hand it its task.
+fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegation::Directive) {
+    let state = app.state::<AppState>();
+    let info: Option<(String, i64, String, String)> = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT s.workspace_id,COALESCE(s.depth,0),w.path,w.branch FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            params![parent_session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok()
+    };
+    let Some((workspace_id, parent_depth, path, branch)) = info else {
+        return;
+    };
+    let depth = parent_depth + 1;
+    if depth > delegation::MAX_DEPTH {
+        return;
+    }
+    let harness = directive.harness.clone();
+    let model = directive.model.clone();
+    let effort = directive.effort.clone();
+    let label = directive.label();
+    let instructions = delegation::worker_briefing(directive, depth, &branch);
+
+    let started = match state.adapter_registry.start(
+        &harness,
+        &path,
+        Some(model.as_str()),
+        effort.as_deref(),
+        Some(instructions.as_str()),
+    ) {
+        Ok(started) => started,
+        Err(error) => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "worker.failed",
+                parent_session_id,
+                &format!("Could not start {label}: {error}"),
+            );
+            drop(db);
+            let _ = app.emit("state-changed", ());
+            return;
+        }
+    };
+    let session_id = Uuid::new_v4().to_string();
+    let thread_id = started.runtime.provider_session_id().to_owned();
+    let current_turn = started.runtime.current_turn();
+    let reader = started.reader;
+
+    {
+        let db = state.db.lock().unwrap();
+        let _ = db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,?10)",
+            params![
+                session_id,
+                workspace_id,
+                harness,
+                label,
+                Utc::now().to_rfc3339(),
+                thread_id,
+                model,
+                effort,
+                parent_session_id,
+                depth
+            ],
+        );
+        let _ = db.execute(
+            "UPDATE workspaces SET status='working' WHERE id=?1",
+            params![workspace_id],
+        );
+        for message in &started.startup_messages {
+            let _ = persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
+        }
+        let spawn_event = agent::NormalizedEvent {
+            kind: "delegation.spawned".into(),
+            item_id: Some(format!("spawn-{session_id}")),
+            role: Some("system".into()),
+            status: Some("working".into()),
+            title: Some(format!("Delegated to {label}")),
+            text: Some(directive.task.clone()),
+            data: serde_json::json!({
+                "childSessionId": session_id,
+                "harness": harness,
+                "model": model,
+                "modelLabel": delegation::model_display(&model),
+                "effort": effort.clone().unwrap_or_else(|| "medium".into()),
+                "depth": depth,
+            }),
+        };
+        if let Ok(stored) =
+            store::agent_event(&db, parent_session_id, &spawn_event, &serde_json::json!({"delegation": true}))
+        {
+            let _ = app.emit("agent-event", stored);
+        }
+        let _ = store::event(
             &db,
-            session_id,
-            &normalized_event,
-            &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
-        ) {
-            let _ = app.emit("agent-event", event);
+            "delegation",
+            "worker.spawned",
+            parent_session_id,
+            &format!(
+                "Spawned {label} (effort {})",
+                effort.as_deref().unwrap_or("medium")
+            ),
+        );
+    }
+
+    state
+        .adapters
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), started.runtime);
+    spawn_reader_thread(app.clone(), session_id.clone(), current_turn, reader);
+    *state
+        .delegations
+        .lock()
+        .unwrap()
+        .outstanding
+        .entry(parent_session_id.to_owned())
+        .or_insert(0) += 1;
+    if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
+        let _ = runtime.send_turn(&directive.task);
+    }
+    let _ = app.emit("state-changed", ());
+}
+
+/// Frame a finished worker's final message and send it up to its parent.
+fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
+    let state = app.state::<AppState>();
+    let meta: Option<(Option<String>, String, String, Option<String>, Option<String>)> = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT parent_session_id,label,harness,model,effort FROM sessions WHERE id=?1",
+            params![child_session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .ok()
+    };
+    let Some((parent, label, harness, model, effort)) = meta else {
+        return;
+    };
+    if parent.is_none() {
+        return;
+    }
+    let summary: Option<String> = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT text FROM agent_events WHERE session_id=?1 AND kind='message.completed' AND role='assistant' AND text IS NOT NULL AND text<>'' ORDER BY sequence DESC LIMIT 1",
+            params![child_session_id],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    let summary = summary.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
+    let model_label = delegation::model_display(model.as_deref().unwrap_or("unknown"));
+    let framed = format!(
+        "[worker result] {label} ({harness}/{model_label}, effort {}) finished:\n\n{summary}",
+        effort.as_deref().unwrap_or("medium")
+    );
+    report_to_parent(app, child_session_id, &framed);
+}
+
+/// If a worker process exits before ever reporting, tell its parent so the
+/// parent is not left waiting on a child that will never answer.
+fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
+    let state = app.state::<AppState>();
+    let already = state
+        .delegations
+        .lock()
+        .unwrap()
+        .reported
+        .contains(child_session_id);
+    if already {
+        return;
+    }
+    let meta: Option<(Option<String>, String)> = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT parent_session_id,label FROM sessions WHERE id=?1",
+            params![child_session_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    };
+    let Some((Some(_parent), label)) = meta else {
+        return;
+    };
+    let framed = format!(
+        "[worker stopped] {label} ended without reporting a result. You may retry, delegate differently, or proceed without it."
+    );
+    report_to_parent(app, child_session_id, &framed);
+}
+
+/// Deliver a framed message from a child to its parent session: send it into the
+/// parent's live turn stream and drop a marker card into the parent's transcript.
+fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) {
+    let state = app.state::<AppState>();
+    let parent_id: Option<String> = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT parent_session_id FROM sessions WHERE id=?1",
+            params![child_session_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten()
+    };
+    let Some(parent_id) = parent_id else {
+        return;
+    };
+    let delivered = match state.adapters.lock().unwrap().get(&parent_id) {
+        Some(runtime) => runtime.send_turn(framed_text).is_ok(),
+        None => false,
+    };
+    {
+        let db = state.db.lock().unwrap();
+        let result_event = agent::NormalizedEvent {
+            kind: "delegation.result".into(),
+            item_id: Some(format!("result-{}", Uuid::new_v4())),
+            role: Some("system".into()),
+            status: Some("completed".into()),
+            title: Some("Worker result".into()),
+            text: Some(framed_text.to_owned()),
+            data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered}),
+        };
+        if let Ok(stored) =
+            store::agent_event(&db, &parent_id, &result_event, &serde_json::json!({"delegation": true}))
+        {
+            let _ = app.emit("agent-event", stored);
+        }
+        if delivered {
+            let _ = db.execute(
+                "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
+                params![parent_id],
+            );
+        }
+    }
+    {
+        let mut delegations = state.delegations.lock().unwrap();
+        if delegations.reported.insert(child_session_id.to_owned()) {
+            if let Some(count) = delegations.outstanding.get_mut(&parent_id) {
+                if *count > 0 {
+                    *count -= 1;
+                }
+            }
         }
     }
     let _ = app.emit("state-changed", ());
@@ -825,6 +1165,7 @@ pub fn run() {
                 runtimes: Mutex::new(HashMap::new()),
                 adapters: Mutex::new(HashMap::new()),
                 adapter_registry,
+                delegations: Mutex::new(DelegationState::default()),
                 worktrees: data.join("worktrees"),
                 database_path: db_path,
             });

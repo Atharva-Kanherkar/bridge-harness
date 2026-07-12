@@ -23,7 +23,12 @@ pub struct StartedCodex {
     pub startup_messages: Vec<Value>,
 }
 
-pub fn start(cwd: &str, model: Option<&str>, instructions: Option<&str>) -> Result<StartedCodex, BridgeError> {
+pub fn start(
+    cwd: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    instructions: Option<&str>,
+) -> Result<StartedCodex, BridgeError> {
     let binary = binary::resolve("codex").ok_or_else(|| {
         BridgeError::Invalid("Codex binary is not installed".into())
     })?;
@@ -53,6 +58,13 @@ pub fn start(cwd: &str, model: Option<&str>, instructions: Option<&str>) -> Resu
     let mut params = json!({"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false,"serviceName":"Bridge"});
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = json!(model);
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
+        // Reasoning-effort override. Field names accepted by current Codex
+        // app-server builds; unknown fields are ignored safely on older ones,
+        // and the worker briefing also states the effort so behavior follows.
+        params["effort"] = json!(effort);
+        params["model_reasoning_effort"] = json!(effort);
     }
     if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
         // Accepted by current Codex app-server builds; unknown fields are ignored safely on older ones.
@@ -189,7 +201,7 @@ mod tests {
     fn live_app_server_emits_a_structured_turn() {
         use std::{sync::mpsc, thread, time::Duration};
         let cwd = std::env::current_dir().unwrap();
-        let started = start(cwd.to_str().unwrap(), None, None).unwrap();
+        let started = start(cwd.to_str().unwrap(), None, None, None).unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime

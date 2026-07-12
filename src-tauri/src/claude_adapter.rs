@@ -24,7 +24,12 @@ pub struct StartedClaude {
     pub startup_messages: Vec<Value>,
 }
 
-pub fn start(cwd: &str, model: Option<&str>) -> Result<StartedClaude, BridgeError> {
+pub fn start(
+    cwd: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    instructions: Option<&str>,
+) -> Result<StartedClaude, BridgeError> {
     let binary = binary::resolve("claude").ok_or_else(|| {
         BridgeError::Invalid(
             "Claude Code binary is not installed (expected `claude` on PATH or in ~/.local/bin)"
@@ -36,28 +41,39 @@ pub fn start(cwd: &str, model: Option<&str>) -> Result<StartedClaude, BridgeErro
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("sonnet");
-    let mut child = Command::new(binary)
-        .args([
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--input-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--permission-mode",
-            "acceptEdits",
-            "--model",
-            chosen_model,
-            "--session-id",
-            &session_id,
-        ])
+    let mut command = Command::new(binary);
+    command.args([
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--permission-mode",
+        "acceptEdits",
+        "--model",
+        chosen_model,
+        "--session-id",
+        &session_id,
+    ]);
+    // Bridge injects the delegation protocol + worker brief as an appended
+    // system prompt so the child agent can itself delegate and knows its task.
+    if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
+        command.args(["--append-system-prompt", instructions]);
+    }
+    command
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .env("CLAUDE_CODE_ENTRYPOINT", "bridge-deck")
-        .spawn()?;
+        .env("CLAUDE_CODE_ENTRYPOINT", "bridge-deck");
+    // Claude Code has no per-run effort flag; the closest real knob is the
+    // extended-thinking budget, which we scale by the routed effort tier.
+    if let Some(budget) = thinking_budget(effort) {
+        command.env("MAX_THINKING_TOKENS", budget.to_string());
+    }
+    let mut child = command.spawn()?;
     let stdin = child
         .stdin
         .take()
@@ -162,6 +178,16 @@ pub fn binary_version() -> Option<String> {
     binary::version("claude")
 }
 
+/// Map a routed effort tier to an extended-thinking token budget. `None` leaves
+/// Claude Code on its default (used for low/medium).
+fn thinking_budget(effort: Option<&str>) -> Option<u32> {
+    match effort.map(str::trim).unwrap_or("") {
+        "high" => Some(16_000),
+        "xhigh" => Some(32_000),
+        _ => None,
+    }
+}
+
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
     let mut writer = writer.lock().unwrap();
     serde_json::to_writer(&mut *writer, value)
@@ -200,7 +226,7 @@ mod tests {
     fn live_stream_json_emits_a_structured_turn() {
         use std::{io::BufRead, sync::mpsc, thread, time::Duration};
         let cwd = std::env::temp_dir();
-        let started = start(cwd.to_str().unwrap(), None).unwrap();
+        let started = start(cwd.to_str().unwrap(), None, None, None).unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime

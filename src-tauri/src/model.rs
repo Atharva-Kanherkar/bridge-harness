@@ -90,6 +90,9 @@ pub struct Session {
     pub provider_session_id: Option<String>,
     pub active_turn_id: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub depth: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

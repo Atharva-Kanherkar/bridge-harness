@@ -31,6 +31,7 @@ pub trait HarnessAdapter: Send + Sync {
         &self,
         cwd: &str,
         model: Option<&str>,
+        effort: Option<&str>,
         instructions: Option<&str>,
     ) -> Result<StartedAdapter, BridgeError>;
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
@@ -92,6 +93,8 @@ impl AdapterRegistry {
         id: &str,
         cwd: &str,
         model: Option<&str>,
+        effort: Option<&str>,
+        instructions: Option<&str>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -104,8 +107,7 @@ impl AdapterRegistry {
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        let briefing = (id == orchestrator::HARNESS).then(orchestrator::briefing);
-        adapter.start(cwd, model, briefing.as_deref())
+        adapter.start(cwd, model, effort, instructions)
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -157,9 +159,10 @@ impl HarnessAdapter for CodexAdapter {
         &self,
         cwd: &str,
         model: Option<&str>,
+        effort: Option<&str>,
         instructions: Option<&str>,
     ) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::start(cwd, model, instructions)?;
+        let started = codex_adapter::start(cwd, model, effort, instructions)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -215,9 +218,10 @@ impl HarnessAdapter for ClaudeAdapter {
         &self,
         cwd: &str,
         model: Option<&str>,
-        _instructions: Option<&str>,
+        effort: Option<&str>,
+        instructions: Option<&str>,
     ) -> Result<StartedAdapter, BridgeError> {
-        let started = claude_adapter::start(cwd, model)?;
+        let started = claude_adapter::start(cwd, model, effort, instructions)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -257,6 +261,7 @@ mod tests {
             &self,
             _cwd: &str,
             _model: Option<&str>,
+            _effort: Option<&str>,
             _instructions: Option<&str>,
         ) -> Result<StartedAdapter, BridgeError> {
             Err(BridgeError::Invalid("not launched in registry test".into()))

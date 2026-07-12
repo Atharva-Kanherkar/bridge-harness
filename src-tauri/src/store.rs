@@ -37,6 +37,9 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     );
     let _ = connection.execute("ALTER TABLE sessions ADD COLUMN active_turn_id TEXT", []);
     let _ = connection.execute("ALTER TABLE sessions ADD COLUMN model TEXT", []);
+    let _ = connection.execute("ALTER TABLE sessions ADD COLUMN effort TEXT", []);
+    let _ = connection.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT", []);
+    let _ = connection.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER", []);
     connection.execute(
         "UPDATE sessions SET status='stopped', ended_at=?1 WHERE status IN ('working','waiting')",
         params![Utc::now().to_rfc3339()],
@@ -62,7 +65,7 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model FROM sessions ORDER BY rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)? }))?;
+    let sessions = query(db, "SELECT id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model,effort,parent_session_id,depth FROM sessions ORDER BY rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, effort:r.get(13)?, parent_session_id:r.get(14)?, depth:r.get(15)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",

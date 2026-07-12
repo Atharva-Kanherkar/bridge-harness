@@ -11,6 +11,24 @@ const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], ev
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", working: "WORKING", waiting: "NEEDS YOU", ready: "READY", stopped: "STOPPED", failed: "FAILED" };
 const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
 const ORCHESTRATOR_MODEL = "gpt-5.6-luna";
+const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
+const modelLabel = (model?: string | null) => (model ? MODEL_LABELS[model] ?? model : "—");
+
+// Order sessions as a delegation tree (orchestrator first, each worker directly
+// under its parent) so the session strip reads top-down like the blueprint.
+function orderSessionTree(sessions: Session[]): Session[] {
+  const byParent = new Map<string | undefined, Session[]>();
+  for (const s of sessions) {
+    const key = s.parentSessionId ?? undefined;
+    const list = byParent.get(key) ?? [];
+    list.push(s); byParent.set(key, list);
+  }
+  const out: Session[] = [];
+  const visit = (parent: string | undefined) => { for (const s of byParent.get(parent) ?? []) { out.push(s); visit(s.id); } };
+  visit(undefined);
+  for (const s of sessions) if (!out.includes(s)) out.push(s);
+  return out;
+}
 
 function Meter({ label, value, detail }: { label: string; value: number; detail: string }) {
   return <div className="meter"><span>{label}</span><div className="meter-track"><i style={{ width: `${value}%` }} /></div><b>{value}%</b><small>{detail}</small></div>;
@@ -66,6 +84,7 @@ export function App() {
   const session = sessions.find(s => s.id === selectedSessionId) ?? sessions.find(s => liveStatuses.includes(s.status)) ?? sessions[0];
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = state.agentEvents.filter(event => event.sessionId === session?.id);
+  const orderedSessions = useMemo(() => orderSessionTree(sessions), [sessions]);
   const grouped = useMemo(() => state.projects.map(project => ({ project, workspaces: state.workspaces.filter(w => w.projectId === project.id) })), [state]);
   const orchestratorReady = !!health?.adapters.find(adapter => adapter.id === "codex" && adapter.available);
 
@@ -167,7 +186,7 @@ export function App() {
           <div className="workspace-actions"><button className="secondary"><GitPullRequest size={14}/> Review changes</button><button className="secondary archive" onClick={() => void archiveSelected()} title="Archive clean workspace"><Archive size={14}/> Archive</button>{session?.activeTurnId && <button className="secondary" onClick={() => void bridgeApi.interruptTurn(session.id)}><Square size={12}/> Stop turn</button>}{sessionConnected ? <button className="run-button stop" disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14}/> : <Square size={13}/>} End agent</button> : <button className="run-button" disabled={busy || !orchestratorReady} onClick={() => void toggleSession(session)} title="Restart if auto-start failed">{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>} Restart</button>}</div>
         </div>
         <div className="session-strip">
-          {sessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""}`} key={s.id} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]} · GPT Luna</small></span></button>)}
+          {orderedSessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""} ${(s.depth ?? 0) > 0 ? "worker" : ""}`} key={s.id} style={(s.depth ?? 0) > 0 ? { marginLeft: (s.depth ?? 0) * 14 } : undefined} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]} · {modelLabel(s.model)}{s.effort ? ` · ${s.effort}` : ""}</small></span></button>)}
           <div className="session-metrics"><span>ELAPSED <b>{formatElapsed(session?.startedAt, clock)}</b></span><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
         </div>
         <div className="content-tabs"><button className={activeTab === "agent" ? "active" : ""} onClick={() => setActiveTab("agent")}><MessageSquareText size={14}/> Agent</button><button className={activeTab === "changes" ? "active" : ""} onClick={() => setActiveTab("changes")}><FileCode2 size={14}/> Changes <span>{selected.dirtyFiles}</span></button><button className={activeTab === "events" ? "active" : ""} onClick={() => setActiveTab("events")}><Activity size={14}/> Events</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}><TerminalSquare size={14}/> Terminal</button></div>
@@ -177,7 +196,7 @@ export function App() {
           {activeTab === "events" && <EventPanel state={state} workspace={selected}/>}
           {activeTab === "terminal" && <div className="terminal-layer"><TerminalPane workspaceId={selected.id}/></div>}
         </section>
-        {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? "Tell Bridge what you want to build…" : busy ? "Starting orchestrator…" : "Orchestrator starting…"} disabled={!sessionConnected}/><div className="composer-tools"><span className="orchestrator-pill">Orchestrator · GPT Luna</span><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><Send size={14}/></button></div></div></div>}
+        {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? "Tell Bridge what you want to build…" : busy ? "Starting orchestrator…" : "Orchestrator starting…"} disabled={!sessionConnected}/><div className="composer-tools"><span className="orchestrator-pill">{(session?.depth ?? 0) > 0 ? `${session?.label}${session?.effort ? ` · ${session.effort}` : ""}` : `${session?.label ?? "Orchestrator"} · ${modelLabel(session?.model)}`}</span><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><Send size={14}/></button></div></div></div>}
       </> : <Welcome onAdd={() => setModal("project")}/>}
     </main>
     {error && <div className="error-toast" role="alert"><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
