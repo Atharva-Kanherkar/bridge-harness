@@ -1,4 +1,4 @@
-use crate::{adapters::AdapterRuntime, binary, BridgeError};
+use crate::{adapters::AdapterRuntime, binary, delegation::WriteMode, BridgeError};
 use serde_json::{json, Value};
 use std::{
     io::{BufReader, Write},
@@ -29,6 +29,7 @@ pub fn start(
     model: Option<&str>,
     effort: Option<&str>,
     instructions: Option<&str>,
+    write_mode: Option<WriteMode>,
 ) -> Result<StartedClaude, BridgeError> {
     let binary = binary::resolve("claude").ok_or_else(|| {
         BridgeError::Invalid(
@@ -50,13 +51,9 @@ pub fn start(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
-        "--permission-mode",
-        "bypassPermissions",
-        "--model",
-        chosen_model,
-        "--session-id",
-        &session_id,
     ]);
+    command.args(permission_args(write_mode));
+    command.args(["--model", chosen_model, "--session-id", &session_id]);
     // Bridge injects the delegation protocol + worker brief as an appended
     // system prompt so the child agent can itself delegate and knows its task.
     if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
@@ -102,6 +99,30 @@ pub fn start(
         reader,
         startup_messages,
     })
+}
+
+fn permission_args(write_mode: Option<WriteMode>) -> Vec<&'static str> {
+    match write_mode {
+        None | Some(WriteMode::Full) => {
+            vec!["--permission-mode", "bypassPermissions"]
+        }
+        Some(WriteMode::ReadOnly) => vec![
+            "--permission-mode",
+            "dontAsk",
+            "--allowedTools",
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash",
+            "--disallowedTools",
+            "Edit",
+            "Write",
+            "NotebookEdit",
+        ],
+        Some(WriteMode::Shared | WriteMode::Isolated) => {
+            vec!["--permission-mode", "acceptEdits"]
+        }
+    }
 }
 
 impl ClaudeRuntime {
@@ -202,6 +223,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worker_permissions_follow_write_mode() {
+        for mode in [WriteMode::Shared, WriteMode::Isolated] {
+            let args = permission_args(Some(mode));
+            assert!(args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "acceptEdits"]));
+            assert!(!args.contains(&"bypassPermissions"));
+        }
+        assert!(permission_args(Some(WriteMode::Full)).contains(&"bypassPermissions"));
+        assert!(permission_args(None).contains(&"bypassPermissions"));
+    }
+
+    #[test]
+    fn read_only_denies_direct_write_tools_without_full_bypass() {
+        let args = permission_args(Some(WriteMode::ReadOnly));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--permission-mode", "dontAsk"]));
+        assert!(!args.contains(&"bypassPermissions"));
+        let deny_index = args
+            .iter()
+            .position(|arg| *arg == "--disallowedTools")
+            .unwrap();
+        for tool in ["Edit", "Write", "NotebookEdit"] {
+            assert!(args[deny_index + 1..].contains(&tool));
+        }
+        assert!(args.contains(&"Bash"), "test workers need build artifact access");
+    }
+
+    #[test]
     fn user_turn_is_structured_json_not_terminal_text() {
         let value = json!({
             "type": "user",
@@ -226,7 +277,7 @@ mod tests {
     fn live_stream_json_emits_a_structured_turn() {
         use std::{io::BufRead, sync::mpsc, thread, time::Duration};
         let cwd = std::env::temp_dir();
-        let started = start(cwd.to_str().unwrap(), None, None, None).unwrap();
+        let started = start(cwd.to_str().unwrap(), None, None, None, None).unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime

@@ -254,6 +254,7 @@ fn start_session(
         chosen_model.as_deref(),
         None,
         Some(orchestrator_instructions.as_str()),
+        None,
     )?;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
@@ -849,6 +850,7 @@ fn launch_worker(
         Some(model.as_str()),
         Some(&effort),
         Some(instructions.as_str()),
+        Some(directive.write_mode),
     ) {
         Ok(started) => started,
         Err(error) => {
