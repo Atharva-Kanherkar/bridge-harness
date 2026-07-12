@@ -48,7 +48,7 @@ pub fn start(cwd: &str) -> Result<StartedCodex, BridgeError> {
     write_value(&writer, &json!({"method":"initialized"}))?;
     write_value(
         &writer,
-        &json!({"method":"thread/start","id":2,"params":{"cwd":cwd,"runtimeWorkspaceRoots":[cwd],"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false,"serviceName":"Bridge"}}),
+        &json!({"method":"thread/start","id":2,"params":{"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false,"serviceName":"Bridge"}}),
     )?;
     let (response, mut later_messages) = wait_for_response(&mut reader, 2)?;
     startup_messages.append(&mut later_messages);
@@ -173,5 +173,51 @@ mod tests {
         assert_eq!(value["method"], "turn/start");
         assert!(value.to_string().contains("text_elements"));
         assert!(!value.to_string().contains("\\u001b"));
+    }
+
+    #[test]
+    #[ignore = "requires an installed, authenticated Codex binary"]
+    fn live_app_server_emits_a_structured_turn() {
+        use std::{sync::mpsc, thread, time::Duration};
+        let cwd = std::env::current_dir().unwrap();
+        let started = start(cwd.to_str().unwrap()).unwrap();
+        let mut runtime = started.runtime;
+        let mut reader = started.reader;
+        runtime
+            .start_turn("Reply exactly BRIDGE_SMOKE_OK. Do not use tools.")
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
+                let completed =
+                    value.get("method").and_then(Value::as_str) == Some("turn/completed");
+                let _ = sender.send(value);
+                if completed {
+                    break;
+                }
+            }
+        });
+        let mut methods = Vec::new();
+        loop {
+            let value = receiver
+                .recv_timeout(Duration::from_secs(90))
+                .expect("Codex turn timed out");
+            if let Some(method) = value.get("method").and_then(Value::as_str) {
+                methods.push(method.to_owned());
+            }
+            if value.get("method").and_then(Value::as_str) == Some("turn/completed") {
+                break;
+            }
+        }
+        runtime.stop();
+        assert!(methods.iter().any(|method| method == "turn/started"));
+        assert!(methods
+            .iter()
+            .any(|method| method == "item/agentMessage/delta" || method == "item/completed"));
+        assert!(methods.iter().any(|method| method == "turn/completed"));
     }
 }
