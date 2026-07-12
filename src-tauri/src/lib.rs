@@ -965,7 +965,7 @@ fn begin_pressure_compaction(
 ) -> Result<Option<String>, BridgeError> {
     let context_percent = db
         .query_row(
-            "SELECT context_percent FROM usage_ledger WHERE session_id=?1 AND context_percent IS NOT NULL ORDER BY id DESC LIMIT 1",
+            "SELECT CAST(context_percent AS REAL) FROM usage_ledger WHERE session_id=?1 AND context_percent IS NOT NULL ORDER BY id DESC LIMIT 1",
             params![session_id],
             |row| row.get::<_, f64>(0),
         )
@@ -3078,6 +3078,29 @@ mod tests {
         ] {
             assert_eq!(store::status(value), expected);
         }
+    }
+
+    #[test]
+    fn pressure_compaction_starts_only_at_seventy_five_percent_with_new_work() {
+        let db = policy_fixture();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"meaningful work"}),
+            )
+            .unwrap();
+        db.execute("INSERT INTO usage_ledger(workspace_id,session_id,context_percent,capability_units,source,created_at) VALUES('w','parent',74,0,'test','now')", []).unwrap();
+        assert!(begin_pressure_compaction(&db, "parent").unwrap().is_none());
+        db.execute("INSERT INTO usage_ledger(workspace_id,session_id,context_percent,capability_units,source,created_at) VALUES('w','parent',75,0,'test','later')", []).unwrap();
+        assert!(begin_pressure_compaction(&db, "parent").unwrap().is_some());
+        assert_eq!(
+            compaction_controller::CompactionController::pending(&db, "parent")
+                .unwrap()
+                .unwrap()
+                .reason,
+            compaction_controller::CompactionReason::ContextPressure
+        );
     }
 
     #[test]
