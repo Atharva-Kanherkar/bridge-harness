@@ -651,7 +651,7 @@ fn archive_workspace(
     store::state(&db)
 }
 
-fn start_health_server(database: PathBuf) {
+fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>) {
     thread::spawn(move || {
         let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
             return;
@@ -664,6 +664,7 @@ fn start_health_server(database: PathBuf) {
                         "ok": true,
                         "version": env!("CARGO_PKG_VERSION"),
                         "database": database,
+                        "adapters": adapters,
                         "harnesses": {
                             "claude": which::which("claude").is_ok(),
                             "codex": which::which("codex").is_ok(),
@@ -695,13 +696,14 @@ pub fn run() {
             let db_path = data.join("bridge.db");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            start_health_server(db_path.clone());
+            let adapter_registry = adapters::AdapterRegistry::built_in()
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            start_health_server(db_path.clone(), adapter_registry.descriptors());
             app.manage(AppState {
                 db: Mutex::new(connection),
                 runtimes: Mutex::new(HashMap::new()),
                 adapters: Mutex::new(HashMap::new()),
-                adapter_registry: adapters::AdapterRegistry::built_in()
-                    .map_err(|error| Box::<dyn std::error::Error>::from(error))?,
+                adapter_registry,
                 worktrees: data.join("worktrees"),
                 database_path: db_path,
             });
