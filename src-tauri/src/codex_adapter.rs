@@ -1,4 +1,4 @@
-use crate::{adapters::AdapterRuntime, binary, BridgeError};
+use crate::{adapters::AdapterRuntime, binary, delegation::WriteMode, BridgeError};
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -28,6 +28,7 @@ pub fn start(
     model: Option<&str>,
     effort: Option<&str>,
     instructions: Option<&str>,
+    write_mode: Option<WriteMode>,
 ) -> Result<StartedCodex, BridgeError> {
     let binary = binary::resolve("codex").ok_or_else(|| {
         BridgeError::Invalid("Codex binary is not installed".into())
@@ -55,25 +56,7 @@ pub fn start(
     )?;
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     write_value(&writer, &json!({"method":"initialized"}))?;
-    // Full auto-accept: the user runs Bridge in unattended auto-accept mode, so
-    // agents never wait on approval prompts and can perform local actions
-    // (e.g. `open <file>` to launch the browser) without escalation.
-    let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":false,"serviceName":"Bridge"});
-    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
-        params["model"] = json!(model);
-    }
-    if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
-        // Reasoning-effort override. Field names accepted by current Codex
-        // app-server builds; unknown fields are ignored safely on older ones,
-        // and the worker briefing also states the effort so behavior follows.
-        params["effort"] = json!(effort);
-        params["model_reasoning_effort"] = json!(effort);
-    }
-    if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
-        // Accepted by current Codex app-server builds; unknown fields are ignored safely on older ones.
-        params["developerInstructions"] = json!(instructions);
-        params["instructions"] = json!(instructions);
-    }
+    let params = thread_start_params(cwd, model, effort, instructions, write_mode);
     write_value(
         &writer,
         &json!({"method":"thread/start","id":2,"params":params}),
@@ -100,6 +83,38 @@ pub fn start(
         reader,
         startup_messages,
     })
+}
+
+fn thread_start_params(
+    cwd: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    instructions: Option<&str>,
+    write_mode: Option<WriteMode>,
+) -> Value {
+    let (approval_policy, sandbox) = match write_mode {
+        None => ("never", "danger-full-access"),
+        Some(WriteMode::ReadOnly) => ("on-request", "workspace-write"),
+        Some(WriteMode::Shared | WriteMode::Isolated) => ("on-request", "workspace-write"),
+        Some(WriteMode::Full) => ("never", "danger-full-access"),
+    };
+    let mut params = json!({"cwd":cwd,"approvalPolicy":approval_policy,"sandbox":sandbox,"ephemeral":false,"serviceName":"Bridge"});
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        params["model"] = json!(model);
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
+        // Reasoning-effort override. Field names accepted by current Codex
+        // app-server builds; unknown fields are ignored safely on older ones,
+        // and the worker briefing also states the effort so behavior follows.
+        params["effort"] = json!(effort);
+        params["model_reasoning_effort"] = json!(effort);
+    }
+    if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
+        // Accepted by current Codex app-server builds; unknown fields are ignored safely on older ones.
+        params["developerInstructions"] = json!(instructions);
+        params["instructions"] = json!(instructions);
+    }
+    params
 }
 
 impl CodexRuntime {
@@ -191,6 +206,42 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_sandbox_and_approval_follow_write_mode() {
+        for mode in [
+            WriteMode::ReadOnly,
+            WriteMode::Shared,
+            WriteMode::Isolated,
+            WriteMode::Full,
+        ] {
+            let params = thread_start_params("/tmp/work", None, None, None, Some(mode));
+            if mode == WriteMode::Full {
+                assert_eq!(params["sandbox"], "danger-full-access");
+                assert_eq!(params["approvalPolicy"], "never");
+            } else {
+                assert_eq!(params["sandbox"], "workspace-write");
+                assert_eq!(params["approvalPolicy"], "on-request");
+            }
+        }
+        let orchestrator = thread_start_params("/tmp/work", None, None, None, None);
+        assert_eq!(orchestrator["sandbox"], "danger-full-access");
+        assert_eq!(orchestrator["approvalPolicy"], "never");
+    }
+
+    #[test]
+    fn thread_params_preserve_runtime_configuration() {
+        let params = thread_start_params(
+            "/tmp/work",
+            Some("runtime-model"),
+            Some("high"),
+            Some("worker rules"),
+            Some(WriteMode::ReadOnly),
+        );
+        assert_eq!(params["model"], "runtime-model");
+        assert_eq!(params["effort"], "high");
+        assert_eq!(params["developerInstructions"], "worker rules");
+    }
     #[test]
     fn turn_request_is_structured_json_not_terminal_text() {
         let value = json!({"method":"turn/start","id":10,"params":{"threadId":"t","input":[{"type":"text","text":"hello","text_elements":[]}]}});
@@ -204,7 +255,7 @@ mod tests {
     fn live_app_server_emits_a_structured_turn() {
         use std::{sync::mpsc, thread, time::Duration};
         let cwd = std::env::current_dir().unwrap();
-        let started = start(cwd.to_str().unwrap(), None, None, None).unwrap();
+        let started = start(cwd.to_str().unwrap(), None, None, None, None).unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime

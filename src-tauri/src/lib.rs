@@ -10,6 +10,7 @@ mod orchestrator;
 mod policy;
 mod session_forest;
 mod store;
+mod worker_guard;
 
 use chrono::Utc;
 use model::*;
@@ -80,6 +81,8 @@ struct DelegationState {
     /// Last observed provider turn per session, retained until the next turn
     /// so late usage events keep the originating user-request budget key.
     last_turn_by_session: HashMap<String, String>,
+    /// Read-only worker session → tracked Git state captured before process start.
+    read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
 }
 
 #[derive(Serialize)]
@@ -254,6 +257,7 @@ fn start_session(
         chosen_model.as_deref(),
         None,
         Some(orchestrator_instructions.as_str()),
+        None,
     )?;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
@@ -843,15 +847,57 @@ fn launch_worker(
     let instructions =
         delegation::worker_briefing(directive, reservation.depth, &reservation.branch);
 
+    if directive.write_mode == delegation::WriteMode::ReadOnly {
+        match worker_guard::ReadOnlyBaseline::capture(&reservation.path) {
+            Ok(baseline) => {
+                state
+                    .delegations
+                    .lock()
+                    .unwrap()
+                    .read_only_baselines
+                    .insert(reservation.session_id.clone(), baseline);
+            }
+            Err(error) => {
+                let db = state.db.lock().unwrap();
+                let now = Utc::now().to_rfc3339();
+                let _ = db.execute(
+                    "UPDATE sessions SET status='failed',ended_at=?2 WHERE id=?1",
+                    params![reservation.session_id, now],
+                );
+                let _ = db.execute(
+                    "UPDATE worker_leases SET lease_status='expired',updated_at=?2 WHERE session_id=?1",
+                    params![reservation.session_id, Utc::now().to_rfc3339()],
+                );
+                let _ = store::event(
+                    &db,
+                    "sandbox",
+                    "worker.read_only_verification_failed",
+                    &reservation.session_id,
+                    &format!("Could not capture tracked-file baseline: {error}"),
+                );
+                drop(db);
+                let _ = app.emit("state-changed", ());
+                return;
+            }
+        }
+    }
+
     let started = match state.adapter_registry.start(
         &harness,
         &reservation.path,
         Some(model.as_str()),
         Some(&effort),
         Some(instructions.as_str()),
+        Some(directive.write_mode),
     ) {
         Ok(started) => started,
         Err(error) => {
+            state
+                .delegations
+                .lock()
+                .unwrap()
+                .read_only_baselines
+                .remove(&reservation.session_id);
             let db = state.db.lock().unwrap();
             let now = Utc::now().to_rfc3339();
             let _ = db.execute(
@@ -1018,6 +1064,7 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         let _ = app.emit("state-changed", ());
         return;
     };
+    verify_read_only_worker(app, child_session_id);
     let model_label = delegation::model_display(model.as_deref().unwrap_or("unknown"));
     let framed = format!(
         "[worker result] {label} ({harness}/{model_label}, effort {}) finished:\n\n{result_text}",
@@ -1070,6 +1117,7 @@ fn process_worker_result_output(
 /// parent is not left waiting on a child that will never answer.
 fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
     let state = app.state::<AppState>();
+    verify_read_only_worker(app, child_session_id);
     let already = state
         .delegations
         .lock()
@@ -1095,6 +1143,29 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
         "[worker stopped] {label} ended without reporting a result. You may retry, delegate differently, or proceed without it."
     );
     report_to_parent(app, child_session_id, &framed);
+}
+
+fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
+    let state = app.state::<AppState>();
+    let baseline = state
+        .delegations
+        .lock()
+        .unwrap()
+        .read_only_baselines
+        .remove(child_session_id);
+    let Some(baseline) = baseline else {
+        return;
+    };
+    let db = state.db.lock().unwrap();
+    if let Err(error) = worker_guard::verify_and_record(&db, child_session_id, &baseline) {
+        let _ = store::event(
+            &db,
+            "sandbox",
+            "worker.read_only_verification_failed",
+            child_session_id,
+            &error.to_string(),
+        );
+    }
 }
 
 /// Deliver a framed message from a child to its parent session: send it into the
