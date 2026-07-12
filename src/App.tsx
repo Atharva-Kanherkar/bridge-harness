@@ -5,14 +5,11 @@ import { bridgeApi } from "./api";
 import type { BridgeState, Health, Session, SessionStatus, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { TerminalPane } from "./components/TerminalPane";
-import { formatElapsed } from "./utils";
+import { formatElapsed, tierRuntimeLabel } from "./utils";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [], agentEvents: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", working: "WORKING", waiting: "NEEDS YOU", ready: "READY", stopped: "STOPPED", failed: "FAILED" };
 const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
-const ORCHESTRATOR_MODEL = "gpt-5.6-luna";
-const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
-const modelLabel = (model?: string | null) => (model ? MODEL_LABELS[model] ?? model : "—");
 
 // Order sessions as a delegation tree (orchestrator first, each worker directly
 // under its parent) so the session strip reads top-down like the blueprint.
@@ -93,7 +90,7 @@ export function App() {
     if (autoStartRef.current === selectedId) return;
     autoStartRef.current = selectedId;
     setBusy(true);
-    void bridgeApi.startSession(selectedId, "codex", ORCHESTRATOR_MODEL)
+    void bridgeApi.startSession(selectedId, "codex", null)
       .then(next => {
         setState(next);
         const started = [...next.sessions].reverse().find(item => item.workspaceId === selectedId && liveStatuses.includes(item.status));
@@ -124,7 +121,7 @@ export function App() {
       setSelectedId(workspace.id);
       setModal(null);
       setTitle("");
-      const started = await bridgeApi.startSession(workspace.id, "codex", ORCHESTRATOR_MODEL);
+      const started = await bridgeApi.startSession(workspace.id, "codex", null);
       setState(started);
       const active = [...started.sessions].reverse().find(item => item.workspaceId === workspace.id && liveStatuses.includes(item.status));
       if (active) setSelectedSessionId(active.id);
@@ -138,7 +135,7 @@ export function App() {
       const connected = !!target && !target.endedAt && liveStatuses.includes(target.status);
       const next = connected
         ? await bridgeApi.stopSession(target.id)
-        : await bridgeApi.startSession(selected.id, "codex", ORCHESTRATOR_MODEL);
+        : await bridgeApi.startSession(selected.id, "codex", null);
       setState(next);
       autoStartRef.current = selected.id;
       if (!connected) {
@@ -186,7 +183,7 @@ export function App() {
           <div className="workspace-actions"><button className="secondary"><GitPullRequest size={14}/> Review changes</button><button className="secondary archive" onClick={() => void archiveSelected()} title="Archive clean workspace"><Archive size={14}/> Archive</button>{session?.activeTurnId && <button className="secondary" onClick={() => void bridgeApi.interruptTurn(session.id)}><Square size={12}/> Stop turn</button>}{sessionConnected ? <button className="run-button stop" disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14}/> : <Square size={13}/>} End agent</button> : <button className="run-button" disabled={busy || !orchestratorReady} onClick={() => void toggleSession(session)} title="Restart if auto-start failed">{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>} Restart</button>}</div>
         </div>
         <div className="session-strip">
-          {orderedSessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""} ${(s.depth ?? 0) > 0 ? "worker" : ""}`} key={s.id} style={(s.depth ?? 0) > 0 ? { marginLeft: (s.depth ?? 0) * 14 } : undefined} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]} · {modelLabel(s.model)}{s.effort ? ` · ${s.effort}` : ""}</small></span></button>)}
+          {orderedSessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""} ${(s.depth ?? 0) > 0 ? "worker" : ""}`} key={s.id} style={(s.depth ?? 0) > 0 ? { marginLeft: (s.depth ?? 0) * 14 } : undefined} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]} · {tierRuntimeLabel(s.requestedTier, s.model, s.effort)}</small></span></button>)}
           <div className="session-metrics"><span>ELAPSED <b>{formatElapsed(session?.startedAt, clock)}</b></span><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
         </div>
         <div className="content-tabs"><button className={activeTab === "agent" ? "active" : ""} onClick={() => setActiveTab("agent")}><MessageSquareText size={14}/> Agent</button><button className={activeTab === "changes" ? "active" : ""} onClick={() => setActiveTab("changes")}><FileCode2 size={14}/> Changes <span>{selected.dirtyFiles}</span></button><button className={activeTab === "events" ? "active" : ""} onClick={() => setActiveTab("events")}><Activity size={14}/> Events</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}><TerminalSquare size={14}/> Terminal</button></div>
@@ -196,13 +193,13 @@ export function App() {
           {activeTab === "events" && <EventPanel state={state} workspace={selected}/>}
           {activeTab === "terminal" && <div className="terminal-layer"><TerminalPane workspaceId={selected.id}/></div>}
         </section>
-        {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? "Tell Bridge what you want to build…" : busy ? "Starting orchestrator…" : "Orchestrator starting…"} disabled={!sessionConnected}/><div className="composer-tools"><span className="orchestrator-pill">{(session?.depth ?? 0) > 0 ? `${session?.label}${session?.effort ? ` · ${session.effort}` : ""}` : `${session?.label ?? "Orchestrator"} · ${modelLabel(session?.model)}`}</span><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><Send size={14}/></button></div></div></div>}
+        {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? "Tell Bridge what you want to build…" : busy ? "Starting orchestrator…" : "Orchestrator starting…"} disabled={!sessionConnected}/><div className="composer-tools"><span className="orchestrator-pill">{`${session?.label ?? "Orchestrator"} · ${tierRuntimeLabel(session?.requestedTier, session?.model)}`}</span><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><Send size={14}/></button></div></div></div>}
       </> : <Welcome onAdd={() => setModal("project")}/>}
     </main>
     {error && <div className="error-toast" role="alert"><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     {modal && <Modal kind={modal} onClose={() => setModal(null)}>
       {modal === "project" && <><ModalTitle icon={<FolderGit2/>} title="Add a repository" copy="Bridge works locally and never uploads your code."/><label className="field-label">REPOSITORY PATH</label><div className="path-input"><input autoFocus value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/Developer/project"/><button onClick={() => void chooseFolder()}>Choose…</button></div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!path || busy} onClick={() => void addProject()}>{busy ? "Adding…" : "Add repository"}</button></div></>}
-      {modal === "workspace" && <><ModalTitle icon={<Box/>} title="New workspace" copy="Name the lane. Bridge starts the orchestrator automatically—no harness or model to pick."/><label className="field-label">WORKSPACE NAME</label><textarea className="task-input" autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Keyboard navigation"/><p className="modal-hint">Starts Orchestrator on GPT Luna. You describe the work in chat.</p><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!title.trim() || !state.projects.length || busy || !orchestratorReady} onClick={() => void createWorkspace()}>{busy ? "Starting…" : "Create workspace"}</button></div></>}
+      {modal === "workspace" && <><ModalTitle icon={<Box/>} title="New workspace" copy="Name the lane. Bridge starts the orchestrator automatically—no harness or model to pick."/><label className="field-label">WORKSPACE NAME</label><textarea className="task-input" autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Keyboard navigation"/><p className="modal-hint">Starts a fast-tier Orchestrator. The adapter chooses the runtime model.</p><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!title.trim() || !state.projects.length || busy || !orchestratorReady} onClick={() => void createWorkspace()}>{busy ? "Starting…" : "Create workspace"}</button></div></>}
       {modal === "palette" && <CommandPalette workspaces={state.workspaces} onChoose={id => { setSelectedId(id); setModal(null); autoStartRef.current = undefined; }}/>}
     </Modal>}
   </div>;
@@ -210,7 +207,7 @@ export function App() {
 
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="panel-view"><div className="panel-kicker">CHANGE STORY</div><h2>{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p>Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="diff-stat"><b className="add">+{workspace.additions}</b><b className="del">−{workspace.deletions}</b><span/><small>{workspace.branch}</small></div><div className="placeholder-lines">{[78,92,64,85,51,70].map((n,i)=><i key={i} style={{width:`${n}%`}}/>)}</div></div>; }
 function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="event-list">{events.length ? events.map(e => <article key={e.id}><CircleDot size={14}/><div><b>{e.kind.replaceAll(".", " ")}</b><p>{e.body}</p><small>{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="empty-panel">No events for this workspace yet.</div>}</div>; }
-function Welcome({ onAdd }: { onAdd: () => void }) { return <div className="welcome"><div className="welcome-mark">B</div><div className="eyebrow">LOCAL AGENT CONTROL ROOM</div><h1>One orchestrator.<br/>Many workers later.</h1><p>Open a workspace and Bridge starts a cheap Codex orchestrator on GPT Luna.<br/>Describe what to build—no harness picker.</p><button className="primary large" onClick={onAdd}><FolderGit2 size={16}/> Add your first repository</button><small>Your code stays on this Mac.</small></div>; }
+function Welcome({ onAdd }: { onAdd: () => void }) { return <div className="welcome"><div className="welcome-mark">B</div><div className="eyebrow">LOCAL AGENT CONTROL ROOM</div><h1>One orchestrator.<br/>Focused workers.</h1><p>Open a workspace and Bridge starts a fast-tier orchestrator.<br/>Describe what to build—Bridge resolves the runtime.</p><button className="primary large" onClick={onAdd}><FolderGit2 size={16}/> Add your first repository</button><small>Your code stays on this Mac.</small></div>; }
 function Modal({ children, onClose, kind }: { children: React.ReactNode; onClose: () => void; kind: string }) { return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><div className={`modal-card ${kind === "palette" ? "palette" : ""}`}><button className="modal-close" onClick={onClose}><X size={16}/></button>{children}</div></div>; }
 function ModalTitle({ icon, title, copy }: { icon: React.ReactNode; title: string; copy: string }) { return <div className="modal-title"><span>{icon}</span><div><h2>{title}</h2><p>{copy}</p></div></div>; }
 function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><div className="palette-input"><Search size={17}/><input autoFocus placeholder="Search workspaces and actions…"/></div><div className="palette-section"><label>WORKSPACES</label>{workspaces.map(w => <button key={w.id} onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span><b>{w.title}</b><small>{w.city} · {w.branch}</small></span><kbd>↵</kbd></button>)}</div><div className="palette-footer"><span>↑↓ navigate</span><span>esc close</span></div></>; }

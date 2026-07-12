@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canTransition, formatElapsed, safeSlug } from "./utils";
+import { canTransition, formatElapsed, safeSlug, tierRuntimeLabel } from "./utils";
 
 describe("safeSlug", () => {
   it("normalizes unsafe branch text", () => expect(safeSlug(" Add OAuth / callbacks! ")).toBe("add-oauth-callbacks"));
@@ -14,4 +14,13 @@ describe("session transitions", () => {
 describe("formatElapsed", () => {
   it("formats supervised runtime without fake precision", () => expect(formatElapsed("2026-07-12T10:00:00Z", Date.parse("2026-07-12T12:05:00Z"))).toBe("2h 05m"));
   it("labels sessions that have not started", () => expect(formatElapsed(null)).toBe("—"));
+});
+
+describe("tierRuntimeLabel", () => {
+  it("leads with durable tier and keeps provider model as runtime detail", () => {
+    expect(tierRuntimeLabel("strong", "fable", "high")).toBe("STRONG TIER · high · runtime Fable");
+  });
+  it("handles unknown runtime models without changing the tier semantic", () => {
+    expect(tierRuntimeLabel("standard", "provider-next")).toBe("STANDARD TIER · runtime provider-next");
+  });
 });
