@@ -2,16 +2,22 @@ mod adapters;
 mod agent;
 mod binary;
 mod claude_adapter;
+mod compaction_controller;
 mod codex_adapter;
 mod delegation;
 mod git;
 mod model;
 mod orchestrator;
 mod policy;
+mod policy_coordinator;
 mod restoration;
 mod session_forest;
+mod session_supervisor;
 mod store;
 mod worker_guard;
+mod worker_lifecycle;
+mod worker_pool;
+mod worktree_coordinator;
 
 use chrono::Utc;
 use model::*;
@@ -19,11 +25,12 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use thiserror::Error;
@@ -69,14 +76,6 @@ struct AppState {
 /// Bookkeeping for the multi-agent delegation tree.
 #[derive(Default)]
 struct DelegationState {
-    /// `{session}::{item_id}` of assistant messages already turned into spawns,
-    /// so re-observing the same message never double-spawns workers.
-    spawned: HashSet<String>,
-    /// Parent session id → count of child workers that have not yet reported a
-    /// first result. A parent forwards its own result only when this is zero.
-    outstanding: HashMap<String, i64>,
-    /// Child sessions that have reported to their parent at least once.
-    reported: HashSet<String>,
     /// Tracks the single same-session repair allowed for malformed worker output.
     result_repairs: delegation::ResultRepairTracker,
     /// Last observed provider turn per session, retained until the next turn
@@ -544,6 +543,10 @@ fn spawn_reader_thread(
         state.adapters.lock().unwrap().remove(&session_id);
         notify_parent_on_worker_exit(&app, &session_id);
         let db = state.db.lock().unwrap();
+        let is_worker = store::worker_runtime(&db, &session_id)
+            .ok()
+            .flatten()
+            .is_some();
         let workspace: Option<String> = db
             .query_row(
                 "SELECT workspace_id FROM sessions WHERE id=?1",
@@ -551,7 +554,9 @@ fn spawn_reader_thread(
                 |r| r.get(0),
             )
             .ok();
-        let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+        if !is_worker {
+            let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+        }
         if let Some(workspace) = workspace {
             let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
         }
@@ -589,6 +594,7 @@ fn handle_agent_value(
 ) {
     let state = app.state::<AppState>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
+    let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut turn_completed = false;
 
     {
@@ -651,10 +657,19 @@ fn handle_agent_value(
                     let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
                 }
                 "approval.requested" => {
-                    let _ = db.execute(
-                        "UPDATE sessions SET status='waiting' WHERE id=?1",
-                        params![session_id],
-                    );
+                    if own_depth > 0 {
+                        let _ = session_supervisor::SessionSupervisor::transition(
+                            &db,
+                            session_id,
+                            worker_lifecycle::WorkerLifecycleState::Waiting,
+                            Some("approval_requested"),
+                        );
+                    } else {
+                        let _ = db.execute(
+                            "UPDATE sessions SET status='waiting' WHERE id=?1",
+                            params![session_id],
+                        );
+                    }
                     let _ = db.execute(
                         "UPDATE workspaces SET status='waiting' WHERE id=?1",
                         params![workspace_id],
@@ -671,10 +686,31 @@ fn handle_agent_value(
                     );
                 }
                 "error" if event.status.as_deref() == Some("failed") => {
-                    let _ = db.execute(
-                        "UPDATE sessions SET status='failed' WHERE id=?1",
-                        params![session_id],
-                    );
+                    if own_depth > 0 {
+                        let lifecycle = store::worker_runtime(&db, session_id)
+                            .ok()
+                            .flatten()
+                            .map(|runtime| runtime.lifecycle_state);
+                        if lifecycle.as_deref() == Some("waiting") {
+                            let _ = session_supervisor::SessionSupervisor::transition(
+                                &db,
+                                session_id,
+                                worker_lifecycle::WorkerLifecycleState::Working,
+                                Some("approval_aborted_by_error"),
+                            );
+                        }
+                        let _ = session_supervisor::SessionSupervisor::transition(
+                            &db,
+                            session_id,
+                            worker_lifecycle::WorkerLifecycleState::Failed,
+                            Some("provider_error"),
+                        );
+                    } else {
+                        let _ = db.execute(
+                            "UPDATE sessions SET status='failed' WHERE id=?1",
+                            params![session_id],
+                        );
+                    }
                     let _ = db.execute(
                         "UPDATE workspaces SET status='failed' WHERE id=?1",
                         params![workspace_id],
@@ -693,11 +729,13 @@ fn handle_agent_value(
                 if let Some(text) = normalized_event.text.clone() {
                     match delegation::parse_delegation_requests(&text) {
                         delegation::ParseOutcome::Parsed(requests) => {
-                            let key = format!(
-                                "{session_id}::{}",
-                                normalized_event.item_id.clone().unwrap_or_default()
-                            );
-                            let is_new = state.delegations.lock().unwrap().spawned.insert(key);
+                            let item_id = normalized_event.item_id.clone().unwrap_or_default();
+                            let is_new = store::claim_delegation_receipt(
+                                &db,
+                                session_id,
+                                &item_id,
+                            )
+                            .unwrap_or(false);
                             let mut accepted_count = 0;
                             let mut rejection_message = None;
                             if is_new {
@@ -731,7 +769,7 @@ fn handle_agent_value(
                                         session_id,
                                         &rejection,
                                     ) {
-                                        let _ = app.emit("agent-event", event);
+                                        pending_ui_events.push(event);
                                     }
                                 }
                             }
@@ -773,29 +811,26 @@ fn handle_agent_value(
                 &normalized_event,
                 &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
             ) {
-                let _ = app.emit("agent-event", event);
+                pending_ui_events.push(event);
             }
         }
     }
 
     for (directive, turn_id) in &pending_directives {
-        launch_worker(app, session_id, turn_id, directive);
+        let _ = launch_worker(app, session_id, turn_id, directive, true);
     }
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
     if turn_completed {
-        let idle = state
-            .delegations
-            .lock()
-            .unwrap()
-            .outstanding
-            .get(session_id)
-            .copied()
+        let idle = store::outstanding_children(&state.db.lock().unwrap(), session_id)
             .unwrap_or(0)
             == 0;
         if idle {
             forward_turn_result(app, session_id);
         }
+    }
+    for event in pending_ui_events {
+        let _ = app.emit("agent-event", event);
     }
     let _ = app.emit("state-changed", ());
 }
@@ -836,6 +871,14 @@ struct WorkerLaunchReservation {
     branch: String,
     actual_model: String,
     outcome: policy::PolicyOutcome,
+    reuse_existing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerActivation {
+    Fresh,
+    Native,
+    CheckpointRestored,
 }
 
 fn record_model_resolution_warning(
@@ -861,47 +904,55 @@ fn reserve_worker_launch(
     turn_id: &str,
     directive: &delegation::DelegationRequest,
     actual_model: &str,
+    queue_on_block: bool,
 ) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
-    let (workspace_id, parent_depth, path, branch): (String, i64, String, String) = db
-        .query_row(
-            "SELECT s.workspace_id,COALESCE(s.depth,0),w.path,w.branch FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
-            params![parent_session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
-    let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
-    let active_workers = policy::load_workers(db, &workspace_id, "active")?;
-    let warm_workers = policy::load_workers(db, &workspace_id, "warm")?;
-    let input = policy::PolicyInput {
-        workspace_id: workspace_id.clone(),
-        worktree_id: workspace_id.clone(),
-        parent_session_id: parent_session_id.into(),
-        turn_id: turn_id.into(),
-        parent_depth,
-        request: directive.clone(),
-        requested_harness: directive.runtime_harness(),
-        task_family: policy::role_name(directive.role).into(),
-        active_workers,
-        warm_workers,
-        budget: budget.clone(),
-        retry_count: 0,
-        parent_can_execute: false,
-        requires_user_approval: false,
-        // Issue #11 supplies the child-worktree coordinator. Until then, the
-        // policy queues a second disjoint writer instead of running it shared.
-        child_worktrees_available: false,
-    };
-    let outcome = policy::PolicyEngine::default().decide(&input);
-    policy::record_decision(
+    let route = policy_coordinator::PolicyCoordinator::decide_worker_route(
         db,
         parent_session_id,
         turn_id,
         directive,
-        &outcome,
-        &budget,
+        true,
     )?;
-    let policy::RouteDecision::SpawnWorker(_) = &outcome.decision else {
-        return Ok(None);
-    };
+    let policy_coordinator::WorkerRouteContext {
+        workspace_id,
+        parent_depth,
+        path,
+        branch,
+        outcome,
+    } = route;
+    match &outcome.decision {
+        policy::RouteDecision::Queue => {
+            if queue_on_block {
+                worker_pool::WorkerPool::enqueue(
+                    db,
+                    parent_session_id,
+                    &workspace_id,
+                    turn_id,
+                    directive,
+                    actual_model,
+                )?;
+            }
+            return Ok(None);
+        }
+        policy::RouteDecision::ResumeWorker { session_id } => {
+            let runtime = store::worker_runtime(db, session_id)?
+                .ok_or_else(|| BridgeError::Invalid(format!("warm worker {session_id} has no runtime record")))?;
+            let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
+            let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
+            return Ok(Some(WorkerLaunchReservation {
+                session_id: session_id.clone(),
+                workspace_id,
+                depth: parent_depth + 1,
+                path: worker_path,
+                branch: worker_branch,
+                actual_model: actual_model.into(),
+                outcome,
+                reuse_existing: true,
+            }));
+        }
+        policy::RouteDecision::SpawnWorker(_) => {}
+        _ => return Ok(None),
+    }
 
     let session_id = Uuid::new_v4().to_string();
     let depth = parent_depth + 1;
@@ -924,6 +975,8 @@ fn reserve_worker_launch(
             depth,
         ],
     )?;
+    let compatibility_key =
+        worker_pool::WorkerCompatibilityKey::for_request(&workspace_id, directive)?.encode()?;
     store::upsert_worker_lease(
         &transaction,
         &WorkerLease {
@@ -931,12 +984,30 @@ fn reserve_worker_launch(
             workspace_id: workspace_id.clone(),
             role: policy::role_name(directive.role).into(),
             capability_tier: policy::tier_name(directive.capability_tier).into(),
+            task_family: policy::role_name(directive.role).into(),
             owned_paths: serde_json::json!(directive.owned_paths),
             write_mode: policy::write_mode_name(directive.write_mode).into(),
             lease_status: "active".into(),
             expires_at: None,
             created_at: now.clone(),
             updated_at: now,
+        },
+    )?;
+    store::upsert_worker_runtime(
+        &transaction,
+        &WorkerRuntimeRecord {
+            session_id: session_id.clone(),
+            parent_session_id: parent_session_id.to_owned(),
+            lifecycle_state: "starting".into(),
+            task_family: worker_pool::task_family(directive),
+            compatibility_key,
+            result_status: "pending".into(),
+            retry_count: 0,
+            warm_until: None,
+            worktree_path: None,
+            worktree_branch: None,
+            last_result: None,
+            updated_at: Utc::now().to_rfc3339(),
         },
     )?;
     policy::record_spawn_usage(
@@ -956,6 +1027,7 @@ fn reserve_worker_launch(
         branch,
         actual_model: actual_model.into(),
         outcome,
+        reuse_existing: false,
     }))
 }
 
@@ -964,7 +1036,8 @@ fn launch_worker(
     parent_session_id: &str,
     turn_id: &str,
     directive: &delegation::DelegationRequest,
-) {
+    queue_on_block: bool,
+) -> Option<String> {
     let state = app.state::<AppState>();
     let harness = directive.runtime_harness();
     let resolution = match state.adapter_registry.resolve_model(
@@ -984,7 +1057,7 @@ fn launch_worker(
             );
             drop(db);
             let _ = app.emit("state-changed", ());
-            return;
+            return None;
         }
     };
     let reservation = {
@@ -996,13 +1069,14 @@ fn launch_worker(
             turn_id,
             directive,
             &resolution.actual_model,
+            queue_on_block,
         )
     };
-    let reservation = match reservation {
+    let mut reservation = match reservation {
         Ok(Some(reservation)) => reservation,
         Ok(None) => {
             let _ = app.emit("state-changed", ());
-            return;
+            return None;
         }
         Err(error) => {
             let db = state.db.lock().unwrap();
@@ -1015,14 +1089,112 @@ fn launch_worker(
             );
             drop(db);
             let _ = app.emit("state-changed", ());
-            return;
+            return None;
         }
     };
+    let requires_child_worktree = matches!(
+        &reservation.outcome.decision,
+        policy::RouteDecision::SpawnWorker(spec) if spec.requires_child_worktree
+    );
+    if requires_child_worktree {
+        match worktree_coordinator::WorktreeCoordinator::prepare_isolated_worker(
+            &state.db.lock().unwrap(),
+            &state.worktrees.join("workers"),
+            &reservation.workspace_id,
+            Path::new(&reservation.path),
+            &reservation.branch,
+            &reservation.session_id,
+            &directive.owned_paths,
+        ) {
+            Ok((path, branch)) => {
+                reservation.path = path.to_string_lossy().into_owned();
+                reservation.branch = branch;
+            }
+            Err(error) => {
+                let db = state.db.lock().unwrap();
+                let transaction = match db.unchecked_transaction() {
+                    Ok(transaction) => transaction,
+                    Err(_) => return None,
+                };
+                let _ = transaction.execute("DELETE FROM worker_runtime WHERE session_id=?1", params![reservation.session_id]);
+                let _ = transaction.execute("DELETE FROM worker_leases WHERE session_id=?1", params![reservation.session_id]);
+                let _ = transaction.execute("DELETE FROM sessions WHERE id=?1", params![reservation.session_id]);
+                let _ = transaction.commit();
+                if queue_on_block {
+                    let _ = worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model);
+                }
+                let _ = store::event(&db, "worktree", "worker.worktree_queued", parent_session_id, &error.to_string());
+                let _ = app.emit("state-changed", ());
+                return None;
+            }
+        }
+    }
     let model = reservation.actual_model.clone();
     let effort = directive.effort.as_str().to_owned();
     let label = directive.label();
     let instructions =
         delegation::worker_briefing(directive, reservation.depth, &reservation.branch);
+
+    if reservation.reuse_existing
+        && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
+    {
+        let current = store::worker_runtime(&state.db.lock().unwrap(), &reservation.session_id)
+            .ok()
+            .flatten()
+            .map(|runtime| runtime.lifecycle_state);
+        let transition_result = match current.as_deref() {
+            Some("warm") => session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &reservation.session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("compatible_hot_task"),
+            ),
+            Some("stopped") => session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &reservation.session_id,
+                worker_lifecycle::WorkerLifecycleState::Resuming,
+                Some("compatible_hot_task"),
+            )
+            .and_then(|_| session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &reservation.session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("hot_process_reused"),
+            )),
+            _ => Err(BridgeError::Invalid("compatible hot worker is not reusable".into())),
+        };
+        if transition_result.is_ok()
+            && worker_pool::WorkerPool::activate_reused_worker(
+                &state.db.lock().unwrap(),
+                &reservation.session_id,
+                &reservation.workspace_id,
+                directive,
+            )
+            .is_ok()
+        {
+            let provider_session_id = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(&reservation.session_id)
+                .map(|runtime| runtime.provider_session_id().to_owned());
+            let _ = restoration::set_head_state(
+                &state.db.lock().unwrap(),
+                &reservation.session_id,
+                RestorationMode::Hot,
+                ResumeEligibility::Native,
+                provider_session_id.as_deref(),
+            );
+            if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
+                if runtime.send_turn(&directive.objective).is_ok() {
+                    let _ = app.emit("state-changed", ());
+                    return Some(reservation.session_id);
+                }
+            }
+        }
+        let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
+        return None;
+    }
 
     if directive.write_mode == delegation::WriteMode::ReadOnly {
         match worker_guard::ReadOnlyBaseline::capture(&reservation.path) {
@@ -1035,40 +1207,84 @@ fn launch_worker(
                     .insert(reservation.session_id.clone(), baseline);
             }
             Err(error) => {
-                let db = state.db.lock().unwrap();
-                let now = Utc::now().to_rfc3339();
-                let _ = db.execute(
-                    "UPDATE sessions SET status='failed',ended_at=?2 WHERE id=?1",
-                    params![reservation.session_id, now],
-                );
-                let _ = db.execute(
-                    "UPDATE worker_leases SET lease_status='expired',updated_at=?2 WHERE session_id=?1",
-                    params![reservation.session_id, Utc::now().to_rfc3339()],
-                );
-                let _ = store::event(
-                    &db,
-                    "sandbox",
-                    "worker.read_only_verification_failed",
+                fail_reserved_worker(
+                    app,
                     &reservation.session_id,
+                    &label,
                     &format!("Could not capture tracked-file baseline: {error}"),
                 );
-                drop(db);
-                let _ = app.emit("state-changed", ());
-                return;
+                return None;
             }
         }
     }
 
-    let started = match state.adapter_registry.start(
-        &harness,
-        adapters::StartRequest {
-            cwd: &reservation.path,
-            model: Some(model.as_str()),
-            effort: Some(&effort),
-            instructions: Some(instructions.as_str()),
-            write_mode: Some(directive.write_mode),
-        },
-    ) {
+    let activation = if reservation.reuse_existing {
+        if session_supervisor::SessionSupervisor::transition(
+            &state.db.lock().unwrap(),
+            &reservation.session_id,
+            worker_lifecycle::WorkerLifecycleState::Resuming,
+            Some("compatible_cold_task"),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        let provider_id: Option<String> = state.db.lock().unwrap().query_row(
+            "SELECT provider_session_id FROM sessions WHERE id=?1",
+            params![reservation.session_id],
+            |row| row.get(0),
+        ).ok().flatten();
+        let checkpoint = restoration::checkpoint_context(
+            &state.db.lock().unwrap(),
+            &reservation.session_id,
+        ).ok().flatten();
+        let resumed = provider_id.as_deref().filter(|_| state.adapter_registry.supports_native_resume(&harness)).map(|provider_session_id| {
+            state.adapter_registry.resume(&harness, adapters::ResumeRequest {
+                provider_session_id,
+                cwd: &reservation.path,
+                model: Some(model.as_str()),
+                effort: Some(&effort),
+                instructions: Some(instructions.as_str()),
+                write_mode: Some(directive.write_mode),
+            })
+        }).transpose();
+        match resumed {
+            Ok(Some(started)) => Ok((started, WorkerActivation::Native)),
+            Err(error) => {
+                let _ = restoration::record_resume_failed(&state.db.lock().unwrap(), &reservation.session_id, &error.to_string());
+                let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
+                state.adapter_registry.start(&harness, adapters::StartRequest {
+                    cwd: &reservation.path,
+                    model: Some(model.as_str()),
+                    effort: Some(&effort),
+                    instructions: Some(restored_instructions.as_str()),
+                    write_mode: Some(directive.write_mode),
+                }).map(|started| (started, WorkerActivation::CheckpointRestored))
+            }
+            Ok(None) => {
+                let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
+                state.adapter_registry.start(&harness, adapters::StartRequest {
+                    cwd: &reservation.path,
+                    model: Some(model.as_str()),
+                    effort: Some(&effort),
+                    instructions: Some(restored_instructions.as_str()),
+                    write_mode: Some(directive.write_mode),
+                }).map(|started| (started, WorkerActivation::CheckpointRestored))
+            }
+        }
+    } else {
+        state.adapter_registry.start(
+            &harness,
+            adapters::StartRequest {
+                cwd: &reservation.path,
+                model: Some(model.as_str()),
+                effort: Some(&effort),
+                instructions: Some(instructions.as_str()),
+                write_mode: Some(directive.write_mode),
+            },
+        ).map(|started| (started, WorkerActivation::Fresh))
+    };
+    let (started, activation) = match activation {
         Ok(started) => started,
         Err(error) => {
             state
@@ -1077,33 +1293,77 @@ fn launch_worker(
                 .unwrap()
                 .read_only_baselines
                 .remove(&reservation.session_id);
-            let db = state.db.lock().unwrap();
-            let now = Utc::now().to_rfc3339();
-            let _ = db.execute(
-                "UPDATE sessions SET status='failed',ended_at=?2 WHERE id=?1",
-                params![reservation.session_id, now],
+            fail_reserved_worker(
+                app,
+                &reservation.session_id,
+                &label,
+                &format!("Could not start provider process: {error}"),
             );
-            let _ = db.execute(
-                "UPDATE worker_leases SET lease_status='expired',updated_at=?2 WHERE session_id=?1",
-                params![reservation.session_id, Utc::now().to_rfc3339()],
-            );
-            let _ = store::event(
-                &db,
-                "delegation",
-                "worker.failed",
-                parent_session_id,
-                &format!("Could not start {label}: {error}"),
-            );
-            drop(db);
-            let _ = app.emit("state-changed", ());
-            return;
+            return None;
         }
     };
     let session_id = reservation.session_id;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let reader = started.reader;
+    let startup_messages = started.startup_messages;
+    let mut runtime = started.runtime;
     let started_at = Utc::now().to_rfc3339();
+
+    let transition_result = match activation {
+        WorkerActivation::Fresh | WorkerActivation::Native => {
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some(if activation == WorkerActivation::Native { "native_resumed" } else { "provider_started" }),
+            ).map(|_| ())
+        }
+        WorkerActivation::CheckpointRestored => {
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &session_id,
+                worker_lifecycle::WorkerLifecycleState::Restored,
+                Some("checkpoint_fallback"),
+            ).and_then(|_| session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("checkpoint_restored"),
+            )).map(|_| ())
+        }
+    };
+    if let Err(error) = transition_result {
+        runtime.stop(adapters::ShutdownReason::Failed);
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "supervisor",
+            "worker.transition_failed",
+            &session_id,
+            &error.to_string(),
+        );
+        return None;
+    }
+    let (restoration_mode, resume_eligibility) = match activation {
+        WorkerActivation::Fresh => (RestorationMode::Fresh, ResumeEligibility::Fresh),
+        WorkerActivation::Native => (RestorationMode::Native, ResumeEligibility::Native),
+        WorkerActivation::CheckpointRestored => (
+            RestorationMode::CheckpointRestored,
+            ResumeEligibility::CheckpointRestored,
+        ),
+    };
+    if restoration::set_head_state(
+        &state.db.lock().unwrap(),
+        &session_id,
+        restoration_mode,
+        resume_eligibility,
+        Some(&thread_id),
+    )
+    .is_err()
+    {
+        runtime.stop(adapters::ShutdownReason::Failed);
+        return None;
+    }
 
     {
         let db = state.db.lock().unwrap();
@@ -1122,15 +1382,15 @@ fn launch_worker(
             "UPDATE workspaces SET status='working' WHERE id=?1",
             params![reservation.workspace_id],
         );
-        for message in &started.startup_messages {
+        for message in &startup_messages {
             let _ = persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
         }
         let spawn_event = agent::NormalizedEvent {
-            kind: "delegation.spawned".into(),
+            kind: if reservation.reuse_existing { "delegation.resumed".into() } else { "delegation.spawned".into() },
             item_id: Some(format!("spawn-{session_id}")),
             role: Some("system".into()),
             status: Some("working".into()),
-            title: Some(format!("Delegated to {label}")),
+            title: Some(if reservation.reuse_existing { format!("Resumed {label}") } else { format!("Delegated to {label}") }),
             text: Some(directive.objective.clone()),
             data: serde_json::json!({
                 "childSessionId": session_id,
@@ -1143,6 +1403,7 @@ fn launch_worker(
                 "depth": reservation.depth,
                 "turnId": turn_id,
                 "policy": reservation.outcome,
+                "restorationMode": restoration_mode,
             }),
         };
         if let Ok(stored) =
@@ -1153,20 +1414,32 @@ fn launch_worker(
         let _ = store::event(
             &db,
             "delegation",
-            "worker.spawned",
+            if reservation.reuse_existing { "worker.resumed" } else { "worker.spawned" },
             parent_session_id,
             &format!(
-                "Spawned {label} (effort {})",
+                "{} {label} (effort {})",
+                if reservation.reuse_existing { "Resumed" } else { "Spawned" },
                 effort
             ),
         );
     }
 
+    if reservation.reuse_existing
+        && worker_pool::WorkerPool::activate_reused_worker(
+            &state.db.lock().unwrap(),
+            &session_id,
+            &reservation.workspace_id,
+            directive,
+        )
+        .is_err()
+    {
+        return None;
+    }
     state
         .adapters
         .lock()
         .unwrap()
-        .insert(session_id.clone(), started.runtime);
+        .insert(session_id.clone(), runtime);
     spawn_reader_thread(
         app.clone(),
         session_id.clone(),
@@ -1174,17 +1447,41 @@ fn launch_worker(
         current_turn,
         reader,
     );
-    *state
-        .delegations
-        .lock()
-        .unwrap()
-        .outstanding
-        .entry(parent_session_id.to_owned())
-        .or_insert(0) += 1;
     if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
         let _ = runtime.send_turn(&directive.objective);
     }
     let _ = app.emit("state-changed", ());
+    Some(session_id)
+}
+
+fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
+    let state = app.state::<AppState>();
+    if session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("startup_failed_before_process"),
+    )
+    .is_err()
+    {
+        return;
+    }
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Failed,
+        summary: format!("{label} could not start: {reason}"),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec![reason.to_owned()],
+        remaining_work: vec!["Retry or delegate the task differently".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    if settle_worker_after_result(app, session_id, &result).unwrap_or(false) {
+        report_to_parent(app, session_id, &result);
+    }
 }
 
 /// Frame a finished worker's final message and send it up to its parent.
@@ -1216,7 +1513,7 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
     };
     let raw_output =
         raw_output.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
-    let result_text = match {
+    let result = match {
         let db = state.db.lock().unwrap();
         let mut delegations = state.delegations.lock().unwrap();
         process_worker_result_output(
@@ -1247,17 +1544,36 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
             return;
         }
     };
-    let Some(result_text) = result_text else {
+    let Some(result) = result else {
         let _ = app.emit("state-changed", ());
         return;
     };
     verify_read_only_worker(app, child_session_id);
-    let model_label = delegation::model_display(model.as_deref().unwrap_or("unknown"));
-    let framed = format!(
-        "[worker result] {label} ({harness}/{model_label}, effort {}) finished:\n\n{result_text}",
-        effort.as_deref().unwrap_or("medium")
-    );
-    report_to_parent(app, child_session_id, &framed);
+    let _ = (label, harness, model, effort);
+    match settle_worker_after_result(app, child_session_id, &result) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
+            return;
+        }
+    }
+    report_to_parent(app, child_session_id, &result);
+    let terminal = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if terminal {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
+            runtime.stop(adapters::ShutdownReason::Completed);
+        }
+    }
 }
 
 fn process_worker_result_output(
@@ -1266,15 +1582,13 @@ fn process_worker_result_output(
     child_session_id: &str,
     raw_output: &str,
     send_same_session_repair: impl FnOnce(&str) -> bool,
-) -> Result<Option<String>, BridgeError> {
+) -> Result<Option<delegation::WorkerResult>, BridgeError> {
     match tracker.process(
         child_session_id,
         raw_output,
         send_same_session_repair,
     ) {
-        delegation::WorkerOutputAction::Structured(result) => Ok(Some(
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.summary.clone()),
-        )),
+        delegation::WorkerOutputAction::Structured(result) => Ok(Some(result)),
         delegation::WorkerOutputAction::AwaitingRepair { reason } => {
             store::event(
                 db,
@@ -1293,11 +1607,163 @@ fn process_worker_result_output(
                 child_session_id,
                 &reason,
             )?;
-            Ok(Some(format!(
-                "[worker result unavailable] The worker did not return a valid typed result after one repair attempt: {reason}"
-            )))
+            Ok(Some(delegation::WorkerResult {
+                schema_version: delegation::SCHEMA_VERSION,
+                status: delegation::WorkerResultStatus::Failed,
+                summary: format!("Unstructured worker result after repair failure: {reason}"),
+                files_changed: vec![],
+                tests: vec![],
+                decisions: vec![],
+                risks: vec!["The raw worker response was excluded from parent context".into()],
+                remaining_work: vec!["Review the worker transcript manually".into()],
+                suggested_next_action: delegation::SuggestedNextAction::Finish,
+                suggested_role: None,
+                suggested_task: None,
+            }))
         }
     }
+}
+
+fn settle_worker_after_result(
+    app: &AppHandle,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) -> Result<bool, BridgeError> {
+    let state = app.state::<AppState>();
+    let current = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    if current.as_deref() == Some("failed")
+        && matches!(
+            result.status,
+            delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+        )
+    {
+        session_supervisor::SessionSupervisor::transition(
+            &state.db.lock().unwrap(),
+            child_session_id,
+            worker_lifecycle::WorkerLifecycleState::Completed,
+            Some("terminal_failure_reported"),
+        )?;
+        return Ok(true);
+    }
+    if current.as_deref() != Some("working") {
+        return Ok(true);
+    }
+    if result.is_retryable() {
+        let retry_count = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)?
+            .map(|runtime| runtime.retry_count)
+            .unwrap_or(1);
+        let can_retry_hot = worker_pool::should_retry(
+            result,
+            retry_count,
+            state.adapters.lock().unwrap().contains_key(child_session_id),
+        );
+        if can_retry_hot {
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Failed,
+                Some("typed_failure"),
+            )?;
+            state.db.lock().unwrap().execute(
+                "UPDATE worker_runtime SET retry_count=1,updated_at=?2 WHERE session_id=?1",
+                params![child_session_id, Utc::now().to_rfc3339()],
+            )?;
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Resuming,
+                Some("automatic_retry"),
+            )?;
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("same_process_retry"),
+            )?;
+            let sent = state.adapters.lock().unwrap().get(child_session_id).is_some_and(|runtime| {
+                runtime.send_turn("Retry the same assigned task once. Address the failure, rerun verification, and return a typed worker result.").is_ok()
+            });
+            if sent {
+                return Ok(false);
+            }
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Failed,
+                Some("retry_delivery_failed"),
+            )?;
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Completed,
+                Some("terminal_failure_reported"),
+            )?;
+            return Ok(true);
+        }
+    }
+    let (next, warm_until) = match result.status {
+        delegation::WorkerResultStatus::Completed
+        | delegation::WorkerResultStatus::NeedsDelegation => {
+            let attributes: Option<(String, String, String)> = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT role,capability_tier,write_mode FROM worker_leases WHERE session_id=?1",
+                    params![child_session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .ok();
+            match attributes.map(|(role, tier, mode)| {
+                worker_pool::retention_action_for_attributes(&role, &tier, &mode, Utc::now())
+            }) {
+                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => {
+                    (worker_lifecycle::WorkerLifecycleState::Warm, Some(until.to_rfc3339()))
+                }
+                _ => (worker_lifecycle::WorkerLifecycleState::Completed, None),
+            }
+        }
+        delegation::WorkerResultStatus::Cancelled => (
+            worker_lifecycle::WorkerLifecycleState::Cancelled,
+            None,
+        ),
+        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked => {
+            (worker_lifecycle::WorkerLifecycleState::Failed, None)
+        }
+    };
+    session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        child_session_id,
+        next,
+        Some("typed_result"),
+    )?;
+    if matches!(
+        result.status,
+        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+    ) {
+        session_supervisor::SessionSupervisor::transition(
+            &state.db.lock().unwrap(),
+            child_session_id,
+            worker_lifecycle::WorkerLifecycleState::Completed,
+            Some("terminal_failure_reported"),
+        )?;
+    }
+    if let Some(warm_until) = warm_until {
+        state.db.lock().unwrap().execute(
+            "UPDATE worker_runtime SET warm_until=?2 WHERE session_id=?1",
+            params![child_session_id, warm_until],
+        )?;
+    }
+    Ok(true)
 }
 
 /// If a worker process exits before ever reporting, tell its parent so the
@@ -1305,12 +1771,10 @@ fn process_worker_result_output(
 fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
     let state = app.state::<AppState>();
     verify_read_only_worker(app, child_session_id);
-    let already = state
-        .delegations
-        .lock()
-        .unwrap()
-        .reported
-        .contains(child_session_id);
+    let already = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|runtime| runtime.result_status == "reported");
     if already {
         return;
     }
@@ -1326,10 +1790,28 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
     let Some((Some(_parent), label)) = meta else {
         return;
     };
-    let framed = format!(
-        "[worker stopped] {label} ended without reporting a result. You may retry, delegate differently, or proceed without it."
-    );
-    report_to_parent(app, child_session_id, &framed);
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Failed,
+        summary: format!("{label} ended without reporting a result"),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec!["Worker process exited before a typed result was produced".into()],
+        remaining_work: vec!["Retry or delegate the task differently".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    match settle_worker_after_result(app, child_session_id, &result) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
+            return;
+        }
+    }
+    report_to_parent(app, child_session_id, &result);
 }
 
 fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
@@ -1357,23 +1839,24 @@ fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
 
 /// Deliver a framed message from a child to its parent session: send it into the
 /// parent's live turn stream and drop a marker card into the parent's transcript.
-fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) {
+fn report_to_parent(
+    app: &AppHandle,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) {
     let state = app.state::<AppState>();
-    let parent_id: Option<String> = {
+    let parent_id = {
         let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT parent_session_id FROM sessions WHERE id=?1",
-            params![child_session_id],
-            |r| r.get(0),
-        )
-        .ok()
-        .flatten()
+        session_supervisor::SessionSupervisor::record_result(&db, child_session_id, result)
+            .ok()
+            .flatten()
     };
     let Some(parent_id) = parent_id else {
         return;
     };
+    let typed_result = serde_json::to_string(result).unwrap_or_else(|_| result.summary.clone());
     let delivered = match state.adapters.lock().unwrap().get(&parent_id) {
-        Some(runtime) => runtime.send_turn(framed_text).is_ok(),
+        Some(runtime) => runtime.send_turn(&typed_result).is_ok(),
         None => false,
     };
     {
@@ -1384,8 +1867,8 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) 
             role: Some("system".into()),
             status: Some("completed".into()),
             title: Some("Worker result".into()),
-            text: Some(framed_text.to_owned()),
-            data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered}),
+            text: Some(result.summary.clone()),
+            data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered, "result": result}),
         };
         if let Ok(stored) =
             store::agent_event(&db, &parent_id, &result_event, &serde_json::json!({"delegation": true}))
@@ -1398,22 +1881,94 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) 
                 params![parent_id],
             );
         }
-        let _ = db.execute(
-            "UPDATE worker_leases SET lease_status='released',updated_at=?2 WHERE session_id=?1",
-            params![child_session_id, Utc::now().to_rfc3339()],
-        );
     }
-    {
-        let mut delegations = state.delegations.lock().unwrap();
-        if delegations.reported.insert(child_session_id.to_owned()) {
-            if let Some(count) = delegations.outstanding.get_mut(&parent_id) {
-                if *count > 0 {
-                    *count -= 1;
-                }
-            }
+    let workspace_id = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![child_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    let _ = app.emit("state-changed", ());
+    if let Some(workspace_id) = workspace_id {
+        dispatch_next_queued_worker(app, &workspace_id);
+    }
+}
+
+fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
+    let state = app.state::<AppState>();
+    let queued = worker_pool::WorkerPool::claim_next_queued(
+        &state.db.lock().unwrap(),
+        workspace_id,
+    )
+    .ok()
+    .flatten();
+    let Some(queued) = queued else {
+        return;
+    };
+    let directive: delegation::DelegationRequest = match serde_json::from_value(queued.request) {
+        Ok(directive) => directive,
+        Err(error) => {
+            let db = state.db.lock().unwrap();
+            let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);
+            let _ = store::event(&db, "worker-pool", "worker.queue.invalid", &queued.id, &error.to_string());
+            return;
+        }
+    };
+    let launched = launch_worker(
+        app,
+        &queued.parent_session_id,
+        &queued.turn_id,
+        &directive,
+        false,
+    );
+    let db = state.db.lock().unwrap();
+    let _ = if let Some(session_id) = launched.as_deref() {
+        store::update_worker_queue(&db, &queued.id, "dispatched", Some(session_id))
+    } else {
+        store::update_worker_queue(&db, &queued.id, "rejected", None)
+    };
+}
+
+fn maintain_worker_pool(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let expired = worker_pool::WorkerPool::expire_warm_workers(
+        &state.db.lock().unwrap(),
+        Utc::now(),
+    )
+    .unwrap_or_default();
+    for session_id in expired {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop(adapters::ShutdownReason::Completed);
         }
     }
-    let _ = app.emit("state-changed", ());
+    let workspaces = {
+        let db = state.db.lock().unwrap();
+        let mut statement = match db.prepare(
+            "SELECT DISTINCT workspace_id FROM worker_queue WHERE queue_status='queued' ORDER BY workspace_id",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return,
+        };
+        let workspaces = match statement.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows.filter_map(Result::ok).collect::<Vec<_>>(),
+            Err(_) => return,
+        };
+        workspaces
+    };
+    for workspace_id in workspaces {
+        dispatch_next_queued_worker(app, &workspace_id);
+    }
+}
+
+fn start_worker_maintenance(app: AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(1));
+        maintain_worker_pool(&app);
+    });
 }
 
 #[tauri::command]
@@ -1513,6 +2068,11 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
+    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
+        return Err(BridgeError::Invalid(
+            "Worker turns are scheduled through the policy-controlled worker pool".into(),
+        ));
+    }
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
@@ -1586,12 +2146,32 @@ fn resolve_approval(
         .get("requestId")
         .cloned()
         .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
+    let is_worker = store::worker_runtime(&db, &session_id)?.is_some();
+    if is_worker {
+        session_supervisor::SessionSupervisor::transition(
+            &db,
+            &session_id,
+            worker_lifecycle::WorkerLifecycleState::Working,
+            Some("approval_resolved"),
+        )?;
+    }
     drop(db);
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.respond(request_id, &decision)?;
+    if let Err(error) = runtime.respond(request_id, &decision) {
+        drop(adapters);
+        if is_worker {
+            let _ = session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &session_id,
+                worker_lifecycle::WorkerLifecycleState::Waiting,
+                Some("approval_delivery_failed"),
+            );
+        }
+        return Err(error);
+    }
     drop(adapters);
     let mut normalized = agent::NormalizedEvent {
         kind: "approval.resolved".into(),
@@ -1613,10 +2193,12 @@ fn resolve_approval(
         &normalized,
         &serde_json::json!({"adapter":adapter_id}),
     )?;
-    db.execute(
-        "UPDATE sessions SET status='working' WHERE id=?1",
-        params![session_id],
-    )?;
+    if !is_worker {
+        db.execute(
+            "UPDATE sessions SET status='working' WHERE id=?1",
+            params![session_id],
+        )?;
+    }
     let _ = app.emit("agent-event", event);
     let _ = app.emit("state-changed", ());
     Ok(())
@@ -1652,6 +2234,49 @@ fn stop_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    let is_worker = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+    if is_worker {
+        if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
+            let _ = runtime.interrupt();
+        }
+        let result = delegation::WorkerResult {
+            schema_version: delegation::SCHEMA_VERSION,
+            status: delegation::WorkerResultStatus::Cancelled,
+            summary: "Worker cancelled by user".into(),
+            files_changed: vec![],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec!["Cancelled work was not completed".into()],
+            suggested_next_action: delegation::SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        if !settle_worker_after_result(&app, &session_id, &result)? {
+            return Err(BridgeError::Invalid("cancelled worker cannot be retried".into()));
+        }
+        report_to_parent(&app, &session_id, &result);
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop(adapters::ShutdownReason::UserCancelled);
+        }
+        let db = state.db.lock().unwrap();
+        let workspace_id: String = db.query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
+        let _ = app.emit("state-changed", ());
+        return store::state(&db);
+    }
     {
         let db = state.db.lock().unwrap();
         record_shutdown_reason(&db, &session_id, adapters::ShutdownReason::UserStopped)?;
@@ -1857,15 +2482,8 @@ pub fn run() {
             let db_path = data.join("bridge.db");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            // Sessions cannot outlive the app process; clear stale live statuses on boot.
-            let _ = connection.execute(
-                "UPDATE sessions SET status='stopped', ended_at=COALESCE(ended_at, ?1), active_turn_id=NULL WHERE status IN ('working','waiting','ready')",
-                params![Utc::now().to_rfc3339()],
-            );
-            let _ = connection.execute(
-                "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting','ready')",
-                [],
-            );
+            session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             let adapter_registry = adapters::AdapterRegistry::built_in()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             start_health_server(db_path.clone(), adapter_registry.descriptors());
@@ -1878,6 +2496,7 @@ pub fn run() {
                 worktrees: data.join("worktrees"),
                 database_path: db_path,
             });
+            start_worker_maintenance(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1962,7 +2581,21 @@ mod tests {
 
     #[test]
     fn session_status_round_trip() {
-        assert_eq!(store::status("waiting"), SessionStatus::Waiting);
+        for (value, expected) in [
+            ("starting", SessionStatus::Starting),
+            ("working", SessionStatus::Working),
+            ("waiting", SessionStatus::Waiting),
+            ("warm", SessionStatus::Warm),
+            ("checkpointing", SessionStatus::Checkpointing),
+            ("stopped", SessionStatus::Stopped),
+            ("resuming", SessionStatus::Resuming),
+            ("restored", SessionStatus::Restored),
+            ("failed", SessionStatus::Failed),
+            ("completed", SessionStatus::Completed),
+            ("cancelled", SessionStatus::Cancelled),
+        ] {
+            assert_eq!(store::status(value), expected);
+        }
     }
 
     #[test]
@@ -2045,9 +2678,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fallback.contains("[worker result unavailable]"));
-        assert!(!fallback.contains("invalid first output"));
-        assert!(!fallback.contains("invalid repair output"));
+        assert!(fallback.summary.contains("Unstructured worker result"));
+        assert!(!fallback.summary.contains("invalid first output"));
+        assert!(!fallback.summary.contains("invalid repair output"));
         assert_eq!(
             db.query_row(
                 "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
@@ -2094,7 +2727,7 @@ mod tests {
     fn policy_reservation_precedes_spawn_and_queues_overlapping_writer() {
         let db = policy_fixture();
         let request = policy_request(&["src/auth/**"]);
-        let first = reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra")
+        let first = reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra", true)
             .unwrap()
             .expect("first writer should reserve");
         assert!(matches!(
@@ -2135,6 +2768,7 @@ mod tests {
             "turn-1",
             &request,
             "gpt-5.6-terra",
+            true,
         )
         .unwrap();
         assert!(second.is_none());
@@ -2212,10 +2846,10 @@ mod tests {
             .unwrap();
             assert!(index < 3);
         }
-        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra")
+        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra", true)
             .unwrap()
             .is_none());
-        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra")
+        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra", true)
             .unwrap()
             .expect("new turn should reset request counters");
         assert!(matches!(

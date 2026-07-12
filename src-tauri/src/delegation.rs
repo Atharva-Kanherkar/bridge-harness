@@ -146,6 +146,18 @@ pub enum WorkerResultStatus {
     NeedsDelegation,
 }
 
+impl WorkerResultStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Blocked => "blocked",
+            Self::NeedsDelegation => "needs_delegation",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TestStatus {

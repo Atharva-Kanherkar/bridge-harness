@@ -1,0 +1,335 @@
+use crate::{
+    compaction_controller::CompactionController,
+    delegation::DelegationRequest,
+    model::QueuedWorkerRequest,
+    policy,
+    session_supervisor::SessionSupervisor,
+    store,
+    worker_lifecycle::WorkerLifecycleState,
+    BridgeError,
+};
+use chrono::{DateTime, Duration, Utc};
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+pub const STANDARD_WARM_TIMEOUT_MINUTES: i64 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerCompatibilityKey {
+    pub workspace_id: String,
+    pub role: String,
+    pub harness: String,
+    pub capability_tier: String,
+    pub task_family: String,
+    pub owned_paths: Vec<String>,
+}
+
+impl WorkerCompatibilityKey {
+    pub fn for_request(
+        workspace_id: &str,
+        request: &DelegationRequest,
+    ) -> Result<Self, BridgeError> {
+        Ok(Self {
+            workspace_id: workspace_id.to_owned(),
+            role: policy::role_name(request.role).to_owned(),
+            harness: request.runtime_harness().to_owned(),
+            capability_tier: request.capability_tier.as_str().to_owned(),
+            task_family: task_family(request),
+            owned_paths: policy::normalize_owned_paths(&request.owned_paths)
+                .map_err(BridgeError::Invalid)?,
+        })
+    }
+
+    pub fn encode(&self) -> Result<String, BridgeError> {
+        serde_json::to_string(self).map_err(|error| BridgeError::Invalid(error.to_string()))
+    }
+}
+
+pub fn task_family(request: &DelegationRequest) -> String {
+    policy::role_name(request.role).to_owned()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionAction {
+    StopImmediately,
+    KeepWarmUntil(DateTime<Utc>),
+}
+
+pub fn retention_action(request: &DelegationRequest, now: DateTime<Utc>) -> RetentionAction {
+    retention_action_for_attributes(
+        policy::role_name(request.role),
+        request.capability_tier.as_str(),
+        policy::write_mode_name(request.write_mode),
+        now,
+    )
+}
+
+pub fn retention_action_for_attributes(
+    role: &str,
+    capability_tier: &str,
+    write_mode: &str,
+    now: DateTime<Utc>,
+) -> RetentionAction {
+    let reusable_implementation = role == "implementation"
+        && capability_tier == "standard"
+        && write_mode != "readOnly";
+    if reusable_implementation {
+        RetentionAction::KeepWarmUntil(now + Duration::minutes(STANDARD_WARM_TIMEOUT_MINUTES))
+    } else {
+        RetentionAction::StopImmediately
+    }
+}
+
+pub fn should_retry(
+    result: &crate::delegation::WorkerResult,
+    retry_count: i64,
+    has_hot_process: bool,
+) -> bool {
+    result.is_retryable() && retry_count == 0 && has_hot_process
+}
+
+pub struct WorkerPool;
+
+impl WorkerPool {
+    pub fn enqueue(
+        db: &Connection,
+        parent_session_id: &str,
+        workspace_id: &str,
+        turn_id: &str,
+        request: &DelegationRequest,
+        actual_model: &str,
+    ) -> Result<String, BridgeError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        store::enqueue_worker_request(
+            db,
+            &QueuedWorkerRequest {
+                id: id.clone(),
+                parent_session_id: parent_session_id.to_owned(),
+                workspace_id: workspace_id.to_owned(),
+                turn_id: turn_id.to_owned(),
+                request: serde_json::to_value(request)
+                    .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+                actual_model: actual_model.to_owned(),
+                queue_status: "queued".into(),
+                sequence: 0,
+                dispatched_session_id: None,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+        )?;
+        Ok(id)
+    }
+
+    pub fn expire_warm_workers(
+        db: &Connection,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>, BridgeError> {
+        let session_ids = {
+            let mut statement = db.prepare(
+                "SELECT session_id FROM worker_runtime
+                 WHERE lifecycle_state='warm' AND warm_until IS NOT NULL AND warm_until<=?1
+                 ORDER BY warm_until,session_id",
+            )?;
+            let rows = statement
+                .query_map([now.to_rfc3339()], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        for session_id in &session_ids {
+            CompactionController::request_before_suspend(db, session_id, "warm_idle_timeout")?;
+            SessionSupervisor::transition(
+                db,
+                session_id,
+                WorkerLifecycleState::Checkpointing,
+                Some("warm_idle_timeout"),
+            )?;
+            SessionSupervisor::transition(
+                db,
+                session_id,
+                WorkerLifecycleState::Stopped,
+                Some("checkpoint_requested"),
+            )?;
+            db.execute(
+                "UPDATE worker_leases SET lease_status='checkpointed',updated_at=?2 WHERE session_id=?1",
+                rusqlite::params![session_id, now.to_rfc3339()],
+            )?;
+        }
+        Ok(session_ids)
+    }
+
+    pub fn claim_next_queued(
+        db: &Connection,
+        workspace_id: &str,
+    ) -> Result<Option<QueuedWorkerRequest>, BridgeError> {
+        let active = policy::load_workers(db, workspace_id, "active")?;
+        if active.len() >= policy::PolicyConfig::default().max_concurrent_workers {
+            return Ok(None);
+        }
+        let Some(request) = store::queued_worker_requests(db, workspace_id)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let directive: DelegationRequest = serde_json::from_value(request.request.clone())
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let conflicts = directive.write_mode != crate::delegation::WriteMode::ReadOnly
+            && active.iter().any(|worker| {
+                worker.write_mode != crate::delegation::WriteMode::ReadOnly
+                    && policy::owned_path_sets_overlap(
+                        &directive.owned_paths,
+                        &worker.owned_paths,
+                    )
+                    .unwrap_or(true)
+            });
+        if conflicts {
+            return Ok(None);
+        }
+        let claimed = db.execute(
+            "UPDATE worker_queue SET queue_status='dispatching',updated_at=?2 WHERE id=?1 AND queue_status='queued'",
+            rusqlite::params![request.id, Utc::now().to_rfc3339()],
+        )? == 1;
+        Ok(claimed.then_some(request))
+    }
+
+    pub fn activate_reused_worker(
+        db: &Connection,
+        session_id: &str,
+        workspace_id: &str,
+        request: &DelegationRequest,
+    ) -> Result<(), BridgeError> {
+        let key = WorkerCompatibilityKey::for_request(workspace_id, request)?.encode()?;
+        let now = Utc::now().to_rfc3339();
+        db.execute(
+            "UPDATE worker_runtime SET result_status='pending',warm_until=NULL,compatibility_key=?2,updated_at=?3 WHERE session_id=?1",
+            rusqlite::params![session_id, key, now],
+        )?;
+        db.execute(
+            "UPDATE worker_leases SET role=?2,capability_tier=?3,task_family=?4,owned_paths=?5,write_mode=?6,lease_status='active',expires_at=NULL,updated_at=?7 WHERE session_id=?1",
+            rusqlite::params![session_id,policy::role_name(request.role),request.capability_tier.as_str(),task_family(request),serde_json::to_string(&request.owned_paths).unwrap_or_else(|_| "[]".into()),policy::write_mode_name(request.write_mode),now],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        delegation::{Effort, OutputContract, WorkerRole, WriteMode},
+        model::CapabilityTier,
+    };
+
+    fn request() -> DelegationRequest {
+        DelegationRequest {
+            schema_version: 1,
+            role: WorkerRole::Implementation,
+            objective: "Implement auth".into(),
+            acceptance_criteria: vec!["tests pass".into()],
+            known_facts: vec![],
+            decisions: vec![],
+            relevant_files: vec!["src/auth.rs".into()],
+            owned_paths: vec!["src/auth/**".into(), "src/auth.rs".into()],
+            write_mode: WriteMode::Shared,
+            capability_tier: CapabilityTier::Standard,
+            effort: Effort::Medium,
+            verification: vec!["cargo test auth".into()],
+            output_contract: OutputContract::ImplementationResult,
+            harness: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn compatibility_key_uses_every_required_dimension_and_normalizes_paths() {
+        let key = WorkerCompatibilityKey::for_request("workspace", &request()).unwrap();
+        assert_eq!(key.workspace_id, "workspace");
+        assert_eq!(key.role, "implementation");
+        assert_eq!(key.harness, "codex");
+        assert_eq!(key.capability_tier, "standard");
+        assert_eq!(key.task_family, "implementation");
+        assert_eq!(key.owned_paths, vec!["src/auth.rs", "src/auth/**"]);
+        let encoded = key.encode().unwrap();
+        let mut changed = key.clone();
+        changed.harness = "claude".into();
+        assert_ne!(encoded, changed.encode().unwrap());
+    }
+
+    #[test]
+    fn only_standard_writing_implementation_workers_are_kept_warm() {
+        let now = DateTime::parse_from_rfc3339("2026-07-13T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let standard = request();
+        assert_eq!(
+            retention_action(&standard, now),
+            RetentionAction::KeepWarmUntil(now + Duration::minutes(5))
+        );
+        let mutations: [fn(&mut DelegationRequest); 4] = [
+            |request: &mut DelegationRequest| request.write_mode = WriteMode::ReadOnly,
+            |request: &mut DelegationRequest| request.capability_tier = CapabilityTier::Fast,
+            |request: &mut DelegationRequest| request.capability_tier = CapabilityTier::Strong,
+            |request: &mut DelegationRequest| request.role = WorkerRole::Verification,
+        ];
+        for mutate in mutations {
+            let mut one_shot = request();
+            mutate(&mut one_shot);
+            assert_eq!(retention_action(&one_shot, now), RetentionAction::StopImmediately);
+        }
+    }
+
+    #[test]
+    fn cancellation_is_terminal_and_never_retried() {
+        let result = crate::delegation::WorkerResult {
+            schema_version: crate::delegation::SCHEMA_VERSION,
+            status: crate::delegation::WorkerResultStatus::Cancelled,
+            summary: "cancelled".into(),
+            files_changed: vec![], tests: vec![], decisions: vec![], risks: vec![], remaining_work: vec![],
+            suggested_next_action: crate::delegation::SuggestedNextAction::Finish,
+            suggested_role: None, suggested_task: None,
+        };
+        assert!(result.is_terminal_cancellation());
+        assert!(!should_retry(&result, 0, true));
+    }
+
+    #[test]
+    fn expired_warm_worker_requests_checkpoint_then_stops() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/pool','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/pool-w','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','codex','Worker','warm','reported','parent',1)", []).unwrap();
+        store::upsert_worker_runtime(&db, &crate::model::WorkerRuntimeRecord { session_id:"child".into(), parent_session_id:"parent".into(), lifecycle_state:"warm".into(), task_family:"implementation".into(), compatibility_key:"key".into(), result_status:"reported".into(), retry_count:0, warm_until:Some("2026-07-13T00:00:00+00:00".into()), worktree_path:None, worktree_branch:None, last_result:None, updated_at:"now".into() }).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','standard','implementation','shared','warm','now','now')", []).unwrap();
+
+        let now = DateTime::parse_from_rfc3339("2026-07-13T00:01:00Z").unwrap().with_timezone(&Utc);
+        assert_eq!(WorkerPool::expire_warm_workers(&db, now).unwrap(), vec!["child"]);
+        assert_eq!(store::worker_runtime(&db, "child").unwrap().unwrap().lifecycle_state, "stopped");
+        let entries = store::session_entries(&db, "child").unwrap();
+        assert_eq!(entries.iter().map(|entry| entry.kind.as_str()).collect::<Vec<_>>(), vec!["compaction.requested", "session.status", "session.status"]);
+        assert_eq!(entries[1].payload["status"], "checkpointing");
+        assert_eq!(entries[2].payload["status"], "stopped");
+    }
+
+    #[test]
+    fn fifo_queue_waits_for_conflicting_writer_then_claims_oldest() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/queue','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/queue-w','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('active','w','codex','Worker','working','reported','parent',1)", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('active','w','implementation','standard','implementation','[\"src/**\"]','shared','active','now','now')", []).unwrap();
+        let directive = request();
+        for id in ["q1", "q2"] {
+            store::enqueue_worker_request(&db, &QueuedWorkerRequest { id:id.into(), parent_session_id:"parent".into(), workspace_id:"w".into(), turn_id:"turn".into(), request:serde_json::to_value(&directive).unwrap(), actual_model:"model".into(), queue_status:"queued".into(), sequence:0, dispatched_session_id:None, created_at:"now".into(), updated_at:"now".into() }).unwrap();
+        }
+        assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap(), None);
+        db.execute("UPDATE worker_leases SET lease_status='released' WHERE session_id='active'", []).unwrap();
+        assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap().unwrap().id, "q1");
+        store::update_worker_queue(&db, "q1", "dispatched", Some("active")).unwrap();
+        assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap().unwrap().id, "q2");
+    }
+}

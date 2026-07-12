@@ -80,11 +80,18 @@ impl Harness {
 #[serde(rename_all = "lowercase")]
 pub enum SessionStatus {
     Idle,
+    Starting,
     Working,
     Waiting,
+    Warm,
+    Checkpointing,
     Ready,
     Stopped,
+    Resuming,
+    Restored,
     Failed,
+    Completed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,10 +257,44 @@ pub struct WorkerLease {
     pub workspace_id: String,
     pub role: String,
     pub capability_tier: String,
+    pub task_family: String,
     pub owned_paths: serde_json::Value,
     pub write_mode: String,
     pub lease_status: String,
     pub expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerRuntimeRecord {
+    pub session_id: String,
+    pub parent_session_id: String,
+    pub lifecycle_state: String,
+    pub task_family: String,
+    pub compatibility_key: String,
+    pub result_status: String,
+    pub retry_count: i64,
+    pub warm_until: Option<String>,
+    pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
+    pub last_result: Option<serde_json::Value>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedWorkerRequest {
+    pub id: String,
+    pub parent_session_id: String,
+    pub workspace_id: String,
+    pub turn_id: String,
+    pub request: serde_json::Value,
+    pub actual_model: String,
+    pub queue_status: String,
+    pub sequence: i64,
+    pub dispatched_session_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

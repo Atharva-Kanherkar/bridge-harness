@@ -14,9 +14,19 @@ export function safeSlug(value: string): string {
 }
 
 const transitions: Record<SessionStatus, SessionStatus[]> = {
-  idle: ["working", "failed"], working: ["waiting", "ready", "stopped", "failed"],
-  waiting: ["working", "stopped", "failed"], ready: ["working", "stopped"],
-  stopped: ["working"], failed: ["working", "stopped"]
+  idle: ["starting", "working", "failed"],
+  starting: ["working"],
+  working: ["waiting", "warm", "completed", "checkpointing", "ready", "stopped", "failed", "cancelled"],
+  waiting: ["working", "stopped", "failed", "cancelled"],
+  warm: ["working", "checkpointing"],
+  checkpointing: ["stopped"],
+  ready: ["working", "stopped"],
+  stopped: ["resuming", "working"],
+  resuming: ["working", "restored"],
+  restored: ["working"],
+  failed: ["resuming", "completed", "working", "stopped"],
+  completed: [],
+  cancelled: []
 };
 
 export function canTransition(from: SessionStatus, to: SessionStatus): boolean {

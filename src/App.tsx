@@ -8,7 +8,7 @@ import { TerminalPane } from "./components/TerminalPane";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [], agentEvents: [] };
-const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", working: "WORKING", waiting: "NEEDS YOU", ready: "READY", stopped: "STOPPED", failed: "FAILED" };
+const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
 const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
 
 // Order sessions as a delegation tree (orchestrator first, each worker directly

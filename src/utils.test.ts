@@ -8,6 +8,15 @@ describe("safeSlug", () => {
 
 describe("session transitions", () => {
   it("accepts a supervised waiting cycle", () => { expect(canTransition("working", "waiting")).toBe(true); expect(canTransition("waiting", "working")).toBe(true); });
+  it("accepts the durable worker resume path", () => {
+    expect(canTransition("stopped", "resuming")).toBe(true);
+    expect(canTransition("resuming", "restored")).toBe(true);
+    expect(canTransition("restored", "working")).toBe(true);
+  });
+  it("keeps worker terminal states terminal", () => {
+    expect(canTransition("completed", "working")).toBe(false);
+    expect(canTransition("cancelled", "working")).toBe(false);
+  });
   it("rejects impossible idle-to-ready state", () => expect(canTransition("idle", "ready")).toBe(false));
 });
 

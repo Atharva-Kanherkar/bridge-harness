@@ -61,6 +61,7 @@ pub fn checkpoint_context(
             "user.message" | "assistant.message" | "worker.result" => entry
                 .payload
                 .get("text")
+                .or_else(|| entry.payload.get("summary"))
                 .or_else(|| entry.payload.pointer("/data/text"))
                 .and_then(serde_json::Value::as_str),
             _ => None,
