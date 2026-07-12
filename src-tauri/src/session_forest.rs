@@ -5,6 +5,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
+const TYPED_SCHEMA_MARKER: &str = "_bridgeTypedSchemaVersion";
+const TYPED_SCHEMA_VERSION: u64 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
     UserMessage,
@@ -413,6 +416,77 @@ mod tests {
             Err(ForestError::UnsupportedEntryKind(_))
         ));
     }
+
+    #[test]
+    fn compatibility_kind_collision_remains_readable() {
+        let db = database(&["s"]);
+        let event = crate::agent::NormalizedEvent {
+            kind: "approval.resolved".into(),
+            item_id: None,
+            role: Some("system".into()),
+            status: Some("completed".into()),
+            title: Some("Approval resolved".into()),
+            text: None,
+            data: json!({"decision":"accept"}),
+        };
+        store::agent_event(&db, "s", &event, &json!({"provider":"claude"})).unwrap();
+        let forest = SessionForest::new(&db);
+        let branch = forest.active_branch("s").unwrap();
+        assert_eq!(branch.len(), 1);
+        assert_eq!(branch[0].kind, "approval.resolved");
+        assert_eq!(branch[0].payload["itemId"], Value::Null);
+        assert_eq!(
+            forest.integrity_report().unwrap().healthy_sessions,
+            vec!["s"]
+        );
+    }
+
+    #[test]
+    fn invalid_typed_payload_still_fails_traversal() {
+        let db = database(&["s"]);
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at)
+             VALUES('invalid-typed','s',1,'approval.resolved','{\"_bridgeTypedSchemaVersion\":1}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE session_heads SET active_entry_id='invalid-typed' WHERE session_id='s'",
+            [],
+        )
+        .unwrap();
+        let forest = SessionForest::new(&db);
+        assert!(matches!(
+            forest.active_branch("s"),
+            Err(ForestError::InvalidPayload { .. })
+        ));
+        assert_eq!(
+            forest.integrity_report().unwrap().quarantined_sessions[0].session_id,
+            "s"
+        );
+    }
+
+    #[test]
+    fn append_validates_parent_directly_after_compatibility_history() {
+        let db = database(&["s"]);
+        let event = crate::agent::NormalizedEvent {
+            kind: "approval.resolved".into(),
+            item_id: None,
+            role: Some("system".into()),
+            status: Some("completed".into()),
+            title: None,
+            text: None,
+            data: json!({"decision":"accept"}),
+        };
+        store::agent_event(&db, "s", &event, &json!({})).unwrap();
+        let forest = SessionForest::new(&db);
+        let typed = forest
+            .append("s", EntryKind::AssistantMessage, message("continued"))
+            .unwrap();
+        assert_eq!(typed.sequence, 2);
+        assert_eq!(typed.payload[TYPED_SCHEMA_MARKER], TYPED_SCHEMA_VERSION);
+        assert_eq!(forest.active_branch("s").unwrap().len(), 2);
+    }
 }
 
 impl EntryKind {
@@ -600,6 +674,12 @@ pub enum ForestError {
         session_id: String,
         entry_id: String,
     },
+    #[error("entry {entry_id} belongs to session {actual_session_id}, not {expected_session_id}")]
+    EntryBelongsToOtherSession {
+        entry_id: String,
+        expected_session_id: String,
+        actual_session_id: String,
+    },
     #[error("unsupported entry kind for append: {0}")]
     UnsupportedEntryKind(String),
     #[error("invalid payload for {kind}: {reason}")]
@@ -684,8 +764,9 @@ impl<'connection> SessionForest<'connection> {
         kind.validate_payload(&payload)?;
         self.ensure_session(session_id)?;
         if let Some(parent_entry_id) = parent_entry_id {
-            self.branch_to_leaf(session_id, parent_entry_id)?;
+            self.ensure_entry_in_session(session_id, parent_entry_id)?;
         }
+        let payload = mark_typed_payload(payload);
         let transaction = self.db.unchecked_transaction()?;
         let entry = store::append_session_entry_tx(
             &transaction,
@@ -892,18 +973,23 @@ impl<'connection> SessionForest<'connection> {
     }
 
     fn validate_stored_entry(&self, entry: &SessionEntry) -> Result<(), ForestError> {
-        match EntryKind::from_storage(&entry.kind) {
-            EntryKind::Legacy(_) => {
-                if entry.payload.is_object() {
-                    Ok(())
-                } else {
-                    Err(ForestError::InvalidPayload {
-                        kind: entry.kind.clone(),
-                        reason: "legacy payload must remain inspectable as a JSON object".into(),
-                    })
-                }
-            }
-            kind => kind.validate_payload(&entry.payload),
+        if !entry.payload.is_object() {
+            return Err(ForestError::InvalidPayload {
+                kind: entry.kind.clone(),
+                reason: "stored payload must remain inspectable as a JSON object".into(),
+            });
+        }
+        if entry
+            .payload
+            .get(TYPED_SCHEMA_MARKER)
+            .and_then(Value::as_u64)
+            == Some(TYPED_SCHEMA_VERSION)
+        {
+            EntryKind::from_storage(&entry.kind).validate_payload(&entry.payload)
+        } else {
+            // Migration/dual-write compatibility entries preserve normalized
+            // provider payloads, whose shapes predate typed forest contracts.
+            Ok(())
         }
     }
 
@@ -931,11 +1017,10 @@ impl<'connection> SessionForest<'connection> {
             .optional()?;
         match actual_session {
             Some(actual) if actual == session_id => Ok(()),
-            Some(actual) => Err(ForestError::CrossSessionParent {
-                session_id: session_id.to_owned(),
-                entry_id: "new-entry".into(),
-                parent_entry_id: entry_id.to_owned(),
-                parent_session_id: actual,
+            Some(actual) => Err(ForestError::EntryBelongsToOtherSession {
+                entry_id: entry_id.to_owned(),
+                expected_session_id: session_id.to_owned(),
+                actual_session_id: actual,
             }),
             None => Err(ForestError::EntryNotFound {
                 session_id: session_id.to_owned(),
@@ -1018,4 +1103,14 @@ impl<'connection> SessionForest<'connection> {
             },
         })
     }
+}
+
+fn mark_typed_payload(mut payload: Value) -> Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            TYPED_SCHEMA_MARKER.into(),
+            Value::from(TYPED_SCHEMA_VERSION),
+        );
+    }
+    payload
 }

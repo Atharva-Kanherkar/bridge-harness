@@ -35,7 +35,15 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
     }
 
     if has_user_schema(connection)? && path != Path::new(":memory:") {
-        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let (busy, _, _): (i64, i64, i64) =
+            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        if busy != 0 {
+            return Err(BridgeError::Invalid(
+                "database WAL is busy; refusing to create an incomplete migration backup".into(),
+            ));
+        }
         backup_database(path)?;
     }
 
