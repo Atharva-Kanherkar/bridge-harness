@@ -30,6 +30,391 @@ pub enum EntryKind {
     Legacy(String),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store;
+    use serde_json::json;
+
+    fn database(session_ids: &[&str]) -> Connection {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/forest-demo','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/forest-workspace','idle','now')", []).unwrap();
+        for session_id in session_ids {
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,'w','codex','Codex','idle','reported')",
+                params![session_id],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES(?1,'fresh','now')",
+                params![session_id],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    fn message(text: &str) -> Value {
+        json!({ "text": text })
+    }
+
+    fn entry_ids(entries: &[SessionEntry]) -> Vec<String> {
+        entries.iter().map(|entry| entry.id.clone()).collect()
+    }
+
+    #[test]
+    fn all_entry_kinds_validate_their_payload_contract() {
+        let cases = vec![
+            (EntryKind::UserMessage, json!({"text":"hello"})),
+            (EntryKind::AssistantMessage, json!({"text":"hello"})),
+            (EntryKind::ToolStarted, json!({"toolId":"tool"})),
+            (EntryKind::ToolCompleted, json!({"itemId":"tool"})),
+            (
+                EntryKind::ApprovalRequested,
+                json!({"approvalId":"approval"}),
+            ),
+            (
+                EntryKind::ApprovalResolved,
+                json!({"approvalId":"approval"}),
+            ),
+            (
+                EntryKind::DelegationRequested,
+                json!({"requestId":"request"}),
+            ),
+            (
+                EntryKind::DelegationApproved,
+                json!({"requestId":"request"}),
+            ),
+            (
+                EntryKind::DelegationRejected,
+                json!({"requestId":"request"}),
+            ),
+            (EntryKind::WorkerResult, json!({"status":"completed"})),
+            (
+                EntryKind::Checkpoint,
+                json!({"schemaVersion":1,"summary":"checkpoint"}),
+            ),
+            (EntryKind::CompactionRequested, json!({"reason":"pressure"})),
+            (
+                EntryKind::Compaction,
+                json!({"schemaVersion":1,"summary":"compacted"}),
+            ),
+            (
+                EntryKind::CompactionFailed,
+                json!({"reason":"invalid output"}),
+            ),
+            (
+                EntryKind::BranchSummary,
+                json!({"summary":"alternate path"}),
+            ),
+            (EntryKind::ModelChanged, json!({"model":"runtime-model"})),
+            (EntryKind::EffortChanged, json!({"effort":"high"})),
+            (EntryKind::SessionStatus, json!({"status":"working"})),
+            (
+                EntryKind::SessionResumeFailed,
+                json!({"reason":"thread expired"}),
+            ),
+            (EntryKind::ArtifactCreated, json!({"path":"result.json"})),
+        ];
+        for (kind, valid_payload) in cases {
+            assert!(
+                kind.validate_payload(&valid_payload).is_ok(),
+                "{} rejected its valid payload",
+                kind.as_str()
+            );
+            assert!(
+                matches!(
+                    kind.validate_payload(&json!({})),
+                    Err(ForestError::InvalidPayload { .. })
+                ),
+                "{} accepted a payload missing required fields",
+                kind.as_str()
+            );
+            assert_eq!(
+                EntryKind::from_storage(kind.as_str()).as_str(),
+                kind.as_str()
+            );
+        }
+        assert!(EntryKind::SessionStatus
+            .validate_payload(&json!({"status":"cancelled"}))
+            .is_err());
+        assert!(EntryKind::SessionStatus
+            .validate_payload(&json!({"status":"cancelled","reason":"user_cancelled"}))
+            .is_ok());
+        assert!(matches!(
+            EntryKind::Legacy("turn.completed".into()).validate_payload(&json!({})),
+            Err(ForestError::UnsupportedEntryKind(_))
+        ));
+    }
+
+    #[test]
+    fn append_rewind_append_preserves_immutable_history() {
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        let root = forest
+            .append("s", EntryKind::UserMessage, message("root"))
+            .unwrap();
+        let mut snapshots = HashMap::from([(root.id.clone(), root)]);
+        let mut insertion_ids = snapshots.keys().cloned().collect::<Vec<_>>();
+        for index in 0..200 {
+            if index > 0 && index % 7 == 0 {
+                let rewind_index = (index * 13) % insertion_ids.len();
+                forest
+                    .move_head("s", Some(&insertion_ids[rewind_index]))
+                    .unwrap();
+            }
+            let entry = forest
+                .append(
+                    "s",
+                    EntryKind::AssistantMessage,
+                    message(&format!("message-{index}")),
+                )
+                .unwrap();
+            insertion_ids.push(entry.id.clone());
+            snapshots.insert(entry.id.clone(), entry);
+        }
+        let stored = store::session_entries(&db, "s").unwrap();
+        assert_eq!(stored.len(), snapshots.len());
+        assert_eq!(
+            stored
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            (1..=stored.len() as i64).collect::<Vec<_>>()
+        );
+        for entry in stored {
+            assert_eq!(Some(&entry), snapshots.get(&entry.id));
+        }
+        assert!(forest.branch_leaves("s").unwrap().len() > 1);
+    }
+
+    #[test]
+    fn active_branch_traversal_is_deterministic() {
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        forest
+            .append("s", EntryKind::UserMessage, message("root"))
+            .unwrap();
+        for index in 0..25 {
+            forest
+                .append(
+                    "s",
+                    EntryKind::AssistantMessage,
+                    message(&format!("{index}")),
+                )
+                .unwrap();
+        }
+        let first = entry_ids(&forest.active_branch("s").unwrap());
+        let second = entry_ids(&forest.active_branch("s").unwrap());
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 26);
+    }
+
+    #[test]
+    fn forks_share_a_prefix_and_diverge_after_the_fork_point() {
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        let root = forest
+            .append("s", EntryKind::UserMessage, message("root"))
+            .unwrap();
+        let fork_point = forest
+            .append("s", EntryKind::AssistantMessage, message("common"))
+            .unwrap();
+        let left = forest
+            .append("s", EntryKind::AssistantMessage, message("left"))
+            .unwrap();
+        forest.move_head("s", Some(&fork_point.id)).unwrap();
+        let right = forest
+            .append("s", EntryKind::AssistantMessage, message("right"))
+            .unwrap();
+        let right_tail = forest
+            .append("s", EntryKind::AssistantMessage, message("right-tail"))
+            .unwrap();
+
+        assert_eq!(
+            entry_ids(&forest.branch_to_leaf("s", &left.id).unwrap()),
+            vec![root.id.clone(), fork_point.id.clone(), left.id.clone()]
+        );
+        assert_eq!(
+            entry_ids(&forest.branch_to_leaf("s", &right_tail.id).unwrap()),
+            vec![
+                root.id,
+                fork_point.id.clone(),
+                right.id.clone(),
+                right_tail.id.clone()
+            ]
+        );
+        assert_eq!(
+            entry_ids(&forest.children("s", Some(&fork_point.id)).unwrap()),
+            vec![left.id.clone(), right.id]
+        );
+        assert_eq!(
+            entry_ids(&forest.branch_leaves("s").unwrap()),
+            vec![left.id, right_tail.id]
+        );
+    }
+
+    #[test]
+    fn branch_summary_is_an_immutable_entry() {
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        let root = forest
+            .append("s", EntryKind::UserMessage, message("root"))
+            .unwrap();
+        let summary = forest
+            .append_branch_summary("s", Some(&root.id), "Explored the alternate")
+            .unwrap();
+        assert_eq!(summary.kind, "branch.summary");
+        assert_eq!(summary.payload["summary"], "Explored the alternate");
+        assert_eq!(summary.parent_entry_id.as_deref(), Some(&*root.id));
+        assert_eq!(
+            entry_ids(&forest.active_branch("s").unwrap()),
+            vec![root.id, summary.id]
+        );
+    }
+
+    #[test]
+    fn traverses_ten_thousand_entries_without_recursion() {
+        let db = database(&["s"]);
+        let transaction = db.unchecked_transaction().unwrap();
+        let mut parent: Option<String> = None;
+        for index in 0..10_000 {
+            let id = format!("entry-{index:05}");
+            transaction
+                .execute(
+                    "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                     VALUES(?1,'s',?2,?3,'assistant.message',?4,'now')",
+                    params![id, parent, index + 1, message(&index.to_string()).to_string()],
+                )
+                .unwrap();
+            parent = Some(id);
+        }
+        transaction
+            .execute(
+                "UPDATE session_heads SET active_entry_id=?1 WHERE session_id='s'",
+                params![parent],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        let branch = SessionForest::new(&db).active_branch("s").unwrap();
+        assert_eq!(branch.len(), 10_000);
+        assert_eq!(branch.first().unwrap().id, "entry-00000");
+        assert_eq!(branch.last().unwrap().id, "entry-09999");
+    }
+
+    #[test]
+    fn detects_and_quarantines_corruption_without_breaking_siblings() {
+        let db = database(&["healthy", "orphan", "cross", "cycle", "bad-head"]);
+        let forest = SessionForest::new(&db);
+        let healthy = forest
+            .append("healthy", EntryKind::UserMessage, message("healthy"))
+            .unwrap();
+        db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('orphan-entry','orphan','missing-parent',1,'user.message','{\"text\":\"orphan\"}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('cross-entry','cross',?1,1,'user.message','{\"text\":\"cross\"}','now')",
+            params![healthy.id],
+        )
+        .unwrap();
+        db.execute_batch(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('cycle-a','cycle','cycle-b',1,'user.message','{\"text\":\"a\"}','now');
+             INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('cycle-b','cycle','cycle-a',2,'user.message','{\"text\":\"b\"}','now');
+             UPDATE session_heads SET active_entry_id='orphan-entry' WHERE session_id='orphan';
+             UPDATE session_heads SET active_entry_id='cross-entry' WHERE session_id='cross';
+             UPDATE session_heads SET active_entry_id='cycle-a' WHERE session_id='cycle';
+             UPDATE session_heads SET active_entry_id='missing-head' WHERE session_id='bad-head';
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+
+        let report = forest.integrity_report().unwrap();
+        assert_eq!(report.healthy_sessions, vec!["healthy"]);
+        assert_eq!(
+            report
+                .quarantined_sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["orphan", "cross", "cycle", "bad-head"]
+        );
+        assert!(report.quarantined_sessions.iter().any(|session| session
+            .findings
+            .iter()
+            .any(|finding| matches!(finding, ForestError::OrphanParent { .. }))));
+        assert!(report.quarantined_sessions.iter().any(|session| session
+            .findings
+            .iter()
+            .any(|finding| matches!(finding, ForestError::CrossSessionParent { .. }))));
+        assert!(report.quarantined_sessions.iter().any(|session| session
+            .findings
+            .iter()
+            .any(|finding| matches!(finding, ForestError::Cycle { .. }))));
+        assert!(report.quarantined_sessions.iter().any(|session| session
+            .findings
+            .iter()
+            .any(|finding| matches!(finding, ForestError::InvalidHead { .. }))));
+        assert_eq!(forest.active_branch("healthy").unwrap().len(), 1);
+        assert!(matches!(
+            forest.active_branch("orphan"),
+            Err(ForestError::OrphanParent { .. })
+        ));
+    }
+
+    #[test]
+    fn public_navigation_never_mutates_entries() {
+        let db = database(&["s"]);
+        let forest = SessionForest::new(&db);
+        let root = forest
+            .append("s", EntryKind::UserMessage, message("root"))
+            .unwrap();
+        let leaf = forest
+            .append("s", EntryKind::AssistantMessage, message("leaf"))
+            .unwrap();
+        let before = store::session_entries(&db, "s").unwrap();
+        forest.move_head("s", Some(&root.id)).unwrap();
+        forest.move_head("s", None).unwrap();
+        forest.move_head("s", Some(&leaf.id)).unwrap();
+        let after = store::session_entries(&db, "s").unwrap();
+        assert_eq!(before, after);
+        assert_eq!(forest.active_branch("s").unwrap(), after);
+    }
+
+    #[test]
+    fn compatibility_kinds_are_readable_but_not_appendable() {
+        let db = database(&["s"]);
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at)
+             VALUES('legacy','s',1,'turn.completed','{\"usage\":{\"input\":1}}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE session_heads SET active_entry_id='legacy' WHERE session_id='s'",
+            [],
+        )
+        .unwrap();
+        let forest = SessionForest::new(&db);
+        assert_eq!(forest.active_branch("s").unwrap()[0].kind, "turn.completed");
+        assert!(matches!(
+            forest.append("s", EntryKind::Legacy("turn.completed".into()), json!({})),
+            Err(ForestError::UnsupportedEntryKind(_))
+        ));
+    }
+}
+
 impl EntryKind {
     pub fn as_str(&self) -> &str {
         match self {
