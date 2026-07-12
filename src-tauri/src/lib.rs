@@ -74,6 +74,8 @@ struct DelegationState {
     outstanding: HashMap<String, i64>,
     /// Child sessions that have reported to their parent at least once.
     reported: HashSet<String>,
+    /// Tracks the single same-session repair allowed for malformed worker output.
+    result_repairs: delegation::ResultRepairTracker,
 }
 
 #[derive(Serialize)]
@@ -396,7 +398,7 @@ fn handle_agent_value(
     value: &serde_json::Value,
 ) {
     let state = app.state::<AppState>();
-    let mut pending_directives: Vec<delegation::Directive> = Vec::new();
+    let mut pending_directives: Vec<delegation::DelegationRequest> = Vec::new();
     let mut turn_completed = false;
 
     {
@@ -467,24 +469,36 @@ fn handle_agent_value(
                 && normalized_event.role.as_deref() == Some("assistant")
             {
                 if let Some(text) = normalized_event.text.clone() {
-                    let directives = delegation::parse_directives(&text);
-                    if !directives.is_empty() {
-                        let key = format!(
-                            "{session_id}::{}",
-                            normalized_event.item_id.clone().unwrap_or_default()
-                        );
-                        let is_new = state.delegations.lock().unwrap().spawned.insert(key);
-                        if is_new && own_depth < delegation::MAX_DEPTH {
-                            for directive in directives.into_iter().take(delegation::MAX_FANOUT) {
-                                pending_directives.push(directive);
+                    match delegation::parse_delegation_requests(&text) {
+                        delegation::ParseOutcome::Parsed(requests) => {
+                            let key = format!(
+                                "{session_id}::{}",
+                                normalized_event.item_id.clone().unwrap_or_default()
+                            );
+                            let is_new = state.delegations.lock().unwrap().spawned.insert(key);
+                            if is_new && own_depth < delegation::DEFAULT_MAX_DEPTH {
+                                pending_directives
+                                    .extend(requests.into_iter().take(delegation::MAX_FANOUT));
                             }
+                            let stripped = delegation::strip_directives(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                "_Delegating to a worker…_".to_owned()
+                            } else {
+                                stripped
+                            });
                         }
-                        let stripped = delegation::strip_directives(&text);
-                        normalized_event.text = Some(if stripped.is_empty() {
-                            "_Delegating to a worker…_".to_owned()
-                        } else {
-                            stripped
-                        });
+                        delegation::ParseOutcome::Invalid { reason, .. } => {
+                            let _ = store::event(
+                                &db,
+                                "delegation",
+                                "delegation.request.invalid",
+                                session_id,
+                                &reason,
+                            );
+                            normalized_event.text =
+                                Some(delegation::strip_directives(&text));
+                        }
+                        delegation::ParseOutcome::Absent => {}
                     }
                 }
             }
@@ -522,7 +536,11 @@ fn handle_agent_value(
 }
 
 /// Spawn a child worker session in the parent's workspace and hand it its task.
-fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegation::Directive) {
+fn launch_worker(
+    app: &AppHandle,
+    parent_session_id: &str,
+    directive: &delegation::DelegationRequest,
+) {
     let state = app.state::<AppState>();
     let info: Option<(String, i64, String, String)> = {
         let db = state.db.lock().unwrap();
@@ -537,12 +555,12 @@ fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegatio
         return;
     };
     let depth = parent_depth + 1;
-    if depth > delegation::MAX_DEPTH {
+    if depth > delegation::DEFAULT_MAX_DEPTH {
         return;
     }
-    let harness = directive.harness.clone();
-    let model = directive.model.clone();
-    let effort = directive.effort.clone();
+    let harness = directive.runtime_harness();
+    let model = directive.runtime_model();
+    let effort = directive.effort.as_str().to_owned();
     let label = directive.label();
     let instructions = delegation::worker_briefing(directive, depth, &branch);
 
@@ -550,7 +568,7 @@ fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegatio
         &harness,
         &path,
         Some(model.as_str()),
-        effort.as_deref(),
+        Some(&effort),
         Some(instructions.as_str()),
     ) {
         Ok(started) => started,
@@ -603,13 +621,14 @@ fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegatio
             role: Some("system".into()),
             status: Some("working".into()),
             title: Some(format!("Delegated to {label}")),
-            text: Some(directive.task.clone()),
+            text: Some(directive.objective.clone()),
             data: serde_json::json!({
                 "childSessionId": session_id,
+                "request": directive,
                 "harness": harness,
                 "model": model,
                 "modelLabel": delegation::model_display(&model),
-                "effort": effort.clone().unwrap_or_else(|| "medium".into()),
+                "effort": effort,
                 "depth": depth,
             }),
         };
@@ -625,7 +644,7 @@ fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegatio
             parent_session_id,
             &format!(
                 "Spawned {label} (effort {})",
-                effort.as_deref().unwrap_or("medium")
+                effort
             ),
         );
     }
@@ -644,7 +663,7 @@ fn launch_worker(app: &AppHandle, parent_session_id: &str, directive: &delegatio
         .entry(parent_session_id.to_owned())
         .or_insert(0) += 1;
     if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
-        let _ = runtime.send_turn(&directive.task);
+        let _ = runtime.send_turn(&directive.objective);
     }
     let _ = app.emit("state-changed", ());
 }
@@ -667,7 +686,7 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
     if parent.is_none() {
         return;
     }
-    let summary: Option<String> = {
+    let raw_output: Option<String> = {
         let db = state.db.lock().unwrap();
         db.query_row(
             "SELECT text FROM agent_events WHERE session_id=?1 AND kind='message.completed' AND role='assistant' AND text IS NOT NULL AND text<>'' ORDER BY sequence DESC LIMIT 1",
@@ -676,10 +695,54 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         )
         .ok()
     };
-    let summary = summary.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
+    let raw_output =
+        raw_output.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
+    let action = state
+        .delegations
+        .lock()
+        .unwrap()
+        .result_repairs
+        .process(child_session_id, &raw_output, |prompt| {
+            state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(child_session_id)
+                .is_some_and(|runtime| runtime.send_turn(prompt).is_ok())
+        });
+    let result_text = match action {
+        delegation::WorkerOutputAction::Structured(result) => {
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.summary.clone())
+        }
+        delegation::WorkerOutputAction::AwaitingRepair { reason } => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "worker.result.repair_requested",
+                child_session_id,
+                &reason,
+            );
+            drop(db);
+            let _ = app.emit("state-changed", ());
+            return;
+        }
+        delegation::WorkerOutputAction::Unstructured { raw, reason } => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "worker.result.unstructured",
+                child_session_id,
+                &reason,
+            );
+            drop(db);
+            format!("[unstructured — {reason}]\n{raw}")
+        }
+    };
     let model_label = delegation::model_display(model.as_deref().unwrap_or("unknown"));
     let framed = format!(
-        "[worker result] {label} ({harness}/{model_label}, effort {}) finished:\n\n{summary}",
+        "[worker result] {label} ({harness}/{model_label}, effort {}) finished:\n\n{result_text}",
         effort.as_deref().unwrap_or("medium")
     );
     report_to_parent(app, child_session_id, &framed);
