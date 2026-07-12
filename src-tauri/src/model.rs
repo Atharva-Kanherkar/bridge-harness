@@ -140,3 +140,75 @@ pub struct AgentEvent {
     pub provider_meta: serde_json::Value,
     pub created_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEntry {
+    pub id: String,
+    pub session_id: String,
+    pub parent_entry_id: Option<String>,
+    pub sequence: i64,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub provider_event_id: Option<String>,
+    pub context_visibility: String,
+    pub token_estimate: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHead {
+    pub session_id: String,
+    pub active_entry_id: Option<String>,
+    pub native_provider_session_id: Option<String>,
+    pub restoration_mode: String,
+    pub latest_checkpoint_entry_id: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskKnowledge {
+    pub id: String,
+    pub workspace_id: String,
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub body: String,
+    pub source_entry_id: Option<String>,
+    pub superseded_by: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerLease {
+    pub session_id: String,
+    pub workspace_id: String,
+    pub role: String,
+    pub capability_tier: String,
+    pub owned_paths: serde_json::Value,
+    pub write_mode: String,
+    pub lease_status: String,
+    pub expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLedgerRow {
+    pub id: i64,
+    pub workspace_id: String,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    pub context_percent: Option<i64>,
+    pub capability_units: i64,
+    pub runtime_ms: Option<i64>,
+    pub source: String,
+    pub created_at: String,
+}
