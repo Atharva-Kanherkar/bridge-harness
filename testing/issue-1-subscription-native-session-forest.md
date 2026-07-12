@@ -53,4 +53,3 @@ This contract locks the definition of done for GitHub issue #1 and subissues #2â
 - N/A for HTTP cURL: Bridge is a local Tauri application, not an HTTP service.
 - Run the final app with `bun run tauri dev`; exercise branch/rewind, compact, restoration, queued conflict, worker drill-down, and cancellation flows against the acceptance scenarios above.
 - Inspect the migrated SQLite schema and audit events to verify restoration labels, policy reasons, leases, usage, and immutable history.
-

@@ -42,4 +42,3 @@
 - N/A for cURL — no HTTP API changes.
 - Inspect a migrated fixture with `sqlite3 bridge.db '.schema'` and confirm schema versions, five new tables, required indexes, backfilled chains, and foreign keys.
 - Confirm `rg 'let _ = connection.execute\("ALTER TABLE' src-tauri/src/store.rs` returns no matches.
-
