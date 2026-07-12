@@ -20,4 +20,13 @@ describe("normalized conversation reducer",()=>{
     expect(items).toHaveLength(1);
     expect(items[0].text).toBe("Hi there");
   });
+  it("hides worker result blocks without mutating raw events",()=>{
+    const raw = "Finished the work.\n```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\"}\n```\nReview the summary.";
+    const source = event(1,"message.completed",{itemId:"worker-result",role:"assistant",text:raw,status:"completed"});
+    const items = reduceConversation([source]);
+    expect(items).toHaveLength(1);
+    expect(items[0].text).toBe("Finished the work.\nReview the summary.");
+    expect(items[0].text).not.toContain("bridge-worker-result");
+    expect(source.text).toBe(raw);
+  });
 });

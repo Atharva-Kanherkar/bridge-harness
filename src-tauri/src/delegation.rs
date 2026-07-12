@@ -276,6 +276,56 @@ pub enum ParseOutcome<T> {
     Invalid { raw: String, reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationRejectionReason {
+    DepthLimit,
+    FanoutLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationRejection {
+    pub reason: DelegationRejectionReason,
+    pub rejected_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegationSelection {
+    pub accepted: Vec<DelegationRequest>,
+    pub rejections: Vec<DelegationRejection>,
+}
+
+pub fn select_transport_requests(
+    requests: Vec<DelegationRequest>,
+    own_depth: i64,
+    max_fanout: usize,
+) -> DelegationSelection {
+    if own_depth >= DEFAULT_MAX_DEPTH {
+        return DelegationSelection {
+            rejections: (!requests.is_empty())
+                .then_some(DelegationRejection {
+                    reason: DelegationRejectionReason::DepthLimit,
+                    rejected_count: requests.len(),
+                })
+                .into_iter()
+                .collect(),
+            accepted: Vec::new(),
+        };
+    }
+    let rejected_count = requests.len().saturating_sub(max_fanout);
+    DelegationSelection {
+        accepted: requests.into_iter().take(max_fanout).collect(),
+        rejections: (rejected_count > 0)
+            .then_some(DelegationRejection {
+                reason: DelegationRejectionReason::FanoutLimit,
+                rejected_count,
+            })
+            .into_iter()
+            .collect(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct LegacyDirective {
     harness: String,
@@ -413,6 +463,7 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
 
 fn request_from_value(value: Value) -> Result<DelegationRequest, String> {
     if value.get("schemaVersion").is_some() || value.get("objective").is_some() {
+        validate_schema_version(&value, "delegation")?;
         let request: DelegationRequest =
             serde_json::from_value(value).map_err(|error| error.to_string())?;
         request.validate()?;
@@ -440,7 +491,19 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         };
     }
     let raw = blocks[0].body.clone();
-    let result = match serde_json::from_str::<WorkerResult>(&raw) {
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            return ParseOutcome::Invalid {
+                raw,
+                reason: format!("invalid worker-result JSON: {error}"),
+            }
+        }
+    };
+    if let Err(reason) = validate_schema_version(&value, "worker-result") {
+        return ParseOutcome::Invalid { raw, reason };
+    }
+    let result = match serde_json::from_value::<WorkerResult>(value) {
         Ok(result) => result,
         Err(error) => {
             return ParseOutcome::Invalid {
@@ -453,6 +516,18 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         Ok(()) => ParseOutcome::Parsed(result),
         Err(reason) => ParseOutcome::Invalid { raw, reason },
     }
+}
+
+fn validate_schema_version(value: &Value, envelope: &str) -> Result<(), String> {
+    let Some(version) = value.get("schemaVersion").and_then(Value::as_u64) else {
+        return Err(format!("{envelope} schemaVersion must be an integer"));
+    };
+    if version != SCHEMA_VERSION as u64 {
+        return Err(format!(
+            "unsupported {envelope} schema version {version}; expected {SCHEMA_VERSION}"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -546,22 +621,29 @@ pub fn strip_worker_result(text: &str) -> String {
 }
 
 fn strip_machine_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> String {
+    let lines = text.lines().collect::<Vec<_>>();
     let mut kept = Vec::new();
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") {
             let tag = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
             if matches_tag(&tag) {
-                for inner in lines.by_ref() {
-                    if inner.trim_start().starts_with("```") {
-                        break;
-                    }
+                let closing = ((index + 1)..lines.len())
+                    .find(|candidate| lines[*candidate].trim_start().starts_with("```"));
+                if let Some(closing) = closing {
+                    index = closing + 1;
+                    continue;
                 }
-                continue;
+                // An unclosed block is malformed, so preserve it verbatim
+                // rather than deleting all following user-visible prose.
+                kept.extend_from_slice(&lines[index..]);
+                break;
             }
         }
         kept.push(line);
+        index += 1;
     }
     kept.join("\n").trim().to_owned()
 }
@@ -969,5 +1051,59 @@ mod tests {
             parse_delegation_requests("ordinary prose"),
             ParseOutcome::Absent
         );
+    }
+
+    #[test]
+    fn delegation_rejections_report_depth_and_fanout() {
+        let depth = select_transport_requests(vec![request(), request()], 1, MAX_FANOUT);
+        assert!(depth.accepted.is_empty());
+        assert_eq!(
+            depth.rejections,
+            vec![DelegationRejection {
+                reason: DelegationRejectionReason::DepthLimit,
+                rejected_count: 2,
+            }]
+        );
+
+        let fanout = select_transport_requests(
+            vec![request(), request(), request(), request(), request()],
+            0,
+            4,
+        );
+        assert_eq!(fanout.accepted.len(), 4);
+        assert_eq!(
+            fanout.rejections,
+            vec![DelegationRejection {
+                reason: DelegationRejectionReason::FanoutLimit,
+                rejected_count: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn unclosed_machine_fence_preserves_text() {
+        let text = "Before\n```bridge-delegate\n{not valid}\nImportant prose after";
+        assert_eq!(strip_directives(text), text);
+        let result = "Before\n```bridge-worker-result\n{not valid}\nImportant prose after";
+        assert_eq!(strip_worker_result(result), result);
+    }
+
+    #[test]
+    fn unsupported_schema_version_precedes_unknown_field_error() {
+        let request = r#"```bridge-delegate
+{"schemaVersion":2,"objective":"future","futureField":true}
+```"#;
+        let ParseOutcome::Invalid { reason, .. } = parse_delegation_requests(request) else {
+            panic!("future request was not rejected");
+        };
+        assert!(reason.contains("unsupported delegation schema version 2"));
+
+        let result = r#"```bridge-worker-result
+{"schemaVersion":2,"status":"completed","futureField":true}
+```"#;
+        let ParseOutcome::Invalid { reason, .. } = parse_worker_result(result) else {
+            panic!("future result was not rejected");
+        };
+        assert!(reason.contains("unsupported worker-result schema version 2"));
     }
 }

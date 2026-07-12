@@ -476,13 +476,43 @@ fn handle_agent_value(
                                 normalized_event.item_id.clone().unwrap_or_default()
                             );
                             let is_new = state.delegations.lock().unwrap().spawned.insert(key);
-                            if is_new && own_depth < delegation::DEFAULT_MAX_DEPTH {
-                                pending_directives
-                                    .extend(requests.into_iter().take(delegation::MAX_FANOUT));
+                            let mut accepted_count = 0;
+                            let mut rejection_message = None;
+                            if is_new {
+                                let selection = delegation::select_transport_requests(
+                                    requests,
+                                    own_depth,
+                                    delegation::MAX_FANOUT,
+                                );
+                                accepted_count = selection.accepted.len();
+                                pending_directives.extend(selection.accepted);
+                                for rejection in selection.rejections {
+                                    rejection_message = Some(match rejection.reason {
+                                        delegation::DelegationRejectionReason::DepthLimit => {
+                                            "Delegation rejected: workers cannot directly spawn workers."
+                                        }
+                                        delegation::DelegationRejectionReason::FanoutLimit => {
+                                            "Delegation partially rejected: fanout limit reached."
+                                        }
+                                    });
+                                    if let Ok(event) = record_delegation_rejection(
+                                        &db,
+                                        session_id,
+                                        &rejection,
+                                    ) {
+                                        let _ = app.emit("agent-event", event);
+                                    }
+                                }
                             }
                             let stripped = delegation::strip_directives(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
-                                "_Delegating to a worker…_".to_owned()
+                                if accepted_count > 0 {
+                                    "_Delegating to a worker…_".to_owned()
+                                } else if let Some(message) = rejection_message {
+                                    format!("_{message}_")
+                                } else {
+                                    "_Delegation request already processed._".to_owned()
+                                }
                             } else {
                                 stripped
                             });
@@ -495,8 +525,12 @@ fn handle_agent_value(
                                 session_id,
                                 &reason,
                             );
-                            normalized_event.text =
-                                Some(delegation::strip_directives(&text));
+                            let stripped = delegation::strip_directives(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                format!("_Invalid delegation request: {reason}_")
+                            } else {
+                                stripped
+                            });
                         }
                         delegation::ParseOutcome::Absent => {}
                     }
@@ -533,6 +567,33 @@ fn handle_agent_value(
         }
     }
     let _ = app.emit("state-changed", ());
+}
+
+fn record_delegation_rejection(
+    db: &Connection,
+    session_id: &str,
+    rejection: &delegation::DelegationRejection,
+) -> Result<AgentEvent, BridgeError> {
+    let reason = serde_json::to_string(rejection)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "delegation",
+        "delegation.request.rejected",
+        session_id,
+        &reason,
+    )?;
+    let event = agent::NormalizedEvent {
+        kind: "delegation.rejected".into(),
+        item_id: Some(format!("rejection-{}", Uuid::new_v4())),
+        role: Some("system".into()),
+        status: Some("rejected".into()),
+        title: Some("Delegation rejected".into()),
+        text: Some(reason),
+        data: serde_json::to_value(rejection)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+    };
+    store::agent_event(db, session_id, &event, &serde_json::json!({"delegation":true}))
 }
 
 /// Spawn a child worker session in the parent's workspace and hand it its task.
@@ -697,48 +758,40 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
     };
     let raw_output =
         raw_output.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
-    let action = state
-        .delegations
-        .lock()
-        .unwrap()
-        .result_repairs
-        .process(child_session_id, &raw_output, |prompt| {
-            state
-                .adapters
-                .lock()
-                .unwrap()
-                .get(child_session_id)
-                .is_some_and(|runtime| runtime.send_turn(prompt).is_ok())
-        });
-    let result_text = match action {
-        delegation::WorkerOutputAction::Structured(result) => {
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.summary.clone())
-        }
-        delegation::WorkerOutputAction::AwaitingRepair { reason } => {
+    let result_text = match {
+        let db = state.db.lock().unwrap();
+        let mut delegations = state.delegations.lock().unwrap();
+        process_worker_result_output(
+            &db,
+            &mut delegations.result_repairs,
+            child_session_id,
+            &raw_output,
+            |prompt| {
+                state
+                    .adapters
+                    .lock()
+                    .unwrap()
+                    .get(child_session_id)
+                    .is_some_and(|runtime| runtime.send_turn(prompt).is_ok())
+            },
+        )
+    } {
+        Ok(result) => result,
+        Err(error) => {
             let db = state.db.lock().unwrap();
             let _ = store::event(
                 &db,
                 "delegation",
-                "worker.result.repair_requested",
+                "worker.result.processing_failed",
                 child_session_id,
-                &reason,
+                &error.to_string(),
             );
-            drop(db);
-            let _ = app.emit("state-changed", ());
             return;
         }
-        delegation::WorkerOutputAction::Unstructured { raw, reason } => {
-            let db = state.db.lock().unwrap();
-            let _ = store::event(
-                &db,
-                "delegation",
-                "worker.result.unstructured",
-                child_session_id,
-                &reason,
-            );
-            drop(db);
-            format!("[unstructured — {reason}]\n{raw}")
-        }
+    };
+    let Some(result_text) = result_text else {
+        let _ = app.emit("state-changed", ());
+        return;
     };
     let model_label = delegation::model_display(model.as_deref().unwrap_or("unknown"));
     let framed = format!(
@@ -746,6 +799,44 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         effort.as_deref().unwrap_or("medium")
     );
     report_to_parent(app, child_session_id, &framed);
+}
+
+fn process_worker_result_output(
+    db: &Connection,
+    tracker: &mut delegation::ResultRepairTracker,
+    child_session_id: &str,
+    raw_output: &str,
+    send_same_session_repair: impl FnOnce(&str) -> bool,
+) -> Result<Option<String>, BridgeError> {
+    match tracker.process(
+        child_session_id,
+        raw_output,
+        send_same_session_repair,
+    ) {
+        delegation::WorkerOutputAction::Structured(result) => Ok(Some(
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.summary.clone()),
+        )),
+        delegation::WorkerOutputAction::AwaitingRepair { reason } => {
+            store::event(
+                db,
+                "delegation",
+                "worker.result.repair_requested",
+                child_session_id,
+                &reason,
+            )?;
+            Ok(None)
+        }
+        delegation::WorkerOutputAction::Unstructured { raw, reason } => {
+            store::event(
+                db,
+                "delegation",
+                "worker.result.unstructured",
+                child_session_id,
+                &reason,
+            )?;
+            Ok(Some(format!("[unstructured — {reason}]\n{raw}")))
+        }
+    }
 }
 
 /// If a worker process exits before ever reporting, tell its parent so the
@@ -1370,5 +1461,85 @@ mod tests {
         ] {
             assert!(count(&db, table) > 0, "{table} was not rolled back");
         }
+    }
+
+    #[test]
+    fn repair_and_fallback_store_audit_events() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let mut tracker = delegation::ResultRepairTracker::default();
+        let first = process_worker_result_output(
+            &db,
+            &mut tracker,
+            "worker",
+            "invalid first output",
+            |prompt| {
+                assert!(prompt.contains("one repair turn"));
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(first, None);
+        assert_eq!(
+            db.query_row(
+                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "worker.result.repair_requested"
+        );
+
+        let fallback = process_worker_result_output(
+            &db,
+            &mut tracker,
+            "worker",
+            "invalid repair output",
+            |_| panic!("a second repair must not be sent"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(fallback.contains("[unstructured"));
+        assert!(fallback.contains("Initial invalid output:\ninvalid first output"));
+        assert!(fallback.contains("Invalid repair output:\ninvalid repair output"));
+        assert_eq!(
+            db.query_row(
+                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "worker.result.unstructured"
+        );
+    }
+
+    #[test]
+    fn delegation_rejection_is_stored_in_audit_and_normalized_history() {
+        let db = archive_fixture();
+        let rejection = delegation::DelegationRejection {
+            reason: delegation::DelegationRejectionReason::DepthLimit,
+            rejected_count: 2,
+        };
+        let event = record_delegation_rejection(&db, "s", &rejection).unwrap();
+        assert_eq!(event.kind, "delegation.rejected");
+        assert_eq!(event.data["reason"], "depth_limit");
+        assert_eq!(event.data["rejectedCount"], 2);
+        assert_eq!(
+            db.query_row(
+                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "delegation.request.rejected"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM agent_events WHERE session_id='s' AND kind='delegation.rejected'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
     }
 }
