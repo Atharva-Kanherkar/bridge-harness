@@ -714,3 +714,260 @@ fn parse_effort(value: &str) -> Effort {
         _ => Effort::Medium,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn request() -> DelegationRequest {
+        DelegationRequest {
+            schema_version: SCHEMA_VERSION,
+            role: WorkerRole::Implementation,
+            objective: "Add refresh-token rotation".into(),
+            acceptance_criteria: vec![
+                "Old refresh tokens become invalid".into(),
+                "Existing auth tests remain green".into(),
+            ],
+            known_facts: vec!["Auth data is stored in SQLite".into()],
+            decisions: vec!["Use the existing token store".into()],
+            relevant_files: vec!["src/auth/store.rs".into()],
+            owned_paths: vec!["src/auth/**".into()],
+            write_mode: WriteMode::Isolated,
+            capability_tier: CapabilityTier::Standard,
+            effort: Effort::High,
+            verification: vec!["cargo test auth".into()],
+            output_contract: OutputContract::ImplementationResult,
+            harness: Some("claude".into()),
+            model: Some("fable".into()),
+        }
+    }
+
+    fn result(status: WorkerResultStatus) -> WorkerResult {
+        WorkerResult {
+            schema_version: SCHEMA_VERSION,
+            status,
+            summary: "Completed the assigned work".into(),
+            files_changed: vec!["src/auth/store.rs".into()],
+            tests: vec![WorkerTestResult {
+                command: "cargo test auth".into(),
+                status: TestStatus::Passed,
+                detail: Some("12 tests passed".into()),
+            }],
+            decisions: vec!["Kept the existing schema".into()],
+            risks: Vec::new(),
+            remaining_work: Vec::new(),
+            suggested_next_action: SuggestedNextAction::Finish,
+            suggested_role: (status == WorkerResultStatus::NeedsDelegation)
+                .then_some(WorkerRole::Verification),
+            suggested_task: (status == WorkerResultStatus::NeedsDelegation)
+                .then(|| "Run the authentication regression suite".into()),
+        }
+    }
+
+    fn result_block(result: &WorkerResult) -> String {
+        format!(
+            "```bridge-worker-result\n{}\n```",
+            serde_json::to_string(result).unwrap()
+        )
+    }
+
+    #[test]
+    fn typed_request_round_trips_all_fields_and_schema_version() {
+        let expected = request();
+        let encoded = serde_json::to_string(&expected).unwrap();
+        let text = format!("Plan:\n```bridge-delegate\n{encoded}\n```");
+        let ParseOutcome::Parsed(requests) = parse_delegation_requests(&text) else {
+            panic!("typed request did not parse");
+        };
+        assert_eq!(requests, vec![expected.clone()]);
+        assert_eq!(requests[0].schema_version, 1);
+        assert_eq!(requests[0].runtime_harness(), "claude");
+        assert_eq!(requests[0].runtime_model(), "fable");
+        assert!(requests[0].validate().is_ok());
+    }
+
+    #[test]
+    fn typed_worker_result_round_trips_every_status() {
+        let statuses = [
+            WorkerResultStatus::Completed,
+            WorkerResultStatus::Failed,
+            WorkerResultStatus::Cancelled,
+            WorkerResultStatus::Blocked,
+            WorkerResultStatus::NeedsDelegation,
+        ];
+        for status in statuses {
+            let expected = result(status);
+            let ParseOutcome::Parsed(actual) = parse_worker_result(&result_block(&expected)) else {
+                panic!("{status:?} did not parse");
+            };
+            assert_eq!(actual, expected);
+        }
+        let invalid = result_block(&result(WorkerResultStatus::Completed))
+            .replace("\"completed\"", "\"invented_status\"");
+        assert!(matches!(
+            parse_worker_result(&invalid),
+            ParseOutcome::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn cancelled_is_terminal_and_not_retryable() {
+        let cancelled = result(WorkerResultStatus::Cancelled);
+        assert!(cancelled.is_terminal_cancellation());
+        assert!(!cancelled.is_retryable());
+        assert!(result(WorkerResultStatus::Failed).is_retryable());
+        assert!(!result(WorkerResultStatus::Blocked).is_retryable());
+    }
+
+    #[test]
+    fn needs_delegation_requires_suggestion() {
+        let mut needs = result(WorkerResultStatus::NeedsDelegation);
+        assert!(needs.validate().is_ok());
+        needs.suggested_role = None;
+        assert!(needs.validate().unwrap_err().contains("suggestedRole"));
+        needs.suggested_role = Some(WorkerRole::Verification);
+        needs.suggested_task = Some(" ".into());
+        assert!(needs.validate().unwrap_err().contains("suggestedTask"));
+    }
+
+    #[test]
+    fn legacy_fenced_directive_converts_at_parse_boundary() {
+        let text = r#"```bridge-delegate
+{"harness":"anthropic","model":"fable","effort":"ultra","task":"Refactor auth","context":"Keep the public API stable"}
+```"#;
+        let ParseOutcome::Parsed(requests) = parse_delegation_requests(text) else {
+            panic!("legacy directive did not parse");
+        };
+        assert_eq!(requests.len(), 1);
+        let typed = &requests[0];
+        assert_eq!(typed.schema_version, SCHEMA_VERSION);
+        assert_eq!(typed.role, WorkerRole::Implementation);
+        assert_eq!(typed.objective, "Refactor auth");
+        assert_eq!(typed.known_facts, vec!["Keep the public API stable"]);
+        assert_eq!(typed.write_mode, WriteMode::Shared);
+        assert_eq!(typed.capability_tier, CapabilityTier::Standard);
+        assert_eq!(typed.effort, Effort::Xhigh);
+        assert_eq!(typed.runtime_harness(), "claude");
+        assert_eq!(typed.runtime_model(), "fable");
+    }
+
+    #[test]
+    fn malformed_output_requests_one_same_session_repair_then_unstructured_fallback() {
+        let mut tracker = ResultRepairTracker::default();
+        let sends = Cell::new(0);
+        let first = tracker.process("worker-1", "not json", |prompt| {
+            sends.set(sends.get() + 1);
+            assert!(prompt.contains("one repair turn"));
+            assert!(prompt.contains("bridge-worker-result"));
+            true
+        });
+        assert!(matches!(first, WorkerOutputAction::AwaitingRepair { .. }));
+        let second = tracker.process("worker-1", "still not json", |_| {
+            panic!("a second repair turn must never be sent")
+        });
+        let WorkerOutputAction::Unstructured { raw, reason } = second else {
+            panic!("second failure was not labeled unstructured");
+        };
+        assert!(raw.contains("Initial invalid output:\nnot json"));
+        assert!(raw.contains("Invalid repair output:\nstill not json"));
+        assert!(reason.contains("missing bridge-worker-result"));
+        assert_eq!(sends.get(), 1);
+    }
+
+    #[test]
+    fn valid_repair_clears_repair_state() {
+        let mut tracker = ResultRepairTracker::default();
+        assert!(matches!(
+            tracker.process("worker", "bad", |_| true),
+            WorkerOutputAction::AwaitingRepair { .. }
+        ));
+        let corrected = result(WorkerResultStatus::Completed);
+        assert_eq!(
+            tracker.process("worker", &result_block(&corrected), |_| false),
+            WorkerOutputAction::Structured(corrected)
+        );
+        assert!(matches!(
+            tracker.process("worker", "new bad output", |_| true),
+            WorkerOutputAction::AwaitingRepair { .. }
+        ));
+    }
+
+    #[test]
+    fn failed_repair_delivery_falls_back_without_spawning() {
+        let mut tracker = ResultRepairTracker::default();
+        let action = tracker.process("same-worker", "bad output", |prompt| {
+            assert!(prompt.contains("Do not perform more work"));
+            false
+        });
+        let WorkerOutputAction::Unstructured { raw, reason } = action else {
+            panic!("undeliverable repair did not fall back");
+        };
+        assert_eq!(raw, "bad output");
+        assert!(reason.contains("same-session repair could not be delivered"));
+    }
+
+    #[test]
+    fn strip_directives_removes_machine_blocks_only() {
+        let typed = serde_json::to_string(&request()).unwrap();
+        let text = format!(
+            "Prose before.\n```rust\nlet x = 1;\n```\n```bridge-delegate\n{typed}\n```\nProse after."
+        );
+        let stripped = strip_directives(&text);
+        assert!(stripped.contains("Prose before."));
+        assert!(stripped.contains("```rust"));
+        assert!(stripped.contains("let x = 1;"));
+        assert!(stripped.contains("Prose after."));
+        assert!(!stripped.contains("bridge-delegate"));
+        assert!(!stripped.contains("acceptanceCriteria"));
+
+        let result_text = format!(
+            "Visible.\n{}",
+            result_block(&result(WorkerResultStatus::Completed))
+        );
+        assert_eq!(strip_worker_result(&result_text), "Visible.");
+    }
+
+    #[test]
+    fn flat_protocol_forbids_worker_delegation() {
+        assert_eq!(DEFAULT_MAX_DEPTH, 1);
+        assert!(protocol(0).contains("Default topology is flat"));
+        assert!(protocol(0).contains("schemaVersion"));
+        assert!(protocol(1).contains("Do not spawn or directly delegate"));
+        assert!(protocol(1).contains("needs_delegation"));
+        assert!(!protocol(1).contains("```bridge-delegate"));
+    }
+
+    #[test]
+    fn worker_briefing_contains_typed_output_contract() {
+        let briefing = worker_briefing(&request(), 1, "bridge/auth-kyoto");
+        assert!(briefing.contains("Add refresh-token rotation"));
+        assert!(briefing.contains("Old refresh tokens become invalid"));
+        assert!(briefing.contains("Auth data is stored in SQLite"));
+        assert!(briefing.contains("src/auth/store.rs"));
+        assert!(briefing.contains("cargo test auth"));
+        assert!(briefing.contains("bridge-worker-result"));
+        assert!(briefing.contains("schemaVersion"));
+        assert!(briefing.contains("Do not directly delegate"));
+    }
+
+    #[test]
+    fn malformed_or_mixed_request_blocks_are_rejected_atomically() {
+        assert!(matches!(
+            parse_delegation_requests("```bridge-delegate\nnot json\n```"),
+            ParseOutcome::Invalid { .. }
+        ));
+        let valid = serde_json::to_string(&request()).unwrap();
+        let mixed = format!(
+            "```bridge-delegate\n[{valid},{{\"schemaVersion\":1,\"objective\":\"missing fields\"}}]\n```"
+        );
+        assert!(matches!(
+            parse_delegation_requests(&mixed),
+            ParseOutcome::Invalid { .. }
+        ));
+        assert_eq!(
+            parse_delegation_requests("ordinary prose"),
+            ParseOutcome::Absent
+        );
+    }
+}
