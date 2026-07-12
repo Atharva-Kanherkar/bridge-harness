@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Archive, ArrowUp, Bot, Box, CircleDot, Clock3, Command, FileCode2, FileDiff, FileText, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, ArrowUp, Bot, CircleDot, Clock3, Command, FileCode2, FileDiff, FileText, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import type { BridgeState, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { MOCK_CONVERSATION } from "./mockConversation";
@@ -9,13 +9,20 @@ import { TerminalPane } from "./components/TerminalPane";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
+import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Kbd } from "@/components/ui/kbd";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [], agentEvents: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
 const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
 
-// Order sessions as a delegation tree (orchestrator first, each worker directly
-// under its parent) so the session strip reads top-down like the blueprint.
 function orderSessionTree(sessions: Session[]): Session[] {
   const byParent = new Map<string | undefined, Session[]>();
   for (const s of sessions) {
@@ -177,35 +184,69 @@ export function App() {
 
   return <div className="app-shell">
     <header className="top-rail" data-tauri-drag-region>
-      <div className="traffic-space" data-tauri-drag-region /><div className="wordmark"><span className="mark">B</span><strong>Bridge</strong><em>LOCAL</em></div>
-      <button className="command-trigger" onClick={() => setModal("palette")}><Command size={13} /><span>Jump to anything</span><kbd>⌘ K</kbd></button>
-      <div className={`daemon-pill ${health?.ok ? "online" : ""}`}><span />{health?.ok ? "DAEMON ONLINE" : "CONNECTING"}</div>
+      <div className="traffic-space" data-tauri-drag-region />
+      <div className="wordmark"><span className="mark">B</span><strong>Bridge</strong><em>LOCAL</em></div>
+      <Button type="button" variant="outline" size="sm" className="command-trigger" onClick={() => setModal("palette")}>
+        <Command size={13} aria-hidden="true" /><span>Jump to anything</span><Kbd>⌘ K</Kbd>
+      </Button>
+      <Badge variant={health?.ok ? "success" : "outline"} className={`daemon-pill ${health?.ok ? "online" : ""}`}>
+        <span />{health?.ok ? "DAEMON ONLINE" : "CONNECTING"}
+      </Badge>
     </header>
     <aside className="sidebar">
-      <div className="sidebar-heading"><button className="icon-button"><PanelLeft size={15}/></button><span>WORKSPACES</span><button className="icon-button" onClick={() => setModal("workspace")} title="New workspace"><Plus size={16}/></button></div>
+      <div className="sidebar-heading">
+        <Button type="button" size="icon-sm" variant="ghost" className="icon-button" aria-label="Toggle sidebar"><PanelLeft size={15} aria-hidden="true" /></Button>
+        <span>WORKSPACES</span>
+        <Button type="button" size="icon-sm" variant="ghost" className="icon-button" onClick={() => setModal("workspace")} title="New workspace" aria-label="New workspace"><Plus size={16} aria-hidden="true" /></Button>
+      </div>
       <div className="workspace-scroll">
         {grouped.map(({ project, workspaces }) => <section className="project-group" key={project.id}>
           <div className="project-title"><div className="repo-icon">{project.name.slice(0,1).toUpperCase()}</div><strong>{project.name}</strong></div>
-          {workspaces.map((workspace, index) => <button key={workspace.id} className={`workspace-row ${workspace.id === selectedId ? "selected" : ""}`} onClick={() => { setSelectedId(workspace.id); setSelectedSessionId(undefined); autoStartRef.current = undefined; }}>
-            <span className="workspace-index">{index + 1}</span><span className="workspace-main"><b>{workspace.title}</b><small>{workspace.city} · {workspace.branch}</small></span><span className="workspace-status"><StatusDot status={workspace.status}/><small>{statusCopy[workspace.status]}</small></span>
+          {workspaces.map((workspace, index) => <button key={workspace.id} type="button" className={`workspace-row ${workspace.id === selectedId ? "selected" : ""}`} onClick={() => { setSelectedId(workspace.id); setSelectedSessionId(undefined); autoStartRef.current = undefined; }}>
+            <span className="workspace-index">{index + 1}</span><span className="workspace-main"><b>{workspace.title}</b><small>{workspace.city} · {workspace.branch}</small></span><span className="workspace-status"><StatusDot status={workspace.status}/><Badge variant="outline" size="sm">{statusCopy[workspace.status]}</Badge></span>
           </button>)}
         </section>)}
-        {!state.projects.length && <div className="empty-sidebar"><FolderGit2 size={25}/><p>Add a Git repository to begin.</p></div>}
+        {!state.projects.length && <div className="empty-sidebar"><FolderGit2 size={25} aria-hidden="true" /><p>Add a Git repository to begin.</p></div>}
       </div>
-      <button className="add-repository" onClick={() => setModal("project")}><Plus size={14}/> Add repository</button>
-      <nav className="sidebar-nav"><button><Inbox size={15}/> Inbox <span>{state.events.filter(e => e.kind.includes("waiting")).length}</span></button><button><LayoutGrid size={15}/> All sessions</button><button><Clock3 size={15}/> Night queue</button><button><Settings2 size={15}/> Settings</button></nav>
+      <Button type="button" variant="outline" className="add-repository" onClick={() => setModal("project")}><Plus size={14} aria-hidden="true" /> Add repository</Button>
+      <nav className="sidebar-nav">
+        <button type="button"><Inbox size={15} aria-hidden="true" /> Inbox <Badge variant="secondary" size="sm">{state.events.filter(e => e.kind.includes("waiting")).length}</Badge></button>
+        <button type="button"><LayoutGrid size={15} aria-hidden="true" /> All sessions</button>
+        <button type="button"><Clock3 size={15} aria-hidden="true" /> Night queue</button>
+        <button type="button"><Settings2 size={15} aria-hidden="true" /> Settings</button>
+      </nav>
     </aside>
     <main className="workspace-view">
       {selected ? <>
         <div className="workspace-header">
-          <div><div className="eyebrow"><StatusDot status={selected.status}/>{statusCopy[selected.status]} · {selected.city.toUpperCase()}</div><h1>{selected.title}</h1><div className="branch-line"><GitBranch size={13}/>{selected.branch}<span>·</span><span className={selected.dirtyFiles ? "dirty" : ""}>{selected.dirtyFiles ? `${selected.dirtyFiles} files changed` : "clean"}</span></div></div>
-          <div className="workspace-actions"><button className="secondary"><GitPullRequest size={14}/> Review changes</button><button className="secondary archive" onClick={() => void archiveSelected()} title="Archive clean workspace"><Archive size={14}/> Archive</button>{session?.activeTurnId && <button className="secondary" onClick={() => void bridgeApi.interruptTurn(session.id)}><Square size={12}/> Stop turn</button>}{sessionConnected ? <button className="run-button stop" disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14}/> : <Square size={13}/>} End agent</button> : <button className="run-button" disabled={busy || !orchestratorReady} onClick={() => void toggleSession(session)} title="Restart if auto-start failed">{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14}/>} Restart</button>}</div>
+          <div>
+            <div className="eyebrow"><StatusDot status={selected.status}/><Badge variant="outline" size="sm">{statusCopy[selected.status]}</Badge> · {selected.city.toUpperCase()}</div>
+            <h1>{selected.title}</h1>
+            <div className="branch-line"><GitBranch size={13} aria-hidden="true" />{selected.branch}<span>·</span>{selected.dirtyFiles ? <Badge variant="warning" size="sm">{selected.dirtyFiles} files changed</Badge> : <span>clean</span>}</div>
+          </div>
+          <div className="workspace-actions">
+            <Button type="button" variant="outline" size="sm" className="secondary"><GitPullRequest size={14} aria-hidden="true" /> Review changes</Button>
+            <Button type="button" variant="outline" size="sm" className="secondary archive" onClick={() => void archiveSelected()} title="Archive clean workspace"><Archive size={14} aria-hidden="true" /> Archive</Button>
+            {session?.activeTurnId && <Button type="button" variant="outline" size="sm" className="secondary" onClick={() => void bridgeApi.interruptTurn(session.id)}><Square size={12} aria-hidden="true" /> Stop turn</Button>}
+            {sessionConnected
+              ? <Button type="button" variant="destructive-outline" size="sm" className="run-button stop" disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : <Square size={13} aria-hidden="true" />} End agent</Button>
+              : <Button type="button" size="sm" className="run-button" disabled={busy || !orchestratorReady} loading={busy} onClick={() => void toggleSession(session)} title="Restart if auto-start failed"><Play size={14} aria-hidden="true" /> Restart</Button>}
+          </div>
         </div>
         <div className="session-strip">
-          {orderedSessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""} ${(s.depth ?? 0) > 0 ? "worker" : ""}`} key={s.id} style={(s.depth ?? 0) > 0 ? { marginLeft: (s.depth ?? 0) * 14 } : undefined} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]} · {s.restorationMode.replaceAll("_", " ").toUpperCase()} · {tierRuntimeLabel(s.requestedTier, s.model, s.effort)}</small></span></button>)}
-          <div className="session-metrics"><span>ELAPSED <b>{formatElapsed(session?.startedAt, clock)}</b></span><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
+          {orderedSessions.map(s => <button type="button" className={`session-chip ${s.id === session?.id ? "active" : ""} ${(s.depth ?? 0) > 0 ? "worker" : ""}`} key={s.id} style={(s.depth ?? 0) > 0 ? { marginLeft: (s.depth ?? 0) * 14 } : undefined} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14} aria-hidden="true" /></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]} · {s.restorationMode.replaceAll("_", " ").toUpperCase()} · {tierRuntimeLabel(s.requestedTier, s.model, s.effort)}</small></span></button>)}
+          <div className="session-metrics"><span>ELAPSED <b>{formatElapsed(session?.startedAt, clock)}</b></span><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><Badge variant="outline" size="sm">{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</Badge></div>
         </div>
-        <div className="content-tabs"><button className={activeTab === "agent" ? "active" : ""} onClick={() => setActiveTab("agent")}><MessageSquareText size={14}/> Agent</button><button className={activeTab === "changes" ? "active" : ""} onClick={() => setActiveTab("changes")}><FileCode2 size={14}/> Changes <span>{selected.dirtyFiles}</span></button><button className={activeTab === "events" ? "active" : ""} onClick={() => setActiveTab("events")}><Activity size={14}/> Events</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}><TerminalSquare size={14}/> Terminal</button></div>
+        <Tabs value={activeTab} onValueChange={v => setActiveTab(v as typeof activeTab)}>
+          <div className="content-tabs-wrap">
+            <TabsList variant="underline">
+              <TabsTab value="agent"><MessageSquareText size={14} aria-hidden="true" /> Agent</TabsTab>
+              <TabsTab value="changes"><FileCode2 size={14} aria-hidden="true" /> Changes {selected.dirtyFiles > 0 && <Badge variant="secondary" size="sm">{selected.dirtyFiles}</Badge>}</TabsTab>
+              <TabsTab value="events"><Activity size={14} aria-hidden="true" /> Events</TabsTab>
+              <TabsTab value="terminal"><TerminalSquare size={14} aria-hidden="true" /> Terminal</TabsTab>
+            </TabsList>
+          </div>
+        </Tabs>
         <section className="content-body">
           <div className="content-main">
             {activeTab === "agent" && <>
@@ -220,16 +261,16 @@ export function App() {
                 />
               </div>
               <div className="composer">
-                {(selected.dirtyFiles > 0 || session?.activeTurnId) && <div className="turn-chip-row"><div className="turn-chip">{session?.activeTurnId ? <LoaderCircle size={12} className="spin"/> : <FileDiff size={12}/>}<span>{selected.dirtyFiles ? `${selected.dirtyFiles} file${selected.dirtyFiles === 1 ? "" : "s"}` : "working"}</span>{selected.dirtyFiles > 0 && <em><b className="add">+{selected.additions}</b> <b className="del">−{selected.deletions}</b></em>}</div></div>}
+                {(selected.dirtyFiles > 0 || session?.activeTurnId) && <div className="turn-chip-row"><div className="turn-chip">{session?.activeTurnId ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : <FileDiff size={12} aria-hidden="true" />}<span>{selected.dirtyFiles ? `${selected.dirtyFiles} file${selected.dirtyFiles === 1 ? "" : "s"}` : "working"}</span>{selected.dirtyFiles > 0 && <em><b className="add">+{selected.additions}</b> <b className="del">−{selected.deletions}</b></em>}</div></div>}
                 <div className="composer-inner">
-                  <textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? "Ask for follow-up changes…" : busy ? "Starting orchestrator…" : "Orchestrator starting…"} disabled={!sessionConnected}/>
+                  <Textarea className="composer-textarea" unstyled value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? "Ask for follow-up changes…" : busy ? "Starting orchestrator…" : "Orchestrator starting…"} disabled={!sessionConnected} />
                   <div className="composer-tools">
-                    <button className="composer-plus" title="Attach context"><Plus size={15}/></button>
+                    <Button type="button" size="icon-sm" variant="ghost" className="composer-plus" title="Attach context" aria-label="Attach context"><Plus size={15} aria-hidden="true" /></Button>
                     <span className="orchestrator-pill">{`${session?.label ?? "Orchestrator"} · ${tierRuntimeLabel(session?.requestedTier, session?.model)}`}</span>
                     <span className="hint">↵ send · ⇧↵ newline</span>
                     {session?.activeTurnId
-                      ? <button className="send stop" onClick={() => void bridgeApi.interruptTurn(session.id)} title="Stop turn"><Square size={11} fill="currentColor"/></button>
-                      : <button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><ArrowUp size={15}/></button>}
+                      ? <Button type="button" size="icon-sm" className="send-button" onClick={() => void bridgeApi.interruptTurn(session.id)} title="Stop turn" aria-label="Stop turn"><Square size={11} fill="currentColor" aria-hidden="true" /></Button>
+                      : <Button type="button" size="icon-sm" className="send-button" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected} aria-label="Send message"><ArrowUp size={15} aria-hidden="true" /></Button>}
                   </div>
                 </div>
               </div>
@@ -252,12 +293,60 @@ export function App() {
       </> : <Welcome onAdd={() => setModal("project")}/>}
     </main>
     {home && <WelcomeScreen onDismiss={() => setHome(false)}/>}
-    {error && <div className="error-toast" role="alert"><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
-    {modal && <Modal kind={modal} onClose={() => setModal(null)}>
-      {modal === "project" && <><ModalTitle icon={<FolderGit2/>} title="Add a repository" copy="Bridge works locally and never uploads your code."/><label className="field-label">REPOSITORY PATH</label><div className="path-input"><input autoFocus value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/Developer/project"/><button onClick={() => void chooseFolder()}>Choose…</button></div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!path || busy} onClick={() => void addProject()}>{busy ? "Adding…" : "Add repository"}</button></div></>}
-      {modal === "workspace" && <><ModalTitle icon={<Box/>} title="New workspace" copy="Name the lane. Bridge starts the orchestrator automatically—no harness or model to pick."/><label className="field-label">WORKSPACE NAME</label><textarea className="task-input" autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Keyboard navigation"/><p className="modal-hint">Starts a fast-tier Orchestrator. The adapter chooses the runtime model.</p><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!title.trim() || !state.projects.length || busy || !orchestratorReady} onClick={() => void createWorkspace()}>{busy ? "Starting…" : "Create workspace"}</button></div></>}
-      {modal === "palette" && <CommandPalette workspaces={state.workspaces} onChoose={id => { setSelectedId(id); setModal(null); autoStartRef.current = undefined; }}/>}
-    </Modal>}
+    {error && (
+      <Alert variant="error" className="error-toast">
+        <AlertDescription>{error}</AlertDescription>
+        <AlertAction>
+          <Button type="button" size="icon-sm" variant="ghost" aria-label="Dismiss error" onClick={() => setError(undefined)}><X size={14} aria-hidden="true" /></Button>
+        </AlertAction>
+      </Alert>
+    )}
+
+    <Dialog open={modal === "project"} onOpenChange={open => !open && setModal(null)}>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>Add a repository</DialogTitle>
+          <DialogDescription>Bridge works locally and never uploads your code.</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <Label className="field-label">REPOSITORY PATH</Label>
+          <InputGroup>
+            <InputGroupInput autoFocus value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/Developer/project" className="font-mono text-xs" />
+            <InputGroupAddon align="inline-end">
+              <Button type="button" variant="outline" size="sm" onClick={() => void chooseFolder()}>Choose…</Button>
+            </InputGroupAddon>
+          </InputGroup>
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button type="button" variant="ghost" />}>Cancel</DialogClose>
+          <Button type="button" loading={busy} disabled={!path} onClick={() => void addProject()}>{busy ? "Adding…" : "Add repository"}</Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+
+    <Dialog open={modal === "workspace"} onOpenChange={open => !open && setModal(null)}>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>New workspace</DialogTitle>
+          <DialogDescription>Name the lane. Bridge starts the orchestrator automatically—no harness or model to pick.</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <Label className="field-label">WORKSPACE NAME</Label>
+          <Textarea autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Keyboard navigation" />
+          <p className="modal-hint">Starts a fast-tier Orchestrator. The adapter chooses the runtime model.</p>
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button type="button" variant="ghost" />}>Cancel</DialogClose>
+          <Button type="button" loading={busy} disabled={!title.trim() || !state.projects.length || !orchestratorReady} onClick={() => void createWorkspace()}>{busy ? "Starting…" : "Create workspace"}</Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+
+    <Dialog open={modal === "palette"} onOpenChange={open => !open && setModal(null)}>
+      <DialogPopup className="palette-dialog" showCloseButton={false} bottomStickOnMobile={false}>
+        <CommandPalette workspaces={state.workspaces} onChoose={id => { setSelectedId(id); setModal(null); autoStartRef.current = undefined; }} />
+      </DialogPopup>
+    </Dialog>
   </div>;
 }
 
@@ -268,17 +357,17 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   const restoration = restorationPresentation(session?.restorationMode ?? "fresh");
   return <aside className="env-panel">
     <div className="env-label">Environment</div>
-    <button className="env-row" onClick={onChanges}><FileDiff size={14}/><span>Changes</span>{workspace.dirtyFiles ? <small className="dstat"><b className="add">+{workspace.additions}</b><b className="del">−{workspace.deletions}</b></small> : <small>clean</small>}</button>
-    <button className="env-row"><Monitor size={14}/><span>Local</span><small>{workspace.city}</small></button>
-    <button className="env-row"><GitBranch size={14}/><span>{workspace.branch}</span></button>
-    <button className="env-row"><GitCommitHorizontal size={14}/><span>Commit or push</span></button>
-    <button className="env-row"><GitPullRequest size={14}/><span>Create pull request</span></button>
+    <button type="button" className="env-row" onClick={onChanges}><FileDiff size={14} aria-hidden="true" /><span>Changes</span>{workspace.dirtyFiles ? <small className="dstat"><b className="add">+{workspace.additions}</b><b className="del">−{workspace.deletions}</b></small> : <small>clean</small>}</button>
+    <button type="button" className="env-row"><Monitor size={14} aria-hidden="true" /><span>Local</span><small>{workspace.city}</small></button>
+    <button type="button" className="env-row"><GitBranch size={14} aria-hidden="true" /><span>{workspace.branch}</span></button>
+    <button type="button" className="env-row"><GitCommitHorizontal size={14} aria-hidden="true" /><span>Commit or push</span></button>
+    <button type="button" className="env-row"><GitPullRequest size={14} aria-hidden="true" /><span>Create pull request</span></button>
     <div className="env-label">Session forest</div>
     <div className={`restoration-badge ${session?.restorationMode ?? "fresh"}`}><span>{restoration.label}</span><small>{restoration.detail}</small></div>
     <div className="budget-card"><span>Turn budget</span><b>{budget.units}/{forest?.policyLimits.maxCapabilityUnitsPerTurn ?? 24} units</b><small>{budget.workers}/{forest?.policyLimits.maxWorkersPerTurn ?? 3} workers · {budget.strongWorkers}/{forest?.policyLimits.maxStrongWorkersPerTurn ?? 1} strong</small></div>
-    <button className="env-row" onClick={onCompact}><FileText size={14}/><span>Compact context</span><small>{session?.contextPercent == null ? "manual" : `${session.contextPercent}%`}</small></button>
+    <button type="button" className="env-row" onClick={onCompact}><FileText size={14} aria-hidden="true" /><span>Compact context</span><small>{session?.contextPercent == null ? "manual" : `${session.contextPercent}%`}</small></button>
     <div className="rewind-warning">Conversation rewind never rewinds files or Git state.</div>
-    {(forest?.leaves ?? []).map(leaf => <button className={`env-row forest-leaf ${leaf.id === forest?.head?.activeEntryId ? "active" : ""}`} key={leaf.id} onClick={() => onSelectLeaf(leaf.id)}><GitBranch size={14}/><span>{leaf.payload.summary ? String(leaf.payload.summary) : `${leaf.kind} · ${leaf.sequence}`}</span><small>{leaf.id === forest?.head?.activeEntryId ? "active" : "switch"}</small></button>)}
+    {(forest?.leaves ?? []).map(leaf => <button type="button" className={`env-row forest-leaf ${leaf.id === forest?.head?.activeEntryId ? "active" : ""}`} key={leaf.id} onClick={() => onSelectLeaf(leaf.id)}><GitBranch size={14} aria-hidden="true" /><span>{leaf.payload.summary ? String(leaf.payload.summary) : `${leaf.kind} · ${leaf.sequence}`}</span><small>{leaf.id === forest?.head?.activeEntryId ? "active" : "switch"}</small></button>)}
     <div className="env-label">Subagents</div>
     {workers.length
       ? workers.map(worker => {
@@ -287,17 +376,14 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
           return <details className="worker-drilldown" key={worker.id}><summary><StatusDot status={worker.status}/><span>{worker.label}</span><small>{runtime?.lifecycleState ?? worker.status}</small></summary><div><p><b>{lease?.role ?? "worker"}</b> · {lease?.writeMode ?? "—"} · {lease?.leaseStatus ?? "—"}</p><p>{(lease?.ownedPaths ?? []).join(", ") || "No owned paths"}</p><p>{tierRuntimeLabel(worker.requestedTier, worker.model, worker.effort)}</p>{runtime?.lastResult && <pre>{JSON.stringify(runtime.lastResult, null, 2)}</pre>}</div></details>;
         })
       : <div className="env-empty">{doneWorkers ? `${doneWorkers} done` : "None spawned yet"}</div>}
-    {(forest?.workerQueue ?? []).map(item => <details className="queue-explanation" key={item.id}><summary><Clock3 size={13}/><span>{item.queueStatus}: {String(item.request.objective ?? "worker request")}</span></summary><p>{queueExplanation(item, forest?.workerLeases ?? [])}</p><code>{Array.isArray(item.request.ownedPaths) ? item.request.ownedPaths.join(", ") : ""}</code><small>runtime {item.actualModel}</small></details>)}
-    {!!forest?.reasons.length && <details className="reason-log"><summary><CircleDot size={13}/> Inspect lifecycle reasons</summary>{forest.reasons.map(reason => <div key={reason.id}><b>{reason.kind}</b><p>{reason.body}</p></div>)}</details>}
+    {(forest?.workerQueue ?? []).map(item => <details className="queue-explanation" key={item.id}><summary><Clock3 size={13} aria-hidden="true" /><span>{item.queueStatus}: {String(item.request.objective ?? "worker request")}</span></summary><p>{queueExplanation(item, forest?.workerLeases ?? [])}</p><code>{Array.isArray(item.request.ownedPaths) ? item.request.ownedPaths.join(", ") : ""}</code><small>runtime {item.actualModel}</small></details>)}
+    {!!forest?.reasons.length && <details className="reason-log"><summary><CircleDot size={13} aria-hidden="true" /> Inspect lifecycle reasons</summary>{forest.reasons.map(reason => <div key={reason.id}><b>{reason.kind}</b><p>{reason.body}</p></div>)}</details>}
     <div className="env-label">Sources</div>
-    <button className="env-row"><FolderGit2 size={14}/><span>{project?.path ?? workspace.path}</span></button>
+    <button type="button" className="env-row"><FolderGit2 size={14} aria-hidden="true" /><span>{project?.path ?? workspace.path}</span></button>
   </aside>;
 }
 
-
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="panel-view"><div className="panel-kicker">CHANGE STORY</div><h2>{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p>Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="diff-stat"><b className="add">+{workspace.additions}</b><b className="del">−{workspace.deletions}</b><span/><small>{workspace.branch}</small></div><div className="placeholder-lines">{[78,92,64,85,51,70].map((n,i)=><i key={i} style={{width:`${n}%`}}/>)}</div></div>; }
-function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="event-list">{events.length ? events.map(e => <article key={e.id}><CircleDot size={14}/><div><b>{e.kind.replaceAll(".", " ")}</b><p>{e.body}</p><small>{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="empty-panel">No events for this workspace yet.</div>}</div>; }
-function Welcome({ onAdd }: { onAdd: () => void }) { return <div className="welcome"><div className="welcome-mark">B</div><div className="eyebrow">LOCAL AGENT CONTROL ROOM</div><h1>One orchestrator.<br/>Focused workers.</h1><p>Open a workspace and Bridge starts a fast-tier orchestrator.<br/>Describe what to build—Bridge resolves the runtime.</p><button className="primary large" onClick={onAdd}><FolderGit2 size={16}/> Add your first repository</button><small>Your code stays on this Mac.</small></div>; }
-function Modal({ children, onClose, kind }: { children: React.ReactNode; onClose: () => void; kind: string }) { return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><div className={`modal-card ${kind === "palette" ? "palette" : ""}`}><button className="modal-close" onClick={onClose}><X size={16}/></button>{children}</div></div>; }
-function ModalTitle({ icon, title, copy }: { icon: React.ReactNode; title: string; copy: string }) { return <div className="modal-title"><span>{icon}</span><div><h2>{title}</h2><p>{copy}</p></div></div>; }
-function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><div className="palette-input"><Search size={17}/><input autoFocus placeholder="Search workspaces and actions…"/></div><div className="palette-section"><label>WORKSPACES</label>{workspaces.map(w => <button key={w.id} onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span><b>{w.title}</b><small>{w.city} · {w.branch}</small></span><kbd>↵</kbd></button>)}</div><div className="palette-footer"><span>↑↓ navigate</span><span>esc close</span></div></>; }
+function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="event-list">{events.length ? events.map(e => <article key={e.id}><CircleDot size={14} aria-hidden="true" /><div><b>{e.kind.replaceAll(".", " ")}</b><p>{e.body}</p><small>{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="empty-panel">No events for this workspace yet.</div>}</div>; }
+function Welcome({ onAdd }: { onAdd: () => void }) { return <div className="welcome"><div className="welcome-mark">B</div><div className="eyebrow">LOCAL AGENT CONTROL ROOM</div><h1>One orchestrator.<br/>Focused workers.</h1><p>Open a workspace and Bridge starts a fast-tier orchestrator.<br/>Describe what to build—Bridge resolves the runtime.</p><Button type="button" size="lg" className="welcome-cta" onClick={onAdd}><FolderGit2 size={16} aria-hidden="true" /> Add your first repository</Button><small>Your code stays on this Mac.</small></div>; }
+function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="palette-input"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="palette-section"><label>WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="palette-row" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span><b>{w.title}</b><small>{w.city} · {w.branch}</small></span><Kbd>↵</Kbd></Button>)}</div><div className="palette-footer"><span>↑↓ navigate</span><span>esc close</span></div></>; }
