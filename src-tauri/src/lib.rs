@@ -3,6 +3,7 @@ mod agent;
 mod binary;
 mod claude_adapter;
 mod compaction_controller;
+mod context;
 mod codex_adapter;
 mod delegation;
 mod git;
@@ -596,6 +597,12 @@ fn handle_agent_value(
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut turn_completed = false;
+    let mut checkpoint_prompt_after_turn: Option<String> = None;
+    let mut checkpoint_response_seen = false;
+    let mut checkpoint_turn_handled = false;
+    let mut finish_checkpointing = false;
+    let mut finish_requested_shutdown = false;
+    let mut recover_compaction = false;
 
     {
         let db = state.db.lock().unwrap();
@@ -642,18 +649,39 @@ fn handle_agent_value(
                             .last_turn_by_session
                             .insert(session_id.into(), turn_id.clone());
                     }
-                    let _ = db.execute(
-                        "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
-                        params![session_id, turn_id],
-                    );
+                    let checkpointing = db
+                        .query_row(
+                            "SELECT status='checkpointing' FROM sessions WHERE id=?1",
+                            params![session_id],
+                            |row| row.get::<_, bool>(0),
+                        )
+                        .unwrap_or(false);
+                    let _ = if checkpointing {
+                        db.execute(
+                            "UPDATE sessions SET active_turn_id=?2 WHERE id=?1",
+                            params![session_id, turn_id],
+                        )
+                    } else {
+                        db.execute(
+                            "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
+                            params![session_id, turn_id],
+                        )
+                    };
                 }
                 "turn.completed" => {
                     turn_completed = true;
                     *current_turn.lock().unwrap() = None;
-                    let _ = db.execute(
-                        "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
-                        params![session_id],
-                    );
+                    let checkpointing_worker = own_depth > 0
+                        && store::worker_runtime(&db, session_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
+                    if !checkpointing_worker {
+                        let _ = db.execute(
+                            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
+                            params![session_id],
+                        );
+                    }
                     let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
                 }
                 "approval.requested" => {
@@ -813,7 +841,103 @@ fn handle_agent_value(
             ) {
                 pending_ui_events.push(event);
             }
+            let pending_compaction = compaction_controller::CompactionController::pending(
+                &db,
+                session_id,
+            )
+            .ok()
+            .flatten();
+            if normalized_event.kind == "message.completed"
+                && normalized_event.role.as_deref() == Some("assistant")
+                && pending_compaction.is_some()
+            {
+                checkpoint_response_seen = true;
+                checkpoint_turn_handled = true;
+                let output = normalized_event.text.as_deref().unwrap_or_default();
+                match compaction_controller::CompactionController::handle_output(
+                    &db,
+                    session_id,
+                    output,
+                ) {
+                    Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
+                        checkpoint_prompt_after_turn = Some(prompt);
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::Completed { .. }) => {
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
+                            pending.reason
+                                == compaction_controller::CompactionReason::BeforeShutdown
+                        });
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::Failed) => {
+                        recover_compaction = true;
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
+                            pending.reason
+                                == compaction_controller::CompactionReason::BeforeShutdown
+                        });
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
+                }
+            }
         }
+        if turn_completed && checkpoint_prompt_after_turn.is_none() {
+            if let Ok(Some(pending)) =
+                compaction_controller::CompactionController::pending(&db, session_id)
+            {
+                if pending.attempt == 1 {
+                    checkpoint_turn_handled = true;
+                    checkpoint_prompt_after_turn = Some(
+                        compaction_controller::CompactionController::checkpoint_prompt(
+                            session_id,
+                            &pending,
+                            Some("repair the invalid checkpoint response"),
+                        ),
+                    );
+                }
+            }
+        }
+        if turn_completed
+            && checkpoint_prompt_after_turn.is_none()
+            && !checkpoint_response_seen
+            && own_depth == 0
+        {
+            if let Ok(Some(prompt)) = begin_pressure_compaction(&db, session_id) {
+                checkpoint_prompt_after_turn = Some(prompt);
+            }
+        }
+    }
+
+    if turn_completed {
+        if let Some(prompt) = checkpoint_prompt_after_turn {
+            if let Err(error) = send_internal_checkpoint_turn(app, session_id, &prompt) {
+                let db = state.db.lock().unwrap();
+                let pending = compaction_controller::CompactionController::pending(&db, session_id)
+                    .ok()
+                    .flatten();
+                let attempt = pending.as_ref().map_or(0, |pending| pending.attempt);
+                let shutdown = pending.is_some_and(|pending| {
+                    pending.reason == compaction_controller::CompactionReason::BeforeShutdown
+                });
+                let _ = compaction_controller::CompactionController::record_failure(
+                    &db,
+                    session_id,
+                    &format!("checkpoint turn could not start: {error}"),
+                    attempt,
+                );
+                finish_checkpointing = true;
+                finish_requested_shutdown = shutdown;
+            }
+        }
+    }
+    if finish_checkpointing {
+        finish_worker_checkpoint(app, session_id, adapters::ShutdownReason::Completed);
+    }
+    if recover_compaction {
+        let _ = run_compaction_recovery(app, session_id);
+    }
+    if finish_requested_shutdown {
+        finish_orchestrator_shutdown(app, session_id, adapters::ShutdownReason::UserStopped);
     }
 
     for (directive, turn_id) in &pending_directives {
@@ -821,7 +945,7 @@ fn handle_agent_value(
     }
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
-    if turn_completed {
+    if turn_completed && !checkpoint_response_seen && !checkpoint_turn_handled {
         let idle = store::outstanding_children(&state.db.lock().unwrap(), session_id)
             .unwrap_or(0)
             == 0;
@@ -833,6 +957,150 @@ fn handle_agent_value(
         let _ = app.emit("agent-event", event);
     }
     let _ = app.emit("state-changed", ());
+}
+
+fn begin_pressure_compaction(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<String>, BridgeError> {
+    let context_percent = db
+        .query_row(
+            "SELECT CAST(context_percent AS REAL) FROM usage_ledger WHERE session_id=?1 AND context_percent IS NOT NULL ORDER BY id DESC LIMIT 1",
+            params![session_id],
+            |row| row.get::<_, f64>(0),
+        )
+        .ok();
+    let branch = session_forest::SessionForest::new(db)
+        .active_branch(session_id)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let last_boundary = branch
+        .iter()
+        .rposition(|entry| entry.kind == "compaction")
+        .map_or(0, |index| index + 1);
+    let meaningful = branch[last_boundary..].iter().any(|entry| {
+        matches!(
+            entry.kind.as_str(),
+            "user.message" | "assistant.message" | "worker.result" | "tool.completed"
+        )
+    });
+    let trigger = compaction_controller::TriggerState {
+        reason: compaction_controller::CompactionReason::ContextPressure,
+        context_percent,
+        projected_tokens_with_reserve: None,
+        context_window_tokens: None,
+        has_valid_typed_result: false,
+        one_shot_worker: false,
+        tool_call_active: false,
+        approval_active: false,
+        has_meaningful_new_work: meaningful,
+        wall_clock_only: false,
+    };
+    let Ok(reason) = compaction_controller::decide(&trigger) else {
+        return Ok(None);
+    };
+    let tokens = compaction_controller::active_token_estimate(db, session_id)?;
+    compaction_controller::CompactionController::begin(db, session_id, reason, tokens)
+}
+
+fn send_internal_checkpoint_turn(
+    app: &AppHandle,
+    session_id: &str,
+    prompt: &str,
+) -> Result<(), BridgeError> {
+    let state = app.state::<AppState>();
+    let adapters = state.adapters.lock().unwrap();
+    let runtime = adapters
+        .get(session_id)
+        .ok_or_else(|| BridgeError::Invalid("checkpoint agent process is not running".into()))?;
+    runtime.send_turn(prompt)?;
+    drop(adapters);
+    store::event(
+        &state.db.lock().unwrap(),
+        "compaction",
+        "checkpoint.turn_started",
+        session_id,
+        "Checkpoint-only structured turn started",
+    )?;
+    Ok(())
+}
+
+fn finish_worker_checkpoint(app: &AppHandle, session_id: &str, reason: adapters::ShutdownReason) {
+    let state = app.state::<AppState>();
+    let should_stop = {
+        let db = state.db.lock().unwrap();
+        let checkpointing = store::worker_runtime(&db, session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
+        if checkpointing {
+            let _ = session_supervisor::SessionSupervisor::transition(
+                &db,
+                session_id,
+                worker_lifecycle::WorkerLifecycleState::Stopped,
+                Some("checkpoint_turn_finished"),
+            );
+            let _ = db.execute(
+                "UPDATE worker_leases SET lease_status='checkpointed',updated_at=?2 WHERE session_id=?1",
+                params![session_id, Utc::now().to_rfc3339()],
+            );
+        }
+        checkpointing
+    };
+    if should_stop {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
+            runtime.stop(reason);
+        }
+    }
+}
+
+fn finish_orchestrator_shutdown(
+    app: &AppHandle,
+    session_id: &str,
+    reason: adapters::ShutdownReason,
+) {
+    let state = app.state::<AppState>();
+    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
+        runtime.stop(reason);
+    }
+    let db = state.db.lock().unwrap();
+    let workspace_id = db
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    let _ = record_shutdown_reason(&db, session_id, reason);
+    let _ = db.execute(
+        "UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1",
+        params![session_id, Utc::now().to_rfc3339()],
+    );
+    if let Some(workspace_id) = workspace_id {
+        let _ = db.execute(
+            "UPDATE workspaces SET status='stopped' WHERE id=?1",
+            params![workspace_id],
+        );
+    }
+    let _ = app.emit("state-changed", ());
+}
+
+fn run_compaction_recovery(app: &AppHandle, session_id: &str) -> Result<(), BridgeError> {
+    let state = app.state::<AppState>();
+    let workspace_path: String = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?
+    };
+    let git_status = worker_guard::tracked_status(Path::new(&workspace_path)).unwrap_or_default();
+    compaction_controller::CompactionController::reconstruct_from_normalized_events_and_git(
+        &state.db.lock().unwrap(),
+        session_id,
+        &git_status,
+    )?;
+    Ok(())
 }
 
 fn record_delegation_rejection(
@@ -1935,15 +2203,123 @@ fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
 
 fn maintain_worker_pool(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let expired = worker_pool::WorkerPool::expire_warm_workers(
+    let expired = worker_pool::WorkerPool::warm_workers_due(
         &state.db.lock().unwrap(),
         Utc::now(),
     )
     .unwrap_or_default();
     for session_id in expired {
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-            runtime.stop(adapters::ShutdownReason::Completed);
+        let prompt = {
+            let db = state.db.lock().unwrap();
+            let tokens = compaction_controller::active_token_estimate(&db, &session_id)
+                .unwrap_or_default();
+            let prompt = compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeSuspend,
+                tokens,
+            )
+            .ok()
+            .flatten();
+            if prompt.is_some() {
+                let _ = session_supervisor::SessionSupervisor::transition(
+                    &db,
+                    &session_id,
+                    worker_lifecycle::WorkerLifecycleState::Checkpointing,
+                    Some("warm_idle_timeout"),
+                );
+                let _ = db.execute(
+                    "UPDATE worker_runtime SET warm_until=NULL WHERE session_id=?1",
+                    params![session_id],
+                );
+            }
+            prompt
+        };
+        if let Some(prompt) = prompt {
+            if let Err(error) = send_internal_checkpoint_turn(app, &session_id, &prompt) {
+                let _ = compaction_controller::CompactionController::record_failure(
+                    &state.db.lock().unwrap(),
+                    &session_id,
+                    &format!("checkpoint turn could not start: {error}"),
+                    0,
+                );
+                finish_worker_checkpoint(app, &session_id, adapters::ShutdownReason::Failed);
+            }
         }
+    }
+    let timed_out = {
+        let db = state.db.lock().unwrap();
+        let mut statement = match db.prepare(
+            "SELECT session_id FROM worker_runtime WHERE lifecycle_state='checkpointing' ORDER BY session_id",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return,
+        };
+        let result = match statement.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows
+                .filter_map(Result::ok)
+                .filter(|session_id| {
+                    compaction_controller::CompactionController::pending(&db, session_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|pending| chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok())
+                        .is_some_and(|requested| {
+                            Utc::now().signed_duration_since(requested.with_timezone(&Utc)).num_seconds()
+                                >= compaction_controller::CHECKPOINT_TIMEOUT_SECONDS
+                        })
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        result
+    };
+    for session_id in timed_out {
+        let _ = compaction_controller::CompactionController::record_failure(
+            &state.db.lock().unwrap(),
+            &session_id,
+            "checkpoint turn timed out; suspension continued",
+            1,
+        );
+        finish_worker_checkpoint(app, &session_id, adapters::ShutdownReason::Failed);
+    }
+    let shutdown_timeouts = {
+        let db = state.db.lock().unwrap();
+        let mut statement = match db.prepare(
+            "SELECT id FROM sessions WHERE status='checkpointing' AND parent_session_id IS NULL ORDER BY id",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return,
+        };
+        let result = match statement.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows
+                .filter_map(Result::ok)
+                .filter(|session_id| {
+                    compaction_controller::CompactionController::pending(&db, session_id)
+                        .ok()
+                        .flatten()
+                        .filter(|pending| {
+                            pending.reason
+                                == compaction_controller::CompactionReason::BeforeShutdown
+                        })
+                        .and_then(|pending| chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok())
+                        .is_some_and(|requested| {
+                            Utc::now().signed_duration_since(requested.with_timezone(&Utc)).num_seconds()
+                                >= compaction_controller::CHECKPOINT_TIMEOUT_SECONDS
+                        })
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        result
+    };
+    for session_id in shutdown_timeouts {
+        let _ = compaction_controller::CompactionController::record_failure(
+            &state.db.lock().unwrap(),
+            &session_id,
+            "shutdown checkpoint timed out; termination continued",
+            1,
+        );
+        finish_orchestrator_shutdown(app, &session_id, adapters::ShutdownReason::UserStopped);
     }
     let workspaces = {
         let db = state.db.lock().unwrap();
@@ -2113,6 +2489,58 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
 }
 
 #[tauri::command]
+fn compact_session(
+    session_id: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), BridgeError> {
+    let prompt = {
+        let db = state.db.lock().unwrap();
+        let status: String = db.query_row(
+            "SELECT status FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if matches!(status.as_str(), "working" | "waiting" | "checkpointing") {
+            return Err(BridgeError::Invalid(
+                "Compaction waits until the active tool, approval, or turn finishes".into(),
+            ));
+        }
+        let branch = session_forest::SessionForest::new(&db)
+            .active_branch(&session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let meaningful = branch.iter().any(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
+            )
+        });
+        compaction_controller::decide(&compaction_controller::TriggerState {
+            reason: compaction_controller::CompactionReason::Manual,
+            context_percent: None,
+            projected_tokens_with_reserve: None,
+            context_window_tokens: None,
+            has_valid_typed_result: false,
+            one_shot_worker: false,
+            tool_call_active: false,
+            approval_active: false,
+            has_meaningful_new_work: meaningful,
+            wall_clock_only: false,
+        })
+        .map_err(|reason| BridgeError::Invalid(format!("Compaction suppressed: {reason:?}")))?;
+        let tokens = compaction_controller::active_token_estimate(&db, &session_id)?;
+        compaction_controller::CompactionController::begin(
+            &db,
+            &session_id,
+            compaction_controller::CompactionReason::Manual,
+            tokens,
+        )?
+        .ok_or_else(|| BridgeError::Invalid("Compaction is already pending".into()))?
+    };
+    send_internal_checkpoint_turn(&app, &session_id, &prompt)
+}
+
+#[tauri::command]
 fn interrupt_turn(session_id: String, state: State<AppState>) -> Result<(), BridgeError> {
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
@@ -2276,6 +2704,59 @@ fn stop_session(
         db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
         let _ = app.emit("state-changed", ());
         return store::state(&db);
+    }
+    let has_process = state.adapters.lock().unwrap().contains_key(&session_id);
+    let shutdown_prompt = {
+        let db = state.db.lock().unwrap();
+        let status: String = db.query_row(
+            "SELECT status FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let branch = session_forest::SessionForest::new(&db)
+            .active_branch(&session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let meaningful = branch.iter().any(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
+            )
+        });
+        if has_process
+            && meaningful
+            && !matches!(status.as_str(), "working" | "waiting" | "checkpointing")
+        {
+            let tokens = compaction_controller::active_token_estimate(&db, &session_id)?;
+            compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeShutdown,
+                tokens,
+            )?
+        } else {
+            None
+        }
+    };
+    if let Some(prompt) = shutdown_prompt {
+        match send_internal_checkpoint_turn(&app, &session_id, &prompt) {
+            Ok(()) => {
+                let db = state.db.lock().unwrap();
+                db.execute(
+                    "UPDATE sessions SET status='checkpointing' WHERE id=?1",
+                    params![session_id],
+                )?;
+                let _ = app.emit("state-changed", ());
+                return store::state(&db);
+            }
+            Err(error) => {
+                let _ = compaction_controller::CompactionController::record_failure(
+                    &state.db.lock().unwrap(),
+                    &session_id,
+                    &format!("shutdown checkpoint could not start: {error}"),
+                    0,
+                );
+            }
+        }
     }
     {
         let db = state.db.lock().unwrap();
@@ -2509,6 +2990,7 @@ pub fn run() {
             write_terminal,
             resize_terminal,
             send_turn,
+            compact_session,
             interrupt_turn,
             resolve_approval,
             stop_session,
@@ -2596,6 +3078,29 @@ mod tests {
         ] {
             assert_eq!(store::status(value), expected);
         }
+    }
+
+    #[test]
+    fn pressure_compaction_starts_only_at_seventy_five_percent_with_new_work() {
+        let db = policy_fixture();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"meaningful work"}),
+            )
+            .unwrap();
+        db.execute("INSERT INTO usage_ledger(workspace_id,session_id,context_percent,capability_units,source,created_at) VALUES('w','parent',74,0,'test','now')", []).unwrap();
+        assert!(begin_pressure_compaction(&db, "parent").unwrap().is_none());
+        db.execute("INSERT INTO usage_ledger(workspace_id,session_id,context_percent,capability_units,source,created_at) VALUES('w','parent',75,0,'test','later')", []).unwrap();
+        assert!(begin_pressure_compaction(&db, "parent").unwrap().is_some());
+        assert_eq!(
+            compaction_controller::CompactionController::pending(&db, "parent")
+                .unwrap()
+                .unwrap()
+                .reason,
+            compaction_controller::CompactionReason::ContextPressure
+        );
     }
 
     #[test]
