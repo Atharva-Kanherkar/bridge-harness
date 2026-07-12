@@ -1,5 +1,5 @@
 use crate::{model::SessionEntry, store, BridgeError};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -1103,6 +1103,56 @@ impl<'connection> SessionForest<'connection> {
             },
         })
     }
+}
+
+pub(crate) fn append_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    kind: EntryKind,
+    payload: Value,
+) -> Result<SessionEntry, ForestError> {
+    kind.validate_payload(&payload)?;
+    let session_exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if !session_exists {
+        return Err(ForestError::SessionNotFound(session_id.to_owned()));
+    }
+    let parent_entry_id: Option<String> = transaction
+        .query_row(
+            "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(parent_entry_id) = &parent_entry_id {
+        let parent_session: Option<String> = transaction
+            .query_row(
+                "SELECT session_id FROM session_entries WHERE id=?1",
+                params![parent_entry_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if parent_session.as_deref() != Some(session_id) {
+            return Err(ForestError::InvalidHead {
+                session_id: session_id.to_owned(),
+                entry_id: parent_entry_id.clone(),
+            });
+        }
+    }
+    Ok(store::append_session_entry_tx(
+        transaction,
+        session_id,
+        parent_entry_id.as_deref(),
+        kind.as_str(),
+        &mark_typed_payload(payload),
+        None,
+        "eligible",
+        None,
+    )?)
 }
 
 fn mark_typed_payload(mut payload: Value) -> Value {

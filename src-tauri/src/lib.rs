@@ -10,6 +10,7 @@ mod orchestrator;
 mod policy;
 mod restoration;
 mod session_forest;
+mod session_supervisor;
 mod store;
 mod worker_guard;
 mod worker_lifecycle;
