@@ -785,6 +785,146 @@ pub fn agent_event(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn seed_workspace(db: &Connection) {
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/demo','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/w','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,provider_session_id) VALUES('s','w','codex','Codex','working','reported','native-s')", []).unwrap();
+    }
+
+    fn create_legacy_fixture(path: &Path) {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch(
+            "PRAGMA journal_mode=WAL;
+            CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
+            CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), city TEXT NOT NULL, title TEXT NOT NULL, branch TEXT NOT NULL, path TEXT NOT NULL UNIQUE, status TEXT NOT NULL, dirty_files INTEGER NOT NULL DEFAULT 0, additions INTEGER NOT NULL DEFAULT 0, deletions INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), harness TEXT NOT NULL, label TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT, ended_at TEXT, context_percent INTEGER, usage_percent INTEGER, metric_source TEXT NOT NULL DEFAULT 'estimated');
+            CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, kind TEXT NOT NULL, entity_id TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE agent_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                sequence INTEGER NOT NULL,
+                protocol_version INTEGER NOT NULL DEFAULT 1,
+                kind TEXT NOT NULL,
+                item_id TEXT,
+                role TEXT,
+                status TEXT,
+                title TEXT,
+                text TEXT,
+                data TEXT NOT NULL DEFAULT '{}',
+                provider_meta TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(session_id, sequence)
+            );
+            CREATE INDEX idx_agent_events_session ON agent_events(session_id, sequence);
+            ALTER TABLE sessions ADD COLUMN provider_session_id TEXT;
+            ALTER TABLE sessions ADD COLUMN active_turn_id TEXT;
+            ALTER TABLE sessions ADD COLUMN model TEXT;
+            ALTER TABLE sessions ADD COLUMN effort TEXT;
+            ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+            ALTER TABLE sessions ADD COLUMN depth INTEGER;",
+        )
+        .unwrap();
+        seed_workspace(&db);
+        db.execute(
+            "INSERT INTO agent_events(session_id,sequence,kind,item_id,role,status,title,text,data,provider_meta,created_at)
+             VALUES('s',1,'assistant.message','m1','assistant','inProgress','First','hello','{\"delta\":\"hello\"}','{\"provider\":\"codex\",\"rawId\":1}','t1')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO agent_events(session_id,sequence,kind,item_id,role,status,title,text,data,provider_meta,created_at)
+             VALUES('s',2,'assistant.message','m2','assistant','completed','Second','world','{\"delta\":\"world\"}','{\"provider\":\"codex\",\"rawId\":2}','t2')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn schema_signature(db: &Connection) -> Vec<String> {
+        let mut objects = {
+            let mut statement = db
+                .prepare(
+                    "SELECT type,name,tbl_name FROM sqlite_master
+                     WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+                )
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{}:{}:{}",
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        let tables = [
+            "schema_version",
+            "projects",
+            "workspaces",
+            "sessions",
+            "events",
+            "agent_events",
+            "session_entries",
+            "session_heads",
+            "task_knowledge",
+            "worker_leases",
+            "usage_ledger",
+        ];
+        for table in tables {
+            let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+            let columns = statement
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{}:{}:{}:{}:{:?}:{}",
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            objects.push(format!("columns:{table}:{}", columns.join("|")));
+        }
+        objects
+    }
+
+    fn migration_versions(db: &Connection) -> Vec<i64> {
+        let mut statement = db
+            .prepare("SELECT version FROM schema_version ORDER BY version")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn backup_paths(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("bridge.db.backup-"))
+            })
+            .collect()
+    }
+
     #[test]
     fn persists_and_replays_ordered_events() {
         let dir = tempfile::tempdir().unwrap();
@@ -801,28 +941,258 @@ mod tests {
         assert_eq!(snapshot.events[0].kind, "second");
         assert_eq!(snapshot.events[1].kind, "first");
     }
+
     #[test]
-    fn persists_normalized_agent_events_in_sequence() {
+    fn migrates_current_schema_fixture_idempotently_and_creates_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        create_legacy_fixture(&path);
+        let db = open(&path).unwrap();
+        assert_eq!(migration_versions(&db), vec![1, 2]);
+        assert_eq!(state(&db).unwrap().agent_events.len(), 2);
+        drop(db);
+        let backups = backup_paths(dir.path());
+        assert_eq!(backups.len(), 1);
+        let backup = Connection::open(&backups[0]).unwrap();
+        assert_eq!(
+            backup
+                .query_row("SELECT COUNT(*) FROM agent_events", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        drop(backup);
+        let db = open(&path).unwrap();
+        assert_eq!(migration_versions(&db), vec![1, 2]);
+        assert_eq!(backup_paths(dir.path()).len(), 1);
+    }
+
+    #[test]
+    fn fresh_and_upgraded_databases_have_identical_schema() {
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let upgraded_dir = tempfile::tempdir().unwrap();
+        let fresh = open(&fresh_dir.path().join("bridge.db")).unwrap();
+        let upgraded_path = upgraded_dir.path().join("bridge.db");
+        create_legacy_fixture(&upgraded_path);
+        let upgraded = open(&upgraded_path).unwrap();
+        assert_eq!(schema_signature(&fresh), schema_signature(&upgraded));
+        assert_eq!(migration_versions(&fresh), migration_versions(&upgraded));
+    }
+
+    #[test]
+    fn migration_failure_rolls_back_objects_and_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let mut db = Connection::open(&path).unwrap();
+        let transaction = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        migration_1_current_schema(&transaction).unwrap();
+        transaction
+            .execute(
+                "INSERT INTO schema_version(version,applied_at) VALUES(1,'now')",
+                [],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        db.execute("CREATE TABLE session_entries(blocker TEXT)", [])
+            .unwrap();
+        drop(db);
+        assert!(open(&path).is_err());
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(migration_versions(&db), vec![1]);
+        let partial: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_heads')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!partial);
+    }
+
+    #[test]
+    fn backfills_agent_events_as_linear_session_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        create_legacy_fixture(&path);
+        let db = open(&path).unwrap();
+        let entries = session_entries(&db, "s").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].sequence, 1);
+        assert_eq!(entries[0].parent_entry_id, None);
+        assert_eq!(entries[1].parent_entry_id.as_deref(), Some(&*entries[0].id));
+        assert_eq!(entries[1].payload["providerMeta"]["rawId"], 2);
+        assert_eq!(entries[1].provider_event_id.as_deref(), Some("m2"));
+        let head = session_head(&db, "s").unwrap().unwrap();
+        assert_eq!(head.active_entry_id.as_deref(), Some(&*entries[1].id));
+        assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
+    }
+
+    #[test]
+    fn session_entry_sequence_is_unique_and_append_assigns_next_sequence() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir.path().join("bridge.db")).unwrap();
-        db.execute(
-            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/demo','now')",
-            [],
+        seed_workspace(&db);
+        let first = append_session_entry(
+            &db,
+            "s",
+            None,
+            "user.message",
+            &json!({"text":"one"}),
+            None,
+            "eligible",
+            Some(1),
         )
         .unwrap();
-        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/w','idle','now')", []).unwrap();
-        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','working','reported')", []).unwrap();
+        let second = append_session_entry(
+            &db,
+            "s",
+            Some(&first.id),
+            "assistant.message",
+            &json!({"text":"two"}),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!((first.sequence, second.sequence), (1, 2));
+        assert_eq!(
+            session_head(&db, "s").unwrap().unwrap().active_entry_id,
+            Some(second.id.clone())
+        );
+        let duplicate = db.execute(
+            "INSERT INTO session_entries(id,session_id,sequence,kind,created_at) VALUES('duplicate','s',2,'user.message','now')",
+            [],
+        );
+        assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn agent_event_dual_write_is_atomic_and_equivalent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
         let first = crate::agent::normalize_codex_message(
             &json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"hel"}}),
         );
-        let second = crate::agent::normalize_codex_message(
-            &json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"lo"}}),
-        );
         agent_event(&db, "s", &first[0], &json!({"provider":"codex"})).unwrap();
-        agent_event(&db, "s", &second[0], &json!({"provider":"codex"})).unwrap();
         let snapshot = state(&db).unwrap();
-        assert_eq!(snapshot.agent_events.len(), 2);
+        let entries = session_entries(&db, "s").unwrap();
+        assert_eq!(snapshot.agent_events.len(), 1);
+        assert_eq!(entries.len(), 1);
         assert_eq!(snapshot.agent_events[0].sequence, 1);
-        assert_eq!(snapshot.agent_events[1].text.as_deref(), Some("lo"));
+        assert_eq!(entries[0].sequence, 1);
+        assert_eq!(entries[0].kind, snapshot.agent_events[0].kind);
+        assert_eq!(entries[0].payload["data"], snapshot.agent_events[0].data);
+        assert_eq!(entries[0].payload["providerMeta"]["provider"], "codex");
+
+        db.execute_batch(
+            "CREATE TRIGGER reject_forest_insert BEFORE INSERT ON session_entries
+             BEGIN SELECT RAISE(FAIL, 'injected forest failure'); END;",
+        )
+        .unwrap();
+        assert!(agent_event(&db, "s", &first[0], &json!({"provider":"codex"})).is_err());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM agent_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM session_entries", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn foreign_keys_are_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        assert_eq!(
+            db.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(append_session_entry(
+            &db,
+            "missing",
+            None,
+            "user.message",
+            &json!({}),
+            None,
+            "eligible",
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn queries_knowledge_leases_and_usage_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let entry = append_session_entry(
+            &db,
+            "s",
+            None,
+            "user.message",
+            &json!({"text":"remember"}),
+            None,
+            "eligible",
+            None,
+        )
+        .unwrap();
+        let knowledge = TaskKnowledge {
+            id: "k".into(),
+            workspace_id: "w".into(),
+            session_id: Some("s".into()),
+            kind: "decision".into(),
+            body: "Use SQLite".into(),
+            source_entry_id: Some(entry.id),
+            superseded_by: None,
+            created_at: "now".into(),
+        };
+        insert_task_knowledge(&db, &knowledge).unwrap();
+        assert_eq!(task_knowledge(&db, "w").unwrap(), vec![knowledge]);
+
+        let lease = WorkerLease {
+            session_id: "s".into(),
+            workspace_id: "w".into(),
+            role: "implementation".into(),
+            capability_tier: "standard".into(),
+            owned_paths: json!(["src/**"]),
+            write_mode: "isolated".into(),
+            lease_status: "active".into(),
+            expires_at: None,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        };
+        upsert_worker_lease(&db, &lease).unwrap();
+        assert_eq!(worker_leases(&db, "w").unwrap(), vec![lease]);
+
+        let usage = UsageLedgerRow {
+            id: 0,
+            workspace_id: "w".into(),
+            session_id: Some("s".into()),
+            turn_id: Some("turn-1".into()),
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            cache_read_tokens: Some(2),
+            cache_write_tokens: None,
+            context_percent: Some(25),
+            capability_units: 3,
+            runtime_ms: Some(100),
+            source: "codex".into(),
+            created_at: "now".into(),
+        };
+        let id = append_usage_ledger(&db, &usage).unwrap();
+        let rows = usage_ledger(&db, "w", Some("s")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(rows[0].capability_units, 3);
     }
 }
