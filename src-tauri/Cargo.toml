@@ -27,3 +27,11 @@ tiny_http = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

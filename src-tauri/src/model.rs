@@ -94,6 +94,7 @@ pub struct BridgeState {
     pub workspaces: Vec<Workspace>,
     pub sessions: Vec<Session>,
     pub events: Vec<BridgeEvent>,
+    pub agent_events: Vec<AgentEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,4 +102,33 @@ pub struct BridgeState {
 pub struct TerminalChunk {
     pub session_id: String,
     pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEvent {
+    pub id: i64,
+    pub session_id: String,
+    pub sequence: i64,
+    pub protocol_version: i64,
+    pub kind: String,
+    pub item_id: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+    pub title: Option<String>,
+    pub text: Option<String>,
+    pub data: serde_json::Value,
+    pub provider_meta: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterDescriptor {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub capabilities: Vec<String>,
+    pub unavailable_reason: Option<String>,
 }

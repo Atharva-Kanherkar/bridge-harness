@@ -1,3 +1,4 @@
+mod agent;
 mod git;
 mod metrics;
 mod model;
