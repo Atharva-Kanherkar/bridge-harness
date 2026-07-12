@@ -1,4 +1,6 @@
-use crate::BridgeError;
+use crate::{policy, BridgeError};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -72,6 +74,297 @@ pub fn create_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), Bri
 pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), BridgeError> {
     run(repo, ["worktree", "remove", &path.to_string_lossy()])?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCheckpoint {
+    pub session_id: String,
+    pub forest_entry_id: String,
+    pub commit: String,
+    pub branch: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveWriter {
+    pub session_id: String,
+    pub owned_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerWorktree {
+    pub session_id: String,
+    pub branch: String,
+    pub path: PathBuf,
+    pub owned_paths: Vec<String>,
+    pub base_commit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerChangeSet {
+    pub base_commit: String,
+    pub worker_commit: String,
+    pub commits: Vec<String>,
+    pub changed_paths: Vec<String>,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationResult {
+    Integrated,
+    AlreadyIntegrated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceOperation {
+    ConversationBranchOnly,
+    ConversationBranchWithChildWorktree,
+    RestoreRecordedGitCheckpoint,
+    ExtractWorkerChanges,
+}
+
+impl WorkspaceOperation {
+    pub fn mutates_filesystem(self) -> bool {
+        matches!(
+            self,
+            Self::ConversationBranchWithChildWorktree | Self::RestoreRecordedGitCheckpoint
+        )
+    }
+}
+
+/// Marks the explicit conversation-only operation. This deliberately performs no
+/// repository lookup or filesystem operation.
+pub fn branch_conversation_only() -> WorkspaceOperation {
+    WorkspaceOperation::ConversationBranchOnly
+}
+
+pub fn owned_paths_overlap(left: &[String], right: &[String]) -> Result<bool, BridgeError> {
+    policy::owned_path_sets_overlap(left, right).map_err(BridgeError::Invalid)
+}
+
+pub fn authorize_disjoint_writer(
+    requested_paths: &[String],
+    active_writers: &[ActiveWriter],
+) -> Result<(), BridgeError> {
+    policy::normalize_owned_paths(requested_paths).map_err(BridgeError::Invalid)?;
+    for writer in active_writers {
+        if owned_paths_overlap(requested_paths, &writer.owned_paths)? {
+            return Err(BridgeError::Invalid(format!(
+                "owned paths overlap active writer session {}",
+                writer.session_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn worker_worktree_path(
+    namespace_root: &Path,
+    task_worktree: &Path,
+    session_id: &str,
+) -> Result<PathBuf, BridgeError> {
+    let task = task_worktree
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(slug)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BridgeError::Invalid("task worktree needs a safe name".into()))?;
+    let worker = slug(session_id);
+    if worker.is_empty() {
+        return Err(BridgeError::Invalid(
+            "worker session needs a safe identifier".into(),
+        ));
+    }
+    Ok(namespace_root.join(task).join(worker))
+}
+
+pub fn create_child_worktree(
+    task_worktree: &Path,
+    namespace_root: &Path,
+    session_id: &str,
+    branch: &str,
+    requested_paths: &[String],
+    active_writers: &[ActiveWriter],
+) -> Result<WorkerWorktree, BridgeError> {
+    authorize_disjoint_writer(requested_paths, active_writers)?;
+    if branch.trim().is_empty() || branch.starts_with('-') {
+        return Err(BridgeError::Invalid("worker branch is invalid".into()));
+    }
+    let path = worker_worktree_path(namespace_root, task_worktree, session_id)?;
+    if path.exists() {
+        return Err(BridgeError::Invalid(format!(
+            "worker worktree already exists: {}",
+            path.display()
+        )));
+    }
+    let base_commit = run(task_worktree, ["rev-parse", "HEAD"])?.trim().to_owned();
+    create_worktree(task_worktree, &path, branch)?;
+    Ok(WorkerWorktree {
+        session_id: session_id.to_owned(),
+        branch: branch.to_owned(),
+        path,
+        owned_paths: policy::normalize_owned_paths(requested_paths)
+            .map_err(BridgeError::Invalid)?,
+        base_commit,
+    })
+}
+
+pub fn record_clean_checkpoint(
+    worktree: &Path,
+    session_id: &str,
+    forest_entry_id: &str,
+) -> Result<GitCheckpoint, BridgeError> {
+    if session_id.trim().is_empty() || forest_entry_id.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "checkpoint requires session and forest entry identifiers".into(),
+        ));
+    }
+    ensure_clean(worktree, "record Git checkpoint")?;
+    Ok(GitCheckpoint {
+        session_id: session_id.to_owned(),
+        forest_entry_id: forest_entry_id.to_owned(),
+        commit: run(worktree, ["rev-parse", "HEAD"])?.trim().to_owned(),
+        branch: run(worktree, ["branch", "--show-current"])?
+            .trim()
+            .to_owned(),
+        created_at: Utc::now().to_rfc3339(),
+    })
+}
+
+pub fn extract_worker_changes(
+    task_worktree: &Path,
+    worker_worktree: &Path,
+) -> Result<WorkerChangeSet, BridgeError> {
+    ensure_clean(worker_worktree, "extract worker changes")?;
+    let task_commit = run(task_worktree, ["rev-parse", "HEAD"])?.trim().to_owned();
+    let worker_commit = run(worker_worktree, ["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
+    let base_commit = run(
+        task_worktree,
+        ["merge-base", task_commit.as_str(), worker_commit.as_str()],
+    )?
+    .trim()
+    .to_owned();
+    let range = format!("{base_commit}..{worker_commit}");
+    let commits = nonempty_lines(&run(
+        task_worktree,
+        ["rev-list", "--reverse", range.as_str()],
+    )?);
+    let changed_paths = nonempty_lines(&run(
+        task_worktree,
+        ["diff", "--name-only", range.as_str()],
+    )?);
+    let patch = run(task_worktree, ["diff", "--binary", range.as_str()])?;
+    Ok(WorkerChangeSet {
+        base_commit,
+        worker_commit,
+        commits,
+        changed_paths,
+        patch,
+    })
+}
+
+pub fn integrate_worker_changes(
+    task_worktree: &Path,
+    worker_worktree: &Path,
+    task_has_active_session: bool,
+) -> Result<IntegrationResult, BridgeError> {
+    ensure_inactive(task_has_active_session, "integrate worker changes")?;
+    ensure_clean(task_worktree, "integrate worker changes")?;
+    ensure_clean(worker_worktree, "integrate worker changes")?;
+    let worker_commit = run(worker_worktree, ["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
+    let ancestor = Command::new("git")
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            worker_commit.as_str(),
+            "HEAD",
+        ])
+        .current_dir(task_worktree)
+        .status()?;
+    if ancestor.success() {
+        return Ok(IntegrationResult::AlreadyIntegrated);
+    }
+    let output = Command::new("git")
+        .args(["merge", "--no-ff", "--no-edit", worker_commit.as_str()])
+        .current_dir(task_worktree)
+        .output()?;
+    if !output.status.success() {
+        let _ = Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(task_worktree)
+            .output();
+        return Err(BridgeError::Git(format!(
+            "worker integration failed and was aborted: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(IntegrationResult::Integrated)
+}
+
+pub fn restore_recorded_checkpoint(
+    task_worktree: &Path,
+    checkpoint: &GitCheckpoint,
+    task_has_active_session: bool,
+) -> Result<(), BridgeError> {
+    ensure_inactive(task_has_active_session, "restore Git checkpoint")?;
+    ensure_clean(task_worktree, "restore Git checkpoint")?;
+    let object = format!("{}^{{commit}}", checkpoint.commit);
+    run(task_worktree, ["cat-file", "-e", object.as_str()])?;
+    run(
+        task_worktree,
+        [
+            "restore",
+            "--source",
+            checkpoint.commit.as_str(),
+            "--staged",
+            "--worktree",
+            "--",
+            ".",
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn safe_remove_worker_worktree(
+    repo: &Path,
+    worker_worktree: &Path,
+    worker_session_active: bool,
+) -> Result<(), BridgeError> {
+    ensure_inactive(worker_session_active, "remove worker worktree")?;
+    ensure_clean(worker_worktree, "remove worker worktree")?;
+    remove_worktree(repo, worker_worktree)
+}
+
+fn ensure_inactive(active: bool, operation: &str) -> Result<(), BridgeError> {
+    if active {
+        return Err(BridgeError::Invalid(format!(
+            "cannot {operation} while a session is active"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_clean(worktree: &Path, operation: &str) -> Result<(), BridgeError> {
+    if !run(worktree, ["status", "--porcelain"])?.trim().is_empty() {
+        return Err(BridgeError::Invalid(format!(
+            "cannot {operation} with a dirty worktree"
+        )));
+    }
+    Ok(())
+}
+
+fn nonempty_lines(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
     let porcelain = run(path, ["status", "--porcelain"])?;
