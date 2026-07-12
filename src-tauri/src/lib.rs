@@ -14,6 +14,7 @@ mod session_supervisor;
 mod store;
 mod worker_guard;
 mod worker_lifecycle;
+mod worker_pool;
 
 use chrono::Utc;
 use model::*;
@@ -21,7 +22,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -71,14 +72,6 @@ struct AppState {
 /// Bookkeeping for the multi-agent delegation tree.
 #[derive(Default)]
 struct DelegationState {
-    /// `{session}::{item_id}` of assistant messages already turned into spawns,
-    /// so re-observing the same message never double-spawns workers.
-    spawned: HashSet<String>,
-    /// Parent session id → count of child workers that have not yet reported a
-    /// first result. A parent forwards its own result only when this is zero.
-    outstanding: HashMap<String, i64>,
-    /// Child sessions that have reported to their parent at least once.
-    reported: HashSet<String>,
     /// Tracks the single same-session repair allowed for malformed worker output.
     result_repairs: delegation::ResultRepairTracker,
     /// Last observed provider turn per session, retained until the next turn
@@ -695,11 +688,13 @@ fn handle_agent_value(
                 if let Some(text) = normalized_event.text.clone() {
                     match delegation::parse_delegation_requests(&text) {
                         delegation::ParseOutcome::Parsed(requests) => {
-                            let key = format!(
-                                "{session_id}::{}",
-                                normalized_event.item_id.clone().unwrap_or_default()
-                            );
-                            let is_new = state.delegations.lock().unwrap().spawned.insert(key);
+                            let item_id = normalized_event.item_id.clone().unwrap_or_default();
+                            let is_new = store::claim_delegation_receipt(
+                                &db,
+                                session_id,
+                                &item_id,
+                            )
+                            .unwrap_or(false);
                             let mut accepted_count = 0;
                             let mut rejection_message = None;
                             if is_new {
@@ -786,13 +781,7 @@ fn handle_agent_value(
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
     if turn_completed {
-        let idle = state
-            .delegations
-            .lock()
-            .unwrap()
-            .outstanding
-            .get(session_id)
-            .copied()
+        let idle = store::outstanding_children(&state.db.lock().unwrap(), session_id)
             .unwrap_or(0)
             == 0;
         if idle {
@@ -901,9 +890,21 @@ fn reserve_worker_launch(
         &outcome,
         &budget,
     )?;
-    let policy::RouteDecision::SpawnWorker(_) = &outcome.decision else {
-        return Ok(None);
-    };
+    match &outcome.decision {
+        policy::RouteDecision::Queue => {
+            worker_pool::WorkerPool::enqueue(
+                db,
+                parent_session_id,
+                &workspace_id,
+                turn_id,
+                directive,
+                actual_model,
+            )?;
+            return Ok(None);
+        }
+        policy::RouteDecision::SpawnWorker(_) => {}
+        _ => return Ok(None),
+    }
 
     let session_id = Uuid::new_v4().to_string();
     let depth = parent_depth + 1;
@@ -926,6 +927,8 @@ fn reserve_worker_launch(
             depth,
         ],
     )?;
+    let compatibility_key =
+        worker_pool::WorkerCompatibilityKey::for_request(&workspace_id, directive)?.encode()?;
     store::upsert_worker_lease(
         &transaction,
         &WorkerLease {
@@ -940,6 +943,21 @@ fn reserve_worker_launch(
             expires_at: None,
             created_at: now.clone(),
             updated_at: now,
+        },
+    )?;
+    store::upsert_worker_runtime(
+        &transaction,
+        &WorkerRuntimeRecord {
+            session_id: session_id.clone(),
+            parent_session_id: parent_session_id.to_owned(),
+            lifecycle_state: "starting".into(),
+            task_family: worker_pool::task_family(directive),
+            compatibility_key,
+            result_status: "pending".into(),
+            retry_count: 0,
+            warm_until: None,
+            last_result: None,
+            updated_at: Utc::now().to_rfc3339(),
         },
     )?;
     policy::record_spawn_usage(
@@ -1165,11 +1183,28 @@ fn launch_worker(
         );
     }
 
+    let mut runtime = started.runtime;
+    if let Err(error) = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        &session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("provider_started"),
+    ) {
+        runtime.stop(adapters::ShutdownReason::Failed);
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "supervisor",
+            "worker.transition_failed",
+            &session_id,
+            &error.to_string(),
+        );
+        return;
+    }
     state
         .adapters
         .lock()
         .unwrap()
-        .insert(session_id.clone(), started.runtime);
+        .insert(session_id.clone(), runtime);
     spawn_reader_thread(
         app.clone(),
         session_id.clone(),
@@ -1177,13 +1212,6 @@ fn launch_worker(
         current_turn,
         reader,
     );
-    *state
-        .delegations
-        .lock()
-        .unwrap()
-        .outstanding
-        .entry(parent_session_id.to_owned())
-        .or_insert(0) += 1;
     if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
         let _ = runtime.send_turn(&directive.objective);
     }
@@ -1219,7 +1247,7 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
     };
     let raw_output =
         raw_output.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
-    let result_text = match {
+    let result = match {
         let db = state.db.lock().unwrap();
         let mut delegations = state.delegations.lock().unwrap();
         process_worker_result_output(
@@ -1250,17 +1278,32 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
             return;
         }
     };
-    let Some(result_text) = result_text else {
+    let Some(result) = result else {
         let _ = app.emit("state-changed", ());
         return;
     };
     verify_read_only_worker(app, child_session_id);
-    let model_label = delegation::model_display(model.as_deref().unwrap_or("unknown"));
-    let framed = format!(
-        "[worker result] {label} ({harness}/{model_label}, effort {}) finished:\n\n{result_text}",
-        effort.as_deref().unwrap_or("medium")
-    );
-    report_to_parent(app, child_session_id, &framed);
+    let _ = (label, harness, model, effort);
+    if let Err(error) = settle_worker_after_result(app, child_session_id, &result) {
+        let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
+        return;
+    }
+    report_to_parent(app, child_session_id, &result);
+    let terminal = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if terminal {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
+            runtime.stop(adapters::ShutdownReason::Completed);
+        }
+    }
 }
 
 fn process_worker_result_output(
@@ -1269,15 +1312,13 @@ fn process_worker_result_output(
     child_session_id: &str,
     raw_output: &str,
     send_same_session_repair: impl FnOnce(&str) -> bool,
-) -> Result<Option<String>, BridgeError> {
+) -> Result<Option<delegation::WorkerResult>, BridgeError> {
     match tracker.process(
         child_session_id,
         raw_output,
         send_same_session_repair,
     ) {
-        delegation::WorkerOutputAction::Structured(result) => Ok(Some(
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.summary.clone()),
-        )),
+        delegation::WorkerOutputAction::Structured(result) => Ok(Some(result)),
         delegation::WorkerOutputAction::AwaitingRepair { reason } => {
             store::event(
                 db,
@@ -1296,11 +1337,85 @@ fn process_worker_result_output(
                 child_session_id,
                 &reason,
             )?;
-            Ok(Some(format!(
-                "[worker result unavailable] The worker did not return a valid typed result after one repair attempt: {reason}"
-            )))
+            Ok(Some(delegation::WorkerResult {
+                schema_version: delegation::SCHEMA_VERSION,
+                status: delegation::WorkerResultStatus::Failed,
+                summary: format!("Unstructured worker result after repair failure: {reason}"),
+                files_changed: vec![],
+                tests: vec![],
+                decisions: vec![],
+                risks: vec!["The raw worker response was excluded from parent context".into()],
+                remaining_work: vec!["Review the worker transcript manually".into()],
+                suggested_next_action: delegation::SuggestedNextAction::Finish,
+                suggested_role: None,
+                suggested_task: None,
+            }))
         }
     }
+}
+
+fn settle_worker_after_result(
+    app: &AppHandle,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) -> Result<(), BridgeError> {
+    let state = app.state::<AppState>();
+    let current = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    if current.as_deref() != Some("working") {
+        return Ok(());
+    }
+    let (next, warm_until) = match result.status {
+        delegation::WorkerResultStatus::Completed
+        | delegation::WorkerResultStatus::NeedsDelegation => {
+            let attributes: Option<(String, String, String)> = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT role,capability_tier,write_mode FROM worker_leases WHERE session_id=?1",
+                    params![child_session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .ok();
+            match attributes.map(|(role, tier, mode)| {
+                worker_pool::retention_action_for_attributes(&role, &tier, &mode, Utc::now())
+            }) {
+                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => {
+                    (worker_lifecycle::WorkerLifecycleState::Warm, Some(until.to_rfc3339()))
+                }
+                _ => (worker_lifecycle::WorkerLifecycleState::Completed, None),
+            }
+        }
+        delegation::WorkerResultStatus::Cancelled => (
+            worker_lifecycle::WorkerLifecycleState::Cancelled,
+            None,
+        ),
+        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked => {
+            (worker_lifecycle::WorkerLifecycleState::Failed, None)
+        }
+    };
+    session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        child_session_id,
+        next,
+        Some("typed_result"),
+    )?;
+    if let Some(warm_until) = warm_until {
+        state.db.lock().unwrap().execute(
+            "UPDATE worker_runtime SET warm_until=?2 WHERE session_id=?1",
+            params![child_session_id, warm_until],
+        )?;
+    }
+    Ok(())
 }
 
 /// If a worker process exits before ever reporting, tell its parent so the
@@ -1308,12 +1423,10 @@ fn process_worker_result_output(
 fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
     let state = app.state::<AppState>();
     verify_read_only_worker(app, child_session_id);
-    let already = state
-        .delegations
-        .lock()
-        .unwrap()
-        .reported
-        .contains(child_session_id);
+    let already = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|runtime| runtime.result_status == "reported");
     if already {
         return;
     }
@@ -1329,10 +1442,24 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
     let Some((Some(_parent), label)) = meta else {
         return;
     };
-    let framed = format!(
-        "[worker stopped] {label} ended without reporting a result. You may retry, delegate differently, or proceed without it."
-    );
-    report_to_parent(app, child_session_id, &framed);
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Failed,
+        summary: format!("{label} ended without reporting a result"),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec!["Worker process exited before a typed result was produced".into()],
+        remaining_work: vec!["Retry or delegate the task differently".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    if let Err(error) = settle_worker_after_result(app, child_session_id, &result) {
+        let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
+        return;
+    }
+    report_to_parent(app, child_session_id, &result);
 }
 
 fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
@@ -1360,23 +1487,24 @@ fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
 
 /// Deliver a framed message from a child to its parent session: send it into the
 /// parent's live turn stream and drop a marker card into the parent's transcript.
-fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) {
+fn report_to_parent(
+    app: &AppHandle,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) {
     let state = app.state::<AppState>();
-    let parent_id: Option<String> = {
+    let parent_id = {
         let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT parent_session_id FROM sessions WHERE id=?1",
-            params![child_session_id],
-            |r| r.get(0),
-        )
-        .ok()
-        .flatten()
+        session_supervisor::SessionSupervisor::record_result(&db, child_session_id, result)
+            .ok()
+            .flatten()
     };
     let Some(parent_id) = parent_id else {
         return;
     };
+    let typed_result = serde_json::to_string(result).unwrap_or_else(|_| result.summary.clone());
     let delivered = match state.adapters.lock().unwrap().get(&parent_id) {
-        Some(runtime) => runtime.send_turn(framed_text).is_ok(),
+        Some(runtime) => runtime.send_turn(&typed_result).is_ok(),
         None => false,
     };
     {
@@ -1387,8 +1515,8 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) 
             role: Some("system".into()),
             status: Some("completed".into()),
             title: Some("Worker result".into()),
-            text: Some(framed_text.to_owned()),
-            data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered}),
+            text: Some(result.summary.clone()),
+            data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered, "result": result}),
         };
         if let Ok(stored) =
             store::agent_event(&db, &parent_id, &result_event, &serde_json::json!({"delegation": true}))
@@ -1400,20 +1528,6 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) 
                 "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
                 params![parent_id],
             );
-        }
-        let _ = db.execute(
-            "UPDATE worker_leases SET lease_status='released',updated_at=?2 WHERE session_id=?1",
-            params![child_session_id, Utc::now().to_rfc3339()],
-        );
-    }
-    {
-        let mut delegations = state.delegations.lock().unwrap();
-        if delegations.reported.insert(child_session_id.to_owned()) {
-            if let Some(count) = delegations.outstanding.get_mut(&parent_id) {
-                if *count > 0 {
-                    *count -= 1;
-                }
-            }
         }
     }
     let _ = app.emit("state-changed", ());
@@ -1655,6 +1769,47 @@ fn stop_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    let is_worker = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+    if is_worker {
+        if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
+            let _ = runtime.interrupt();
+        }
+        let result = delegation::WorkerResult {
+            schema_version: delegation::SCHEMA_VERSION,
+            status: delegation::WorkerResultStatus::Cancelled,
+            summary: "Worker cancelled by user".into(),
+            files_changed: vec![],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec!["Cancelled work was not completed".into()],
+            suggested_next_action: delegation::SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        settle_worker_after_result(&app, &session_id, &result)?;
+        report_to_parent(&app, &session_id, &result);
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop(adapters::ShutdownReason::UserCancelled);
+        }
+        let db = state.db.lock().unwrap();
+        let workspace_id: String = db.query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
+        let _ = app.emit("state-changed", ());
+        return store::state(&db);
+    }
     {
         let db = state.db.lock().unwrap();
         record_shutdown_reason(&db, &session_id, adapters::ShutdownReason::UserStopped)?;
@@ -1860,15 +2015,8 @@ pub fn run() {
             let db_path = data.join("bridge.db");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            // Sessions cannot outlive the app process; clear stale live statuses on boot.
-            let _ = connection.execute(
-                "UPDATE sessions SET status='stopped', ended_at=COALESCE(ended_at, ?1), active_turn_id=NULL WHERE status IN ('working','waiting','ready')",
-                params![Utc::now().to_rfc3339()],
-            );
-            let _ = connection.execute(
-                "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting','ready')",
-                [],
-            );
+            session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             let adapter_registry = adapters::AdapterRegistry::built_in()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             start_health_server(db_path.clone(), adapter_registry.descriptors());
@@ -2048,9 +2196,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fallback.contains("[worker result unavailable]"));
-        assert!(!fallback.contains("invalid first output"));
-        assert!(!fallback.contains("invalid repair output"));
+        assert!(fallback.summary.contains("Unstructured worker result"));
+        assert!(!fallback.summary.contains("invalid first output"));
+        assert!(!fallback.summary.contains("invalid repair output"));
         assert_eq!(
             db.query_row(
                 "SELECT kind FROM events ORDER BY id DESC LIMIT 1",

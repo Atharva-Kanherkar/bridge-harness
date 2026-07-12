@@ -38,7 +38,10 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     )?;
     connection.execute(
         "UPDATE worker_leases SET lease_status='expired',updated_at=?1
-         WHERE session_id IN (SELECT id FROM sessions WHERE status IN ('working','waiting'))",
+         WHERE lease_status IN ('active','warm') AND session_id IN (
+            SELECT session_id FROM worker_runtime
+            WHERE lifecycle_state IN ('starting','working','waiting','warm','checkpointing','resuming','restored','failed')
+         )",
         params![now],
     )?;
     connection.execute(

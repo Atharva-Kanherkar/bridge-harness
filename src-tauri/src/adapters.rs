@@ -23,6 +23,7 @@ pub trait AdapterRuntime: Send {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownReason {
     UserStopped,
+    UserCancelled,
     Replaced,
     Completed,
     Failed,
@@ -33,6 +34,7 @@ impl ShutdownReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::UserStopped => "user_stopped",
+            Self::UserCancelled => "user_cancelled",
             Self::Replaced => "replaced",
             Self::Completed => "completed",
             Self::Failed => "failed",
