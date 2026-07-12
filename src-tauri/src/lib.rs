@@ -114,6 +114,75 @@ fn get_state(state: State<AppState>) -> Result<BridgeState, BridgeError> {
     store::state(&state.db.lock().unwrap())
 }
 
+fn session_forest_snapshot(
+    db: &Connection,
+    session_id: &str,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    let workspace_id: String = db.query_row(
+        "SELECT workspace_id FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let config = policy::PolicyConfig::default();
+    Ok(SessionForestSnapshot {
+        session_id: session_id.to_owned(),
+        entries: store::session_entries(db, session_id)?,
+        head: store::session_head(db, session_id)?,
+        leaves: session_forest::SessionForest::new(db)
+            .branch_leaves(session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+        worker_leases: store::worker_leases(db, &workspace_id)?,
+        worker_runtimes: store::worker_runtimes(db, &workspace_id)?,
+        worker_queue: store::worker_queue_requests(db, &workspace_id)?,
+        usage: store::usage_ledger(db, &workspace_id, None)?,
+        reasons: store::workspace_reason_events(db, &workspace_id)?,
+        policy_limits: PolicyLimits {
+            max_workers_per_turn: config.max_workers_per_turn as i64,
+            max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
+            max_capability_units_per_turn: config.max_capability_units_per_turn,
+        },
+    })
+}
+
+#[tauri::command]
+fn get_session_forest(
+    session_id: String,
+    state: State<AppState>,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    session_forest_snapshot(&state.db.lock().unwrap(), &session_id)
+}
+
+#[tauri::command]
+fn activate_session_entry(
+    session_id: String,
+    entry_id: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    let db = state.db.lock().unwrap();
+    let snapshot = activate_session_entry_records(&db, &session_id, &entry_id)?;
+    let _ = app.emit("state-changed", ());
+    Ok(snapshot)
+}
+
+fn activate_session_entry_records(
+    db: &Connection,
+    session_id: &str,
+    entry_id: &str,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    session_forest::SessionForest::new(db)
+        .move_head(session_id, Some(entry_id))
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "session-forest",
+        "session.head_moved",
+        session_id,
+        &format!("Conversation head moved to {entry_id}; files were not changed"),
+    )?;
+    session_forest_snapshot(db, session_id)
+}
+
 #[tauri::command]
 fn add_project(path: String, state: State<AppState>) -> Result<BridgeState, BridgeError> {
     let clean = git::validate_repo(Path::new(&path))?;
@@ -2983,6 +3052,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             health,
             get_state,
+            get_session_forest,
+            activate_session_entry,
             add_project,
             create_workspace,
             start_session,
@@ -3125,6 +3196,33 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn sqlite_snapshot_replays_forest_and_rewind_changes_only_active_head() {
+        let db = archive_fixture();
+        let before_entries = store::session_entries(&db, "s").unwrap();
+        let before_workspace_path: String = db
+            .query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get(0))
+            .unwrap();
+        let initial = session_forest_snapshot(&db, "s").unwrap();
+        assert_eq!(initial.head.unwrap().active_entry_id.as_deref(), Some("e2"));
+        assert_eq!(initial.entries.len(), 2);
+        assert_eq!(initial.leaves.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), vec!["e2"]);
+        assert_eq!(initial.worker_leases.len(), 1);
+        assert_eq!(initial.usage.len(), 1);
+
+        let rewound = activate_session_entry_records(&db, "s", "e1").unwrap();
+        assert_eq!(rewound.head.unwrap().active_entry_id.as_deref(), Some("e1"));
+        assert_eq!(store::session_entries(&db, "s").unwrap(), before_entries);
+        assert_eq!(
+            db.query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            before_workspace_path
+        );
+        assert!(rewound.reasons.iter().any(|event| {
+            event.kind == "session.head_moved" && event.body.contains("files were not changed")
+        }));
     }
 
     #[test]

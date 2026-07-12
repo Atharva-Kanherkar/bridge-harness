@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, Harness, Health, TerminalChunk } from "./types";
+import type { AgentEvent, BridgeState, Harness, Health, SessionEntry, SessionForestSnapshot, TerminalChunk } from "./types";
 import { safeSlug } from "./utils";
 
-const isTauri = () => "__TAURI_INTERNALS__" in window;
+const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const agentListeners = new Set<(event: AgentEvent) => void>();
@@ -44,6 +44,57 @@ let mockState: BridgeState = {
 function agentEvent(id: number, sessionId: string, kind: string, fields: Partial<AgentEvent> = {}): AgentEvent {
   return { id, sessionId, sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: { adapter: "fake" }, createdAt: new Date().toISOString(), ...fields };
 }
+function forestEntry(id: string, sessionId: string, sequence: number, kind: string, payload: Record<string, unknown>, parentEntryId: string | null): SessionEntry {
+  return { id, sessionId, parentEntryId, sequence, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: now };
+}
+const demoEntries: SessionEntry[] = [
+  forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor." }, null),
+  forestEntry("entry-2", "session-1", 2, "checkpoint", { schemaVersion: 1, summary: "Policy and schema decisions are durable", decisions: ["SQLite is authoritative"] }, "entry-1"),
+  forestEntry("entry-3", "session-1", 3, "assistant.message", { text: "Delegating implementation and verification." }, "entry-2"),
+  forestEntry("entry-4a", "session-1", 4, "user.message", { text: "Try the direct implementation path." }, "entry-3"),
+  forestEntry("entry-5a", "session-1", 5, "assistant.message", { text: "This is the inactive branch." }, "entry-4a"),
+  forestEntry("entry-4b", "session-1", 6, "user.message", { text: "Use isolated workers instead." }, "entry-3"),
+  forestEntry("entry-5b", "session-1", 7, "compaction", { schemaVersion: 1, summary: "Workers own isolated paths", firstRetainedEntryId: "entry-6b", tokensBefore: 9200, filesTouched: ["src-tauri/src/lib.rs"], reason: "phase_boundary", sourceAgent: "session-1" }, "entry-4b"),
+  forestEntry("entry-6b", "session-1", 8, "branch.summary", { summary: "Selected isolated-worker branch" }, "entry-5b"),
+  forestEntry("entry-7b", "session-1", 9, "worker.result", { status: "completed", summary: "Lifecycle implementation verified", decisions: ["Keep SQLite authoritative"], tests: ["130 Rust tests"] }, "entry-6b"),
+  forestEntry("entry-raw", "session-1", 10, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-7b")
+];
+const mockForests: Record<string, SessionForestSnapshot> = {
+  "session-1": {
+    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[9]],
+    workerLeases: [
+      { sessionId: "session-1w", workspaceId: "demo-1", role: "implementation", capabilityTier: "strong", taskFamily: "implementation", ownedPaths: ["src/auth/**"], writeMode: "isolated", leaseStatus: "active", expiresAt: null, createdAt: now, updatedAt: now },
+      { sessionId: "session-1w2", workspaceId: "demo-1", role: "verification", capabilityTier: "strong", taskFamily: "verification", ownedPaths: ["src/auth/**"], writeMode: "readOnly", leaseStatus: "released", expiresAt: null, createdAt: now, updatedAt: now }
+    ],
+    workerRuntimes: [
+      { sessionId: "session-1w", parentSessionId: "session-1", lifecycleState: "working", taskFamily: "implementation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: "/tmp/bridge/worker-1w", worktreeBranch: "bridge/worker-1w", lastResult: null, updatedAt: now },
+      { sessionId: "session-1w2", parentSessionId: "session-1", lifecycleState: "completed", taskFamily: "verification", compatibilityKey: "demo", resultStatus: "reported", retryCount: 0, warmUntil: null, worktreePath: null, worktreeBranch: null, lastResult: { status: "completed", summary: "All 42 auth tests pass", tests: ["auth suite"] }, updatedAt: now }
+    ],
+    workerQueue: [{ id: "queue-1", parentSessionId: "session-1", workspaceId: "demo-1", turnId: "mock-turn-1", request: { role: "implementation", objective: "Update the auth serializer", ownedPaths: ["src/auth/**"], writeMode: "isolated", reason: "owned_path_conflict" }, actualModel: "gpt-5.6-terra", queueStatus: "queued", sequence: 1, dispatchedSessionId: null, createdAt: now, updatedAt: now }],
+    usage: [
+      { id: 1, workspaceId: "demo-1", sessionId: "session-1", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 38, capabilityUnits: 0, runtimeMs: null, source: "provider.codex", createdAt: now },
+      { id: 2, workspaceId: "demo-1", sessionId: "session-1w", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: null, capabilityUnits: 8, runtimeMs: null, source: "policy.spawn.strong", createdAt: now }
+    ],
+    reasons: [
+      { id: 106, source: "adapter", kind: "session.shutdown", entityId: "session-old", body: "user_stopped", createdAt: now },
+      { id: 105, source: "compaction", kind: "checkpoint.turn_started", entityId: "session-1", body: "phase_boundary", createdAt: now },
+      { id: 104, source: "worker-pool", kind: "worker.queued", entityId: "queue-1", body: "owned_path_conflict: src/auth/**", createdAt: now },
+      { id: 103, source: "policy", kind: "policy.rejected", entityId: "session-1", body: "turn_budget_exhausted", createdAt: now },
+      { id: 102, source: "restoration", kind: "session.restored", entityId: "session-1w2", body: "checkpoint_restored", createdAt: now },
+      { id: 101, source: "policy", kind: "worker.spawned", entityId: "session-1w", body: "implementation strong isolated", createdAt: now }
+    ],
+    policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 }
+  }
+};
+function mockForest(sessionId: string): SessionForestSnapshot {
+  const existing = mockForests[sessionId];
+  if (existing) return structuredClone(existing);
+  const session = mockState.sessions.find(item => item.id === sessionId);
+  const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "none", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 } };
+  mockForests[sessionId] = created;
+  return structuredClone(created);
+}
 function snapshot() { return structuredClone(mockState); }
 function emitState() { stateListeners.forEach(listener => listener()); }
 function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent> = {}) {
@@ -63,6 +114,35 @@ const mockHealth: Health = {
 export const bridgeApi = {
   health: (): Promise<Health> => isTauri() ? invoke("health") : Promise.resolve(structuredClone(mockHealth)),
   state: (): Promise<BridgeState> => isTauri() ? invoke("get_state") : Promise.resolve(snapshot()),
+  sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? invoke("get_session_forest", { sessionId }) : Promise.resolve(mockForest(sessionId)),
+  activateSessionEntry: async (sessionId: string, entryId: string): Promise<SessionForestSnapshot> => {
+    if (isTauri()) return invoke("activate_session_entry", { sessionId, entryId });
+    if (!mockForests[sessionId]) mockForest(sessionId);
+    const forest = mockForests[sessionId];
+    if (!forest.entries.some(entry => entry.id === entryId)) throw new Error("Entry is not in this session");
+    if (forest.head) forest.head.activeEntryId = entryId;
+    forest.reasons.unshift({ id: nextEventId++, source: "session-forest", kind: "session.head_moved", entityId: sessionId, body: `Conversation head moved to ${entryId}; files were not changed`, createdAt: new Date().toISOString() });
+    emitState(); return structuredClone(forest);
+  },
+  compactSession: async (sessionId: string): Promise<void> => {
+    if (isTauri()) return invoke("compact_session", { sessionId });
+    if (!mockForests[sessionId]) mockForest(sessionId);
+    const forest = mockForests[sessionId];
+    const parent = forest.head?.activeEntryId ?? null;
+    const sequence = Math.max(0, ...forest.entries.map(entry => entry.sequence));
+    const checkpointId = `checkpoint-${nextEventId++}`;
+    const compactionId = `compaction-${nextEventId++}`;
+    const retainedId = `retained-${nextEventId++}`;
+    forest.entries.push(
+      forestEntry(checkpointId, sessionId, sequence + 1, "checkpoint", { schemaVersion: 1, summary: "Manual checkpoint", sourceAgent: sessionId }, parent),
+      forestEntry(compactionId, sessionId, sequence + 2, "compaction", { schemaVersion: 1, summary: "Manual compaction", reason: "manual", firstRetainedEntryId: retainedId, sourceAgent: sessionId }, checkpointId),
+      forestEntry(retainedId, sessionId, sequence + 3, "branch.summary", { summary: "Manual compaction boundary" }, compactionId)
+    );
+    if (forest.head) { forest.head.activeEntryId = retainedId; forest.head.latestCheckpointEntryId = checkpointId; }
+    forest.leaves = [...forest.leaves.filter(entry => entry.id !== parent), forest.entries.at(-1)!];
+    forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
+    emitState();
+  },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return invoke("add_project", { path });
     const name = path.split("/").filter(Boolean).at(-1) || "Repository";
