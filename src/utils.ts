@@ -13,3 +13,12 @@ const transitions: Record<SessionStatus, SessionStatus[]> = {
 export function canTransition(from: SessionStatus, to: SessionStatus): boolean {
   return from === to || transitions[from].includes(to);
 }
+
+export function formatElapsed(startedAt: string | null | undefined, now = Date.now()): string {
+  if (!startedAt) return "—";
+  const elapsed = Math.max(0, now - new Date(startedAt).getTime());
+  if (!Number.isFinite(elapsed)) return "—";
+  const minutes = Math.floor(elapsed / 60_000);
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours}h ${String(minutes % 60).padStart(2, "0")}m` : `${minutes}m`;
+}

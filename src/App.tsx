@@ -4,6 +4,7 @@ import { Activity, Archive, Bot, Box, ChevronDown, CircleDot, Clock3, Code2, Com
 import { bridgeApi } from "./api";
 import type { BridgeState, Harness, Health, Session, SessionStatus, Workspace } from "./types";
 import { TerminalPane } from "./components/TerminalPane";
+import { formatElapsed } from "./utils";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", working: "WORKING", waiting: "NEEDS YOU", ready: "READY", stopped: "STOPPED", failed: "FAILED" };
@@ -27,6 +28,7 @@ export function App() {
   const [composer, setComposer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [clock, setClock] = useState(Date.now());
 
   const reload = useCallback(async () => {
     const next = await bridgeApi.state(); setState(next);
@@ -34,6 +36,7 @@ export function App() {
   }, []);
 
   useEffect(() => { void Promise.all([reload(), bridgeApi.health().then(setHealth)]); let off: (() => void) | undefined; void bridgeApi.onStateChanged(reload).then(fn => off = fn); return () => off?.(); }, [reload]);
+  useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.metaKey && e.key.toLowerCase() === "k") { e.preventDefault(); setModal("palette"); }
@@ -116,7 +119,7 @@ export function App() {
         <div className="session-strip">
           {sessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""}`} key={s.id} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}>{s.harness === "shell" ? <TerminalSquare size={14}/> : <Bot size={14}/>}</span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]}</small></span></button>)}
           <button className="new-session" onClick={() => void toggleSession(undefined, session?.harness === "codex" ? "claude" : "codex")}><Plus size={14}/> Agent</button>
-          <div className="session-metrics"><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
+          <div className="session-metrics"><span>ELAPSED <b>{formatElapsed(session?.startedAt, clock)}</b></span><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
         </div>
         <div className="content-tabs"><button className={activeTab === "agent" ? "active" : ""} onClick={() => setActiveTab("agent")}><MessageSquareText size={14}/> Agent</button><button className={activeTab === "changes" ? "active" : ""} onClick={() => setActiveTab("changes")}><FileCode2 size={14}/> Changes <span>{selected.dirtyFiles}</span></button><button className={activeTab === "events" ? "active" : ""} onClick={() => setActiveTab("events")}><Activity size={14}/> Events</button></div>
         <section className="content-body">
