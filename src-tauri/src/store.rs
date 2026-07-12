@@ -35,7 +35,15 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
     }
 
     if has_user_schema(connection)? && path != Path::new(":memory:") {
-        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let (busy, _, _): (i64, i64, i64) =
+            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        if busy != 0 {
+            return Err(BridgeError::Invalid(
+                "database WAL is busy; refusing to create an incomplete migration backup".into(),
+            ));
+        }
         backup_database(path)?;
     }
 
@@ -1194,5 +1202,40 @@ mod tests {
         assert_eq!(rows[0].id, id);
         assert_eq!(rows[0].turn_id.as_deref(), Some("turn-1"));
         assert_eq!(rows[0].capability_units, 3);
+    }
+
+    #[test]
+    fn busy_wal_aborts_before_migration_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        create_legacy_fixture(&path);
+
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("PRAGMA journal_mode=WAL; BEGIN")
+            .unwrap();
+        let _: i64 = reader
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute("UPDATE sessions SET label='Changed' WHERE id='s'", [])
+            .unwrap();
+        drop(writer);
+
+        let error = open(&path).unwrap_err().to_string();
+        assert!(error.contains("WAL is busy"), "unexpected error: {error}");
+        assert!(backup_paths(dir.path()).is_empty());
+        let raw = Connection::open(&path).unwrap();
+        let has_versions: bool = raw
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!has_versions);
+        drop(raw);
+        reader.execute_batch("ROLLBACK").unwrap();
     }
 }

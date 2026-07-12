@@ -43,9 +43,30 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.text) next.text = event.text; next.data = event.data; items.set(itemKey,next);
   }
   return [...items.values()]
+    .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
     .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
     .filter(item => item.type !== "message" || item.text.trim().length > 0)
     .sort((a,b)=>a.sequence-b.sequence);
+}
+
+export function stripWorkerResultBlocks(text: string): string {
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const trimmed = lines[index].trimStart();
+    const tag = trimmed.startsWith("```") ? trimmed.replace(/^`+/, "").trim().toLowerCase() : "";
+    if (tag.includes("bridge") && tag.includes("worker") && tag.includes("result")) {
+      const closing = lines.findIndex((line, candidate) => candidate > index && line.trimStart().startsWith("```"));
+      if (closing >= 0) {
+        index = closing + 1;
+        continue;
+      }
+    }
+    kept.push(lines[index]);
+    index += 1;
+  }
+  return kept.join("\n").trim();
 }
 
 function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}
