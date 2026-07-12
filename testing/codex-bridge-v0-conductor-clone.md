@@ -37,7 +37,7 @@
 ## Smoke Tests
 
 - `bun run check` passes TypeScript checks for all packages.
-- `bun test` passes unit and integration tests.
+- `bun run test` passes frontend and native unit/integration tests.
 - `bun run build` produces the frontend bundle and daemon artifacts.
 - `bun run tauri build --debug` produces a launchable macOS application bundle.
 - Launching the app shows the primary shell without console errors.
