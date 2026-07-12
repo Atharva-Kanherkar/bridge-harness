@@ -8,6 +8,7 @@ mod git;
 mod model;
 mod orchestrator;
 mod policy;
+mod restoration;
 mod session_forest;
 mod store;
 mod worker_guard;
@@ -218,16 +219,26 @@ fn start_session(
         params![workspace_id],
         |r| r.get(0),
     )?;
-    let existing: Option<String> = db.query_row(
-        "SELECT id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
+    let existing: Option<(String, Option<String>)> = db.query_row(
+        "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
         params![workspace_id, adapter_id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     ).ok();
     let session_id = existing
-        .clone()
+        .as_ref()
+        .map(|(id, _)| id.clone())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let stored_provider_id = existing
+        .as_ref()
+        .and_then(|(_, provider_id)| provider_id.clone());
+    let checkpoint_context = if existing.is_some() {
+        restoration::checkpoint_context(&db, &session_id)?
+    } else {
+        None
+    };
     drop(db);
-    if state.adapters.lock().unwrap().contains_key(&session_id) {
+    let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
+    if process_is_hot {
         let current_model: Option<String> = state
             .db
             .lock()
@@ -240,35 +251,170 @@ fn start_session(
             .ok()
             .flatten();
         if current_model.as_deref() == chosen_model.as_deref() {
-            return store::state(&state.db.lock().unwrap());
+            let db = state.db.lock().unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Hot,
+                if stored_provider_id.is_some() {
+                    ResumeEligibility::Native
+                } else {
+                    ResumeEligibility::CheckpointRestored
+                },
+                stored_provider_id.as_deref(),
+            )?;
+            return store::state(&db);
         }
+        let db = state.db.lock().unwrap();
+        record_shutdown_reason(&db, &session_id, adapters::ShutdownReason::Replaced)?;
+        drop(db);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-            runtime.stop();
+            runtime.stop(adapters::ShutdownReason::Replaced);
         }
     }
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
-    let orchestrator_instructions =
-        format!("{}\n\n{}", orchestrator::briefing(), delegation::protocol(0));
-    let started = state.adapter_registry.start(
-        adapter_id,
-        &path,
-        chosen_model.as_deref(),
-        None,
-        Some(orchestrator_instructions.as_str()),
-        None,
-    )?;
+    let orchestrator_instructions = format!(
+        "{}\n\n{}",
+        orchestrator::briefing(),
+        delegation::protocol(0)
+    );
+    let plan = restoration::select_plan(
+        false,
+        stored_provider_id.as_deref(),
+        state.adapter_registry.supports_native_resume(adapter_id),
+        checkpoint_context.is_some(),
+    );
+    let start_fresh = |instructions: &str| {
+        state.adapter_registry.start(
+            adapter_id,
+            adapters::StartRequest {
+                cwd: &path,
+                model: chosen_model.as_deref(),
+                effort: None,
+                instructions: Some(instructions),
+                write_mode: None,
+            },
+        )
+    };
+    let checkpoint_instructions = checkpoint_context
+        .as_ref()
+        .map(|context| format!("{orchestrator_instructions}\n\n{context}"));
+    let (started, restoration_mode, resume_eligibility) = match plan {
+        restoration::RestorationPlan::Native => {
+            let provider_id = stored_provider_id
+                .as_deref()
+                .expect("native plan has provider id");
+            match state.adapter_registry.resume(
+                adapter_id,
+                adapters::ResumeRequest {
+                    provider_session_id: provider_id,
+                    cwd: &path,
+                    model: chosen_model.as_deref(),
+                    effort: None,
+                    instructions: Some(orchestrator_instructions.as_str()),
+                    write_mode: None,
+                },
+            ) {
+                Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
+                Err(error) => {
+                    let db = state.db.lock().unwrap();
+                    restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
+                    drop(db);
+                    match restoration::fallback_after_failure(
+                        restoration::RestorationPlan::Native,
+                        checkpoint_instructions.is_some(),
+                    ) {
+                        Some(restoration::RestorationPlan::CheckpointRestored) => {
+                            match start_fresh(
+                                checkpoint_instructions
+                                    .as_deref()
+                                    .expect("checkpoint fallback has stored context"),
+                            ) {
+                                Ok(started) => (
+                                    started,
+                                    RestorationMode::CheckpointRestored,
+                                    ResumeEligibility::CheckpointRestored,
+                                ),
+                                Err(error) => {
+                                    let db = state.db.lock().unwrap();
+                                    restoration::record_checkpoint_restore_failed(
+                                        &db,
+                                        &session_id,
+                                        &error.to_string(),
+                                    )?;
+                                    drop(db);
+                                    (
+                                        start_fresh(&orchestrator_instructions)?,
+                                        RestorationMode::Fresh,
+                                        ResumeEligibility::Fresh,
+                                    )
+                                }
+                            }
+                        }
+                        Some(restoration::RestorationPlan::Fresh) => (
+                            start_fresh(&orchestrator_instructions)?,
+                            RestorationMode::Fresh,
+                            ResumeEligibility::Fresh,
+                        ),
+                        _ => unreachable!("native failure has a deterministic fallback"),
+                    }
+                }
+            }
+        }
+        restoration::RestorationPlan::CheckpointRestored => {
+            match start_fresh(
+                checkpoint_instructions
+                    .as_deref()
+                    .expect("checkpoint plan has stored context"),
+            ) {
+                Ok(started) => (
+                    started,
+                    RestorationMode::CheckpointRestored,
+                    ResumeEligibility::CheckpointRestored,
+                ),
+                Err(error) => {
+                    debug_assert_eq!(
+                        restoration::fallback_after_failure(
+                            restoration::RestorationPlan::CheckpointRestored,
+                            true,
+                        ),
+                        Some(restoration::RestorationPlan::Fresh)
+                    );
+                    let db = state.db.lock().unwrap();
+                    restoration::record_checkpoint_restore_failed(
+                        &db,
+                        &session_id,
+                        &error.to_string(),
+                    )?;
+                    drop(db);
+                    (
+                        start_fresh(&orchestrator_instructions)?,
+                        RestorationMode::Fresh,
+                        ResumeEligibility::Fresh,
+                    )
+                }
+            }
+        }
+        restoration::RestorationPlan::Fresh => (
+            start_fresh(&orchestrator_instructions)?,
+            RestorationMode::Fresh,
+            ResumeEligibility::Fresh,
+        ),
+        restoration::RestorationPlan::Hot => unreachable!("hot sessions returned above"),
+    };
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let reader = started.reader;
+    let started_at = Utc::now().to_rfc3339();
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
             "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,requested_tier=?5,label=?6,depth=0,parent_session_id=NULL WHERE id=?1",
             params![
                 session_id,
-                Utc::now().to_rfc3339(),
+                started_at,
                 thread_id,
                 chosen_model,
                 orchestrator::TIER.as_str(),
@@ -283,13 +429,20 @@ fn start_session(
                 workspace_id,
                 adapter_id,
                 session_label,
-                Utc::now().to_rfc3339(),
+                started_at,
                 thread_id,
                 chosen_model,
                 orchestrator::TIER.as_str()
             ],
         )?;
     }
+    restoration::set_head_state(
+        &db,
+        &session_id,
+        restoration_mode,
+        resume_eligibility,
+        Some(&thread_id),
+    )?;
     db.execute(
         "UPDATE workspaces SET status='working' WHERE id=?1",
         params![workspace_id],
@@ -299,7 +452,11 @@ fn start_session(
         "adapter",
         "session.started",
         &session_id,
-        &format!("Started {session_label} on {}", chosen_model.as_deref().unwrap_or("default")),
+        &format!(
+            "Started {session_label} on {} with {} restoration",
+            chosen_model.as_deref().unwrap_or("default"),
+            restoration_mode.as_str()
+        ),
     )?;
     if adapter_id == orchestrator::HARNESS {
         let context = agent::NormalizedEvent {
@@ -338,7 +495,13 @@ fn start_session(
         .unwrap()
         .insert(session_id.clone(), started.runtime);
 
-    spawn_reader_thread(app.clone(), session_id.clone(), current_turn, reader);
+    spawn_reader_thread(
+        app.clone(),
+        session_id.clone(),
+        started_at,
+        current_turn,
+        reader,
+    );
     let _ = app.emit("state-changed", ());
     store::state(&state.db.lock().unwrap())
 }
@@ -348,6 +511,7 @@ fn start_session(
 fn spawn_reader_thread(
     app: AppHandle,
     session_id: String,
+    launch_started_at: String,
     current_turn: Arc<Mutex<Option<String>>>,
     mut reader: Box<dyn BufRead + Send>,
 ) {
@@ -364,6 +528,19 @@ fn spawn_reader_thread(
             }
         }
         let state = app.state::<AppState>();
+        let is_current_launch = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT started_at=?2 FROM sessions WHERE id=?1",
+                params![session_id, launch_started_at],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        if !is_current_launch {
+            return;
+        }
         state.adapters.lock().unwrap().remove(&session_id);
         notify_parent_on_worker_exit(&app, &session_id);
         let db = state.db.lock().unwrap();
@@ -884,11 +1061,13 @@ fn launch_worker(
 
     let started = match state.adapter_registry.start(
         &harness,
-        &reservation.path,
-        Some(model.as_str()),
-        Some(&effort),
-        Some(instructions.as_str()),
-        Some(directive.write_mode),
+        adapters::StartRequest {
+            cwd: &reservation.path,
+            model: Some(model.as_str()),
+            effort: Some(&effort),
+            instructions: Some(instructions.as_str()),
+            write_mode: Some(directive.write_mode),
+        },
     ) {
         Ok(started) => started,
         Err(error) => {
@@ -924,13 +1103,15 @@ fn launch_worker(
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let reader = started.reader;
+    let started_at = Utc::now().to_rfc3339();
 
     {
         let db = state.db.lock().unwrap();
         let _ = db.execute(
-            "UPDATE sessions SET status='working',provider_session_id=?2,label=?3,model=?4,effort=?5 WHERE id=?1",
+            "UPDATE sessions SET status='working',started_at=?2,provider_session_id=?3,label=?4,model=?5,effort=?6 WHERE id=?1",
             params![
                 session_id,
+                started_at,
                 thread_id,
                 label,
                 model,
@@ -986,7 +1167,13 @@ fn launch_worker(
         .lock()
         .unwrap()
         .insert(session_id.clone(), started.runtime);
-    spawn_reader_thread(app.clone(), session_id.clone(), current_turn, reader);
+    spawn_reader_thread(
+        app.clone(),
+        session_id.clone(),
+        started_at,
+        current_turn,
+        reader,
+    );
     *state
         .delegations
         .lock()
@@ -1465,8 +1652,12 @@ fn stop_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    {
+        let db = state.db.lock().unwrap();
+        record_shutdown_reason(&db, &session_id, adapters::ShutdownReason::UserStopped)?;
+    }
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-        runtime.stop();
+        runtime.stop(adapters::ShutdownReason::UserStopped);
     }
     if let Some(mut runtime) = state.runtimes.lock().unwrap().remove(&session_id) {
         runtime
@@ -1495,6 +1686,27 @@ fn stop_session(
     )?;
     let _ = app.emit("state-changed", ());
     store::state(&db)
+}
+
+fn record_shutdown_reason(
+    db: &Connection,
+    session_id: &str,
+    reason: adapters::ShutdownReason,
+) -> Result<(), BridgeError> {
+    session_forest::SessionForest::new(db)
+        .append(
+            session_id,
+            session_forest::EntryKind::SessionStatus,
+            serde_json::json!({"status":"stopped","reason":reason.as_str()}),
+        )
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "adapter",
+        "session.shutdown",
+        session_id,
+        reason.as_str(),
+    )
 }
 #[tauri::command]
 fn refresh_workspace(

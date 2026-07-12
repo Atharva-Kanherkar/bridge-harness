@@ -18,6 +18,46 @@ impl CapabilityTier {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RestorationMode {
+    Hot,
+    Native,
+    CheckpointRestored,
+    #[default]
+    Fresh,
+}
+
+impl RestorationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hot => "hot",
+            Self::Native => "native",
+            Self::CheckpointRestored => "checkpoint_restored",
+            Self::Fresh => "fresh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeEligibility {
+    Native,
+    CheckpointRestored,
+    #[default]
+    Fresh,
+}
+
+impl ResumeEligibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::CheckpointRestored => "checkpoint_restored",
+            Self::Fresh => "fresh",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Harness {
@@ -114,6 +154,7 @@ pub struct Session {
     pub effort: Option<String>,
     pub parent_session_id: Option<String>,
     pub depth: Option<i64>,
+    pub restoration_mode: RestorationMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,7 +224,8 @@ pub struct SessionHead {
     pub session_id: String,
     pub active_entry_id: Option<String>,
     pub native_provider_session_id: Option<String>,
-    pub restoration_mode: String,
+    pub restoration_mode: RestorationMode,
+    pub resume_eligibility: ResumeEligibility,
     pub latest_checkpoint_entry_id: Option<String>,
     pub updated_at: String,
 }

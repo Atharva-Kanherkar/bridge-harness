@@ -1,6 +1,7 @@
 export type Harness = "claude" | "codex" | "shell";
 export type SessionStatus = "idle" | "working" | "waiting" | "ready" | "stopped" | "failed";
 export type CapabilityTier = "fast" | "standard" | "strong";
+export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
 
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Workspace {
@@ -14,6 +15,7 @@ export interface Session {
   providerSessionId?: string | null; activeTurnId?: string | null; model?: string | null;
   requestedTier?: CapabilityTier | null;
   effort?: string | null; parentSessionId?: string | null; depth?: number | null;
+  restorationMode: RestorationMode;
 }
 export interface BridgeEvent { id: number; source: string; kind: string; entityId: string; body: string; createdAt: string }
 export interface AgentEvent {

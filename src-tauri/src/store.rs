@@ -7,7 +7,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 3;
+const LATEST_SCHEMA_VERSION: i64 = 4;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -17,9 +17,33 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     connection.execute_batch("PRAGMA foreign_keys=ON;")?;
     run_migrations(&mut connection, path)?;
     connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    let now = Utc::now().to_rfc3339();
+    connection.execute(
+        "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
+         SELECT id,provider_session_id,'fresh',CASE WHEN provider_session_id IS NOT NULL THEN 'native' ELSE 'fresh' END,?1
+         FROM sessions WHERE status IN ('working','waiting')",
+        params![now],
+    )?;
+    connection.execute(
+        "UPDATE session_heads
+         SET native_provider_session_id=COALESCE(native_provider_session_id,(SELECT provider_session_id FROM sessions WHERE sessions.id=session_heads.session_id)),
+             resume_eligibility=CASE
+                 WHEN COALESCE(native_provider_session_id,(SELECT provider_session_id FROM sessions WHERE sessions.id=session_heads.session_id)) IS NOT NULL THEN 'native'
+                 WHEN active_entry_id IS NOT NULL OR latest_checkpoint_entry_id IS NOT NULL THEN 'checkpoint_restored'
+                 ELSE 'fresh'
+             END,
+             updated_at=?1
+         WHERE session_id IN (SELECT id FROM sessions WHERE status IN ('working','waiting'))",
+        params![now],
+    )?;
+    connection.execute(
+        "UPDATE worker_leases SET lease_status='expired',updated_at=?1
+         WHERE session_id IN (SELECT id FROM sessions WHERE status IN ('working','waiting'))",
+        params![now],
+    )?;
     connection.execute(
         "UPDATE sessions SET status='stopped', ended_at=?1 WHERE status IN ('working','waiting')",
-        params![Utc::now().to_rfc3339()],
+        params![now],
     )?;
     connection.execute(
         "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting')",
@@ -53,6 +77,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             1 => migration_1_current_schema(&transaction)?,
             2 => migration_2_session_forest(&transaction)?,
             3 => migration_3_capability_tiers(&transaction)?,
+            4 => migration_4_resume_eligibility(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -269,6 +294,15 @@ fn migration_3_capability_tiers(transaction: &Transaction<'_>) -> Result<(), Bri
     add_column_if_missing(transaction, "sessions", "requested_tier", "TEXT")
 }
 
+fn migration_4_resume_eligibility(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "session_heads",
+        "resume_eligibility",
+        "TEXT NOT NULL DEFAULT 'fresh'",
+    )
+}
+
 #[derive(Debug)]
 struct LegacyAgentEvent {
     id: i64,
@@ -374,7 +408,7 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model,requested_tier,effort,parent_session_id,depth FROM sessions ORDER BY rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)? }))?;
+    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh') FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?) }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -443,6 +477,21 @@ fn capability_tier(value: Option<String>) -> Option<CapabilityTier> {
         Some("standard") => Some(CapabilityTier::Standard),
         Some("strong") => Some(CapabilityTier::Strong),
         _ => None,
+    }
+}
+fn restoration_mode(value: &str) -> RestorationMode {
+    match value {
+        "hot" => RestorationMode::Hot,
+        "native" => RestorationMode::Native,
+        "checkpoint_restored" => RestorationMode::CheckpointRestored,
+        _ => RestorationMode::Fresh,
+    }
+}
+fn resume_eligibility(value: &str) -> ResumeEligibility {
+    match value {
+        "native" => ResumeEligibility::Native,
+        "checkpoint_restored" => ResumeEligibility::CheckpointRestored,
+        _ => ResumeEligibility::Fresh,
     }
 }
 pub fn harness_name(value: &Harness) -> &'static str {
@@ -560,7 +609,7 @@ pub fn session_entries(
 
 pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionHead>, BridgeError> {
     db.query_row(
-        "SELECT session_id,active_entry_id,native_provider_session_id,restoration_mode,latest_checkpoint_entry_id,updated_at
+        "SELECT session_id,active_entry_id,native_provider_session_id,restoration_mode,resume_eligibility,latest_checkpoint_entry_id,updated_at
          FROM session_heads WHERE session_id=?1",
         params![session_id],
         |row| {
@@ -568,9 +617,10 @@ pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionH
                 session_id: row.get(0)?,
                 active_entry_id: row.get(1)?,
                 native_provider_session_id: row.get(2)?,
-                restoration_mode: row.get(3)?,
-                latest_checkpoint_entry_id: row.get(4)?,
-                updated_at: row.get(5)?,
+                restoration_mode: restoration_mode(&row.get::<_, String>(3)?),
+                resume_eligibility: resume_eligibility(&row.get::<_, String>(4)?),
+                latest_checkpoint_entry_id: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         },
     )
@@ -969,7 +1019,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4]);
         assert_eq!(state(&db).unwrap().agent_events.len(), 2);
         drop(db);
         let backups = backup_paths(dir.path());
@@ -984,7 +1034,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1047,6 +1097,32 @@ mod tests {
     }
 
     #[test]
+    fn resume_eligibility_migration_preserves_existing_restoration_state() {
+        let mut db = Connection::open(":memory:").unwrap();
+        {
+            let transaction = db.transaction().unwrap();
+            migration_1_current_schema(&transaction).unwrap();
+            migration_2_session_forest(&transaction).unwrap();
+            migration_3_capability_tiers(&transaction).unwrap();
+            transaction.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/resume-migration','now')", []).unwrap();
+            transaction.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/resume-workspace','stopped','now')", []).unwrap();
+            transaction.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,provider_session_id) VALUES('s','w','codex','Worker','stopped','reported','native-s')", []).unwrap();
+            transaction.execute("INSERT INTO session_heads(session_id,native_provider_session_id,restoration_mode,updated_at) VALUES('s','native-s','native','now')", []).unwrap();
+            transaction.commit().unwrap();
+        }
+
+        let transaction = db.transaction().unwrap();
+        migration_4_resume_eligibility(&transaction).unwrap();
+        migration_4_resume_eligibility(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let head = session_head(&db, "s").unwrap().unwrap();
+        assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
+        assert_eq!(head.restoration_mode, RestorationMode::Native);
+        assert_eq!(head.resume_eligibility, ResumeEligibility::Fresh);
+    }
+
+    #[test]
     fn migration_failure_rolls_back_objects_and_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");
@@ -1094,6 +1170,8 @@ mod tests {
         let head = session_head(&db, "s").unwrap().unwrap();
         assert_eq!(head.active_entry_id.as_deref(), Some(&*entries[1].id));
         assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
+        assert_eq!(head.restoration_mode, RestorationMode::Fresh);
+        assert_eq!(head.resume_eligibility, ResumeEligibility::Native);
     }
 
     #[test]
