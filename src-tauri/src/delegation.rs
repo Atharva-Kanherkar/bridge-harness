@@ -1,83 +1,654 @@
-//! Delegation protocol for Bridge's multi-agent tree.
+//! Typed delegation transport and worker-result protocol.
 //!
-//! A running session (the orchestrator, or any worker) delegates work by
-//! emitting a fenced directive block in its assistant message — a code fence
-//! tagged "bridge-delegate" whose body is a JSON object with harness, model,
-//! effort, task, and optional context.
-//!
-//! Bridge parses completed assistant messages, spawns the requested child
-//! session in the SAME workspace/worktree (shared context), sends it the task,
-//! and forwards the child's final summary back to the parent as a new turn.
-//! Children may delegate again up to [`MAX_DEPTH`], which is how the tree in the
-//! blueprint (orchestrator -> claude/codex -> codex/claude) is formed.
-//!
-//! No API keys and no MCP server are involved: every child is a local codex or
-//! claude process launched through the existing structured adapters using the
-//! subscription credentials already on the Mac.
+//! Harness messages may still carry fenced `bridge-delegate` JSON, but parsing
+//! immediately produces [`DelegationRequest`]. No free-form task/context object
+//! crosses that boundary. Workers return a versioned [`WorkerResult`].
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
-/// Deepest level a session may occupy. Depth 0 is the orchestrator; workers are
-/// depth >= 1. A session at `MAX_DEPTH` is told to finish the work itself
-/// instead of delegating further, which bounds the tree.
-pub const MAX_DEPTH: i64 = 3;
-
-/// Most children a single assistant message may spawn, so one confused turn
-/// cannot fan out unbounded worker processes.
+pub const SCHEMA_VERSION: u32 = 1;
+pub const DEFAULT_MAX_DEPTH: i64 = 1;
 pub const MAX_FANOUT: usize = 4;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Directive {
-    pub harness: String,
-    pub model: String,
-    pub effort: Option<String>,
-    pub task: String,
-    pub context: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerRole {
+    Research,
+    Implementation,
+    Verification,
+    Planning,
+    Documentation,
 }
 
-impl Directive {
-    fn from_value(value: &Value) -> Option<Self> {
-        let harness = normalize_harness(value.get("harness").and_then(Value::as_str)?)?;
-        let task = value
-            .get("task")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|task| !task.is_empty())?
-            .to_owned();
-        let model = value
-            .get("model")
-            .and_then(Value::as_str)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WriteMode {
+    ReadOnly,
+    Shared,
+    Isolated,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CapabilityTier {
+    Fast,
+    Standard,
+    Strong,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputContract {
+    ImplementationResult,
+    ResearchResult,
+    VerificationResult,
+    DecisionResult,
+    DocumentationResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DelegationRequest {
+    pub schema_version: u32,
+    pub role: WorkerRole,
+    pub objective: String,
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub known_facts: Vec<String>,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
+    pub relevant_files: Vec<String>,
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
+    pub write_mode: WriteMode,
+    pub capability_tier: CapabilityTier,
+    pub effort: Effort,
+    #[serde(default)]
+    pub verification: Vec<String>,
+    pub output_contract: OutputContract,
+    /// Temporary typed transport hint. Policy/capability discovery replaces it in #5/#6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Temporary runtime detail, never a durable routing semantic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl DelegationRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported delegation schema version {}",
+                self.schema_version
+            ));
+        }
+        require_non_empty("objective", &self.objective)?;
+        require_non_empty_list("acceptanceCriteria", &self.acceptance_criteria)?;
+        validate_non_empty_items("knownFacts", &self.known_facts)?;
+        validate_non_empty_items("decisions", &self.decisions)?;
+        validate_non_empty_items("relevantFiles", &self.relevant_files)?;
+        validate_non_empty_items("ownedPaths", &self.owned_paths)?;
+        validate_non_empty_items("verification", &self.verification)?;
+        if let Some(harness) = &self.harness {
+            if normalize_harness(harness).is_none() {
+                return Err(format!("unsupported harness hint: {harness}"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn runtime_harness(&self) -> String {
+        self.harness
+            .as_deref()
+            .and_then(normalize_harness)
+            .unwrap_or_else(|| "codex".into())
+    }
+
+    pub fn runtime_model(&self) -> String {
+        let harness = self.runtime_harness();
+        self.model
+            .as_deref()
             .map(|model| normalize_model(&harness, model))
-            .unwrap_or_else(|| default_model(&harness).to_owned());
-        let effort = value
-            .get("effort")
-            .and_then(Value::as_str)
-            .map(normalize_effort);
-        let context = value
-            .get("context")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|context| !context.is_empty())
-            .map(str::to_owned);
-        Some(Self {
+            .unwrap_or_else(|| default_model(&harness).to_owned())
+    }
+
+    pub fn label(&self) -> String {
+        let harness = self.runtime_harness();
+        format!(
+            "{} · {}",
+            if harness == "claude" {
+                "Claude"
+            } else {
+                "Codex"
+            },
+            model_display(&self.runtime_model())
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerResultStatus {
+    Completed,
+    Failed,
+    Cancelled,
+    Blocked,
+    NeedsDelegation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerTestResult {
+    pub command: String,
+    pub status: TestStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestedNextAction {
+    Finish,
+    Retry,
+    FollowUp,
+    RequestApproval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerResult {
+    pub schema_version: u32,
+    pub status: WorkerResultStatus,
+    pub summary: String,
+    #[serde(default)]
+    pub files_changed: Vec<String>,
+    #[serde(default)]
+    pub tests: Vec<WorkerTestResult>,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+    #[serde(default)]
+    pub remaining_work: Vec<String>,
+    pub suggested_next_action: SuggestedNextAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_role: Option<WorkerRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_task: Option<String>,
+}
+
+impl WorkerResult {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported worker-result schema version {}",
+                self.schema_version
+            ));
+        }
+        require_non_empty("summary", &self.summary)?;
+        validate_non_empty_items("filesChanged", &self.files_changed)?;
+        validate_non_empty_items("decisions", &self.decisions)?;
+        validate_non_empty_items("risks", &self.risks)?;
+        validate_non_empty_items("remainingWork", &self.remaining_work)?;
+        for test in &self.tests {
+            require_non_empty("tests.command", &test.command)?;
+        }
+        if self.status == WorkerResultStatus::NeedsDelegation {
+            if self.suggested_role.is_none() {
+                return Err("needs_delegation requires suggestedRole".into());
+            }
+            require_non_empty(
+                "suggestedTask",
+                self.suggested_task.as_deref().unwrap_or_default(),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.status == WorkerResultStatus::Failed
+    }
+
+    pub fn is_terminal_cancellation(&self) -> bool {
+        self.status == WorkerResultStatus::Cancelled
+    }
+}
+
+fn require_non_empty(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{field} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_non_empty_list(field: &str, values: &[String]) -> Result<(), String> {
+    if values.is_empty() {
+        return Err(format!("{field} must contain at least one item"));
+    }
+    validate_non_empty_items(field, values)
+}
+
+fn validate_non_empty_items(field: &str, values: &[String]) -> Result<(), String> {
+    if values.iter().any(|value| value.trim().is_empty()) {
+        Err(format!("{field} must not contain empty items"))
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseOutcome<T> {
+    Absent,
+    Parsed(T),
+    Invalid { raw: String, reason: String },
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyDirective {
+    harness: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    task: String,
+    #[serde(default)]
+    context: Option<String>,
+}
+
+impl LegacyDirective {
+    fn into_typed(self) -> Result<DelegationRequest, String> {
+        let Self {
             harness,
             model,
             effort,
             task,
             context,
-        })
+        } = self;
+        let harness =
+            normalize_harness(&harness).ok_or_else(|| format!("unsupported harness: {harness}"))?;
+        let objective = task.trim().to_owned();
+        require_non_empty("task", &objective)?;
+        let known_facts = context
+            .map(|context| context.trim().to_owned())
+            .filter(|context| !context.is_empty())
+            .into_iter()
+            .collect();
+        let request = DelegationRequest {
+            schema_version: SCHEMA_VERSION,
+            role: WorkerRole::Implementation,
+            objective,
+            acceptance_criteria: vec![
+                "Complete the objective and report concrete verification evidence".into(),
+            ],
+            known_facts,
+            decisions: Vec::new(),
+            relevant_files: Vec::new(),
+            owned_paths: Vec::new(),
+            write_mode: WriteMode::Shared,
+            capability_tier: CapabilityTier::Standard,
+            effort: parse_effort(effort.as_deref().unwrap_or("medium")),
+            verification: Vec::new(),
+            output_contract: OutputContract::ImplementationResult,
+            model: model.map(|model| normalize_model(&harness, &model)),
+            harness: Some(harness),
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+struct FencedBlock {
+    body: String,
+}
+
+fn fenced_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> Vec<FencedBlock> {
+    let mut blocks = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("```") {
+            continue;
+        }
+        let tag = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
+        if !matches_tag(&tag) {
+            continue;
+        }
+        let mut body = String::new();
+        for inner in lines.by_ref() {
+            if inner.trim_start().starts_with("```") {
+                break;
+            }
+            body.push_str(inner);
+            body.push('\n');
+        }
+        blocks.push(FencedBlock {
+            body: body.trim().to_owned(),
+        });
+    }
+    blocks
+}
+
+fn is_delegation_tag(tag: &str) -> bool {
+    tag.contains("bridge") && tag.contains("delegate")
+}
+
+fn is_worker_result_tag(tag: &str) -> bool {
+    tag.contains("bridge") && tag.contains("worker") && tag.contains("result")
+}
+
+pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationRequest>> {
+    let blocks = fenced_blocks(text, is_delegation_tag);
+    if blocks.is_empty() {
+        return ParseOutcome::Absent;
+    }
+    let raw = blocks
+        .iter()
+        .map(|block| block.body.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut requests = Vec::new();
+    for block in blocks {
+        let value = match serde_json::from_str::<Value>(&block.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return ParseOutcome::Invalid {
+                    raw,
+                    reason: format!("invalid delegation JSON: {error}"),
+                }
+            }
+        };
+        let values = match value {
+            Value::Array(values) => values,
+            value => vec![value],
+        };
+        for value in values {
+            match request_from_value(value) {
+                Ok(request) => requests.push(request),
+                Err(reason) => return ParseOutcome::Invalid { raw, reason },
+            }
+        }
+    }
+    if requests.is_empty() {
+        ParseOutcome::Invalid {
+            raw,
+            reason: "delegation block contained no requests".into(),
+        }
+    } else {
+        ParseOutcome::Parsed(requests)
+    }
+}
+
+fn request_from_value(value: Value) -> Result<DelegationRequest, String> {
+    if value.get("schemaVersion").is_some() || value.get("objective").is_some() {
+        let request: DelegationRequest =
+            serde_json::from_value(value).map_err(|error| error.to_string())?;
+        request.validate()?;
+        Ok(request)
+    } else {
+        serde_json::from_value::<LegacyDirective>(value)
+            .map_err(|error| error.to_string())?
+            .into_typed()
+    }
+}
+
+pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
+    let blocks = fenced_blocks(text, is_worker_result_tag);
+    if blocks.is_empty() {
+        return ParseOutcome::Absent;
+    }
+    if blocks.len() != 1 {
+        return ParseOutcome::Invalid {
+            raw: blocks
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            reason: "expected exactly one bridge-worker-result block".into(),
+        };
+    }
+    let raw = blocks[0].body.clone();
+    let result = match serde_json::from_str::<WorkerResult>(&raw) {
+        Ok(result) => result,
+        Err(error) => {
+            return ParseOutcome::Invalid {
+                raw,
+                reason: format!("invalid worker-result JSON: {error}"),
+            }
+        }
+    };
+    match result.validate() {
+        Ok(()) => ParseOutcome::Parsed(result),
+        Err(reason) => ParseOutcome::Invalid { raw, reason },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerOutputDisposition {
+    Structured(WorkerResult),
+    RequestRepair { prompt: String, reason: String },
+    Unstructured { raw: String, reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerOutputAction {
+    AwaitingRepair { reason: String },
+    Structured(WorkerResult),
+    Unstructured { raw: String, reason: String },
+}
+
+#[derive(Debug, Default)]
+pub struct ResultRepairTracker {
+    first_invalid_output: HashMap<String, String>,
+}
+
+impl ResultRepairTracker {
+    pub fn evaluate(&mut self, session_id: &str, text: &str) -> WorkerOutputDisposition {
+        match parse_worker_result(text) {
+            ParseOutcome::Parsed(result) => {
+                self.first_invalid_output.remove(session_id);
+                WorkerOutputDisposition::Structured(result)
+            }
+            ParseOutcome::Absent => self.invalid(
+                session_id,
+                text,
+                "missing bridge-worker-result block".into(),
+            ),
+            ParseOutcome::Invalid { reason, .. } => self.invalid(session_id, text, reason),
+        }
     }
 
-    /// Short human label for the worker session, e.g. `Claude · Fable`.
-    pub fn label(&self) -> String {
-        format!(
-            "{} · {}",
-            match self.harness.as_str() {
-                "claude" => "Claude",
-                _ => "Codex",
-            },
-            model_display(&self.model)
-        )
+    pub fn process(
+        &mut self,
+        session_id: &str,
+        text: &str,
+        send_same_session_repair: impl FnOnce(&str) -> bool,
+    ) -> WorkerOutputAction {
+        match self.evaluate(session_id, text) {
+            WorkerOutputDisposition::Structured(result) => WorkerOutputAction::Structured(result),
+            WorkerOutputDisposition::Unstructured { raw, reason } => {
+                WorkerOutputAction::Unstructured { raw, reason }
+            }
+            WorkerOutputDisposition::RequestRepair { prompt, reason } => {
+                if send_same_session_repair(&prompt) {
+                    WorkerOutputAction::AwaitingRepair { reason }
+                } else {
+                    self.first_invalid_output.remove(session_id);
+                    WorkerOutputAction::Unstructured {
+                        raw: text.to_owned(),
+                        reason: format!("{reason}; same-session repair could not be delivered"),
+                    }
+                }
+            }
+        }
+    }
+
+    fn invalid(&mut self, session_id: &str, raw: &str, reason: String) -> WorkerOutputDisposition {
+        if let Some(first) = self.first_invalid_output.remove(session_id) {
+            return WorkerOutputDisposition::Unstructured {
+                raw: format!("Initial invalid output:\n{first}\n\nInvalid repair output:\n{raw}"),
+                reason,
+            };
+        }
+        self.first_invalid_output
+            .insert(session_id.to_owned(), raw.to_owned());
+        WorkerOutputDisposition::RequestRepair {
+            prompt: worker_result_repair_prompt(&reason),
+            reason,
+        }
+    }
+}
+
+pub fn worker_result_repair_prompt(reason: &str) -> String {
+    format!(
+        r#"Your previous final output could not be parsed ({reason}). This is your one repair turn. Do not perform more work. Return exactly one fenced `bridge-worker-result` JSON object matching schemaVersion 1 with: status, summary, filesChanged, tests, decisions, risks, remainingWork, suggestedNextAction, and optional suggestedRole/suggestedTask. Do not add prose outside the fence."#
+    )
+}
+
+pub fn strip_directives(text: &str) -> String {
+    strip_machine_blocks(text, is_delegation_tag)
+}
+
+pub fn strip_worker_result(text: &str) -> String {
+    strip_machine_blocks(text, is_worker_result_tag)
+}
+
+fn strip_machine_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> String {
+    let mut kept = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            let tag = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
+            if matches_tag(&tag) {
+                for inner in lines.by_ref() {
+                    if inner.trim_start().starts_with("```") {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        kept.push(line);
+    }
+    kept.join("\n").trim().to_owned()
+}
+
+pub fn protocol(depth: i64) -> String {
+    if depth >= DEFAULT_MAX_DEPTH {
+        return r#"## Bridge worker topology
+
+You are a depth-one worker. Do not spawn or directly delegate to another worker. If more specialization is required, return a typed worker result with `status: "needs_delegation"`, `suggestedRole`, and `suggestedTask`; the parent and Rust policy gate decide what happens next."#
+            .into();
+    }
+    r#"## Delegating work (Bridge typed protocol v1)
+
+Delegate only focused, non-trivial work. Emit one fenced `bridge-delegate` JSON object using this schema:
+
+```bridge-delegate
+{"schemaVersion":1,"role":"implementation","objective":"Add refresh-token rotation","acceptanceCriteria":["Old refresh tokens become invalid","Existing auth tests remain green"],"knownFacts":[],"decisions":["Use the existing SQLite token store"],"relevantFiles":["src/auth/store.rs"],"ownedPaths":["src/auth/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["cargo test auth"],"outputContract":"implementation-result","harness":"codex"}
+```
+
+After emitting a request, stop and wait. Default topology is flat: the worker cannot directly spawn another worker. Do trivial work in the parent."#
+        .into()
+}
+
+pub fn worker_briefing(request: &DelegationRequest, depth: i64, branch: &str) -> String {
+    let criteria = bullet_list(&request.acceptance_criteria);
+    let facts = bullet_list_or_none(&request.known_facts);
+    let decisions = bullet_list_or_none(&request.decisions);
+    let files = bullet_list_or_none(&request.relevant_files);
+    let owned = bullet_list_or_none(&request.owned_paths);
+    let verification = bullet_list_or_none(&request.verification);
+    format!(
+        r#"You are a Bridge {role:?} worker assigned one focused objective on branch `{branch}`.
+
+## Objective
+{objective}
+
+## Acceptance criteria
+{criteria}
+
+## Known facts
+{facts}
+
+## Locked decisions
+{decisions}
+
+## Relevant files
+{files}
+
+## Owned paths
+{owned}
+
+Write mode: {write_mode:?}. Capability tier: {tier:?}. Effort: {effort}.
+
+## Verification
+{verification}
+
+Complete only this objective. Do not directly delegate. If blocked on another specialist, return `needs_delegation` to the parent.
+
+End with exactly one fenced `bridge-worker-result` JSON object matching schemaVersion 1:
+
+```bridge-worker-result
+{{"schemaVersion":1,"status":"completed","summary":"What changed or was found","filesChanged":[],"tests":[{{"command":"command run","status":"passed"}}],"decisions":[],"risks":[],"remainingWork":[],"suggestedNextAction":"finish"}}
+```
+
+{protocol}"#,
+        role = request.role,
+        objective = request.objective,
+        write_mode = request.write_mode,
+        tier = request.capability_tier,
+        effort = request.effort.as_str(),
+        protocol = protocol(depth),
+    )
+}
+
+fn bullet_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn bullet_list_or_none(items: &[String]) -> String {
+    if items.is_empty() {
+        "- None provided".into()
+    } else {
+        bullet_list(items)
     }
 }
 
@@ -133,223 +704,13 @@ pub fn model_display(model: &str) -> String {
     .to_owned()
 }
 
-/// Collapse free-form effort words into the four tiers Bridge routes on.
-pub fn normalize_effort(value: &str) -> String {
+fn parse_effort(value: &str) -> Effort {
     match value.trim().to_ascii_lowercase().as_str() {
-        "low" | "min" | "minimal" | "light" => "low",
-        "high" => "high",
+        "low" | "min" | "minimal" | "light" => Effort::Low,
+        "high" => Effort::High,
         "xhigh" | "x-high" | "extra" | "very-high" | "very high" | "ultra" | "max" | "maximum" => {
-            "xhigh"
+            Effort::Xhigh
         }
-        _ => "medium",
-    }
-    .to_owned()
-}
-
-/// Parse every delegation directive found in an assistant message.
-pub fn parse_directives(text: &str) -> Vec<Directive> {
-    let mut directives = Vec::new();
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("```") {
-            continue;
-        }
-        let tag = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
-        if !(tag.contains("bridge") && tag.contains("delegate")) {
-            continue;
-        }
-        let mut body = String::new();
-        for inner in lines.by_ref() {
-            if inner.trim_start().starts_with("```") {
-                break;
-            }
-            body.push_str(inner);
-            body.push('\n');
-        }
-        let Ok(value) = serde_json::from_str::<Value>(body.trim()) else {
-            continue;
-        };
-        match value {
-            Value::Array(items) => {
-                for item in &items {
-                    if let Some(directive) = Directive::from_value(item) {
-                        directives.push(directive);
-                    }
-                }
-            }
-            _ => {
-                if let Some(directive) = Directive::from_value(&value) {
-                    directives.push(directive);
-                }
-            }
-        }
-    }
-    directives
-}
-
-/// Remove delegation blocks from a message so the conversation surface shows the
-/// agent's prose, not the machine directive (the delegation card carries that).
-pub fn strip_directives(text: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            let tag = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
-            if tag.contains("bridge") && tag.contains("delegate") {
-                for inner in lines.by_ref() {
-                    if inner.trim_start().starts_with("```") {
-                        break;
-                    }
-                }
-                continue;
-            }
-        }
-        kept.push(line);
-    }
-    kept.join("\n").trim().to_owned()
-}
-
-/// The shared delegation protocol injected into every session. `depth` is the
-/// session's own level; when it has reached [`MAX_DEPTH`] the protocol tells it
-/// to stop delegating and finish the work directly.
-pub fn protocol(depth: i64) -> String {
-    let budget = if depth >= MAX_DEPTH {
-        format!(
-            "You are at the maximum delegation depth ({MAX_DEPTH}). Do NOT delegate further — complete this work yourself."
-        )
-    } else {
-        format!(
-            "You may delegate to worker agents. You are at depth {depth}; workers you spawn run at depth {}. The tree is capped at depth {MAX_DEPTH}.",
-            depth + 1
-        )
-    };
-    format!(
-        r#"## Delegating work (Bridge multi-agent protocol)
-
-Bridge lets you hand a subtask to another coding agent — Claude Code or Codex — on a specific model and reasoning effort. {budget}
-
-To delegate, emit a fenced block EXACTLY like this in your reply (Bridge intercepts it; the user does not have to do anything):
-
-```bridge-delegate
-{{"harness": "claude", "model": "fable", "effort": "high", "task": "Precise, self-contained instructions for the worker", "context": "Any background the worker needs"}}
-```
-
-Rules:
-- `harness`: "claude" or "codex".
-- `model`: claude → sonnet | opus | haiku | fable. codex → gpt-5.6-luna | gpt-5.6-terra | gpt-5.6-sol | gpt-5.3-codex.
-- `effort`: low | medium | high | xhigh. Match effort to difficulty; cheap+low for trivial work, strong model + high/xhigh for heavy or high-stakes work.
-- `task`: everything the worker needs; it does not see this conversation, only your task + context.
-- Workers share this workspace and its files. Prefer delegating ONE coding worker at a time and waiting for its result before the next, to avoid conflicting edits. Multiple read-only/analysis workers in one message are fine.
-- After you delegate, STOP and wait. Bridge runs the worker and replies to you with a `[worker result]` message. Then continue, delegate again, or give your final answer.
-- If the task is small, just do it yourself instead of delegating."#
-    )
-}
-
-/// System instructions handed to a freshly spawned worker.
-pub fn worker_briefing(directive: &Directive, depth: i64, branch: &str) -> String {
-    let effort = directive.effort.as_deref().unwrap_or("medium");
-    let context = directive
-        .context
-        .as_deref()
-        .map(|context| format!("\n\n## Context from your parent\n{context}"))
-        .unwrap_or_default();
-    let effort_hint = match effort {
-        "low" => "Work quickly and directly; keep reasoning minimal.",
-        "high" => "Think carefully and reason thoroughly before acting.",
-        "xhigh" => "This is heavy, high-stakes work. Reason exhaustively; verify your work before finishing.",
-        _ => "Balance speed and rigor.",
-    };
-    format!(
-        r#"You are a Bridge worker agent spawned by an orchestrator to complete one focused task.
-
-You are running in the shared workspace on branch `{branch}` at reasoning effort `{effort}`. {effort_hint}
-
-Do the task in the first user message. When done, end your turn with a concise summary of what you changed or found — that summary is sent back to your parent, so make it self-contained. Do not ask the parent questions unless truly blocked.{context}
-
-{protocol}"#,
-        protocol = protocol(depth)
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_single_directive() {
-        let text = "I'll delegate this.\n\n```bridge-delegate\n{\"harness\":\"claude\",\"model\":\"fable\",\"effort\":\"high\",\"task\":\"Refactor auth\"}\n```\n";
-        let directives = parse_directives(text);
-        assert_eq!(directives.len(), 1);
-        assert_eq!(directives[0].harness, "claude");
-        assert_eq!(directives[0].model, "fable");
-        assert_eq!(directives[0].effort.as_deref(), Some("high"));
-        assert_eq!(directives[0].task, "Refactor auth");
-    }
-
-    #[test]
-    fn parses_colon_tag_and_array() {
-        let text = "```bridge:delegate\n[{\"harness\":\"codex\",\"task\":\"a\"},{\"harness\":\"claude\",\"task\":\"b\"}]\n```";
-        let directives = parse_directives(text);
-        assert_eq!(directives.len(), 2);
-        assert_eq!(directives[0].harness, "codex");
-        assert_eq!(directives[0].model, "gpt-5.6-luna");
-        assert_eq!(directives[1].harness, "claude");
-    }
-
-    #[test]
-    fn normalizes_aliases_and_effort() {
-        let text = "```bridge-delegate\n{\"harness\":\"anthropic\",\"model\":\"opus\",\"effort\":\"ultra\",\"task\":\"x\"}\n```";
-        let directive = &parse_directives(text)[0];
-        assert_eq!(directive.harness, "claude");
-        assert_eq!(directive.model, "opus");
-        assert_eq!(directive.effort.as_deref(), Some("xhigh"));
-    }
-
-    #[test]
-    fn ignores_non_bridge_fences_and_bad_json() {
-        let text = "```python\nprint('hi')\n```\n```bridge-delegate\nnot json\n```";
-        assert!(parse_directives(text).is_empty());
-    }
-
-    #[test]
-    fn rejects_directive_without_task_or_bad_harness() {
-        let missing = "```bridge-delegate\n{\"harness\":\"claude\"}\n```";
-        assert!(parse_directives(missing).is_empty());
-        let bad = "```bridge-delegate\n{\"harness\":\"gemini\",\"task\":\"x\"}\n```";
-        assert!(parse_directives(bad).is_empty());
-    }
-
-    #[test]
-    fn strips_directive_blocks_but_keeps_prose() {
-        let text = "Handing this to a worker.\n\n```bridge-delegate\n{\"harness\":\"claude\",\"task\":\"x\"}\n```\n\nStanding by.";
-        let stripped = strip_directives(text);
-        assert!(stripped.contains("Handing this to a worker."));
-        assert!(stripped.contains("Standing by."));
-        assert!(!stripped.contains("bridge-delegate"));
-        assert!(!stripped.contains("harness"));
-    }
-
-    #[test]
-    fn protocol_forbids_delegation_at_max_depth() {
-        assert!(protocol(MAX_DEPTH).contains("maximum delegation depth"));
-        assert!(protocol(0).contains("You may delegate"));
-    }
-
-    #[test]
-    fn worker_briefing_carries_task_effort_and_protocol() {
-        let directive = Directive {
-            harness: "codex".into(),
-            model: "gpt-5.6-sol".into(),
-            effort: Some("xhigh".into()),
-            task: "Do the thing".into(),
-            context: Some("background".into()),
-        };
-        let briefing = worker_briefing(&directive, 1, "bridge/task-kyoto");
-        assert!(briefing.contains("bridge/task-kyoto"));
-        assert!(briefing.contains("xhigh"));
-        assert!(briefing.contains("background"));
-        assert!(briefing.contains("bridge-delegate"));
+        _ => Effort::Medium,
     }
 }
