@@ -817,6 +817,37 @@ pub fn worker_runtime(
     ).optional().map_err(BridgeError::from)
 }
 
+pub fn worker_runtimes(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<Vec<WorkerRuntimeRecord>, BridgeError> {
+    query_with_params(
+        db,
+        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.updated_at
+         FROM worker_runtime r JOIN sessions s ON s.id=r.session_id
+         WHERE s.workspace_id=?1 ORDER BY s.rowid",
+        params![workspace_id],
+        |row| {
+            Ok(WorkerRuntimeRecord {
+                session_id: row.get(0)?,
+                parent_session_id: row.get(1)?,
+                lifecycle_state: row.get(2)?,
+                task_family: row.get(3)?,
+                compatibility_key: row.get(4)?,
+                result_status: row.get(5)?,
+                retry_count: row.get(6)?,
+                warm_until: row.get(7)?,
+                worktree_path: row.get(8)?,
+                worktree_branch: row.get(9)?,
+                last_result: row
+                    .get::<_, Option<String>>(10)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                updated_at: row.get(11)?,
+            })
+        },
+    )
+}
+
 pub fn outstanding_children(db: &Connection, parent_session_id: &str) -> Result<i64, BridgeError> {
     Ok(db.query_row(
         "SELECT COUNT(*) FROM worker_runtime WHERE parent_session_id=?1 AND result_status!='reported'",
@@ -845,6 +876,58 @@ pub fn queued_worker_requests(
         "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,created_at,updated_at FROM worker_queue WHERE workspace_id=?1 AND queue_status='queued' ORDER BY sequence",
         params![workspace_id],
         |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, created_at:row.get(9)?, updated_at:row.get(10)? }),
+    )
+}
+
+pub fn worker_queue_requests(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<Vec<QueuedWorkerRequest>, BridgeError> {
+    query_with_params(
+        db,
+        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,created_at,updated_at
+         FROM worker_queue WHERE workspace_id=?1 ORDER BY sequence",
+        params![workspace_id],
+        |row| {
+            Ok(QueuedWorkerRequest {
+                id: row.get(0)?,
+                parent_session_id: row.get(1)?,
+                workspace_id: row.get(2)?,
+                turn_id: row.get(3)?,
+                request: parse_json_column(row, 4),
+                actual_model: row.get(5)?,
+                queue_status: row.get(6)?,
+                sequence: row.get(7)?,
+                dispatched_session_id: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        },
+    )
+}
+
+pub fn workspace_reason_events(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<Vec<BridgeEvent>, BridgeError> {
+    query_with_params(
+        db,
+        "SELECT id,source,kind,entity_id,body,created_at FROM events
+         WHERE entity_id=?1
+            OR entity_id IN (SELECT id FROM sessions WHERE workspace_id=?1)
+            OR entity_id IN (SELECT id FROM worker_queue WHERE workspace_id=?1)
+         ORDER BY id DESC",
+        params![workspace_id],
+        |row| {
+            Ok(BridgeEvent {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                kind: row.get(2)?,
+                entity_id: row.get(3)?,
+                body: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        },
     )
 }
 

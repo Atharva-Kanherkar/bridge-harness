@@ -316,3 +316,26 @@ pub struct UsageLedgerRow {
     pub source: String,
     pub created_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyLimits {
+    pub max_workers_per_turn: i64,
+    pub max_strong_workers_per_turn: i64,
+    pub max_capability_units_per_turn: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForestSnapshot {
+    pub session_id: String,
+    pub entries: Vec<SessionEntry>,
+    pub head: Option<SessionHead>,
+    pub leaves: Vec<SessionEntry>,
+    pub worker_leases: Vec<WorkerLease>,
+    pub worker_runtimes: Vec<WorkerRuntimeRecord>,
+    pub worker_queue: Vec<QueuedWorkerRequest>,
+    pub usage: Vec<UsageLedgerRow>,
+    pub reasons: Vec<BridgeEvent>,
+    pub policy_limits: PolicyLimits,
+}
