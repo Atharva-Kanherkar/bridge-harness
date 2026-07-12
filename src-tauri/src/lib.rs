@@ -1150,12 +1150,9 @@ fn archive_workspace(
             "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
         )));
     }
-    git::remove_worktree(Path::new(&repo), Path::new(&path))?;
-    db.execute(
-        "DELETE FROM sessions WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    db.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
+    archive_workspace_records(&db, &workspace_id, || {
+        git::remove_worktree(Path::new(&repo), Path::new(&path))
+    })?;
     store::event(
         &db,
         "supervisor",
@@ -1165,6 +1162,49 @@ fn archive_workspace(
     )?;
     let _ = app.emit("state-changed", ());
     store::state(&db)
+}
+
+fn archive_workspace_records(
+    db: &Connection,
+    workspace_id: &str,
+    remove_worktree: impl FnOnce() -> Result<(), BridgeError>,
+) -> Result<(), BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "DELETE FROM task_knowledge WHERE workspace_id=?1",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM worker_leases WHERE workspace_id=?1",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM session_heads WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM session_entries WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM agent_events WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM usage_ledger WHERE workspace_id=?1",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM sessions WHERE workspace_id=?1",
+        params![workspace_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM workspaces WHERE id=?1",
+        params![workspace_id],
+    )?;
+    remove_worktree()?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>) {
@@ -1258,8 +1298,77 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn archive_fixture() -> Connection {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/archive-demo','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/archive-workspace','stopped','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','stopped','reported')", []).unwrap();
+        db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{\"text\":\"one\"}','now'),('e2','s','e1',2,'assistant.message','{\"text\":\"two\"}','now')", []).unwrap();
+        db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,latest_checkpoint_entry_id,updated_at) VALUES('s','e2','fresh','e1','now')", []).unwrap();
+        db.execute("INSERT INTO agent_events(session_id,sequence,kind,data,provider_meta,created_at) VALUES('s',1,'message.completed','{}','{}','now')", []).unwrap();
+        db.execute("INSERT INTO task_knowledge(id,workspace_id,session_id,kind,body,source_entry_id,created_at) VALUES('k','w','s','decision','Keep history','e1','now')", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,write_mode,lease_status,created_at,updated_at) VALUES('s','w','implementation','standard','shared','expired','now','now')", []).unwrap();
+        db.execute("INSERT INTO usage_ledger(workspace_id,session_id,turn_id,capability_units,source,created_at) VALUES('w','s','turn',3,'test','now')", []).unwrap();
+        db
+    }
+
+    fn count(db: &Connection, table: &str) -> i64 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
     #[test]
     fn session_status_round_trip() {
         assert_eq!(store::status("waiting"), SessionStatus::Waiting);
+    }
+
+    #[test]
+    fn archive_workspace_records_cleans_every_dependent_table() {
+        let db = archive_fixture();
+        archive_workspace_records(&db, "w", || Ok(())).unwrap();
+        for table in [
+            "task_knowledge",
+            "worker_leases",
+            "session_heads",
+            "session_entries",
+            "agent_events",
+            "usage_ledger",
+            "sessions",
+            "workspaces",
+        ] {
+            assert_eq!(count(&db, table), 0, "{table} retained archive rows");
+        }
+        assert_eq!(count(&db, "projects"), 1);
+        assert_eq!(
+            db.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn archive_workspace_records_rolls_back_when_worktree_removal_fails() {
+        let db = archive_fixture();
+        let result = archive_workspace_records(&db, "w", || {
+            Err(BridgeError::Git("injected removal failure".into()))
+        });
+        assert!(matches!(result, Err(BridgeError::Git(_))));
+        for table in [
+            "task_knowledge",
+            "worker_leases",
+            "session_heads",
+            "session_entries",
+            "agent_events",
+            "usage_ledger",
+            "sessions",
+            "workspaces",
+        ] {
+            assert!(count(&db, table) > 0, "{table} was not rolled back");
+        }
     }
 }
