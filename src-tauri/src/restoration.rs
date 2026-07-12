@@ -1,4 +1,5 @@
 use crate::{
+    context::ContextProjector,
     model::{RestorationMode, ResumeEligibility},
     session_forest::{EntryKind, SessionForest},
     store, BridgeError,
@@ -51,8 +52,22 @@ pub fn checkpoint_context(
     let branch = SessionForest::new(db)
         .active_branch(session_id)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let projection = ContextProjector::project(&branch, 128_000)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let mut selected = Vec::new();
-    for entry in branch.iter().rev() {
+    if let Some(restoration) = projection.restoration_context {
+        selected.push(format!("compaction: {}", restoration.summary));
+        for decision in restoration.decisions {
+            selected.push(format!("decision: {decision}"));
+        }
+    } else if let Some(summary) = branch.iter().rev().find_map(|entry| {
+        (entry.kind == "checkpoint")
+            .then(|| entry.payload.get("summary").and_then(serde_json::Value::as_str))
+            .flatten()
+    }) {
+        selected.push(format!("checkpoint: {summary}"));
+    }
+    for entry in projection.render_entries.iter().rev() {
         let value = match entry.kind.as_str() {
             "checkpoint" | "compaction" | "branch.summary" => entry
                 .payload

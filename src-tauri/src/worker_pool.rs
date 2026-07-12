@@ -93,6 +93,21 @@ pub fn should_retry(
 pub struct WorkerPool;
 
 impl WorkerPool {
+    pub fn warm_workers_due(
+        db: &Connection,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>, BridgeError> {
+        let mut statement = db.prepare(
+            "SELECT session_id FROM worker_runtime
+             WHERE lifecycle_state='warm' AND warm_until IS NOT NULL AND warm_until<=?1
+             ORDER BY warm_until,session_id",
+        )?;
+        let rows = statement
+            .query_map([now.to_rfc3339()], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn enqueue(
         db: &Connection,
         parent_session_id: &str,
@@ -127,17 +142,7 @@ impl WorkerPool {
         db: &Connection,
         now: DateTime<Utc>,
     ) -> Result<Vec<String>, BridgeError> {
-        let session_ids = {
-            let mut statement = db.prepare(
-                "SELECT session_id FROM worker_runtime
-                 WHERE lifecycle_state='warm' AND warm_until IS NOT NULL AND warm_until<=?1
-                 ORDER BY warm_until,session_id",
-            )?;
-            let rows = statement
-                .query_map([now.to_rfc3339()], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            rows
-        };
+        let session_ids = Self::warm_workers_due(db, now)?;
         for session_id in &session_ids {
             CompactionController::request_before_suspend(db, session_id, "warm_idle_timeout")?;
             SessionSupervisor::transition(
