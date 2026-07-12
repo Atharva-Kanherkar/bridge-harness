@@ -56,6 +56,26 @@ pub struct Workspace {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterDescriptor {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub capabilities: Vec<String>,
+    pub unavailable_reason: Option<String>,
+    pub models: Vec<ModelOption>,
+    pub default_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
     pub workspace_id: String,
@@ -69,6 +89,7 @@ pub struct Session {
     pub metric_source: String,
     pub provider_session_id: Option<String>,
     pub active_turn_id: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,15 +136,4 @@ pub struct AgentEvent {
     pub data: serde_json::Value,
     pub provider_meta: serde_json::Value,
     pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AdapterDescriptor {
-    pub id: String,
-    pub label: String,
-    pub available: bool,
-    pub version: Option<String>,
-    pub capabilities: Vec<String>,
-    pub unavailable_reason: Option<String>,
 }

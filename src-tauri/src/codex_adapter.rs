@@ -1,4 +1,4 @@
-use crate::{adapters::AdapterRuntime, BridgeError};
+use crate::{adapters::AdapterRuntime, binary, BridgeError};
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -23,9 +23,13 @@ pub struct StartedCodex {
     pub startup_messages: Vec<Value>,
 }
 
-pub fn start(cwd: &str) -> Result<StartedCodex, BridgeError> {
-    let mut child = Command::new("codex")
+pub fn start(cwd: &str, model: Option<&str>) -> Result<StartedCodex, BridgeError> {
+    let binary = binary::resolve("codex").ok_or_else(|| {
+        BridgeError::Invalid("Codex binary is not installed".into())
+    })?;
+    let mut child = Command::new(binary)
         .args(["app-server", "--listen", "stdio://"])
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -46,9 +50,13 @@ pub fn start(cwd: &str) -> Result<StartedCodex, BridgeError> {
     )?;
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     write_value(&writer, &json!({"method":"initialized"}))?;
+    let mut params = json!({"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false,"serviceName":"Bridge"});
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        params["model"] = json!(model);
+    }
     write_value(
         &writer,
-        &json!({"method":"thread/start","id":2,"params":{"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false,"serviceName":"Bridge"}}),
+        &json!({"method":"thread/start","id":2,"params":params}),
     )?;
     let (response, mut later_messages) = wait_for_response(&mut reader, 2)?;
     startup_messages.append(&mut later_messages);
@@ -128,11 +136,7 @@ impl AdapterRuntime for CodexRuntime {
 }
 
 pub fn binary_version() -> Option<String> {
-    let output = Command::new("codex").arg("--version").output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    binary::version("codex")
 }
 
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
@@ -180,7 +184,7 @@ mod tests {
     fn live_app_server_emits_a_structured_turn() {
         use std::{sync::mpsc, thread, time::Duration};
         let cwd = std::env::current_dir().unwrap();
-        let started = start(cwd.to_str().unwrap()).unwrap();
+        let started = start(cwd.to_str().unwrap(), None).unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime

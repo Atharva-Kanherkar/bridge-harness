@@ -6,7 +6,8 @@ Bridge is a local macOS control room for structured coding-agent sessions in iso
 
 - Add any local Git repository.
 - Create a dedicated branch and worktree per independent task.
-- Run Codex through its structured `app-server` JSON-RPC interface using the credentials and configuration already on the Mac.
+- Run **Codex** through its structured `app-server` JSON-RPC interface, and **Claude Code** through its structured `stream-json` stdio protocol, using the credentials and binaries already on the Mac.
+- Opening a workspace (or creating one) auto-starts the selected structured agent and sends the task prompt—no manual “Start agent” gate.
 - See messages, reasoning, plans, commands, tools, file changes, approvals, errors, and artifacts as native GUI components. Agent TUIs are never rendered.
 - Use a separate workspace Terminal tab for ad-hoc `zsh` commands without leaking terminal content into agent history.
 - Run multiple sessions in one workspace when agents need the same branch and files.
@@ -19,10 +20,12 @@ Bridge is a local macOS control room for structured coding-agent sessions in iso
 ## Architecture
 
 - `src/` — React + TypeScript conversation GUI, provider-neutral reducer, separate workspace terminal, and typed Tauri API boundary.
-- `src-tauri/src/` — Rust adapter registry, Codex app-server transport, event normalization, SQLite persistence, Git worktrees, workspace PTY, and health.
+- `src-tauri/src/` — Rust adapter registry, Codex app-server + Claude stream-json transports, event normalization, SQLite persistence, Git worktrees, workspace PTY, and health.
 - `testing/` — the acceptance contract locked before implementation.
 
 Bridge launches coding harnesses only through registered structured adapters. An incomplete adapter is reported unavailable instead of falling back to its TUI. Workspaces are validated Git roots, uncommitted worktrees are never archived, and usage/context values are labeled as reported, measured, or estimated.
+
+Claude Code and Codex binaries are resolved from `PATH` plus common install locations (`~/.local/bin`, Homebrew) so the packaged macOS app still finds them when launched from Finder.
 
 ## Run and verify
 

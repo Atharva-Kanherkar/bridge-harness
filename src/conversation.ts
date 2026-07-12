@@ -12,6 +12,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "provider.unknown" || event.kind.startsWith("session.") || event.kind.startsWith("turn.") || event.kind === "usage.updated") continue;
     const itemKey = event.itemId ?? `${event.kind}:${event.id}`;
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
+      if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
       const existing = items.get(itemKey) ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
       existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(itemKey, existing); continue;
@@ -31,10 +32,17 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       const requestId = Number(event.data.requestEventId); const approval = items.get(`approval:${requestId}`); if (approval) approval.status = String(event.data.decision ?? event.status ?? "resolved"); continue;
     }
     const type: ConversationItemType = event.kind.startsWith("message.") ? "message" : event.kind.startsWith("reasoning.") ? "reasoning" : event.kind.startsWith("diff.") || event.kind.startsWith("file_change.") ? "diff" : event.kind.startsWith("artifact.") ? "artifact" : event.kind === "error" ? "error" : "activity";
+    if (type === "reasoning" && !(event.text || stringList(event.data.summary))) continue;
+    if (type === "message" && !event.text && !items.has(itemKey)) continue;
     const existing = items.get(itemKey);
     const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
     next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
     if (event.text) next.text = event.text; next.data = event.data; items.set(itemKey,next);
   }
-  return [...items.values()].sort((a,b)=>a.sequence-b.sequence);
+  return [...items.values()]
+    .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
+    .filter(item => item.type !== "message" || item.text.trim().length > 0)
+    .sort((a,b)=>a.sequence-b.sequence);
 }
+
+function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}

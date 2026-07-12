@@ -17,8 +17,8 @@ let mockState: BridgeState = {
     { id: "demo-3", projectId: "demo-project", city: "Reykjavik", title: "Add event ledger", branch: "bridge/event-ledger", path: "/Users/you/bridge/Reykjavik", status: "ready", dirtyFiles: 0, additions: 148, deletions: 12, createdAt: now }
   ],
   sessions: [
-    { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Codex", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1" },
-    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Codex", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null }
+    { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Codex", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1", model: "gpt-5.6-sol" },
+    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Codex", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-sol" }
   ],
   events: [
     { id: 2, source: "git", kind: "workspace.changed", entityId: "demo-1", body: "4 files changed · +284 −31", createdAt: now },
@@ -44,10 +44,10 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 }
 
 const mockHealth: Health = {
-  ok: true, version: "0.1.0-demo", harnesses: { claude: false, codex: true, shell: true }, database: "demo",
+  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, shell: true }, database: "demo",
   adapters: [
-    { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null },
-    { id: "claude", label: "Claude Code", available: false, version: null, capabilities: [], unavailableReason: "Structured Claude adapter is not installed; Bridge will never fall back to its TUI" }
+    { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "o3", label: "o3" }], defaultModel: "gpt-5.6-sol" },
+    { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet" }, { id: "opus", label: "Claude Opus" }, { id: "haiku", label: "Claude Haiku" }, { id: "fable", label: "Claude Fable" }], defaultModel: "sonnet" }
   ]
 };
 
@@ -63,13 +63,13 @@ export const bridgeApi = {
     if (isTauri()) return invoke("create_workspace", { projectId, title, harness });
     const cities = ["Oslo", "Seoul", "Tallinn", "Nairobi"]; const city = cities[mockState.workspaces.length % cities.length]; const id = crypto.randomUUID();
     mockState.workspaces.push({ id, projectId, city, title, branch: `bridge/${safeSlug(title)}`, path: `/tmp/bridge/${city}`, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
-    mockState.sessions.push({ id: crypto.randomUUID(), workspaceId: id, harness, label: harness === "codex" ? "Codex" : "Claude Code", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null }); emitState(); return snapshot();
+    mockState.sessions.push({ id: crypto.randomUUID(), workspaceId: id, harness, label: harness === "codex" ? "Codex" : "Claude Code", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null }); emitState(); return snapshot();
   },
-  startSession: async (workspaceId: string, harness: Harness): Promise<BridgeState> => {
-    if (isTauri()) return invoke("start_session", { workspaceId, harness });
+  startSession: async (workspaceId: string, harness: Harness, model?: string | null): Promise<BridgeState> => {
+    if (isTauri()) return invoke("start_session", { workspaceId, harness, model: model ?? null });
     let session = mockState.sessions.find(item => item.workspaceId === workspaceId && item.harness === harness);
-    if (!session) { session = { id: crypto.randomUUID(), workspaceId, harness, label: harness === "codex" ? "Codex" : "Claude Code", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated" }; mockState.sessions.push(session); }
-    session.status = "working"; session.startedAt = new Date().toISOString(); session.endedAt = null; session.providerSessionId = `mock-${crypto.randomUUID()}`;
+    if (!session) { session = { id: crypto.randomUUID(), workspaceId, harness, label: harness === "codex" ? "Codex" : "Claude Code", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", model: model ?? null }; mockState.sessions.push(session); }
+    session.status = "working"; session.startedAt = new Date().toISOString(); session.endedAt = null; session.providerSessionId = `mock-${crypto.randomUUID()}`; session.model = model ?? session.model ?? (harness === "claude" ? "sonnet" : "gpt-5.6-sol");
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) workspace.status = "working";
     appendAgent(session.id, "session.started", { status: "working" }); emitState(); return snapshot();
   },

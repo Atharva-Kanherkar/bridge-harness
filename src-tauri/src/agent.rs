@@ -244,6 +244,385 @@ fn normalize_item(method: &str, params: &Value) -> Vec<NormalizedEvent> {
     vec![event]
 }
 
+#[allow(dead_code)]
+pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
+    normalize_claude_message_with_state(message, &mut ClaudeStreamState::default())
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ClaudeStreamState {
+    pub active_message_id: Option<String>,
+    pub active_reasoning_id: Option<String>,
+}
+
+pub fn normalize_claude_message_with_state(
+    message: &Value,
+    state: &mut ClaudeStreamState,
+) -> Vec<NormalizedEvent> {
+    let Some(kind) = message.get("type").and_then(Value::as_str) else {
+        return vec![];
+    };
+    match kind {
+        "system" => normalize_claude_system(message),
+        "stream_event" => normalize_claude_stream(message, state),
+        "assistant" => normalize_claude_assistant(message, state),
+        "user" => normalize_claude_user(message),
+        "result" => {
+            *state = ClaudeStreamState::default();
+            normalize_claude_result(message)
+        }
+        "control_request" | "sdk_control_request" => {
+            normalize_claude_control_request(message).into_iter().collect()
+        }
+        _ => vec![],
+    }
+}
+
+fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
+    let subtype = message
+        .get("subtype")
+        .and_then(Value::as_str)
+        .unwrap_or("system");
+    match subtype {
+        "init" | "session_ready" => {
+            let mut event = with_data("session.started", message, message.clone());
+            event.status = Some("ready".into());
+            vec![event]
+        }
+        "status" => {
+            let status = message
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let mut event = with_data("session.status", message, message.clone());
+            event.status = Some(status.into());
+            if status == "requesting" {
+                let mut turn = with_data(
+                    "turn.started",
+                    message,
+                    json!({"turnId": message.get("uuid").cloned().unwrap_or(Value::Null)}),
+                );
+                turn.status = Some("working".into());
+                return vec![event, turn];
+            }
+            vec![event]
+        }
+        // Hooks/notifications are noise in the conversation surface.
+        _ => vec![],
+    }
+}
+
+fn normalize_claude_stream(
+    message: &Value,
+    state: &mut ClaudeStreamState,
+) -> Vec<NormalizedEvent> {
+    let event = message.get("event").cloned().unwrap_or_else(|| json!({}));
+    let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    match event_type {
+        "message_start" => {
+            if let Some(id) = event
+                .pointer("/message/id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                state.active_message_id = Some(id.clone());
+                state.active_reasoning_id = Some(format!("reasoning-{id}"));
+            }
+            vec![]
+        }
+        "content_block_delta" => {
+            let delta = event.get("delta").cloned().unwrap_or_else(|| json!({}));
+            let delta_type = delta.get("type").and_then(Value::as_str).unwrap_or("");
+            let message_id = state
+                .active_message_id
+                .clone()
+                .or_else(|| {
+                    message
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .map(|session| format!("claude-live-{session}"))
+                })
+                .unwrap_or_else(|| "claude-live".into());
+            match delta_type {
+                "text_delta" => {
+                    let text = delta.get("text").and_then(Value::as_str).unwrap_or("");
+                    if text.is_empty() {
+                        return vec![];
+                    }
+                    let mut normalized = NormalizedEvent::new("message.delta");
+                    normalized.item_id = Some(message_id);
+                    normalized.role = Some("assistant".into());
+                    normalized.status = Some("streaming".into());
+                    normalized.text = Some(text.to_owned());
+                    vec![normalized]
+                }
+                "thinking_delta" | "reasoning_delta" => {
+                    let text = delta
+                        .get("thinking")
+                        .or_else(|| delta.get("text"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if text.is_empty() {
+                        return vec![];
+                    }
+                    let mut normalized = NormalizedEvent::new("reasoning.delta");
+                    normalized.item_id = state
+                        .active_reasoning_id
+                        .clone()
+                        .or_else(|| Some(format!("reasoning-{message_id}")));
+                    normalized.status = Some("streaming".into());
+                    normalized.text = Some(text.to_owned());
+                    vec![normalized]
+                }
+                _ => vec![],
+            }
+        }
+        "content_block_start" => {
+            let block = event
+                .get("content_block")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                "tool_use" => {
+                    let tool_id = block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_owned();
+                    let mut normalized = with_data("tool.started", message, block.clone());
+                    normalized.item_id = Some(tool_id);
+                    normalized.title = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    normalized.status = Some("inProgress".into());
+                    vec![normalized]
+                }
+                "thinking" => {
+                    let message_id = state
+                        .active_message_id
+                        .clone()
+                        .unwrap_or_else(|| "claude-live".into());
+                    state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
+                    vec![]
+                }
+                _ => vec![],
+            }
+        }
+        "message_stop" => {
+            // Keep active ids until the assistant snapshot or result arrives so
+            // completed text can replace the same bubble.
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+fn normalize_claude_assistant(
+    message: &Value,
+    state: &mut ClaudeStreamState,
+) -> Vec<NormalizedEvent> {
+    let payload = message.get("message").cloned().unwrap_or_else(|| json!({}));
+    let message_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| state.active_message_id.clone())
+        .or_else(|| message.get("uuid").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| "assistant".into());
+    state.active_message_id = Some(message_id.clone());
+    state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
+    let content = payload
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut events = Vec::new();
+    let text = content
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    if !text.is_empty() {
+        let mut event = NormalizedEvent::new("message.completed");
+        event.item_id = Some(message_id.clone());
+        event.role = Some("assistant".into());
+        event.status = Some("completed".into());
+        event.text = Some(text);
+        event.data = payload.clone();
+        events.push(event);
+    }
+    for part in content {
+        let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
+        match part_type {
+            "tool_use" => {
+                let tool_id = part
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_owned();
+                let mut event = with_data("tool.started", message, part.clone());
+                event.item_id = Some(tool_id);
+                event.title = part.get("name").and_then(Value::as_str).map(str::to_owned);
+                event.status = Some("inProgress".into());
+                events.push(event);
+            }
+            "thinking" => {
+                if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
+                    if !thinking.is_empty() {
+                        let mut event = NormalizedEvent::new("reasoning.completed");
+                        event.item_id = Some(format!("reasoning-{message_id}"));
+                        event.status = Some("completed".into());
+                        event.text = Some(thinking.to_owned());
+                        events.push(event);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    events
+}
+
+fn normalize_claude_user(message: &Value) -> Vec<NormalizedEvent> {
+    let payload = message.get("message").cloned().unwrap_or_else(|| json!({}));
+    let content = payload
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut events = Vec::new();
+    for part in content {
+        match part.get("type").and_then(Value::as_str).unwrap_or("") {
+            "tool_result" => {
+                let tool_id = part
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_owned();
+                let mut event = with_data("tool.completed", message, part.clone());
+                event.item_id = Some(tool_id);
+                event.status = Some(
+                    if part.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+                        "failed"
+                    } else {
+                        "completed"
+                    }
+                    .into(),
+                );
+                event.text = part
+                    .get("content")
+                    .and_then(|value| match value {
+                        Value::String(text) => Some(text.clone()),
+                        Value::Array(items) => Some(
+                            items
+                                .iter()
+                                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join(""),
+                        ),
+                        _ => None,
+                    });
+                // Keep tool cards compact in the GUI.
+                if let Some(text) = &event.text {
+                    event.data["aggregatedOutput"] = Value::String(text.clone());
+                }
+                events.push(event);
+            }
+            // User text echoes are already persisted by Bridge on send_turn.
+            "text" => {}
+            _ => {}
+        }
+    }
+    events
+}
+
+fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
+    let subtype = message
+        .get("subtype")
+        .and_then(Value::as_str)
+        .unwrap_or("completed");
+    let mut turn = with_data(
+        "turn.completed",
+        message,
+        json!({"turn": {"status": subtype}, "result": message.get("result").cloned().unwrap_or(Value::Null)}),
+    );
+    turn.status = Some(if subtype == "success" {
+        "completed".into()
+    } else {
+        subtype.into()
+    });
+    let mut events = vec![turn];
+    if let Some(usage) = message.get("usage") {
+        events.push(with_data(
+            "usage.updated",
+            message,
+            json!({"usage": usage, "totalCostUsd": message.get("total_cost_usd")}),
+        ));
+    }
+    if message
+        .get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || subtype.contains("error")
+    {
+        let mut error = with_data("error", message, message.clone());
+        error.status = Some("failed".into());
+        error.text = message
+            .get("result")
+            .and_then(Value::as_str)
+            .or_else(|| message.get("error").and_then(Value::as_str))
+            .map(str::to_owned)
+            .or_else(|| Some(format!("Claude turn ended with {subtype}")));
+        events.push(error);
+    }
+    events
+}
+
+fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> {
+    let request = message
+        .get("request")
+        .cloned()
+        .or_else(|| message.get("control_request").cloned())
+        .unwrap_or_else(|| message.clone());
+    let subtype = request
+        .get("subtype")
+        .and_then(Value::as_str)
+        .unwrap_or("permission");
+    if subtype != "permission" && subtype != "can_use_tool" {
+        return None;
+    }
+    let mut event = with_data("approval.requested", message, request.clone());
+    event.item_id = request
+        .get("tool_use_id")
+        .or_else(|| request.get("request_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    event.title = Some(
+        request
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(|name| format!("Approve {name}"))
+            .unwrap_or_else(|| "Approve tool".into()),
+    );
+    event.text = request
+        .pointer("/tool_input/command")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    event.status = Some("pending".into());
+    event.data["requestId"] = message
+        .get("request_id")
+        .cloned()
+        .or_else(|| request.get("request_id").cloned())
+        .unwrap_or(Value::Null);
+    event.data["command"] = request
+        .pointer("/tool_input/command")
+        .cloned()
+        .unwrap_or(Value::Null);
+    Some(event)
+}
+
 fn with_data(kind: &str, params: &Value, data: Value) -> NormalizedEvent {
     let mut event = NormalizedEvent::new(kind);
     event.item_id = params
@@ -305,5 +684,85 @@ mod tests {
         );
         assert_eq!(events[0].kind, "command.output_delta");
         assert_eq!(events[0].text.as_deref(), Some("ok\n"));
+    }
+
+    #[test]
+    fn normalizes_claude_text_delta() {
+        let mut state = ClaudeStreamState::default();
+        let _ = normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1"}}}),
+            &mut state,
+        );
+        let events = normalize_claude_message_with_state(
+            &json!({
+                "type":"stream_event",
+                "event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+            }),
+            &mut state,
+        );
+        assert_eq!(events[0].kind, "message.delta");
+        assert_eq!(events[0].item_id.as_deref(), Some("msg_1"));
+        assert_eq!(events[0].role.as_deref(), Some("assistant"));
+        assert_eq!(events[0].text.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn coalesces_claude_stream_and_completed_into_one_item_id() {
+        let mut state = ClaudeStreamState::default();
+        let _ = normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_9"}}}),
+            &mut state,
+        );
+        let delta = normalize_claude_message_with_state(
+            &json!({"type":"stream_event","uuid":"a","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}}),
+            &mut state,
+        );
+        let delta2 = normalize_claude_message_with_state(
+            &json!({"type":"stream_event","uuid":"b","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}}),
+            &mut state,
+        );
+        let completed = normalize_claude_message_with_state(
+            &json!({"type":"assistant","message":{"id":"msg_9","content":[{"type":"text","text":"Hello"}]}}),
+            &mut state,
+        );
+        assert_eq!(delta[0].item_id, delta2[0].item_id);
+        assert_eq!(delta[0].item_id.as_deref(), Some("msg_9"));
+        assert_eq!(completed[0].item_id.as_deref(), Some("msg_9"));
+        assert_eq!(completed[0].kind, "message.completed");
+    }
+
+    #[test]
+    fn skips_empty_claude_thinking_deltas() {
+        let events = normalize_claude_message(&json!({
+            "type":"stream_event",
+            "event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+        }));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn normalizes_claude_tool_and_result() {
+        let mut state = ClaudeStreamState::default();
+        let started = normalize_claude_message_with_state(&json!({
+            "type":"assistant",
+            "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}
+        }), &mut state);
+        assert_eq!(started[0].kind, "tool.started");
+        assert_eq!(started[0].title.as_deref(), Some("Bash"));
+        let completed = normalize_claude_message(&json!({
+            "type":"user",
+            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"/tmp","is_error":false}]}
+        }));
+        assert_eq!(completed[0].kind, "tool.completed");
+        assert_eq!(completed[0].text.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn normalizes_claude_result_as_turn_completed() {
+        let events = normalize_claude_message(&json!({
+            "type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1}
+        }));
+        assert!(events.iter().any(|event| event.kind == "turn.completed"));
+        assert!(events.iter().any(|event| event.kind == "usage.updated"));
     }
 }

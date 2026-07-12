@@ -1,5 +1,7 @@
 mod adapters;
 mod agent;
+mod binary;
+mod claude_adapter;
 mod codex_adapter;
 mod git;
 mod model;
@@ -72,8 +74,8 @@ fn health(state: State<AppState>) -> Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         harnesses: HashMap::from([
-            ("claude", which::which("claude").is_ok()),
-            ("codex", which::which("codex").is_ok()),
+            ("claude", binary::resolve("claude").is_some()),
+            ("codex", binary::resolve("codex").is_some()),
             ("shell", true),
         ]),
         database: state.database_path.to_string_lossy().into(),
@@ -163,34 +165,84 @@ fn create_workspace(
 fn start_session(
     workspace_id: String,
     harness: Harness,
+    model: Option<String>,
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
+    let chosen_model = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            state
+                .adapter_registry
+                .descriptors()
+                .into_iter()
+                .find(|adapter| adapter.id == adapter_id)
+                .and_then(|adapter| adapter.default_model)
+        });
     let db = state.db.lock().unwrap();
     let path: String = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
         params![workspace_id],
         |r| r.get(0),
     )?;
-    let existing: Option<String> = db.query_row("SELECT id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready') ORDER BY rowid DESC LIMIT 1", params![workspace_id,adapter_id], |r| r.get(0)).ok();
+    let existing: Option<String> = db.query_row(
+        "SELECT id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
+        params![workspace_id, adapter_id],
+        |r| r.get(0),
+    ).ok();
     let session_id = existing
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     drop(db);
     if state.adapters.lock().unwrap().contains_key(&session_id) {
-        return store::state(&state.db.lock().unwrap());
+        let current_model: Option<String> = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT model FROM sessions WHERE id=?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        if current_model.as_deref() == chosen_model.as_deref() {
+            return store::state(&state.db.lock().unwrap());
+        }
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop();
+        }
     }
 
-    let started = state.adapter_registry.start(adapter_id, &path)?;
+    let started = state
+        .adapter_registry
+        .start(adapter_id, &path, chosen_model.as_deref())?;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let mut reader = started.reader;
     let db = state.db.lock().unwrap();
     if existing.is_some() {
-        db.execute("UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported' WHERE id=?1", params![session_id,Utc::now().to_rfc3339(),thread_id])?;
+        db.execute(
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4 WHERE id=?1",
+            params![session_id, Utc::now().to_rfc3339(), thread_id, chosen_model],
+        )?;
     } else {
-        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6)", params![session_id,workspace_id,adapter_id,harness.label(),Utc::now().to_rfc3339(),thread_id])?;
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7)",
+            params![
+                session_id,
+                workspace_id,
+                adapter_id,
+                harness.label(),
+                Utc::now().to_rfc3339(),
+                thread_id,
+                chosen_model
+            ],
+        )?;
     }
     db.execute(
         "UPDATE workspaces SET status='working' WHERE id=?1",
@@ -445,7 +497,7 @@ fn write_terminal(
 }
 
 #[tauri::command]
-fn send_turn(session_id: String, text: String, state: State<AppState>) -> Result<(), BridgeError> {
+fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppState>) -> Result<(), BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
@@ -453,7 +505,39 @@ fn send_turn(session_id: String, text: String, state: State<AppState>) -> Result
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.send_turn(&text)
+    runtime.send_turn(&text)?;
+    drop(adapters);
+    let db = state.db.lock().unwrap();
+    let adapter_id: String = db.query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![session_id],
+        |r| r.get(0),
+    )?;
+    // Claude stream-json does not reliably echo the submitted user turn; persist it locally.
+    if adapter_id == "claude" {
+        let user_event = agent::NormalizedEvent {
+            kind: "message.completed".into(),
+            item_id: Some(format!("user-{}", Uuid::new_v4())),
+            role: Some("user".into()),
+            status: Some("completed".into()),
+            title: None,
+            text: Some(text),
+            data: serde_json::json!({}),
+        };
+        let event = store::agent_event(
+            &db,
+            &session_id,
+            &user_event,
+            &serde_json::json!({"adapter": adapter_id}),
+        )?;
+        let _ = app.emit("agent-event", event);
+    }
+    let _ = db.execute(
+        "UPDATE sessions SET status='working' WHERE id=?1",
+        params![session_id],
+    );
+    let _ = app.emit("state-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -666,8 +750,8 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>) {
                         "database": database,
                         "adapters": adapters,
                         "harnesses": {
-                            "claude": which::which("claude").is_ok(),
-                            "codex": which::which("codex").is_ok(),
+                            "claude": binary::resolve("claude").is_some(),
+                            "codex": binary::resolve("codex").is_some(),
                             "shell": true
                         }
                     })
@@ -696,6 +780,15 @@ pub fn run() {
             let db_path = data.join("bridge.db");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            // Sessions cannot outlive the app process; clear stale live statuses on boot.
+            let _ = connection.execute(
+                "UPDATE sessions SET status='stopped', ended_at=COALESCE(ended_at, ?1), active_turn_id=NULL WHERE status IN ('working','waiting','ready')",
+                params![Utc::now().to_rfc3339()],
+            );
+            let _ = connection.execute(
+                "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting','ready')",
+                [],
+            );
             let adapter_registry = adapters::AdapterRegistry::built_in()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             start_health_server(db_path.clone(), adapter_registry.descriptors());

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Box, ChevronDown, CircleDot, Clock3, Code2, Command, FileCode2, FolderGit2, GitBranch, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, Send, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
@@ -9,6 +9,7 @@ import { formatElapsed } from "./utils";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [], agentEvents: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", working: "WORKING", waiting: "NEEDS YOU", ready: "READY", stopped: "STOPPED", failed: "FAILED" };
+const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
 
 function Meter({ label, value, detail }: { label: string; value: number; detail: string }) {
   return <div className="meter"><span>{label}</span><div className="meter-track"><i style={{ width: `${value}%` }} /></div><b>{value}%</b><small>{detail}</small></div>;
@@ -25,18 +26,36 @@ export function App() {
   const [modal, setModal] = useState<"workspace" | "project" | "palette" | null>(null);
   const [title, setTitle] = useState("");
   const [path, setPath] = useState("");
-  const [harness, setHarness] = useState<Harness>("codex");
+  const [harness, setHarness] = useState<Harness>("claude");
+  const [model, setModel] = useState("sonnet");
   const [composer, setComposer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [clock, setClock] = useState(Date.now());
+  const autoStartRef = useRef<string>();
 
   const reload = useCallback(async () => {
     const next = await bridgeApi.state(); setState(next);
     setSelectedId(current => current && next.workspaces.some(w => w.id === current) ? current : next.workspaces[0]?.id);
   }, []);
 
-  useEffect(() => { void Promise.all([reload(), bridgeApi.health().then(setHealth)]); let off: (() => void) | undefined; void bridgeApi.onStateChanged(reload).then(fn => off = fn); return () => off?.(); }, [reload]);
+  useEffect(() => {
+    void Promise.all([
+      reload(),
+      bridgeApi.health().then(value => {
+        setHealth(value);
+        const preferred = value.adapters.find(adapter => adapter.id === "claude" && adapter.available)
+          ?? value.adapters.find(adapter => adapter.available);
+        if (preferred) {
+          setHarness(preferred.id as Harness);
+          if (preferred.defaultModel) setModel(preferred.defaultModel);
+        }
+      })
+    ]);
+    let off: (() => void) | undefined;
+    void bridgeApi.onStateChanged(reload).then(fn => off = fn);
+    return () => off?.();
+  }, [reload]);
   useEffect(() => { let off: (() => void) | undefined; void bridgeApi.onAgentEvent(event => setState(current => current.agentEvents.some(item => item.id === event.id) ? current : { ...current, agentEvents: [...current.agentEvents, event] })).then(fn => off = fn); return () => off?.(); }, []);
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
@@ -56,10 +75,47 @@ export function App() {
   const selected = state.workspaces.find(w => w.id === selectedId);
   const selectedProject = state.projects.find(p => p.id === selected?.projectId);
   const sessions = state.sessions.filter(s => s.workspaceId === selectedId && s.harness !== "shell");
-  const session = sessions.find(s => s.id === selectedSessionId) ?? sessions.find(s => s.status === "working" || s.status === "waiting") ?? sessions[0];
-  const sessionConnected = !!session && !session.endedAt && ["working", "waiting", "ready"].includes(session.status);
+  const session = sessions.find(s => s.id === selectedSessionId) ?? sessions.find(s => liveStatuses.includes(s.status)) ?? sessions[0];
+  const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = state.agentEvents.filter(event => event.sessionId === session?.id);
   const grouped = useMemo(() => state.projects.map(project => ({ project, workspaces: state.workspaces.filter(w => w.projectId === project.id) })), [state]);
+  const activeHarness = session?.harness ?? harness;
+  const activeAdapter = health?.adapters.find(adapter => adapter.id === activeHarness);
+  const modelChoices = activeAdapter?.models ?? [];
+  const selectedModel = session?.model ?? model ?? activeAdapter?.defaultModel ?? modelChoices[0]?.id ?? "";
+
+  useEffect(() => {
+    if (session?.model) setModel(session.model);
+  }, [session?.model, session?.id]);
+
+  useEffect(() => {
+    if (!selectedId || !("__TAURI_INTERNALS__" in window) || busy) return;
+    if (autoStartRef.current === selectedId) return;
+    const workspaceSessions = state.sessions.filter(item => item.workspaceId === selectedId && item.harness !== "shell");
+    const preferred = workspaceSessions[0]?.harness
+      ?? (health?.adapters.find(adapter => adapter.id === "claude" && adapter.available)?.id as Harness | undefined)
+      ?? (health?.adapters.find(adapter => adapter.available)?.id as Harness | undefined)
+      ?? harness;
+    const adapter = health?.adapters.find(item => item.id === preferred);
+    if (!adapter?.available) return;
+    const preferredModel = workspaceSessions[0]?.model ?? model ?? adapter.defaultModel ?? undefined;
+    autoStartRef.current = selectedId;
+    setBusy(true);
+    void bridgeApi.startSession(selectedId, preferred, preferredModel)
+      .then(next => {
+        setState(next);
+        const started = [...next.sessions].reverse().find(item => item.workspaceId === selectedId && liveStatuses.includes(item.status));
+        if (started) {
+          setSelectedSessionId(started.id);
+          if (started.model) setModel(started.model);
+        }
+      })
+      .catch(e => {
+        autoStartRef.current = undefined;
+        setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setBusy(false));
+  }, [selectedId, state.sessions, health, harness, model, busy]);
 
   async function chooseFolder() {
     if (!("__TAURI_INTERNALS__" in window)) return setPath("/Users/you/Developer/new-project");
@@ -69,21 +125,59 @@ export function App() {
   async function addProject() { setBusy(true); setError(undefined); try { setState(await bridgeApi.addProject(path)); setModal(null); setPath(""); } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); } }
   async function createWorkspace() {
     const projectId = selectedProject?.id ?? state.projects[0]?.id; if (!projectId || !title.trim()) return;
-    setBusy(true); setError(undefined); try { const next = await bridgeApi.createWorkspace(projectId, title.trim(), harness); setState(next); setSelectedId(next.workspaces.at(-1)?.id); setModal(null); setTitle(""); } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); }
+    const name = title.trim();
+    setBusy(true); setError(undefined);
+    try {
+      const next = await bridgeApi.createWorkspace(projectId, name, harness);
+      const workspace = next.workspaces.at(-1);
+      if (!workspace) { setState(next); setModal(null); setTitle(""); return; }
+      autoStartRef.current = workspace.id;
+      setSelectedId(workspace.id);
+      setModal(null);
+      setTitle("");
+      const started = await bridgeApi.startSession(workspace.id, harness, model);
+      setState(started);
+      const active = [...started.sessions].reverse().find(item => item.workspaceId === workspace.id && liveStatuses.includes(item.status));
+      if (active) setSelectedSessionId(active.id);
+    } catch (e) { setError(errorMessage(e)); autoStartRef.current = undefined; }
+    finally { setBusy(false); }
   }
   async function toggleSession(target?: Session, requestedHarness: Harness = harness) {
     if (!selected) return; setBusy(true);
     try {
       setError(undefined);
-      const connected = !!target && !target.endedAt && ["working", "waiting", "ready"].includes(target.status);
-      const next = connected ? await bridgeApi.stopSession(target.id) : await bridgeApi.startSession(selected.id, target?.harness ?? requestedHarness);
+      const connected = !!target && !target.endedAt && liveStatuses.includes(target.status);
+      const next = connected
+        ? await bridgeApi.stopSession(target.id)
+        : await bridgeApi.startSession(selected.id, target?.harness ?? requestedHarness, model);
       setState(next);
-      if (!target || (target.status !== "working" && target.status !== "waiting")) {
-        const started = [...next.sessions].reverse().find(item => item.workspaceId === selected.id && item.status === "working");
+      autoStartRef.current = selected.id;
+      if (!connected) {
+        const started = [...next.sessions].reverse().find(item => item.workspaceId === selected.id && liveStatuses.includes(item.status));
         setSelectedSessionId(started?.id);
       }
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
+  }
+  async function changeModel(nextModel: string) {
+    setModel(nextModel);
+    if (!selected || !session) return;
+    if (!sessionConnected || session.model === nextModel) return;
+    setBusy(true); setError(undefined);
+    try {
+      await bridgeApi.stopSession(session.id);
+      const next = await bridgeApi.startSession(selected.id, session.harness, nextModel);
+      setState(next);
+      autoStartRef.current = selected.id;
+      const started = [...next.sessions].reverse().find(item => item.workspaceId === selected.id && liveStatuses.includes(item.status));
+      if (started) setSelectedSessionId(started.id);
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  }
+  function chooseHarness(next: Harness) {
+    setHarness(next);
+    const adapter = health?.adapters.find(item => item.id === next);
+    if (adapter?.defaultModel) setModel(adapter.defaultModel);
   }
   async function sendPrompt() { if (!session || !composer.trim()) return; const text = composer.trim(); setComposer(""); try { await bridgeApi.sendTurn(session.id, text); } catch (e) { setComposer(text); setError(errorMessage(e)); } }
   async function resolveApproval(eventId: number, decision: string) { try { await bridgeApi.resolveApproval(eventId, decision); await reload(); } catch (e) { setError(errorMessage(e)); } }
@@ -107,7 +201,7 @@ export function App() {
       <div className="workspace-scroll">
         {grouped.map(({ project, workspaces }) => <section className="project-group" key={project.id}>
           <div className="project-title"><div className="repo-icon">{project.name.slice(0,1).toUpperCase()}</div><strong>{project.name}</strong><ChevronDown size={13}/></div>
-          {workspaces.map((workspace, index) => <button key={workspace.id} className={`workspace-row ${workspace.id === selectedId ? "selected" : ""}`} onClick={() => { setSelectedId(workspace.id); setSelectedSessionId(undefined); }}>
+          {workspaces.map((workspace, index) => <button key={workspace.id} className={`workspace-row ${workspace.id === selectedId ? "selected" : ""}`} onClick={() => { setSelectedId(workspace.id); setSelectedSessionId(undefined); autoStartRef.current = undefined; }}>
             <span className="workspace-index">{index + 1}</span><span className="workspace-main"><b>{workspace.title}</b><small>{workspace.city} · {workspace.branch}</small></span><span className="workspace-status"><StatusDot status={workspace.status}/><small>{statusCopy[workspace.status]}</small></span>
           </button>)}
         </section>)}
@@ -123,25 +217,25 @@ export function App() {
           <div className="workspace-actions"><button className="secondary"><GitPullRequest size={14}/> Review changes</button><button className="secondary archive" onClick={() => void archiveSelected()} title="Archive clean workspace"><Archive size={14}/> Archive</button>{session?.activeTurnId && <button className="secondary" onClick={() => void bridgeApi.interruptTurn(session.id)}><Square size={12}/> Stop turn</button>}<button className={`run-button ${sessionConnected ? "stop" : ""}`} disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14}/> : sessionConnected ? <Square size={13}/> : <Play size={14}/>} {sessionConnected ? "End agent" : "Start agent"}</button></div>
         </div>
         <div className="session-strip">
-          {sessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""}`} key={s.id} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]}</small></span></button>)}
-          <button className="new-session" onClick={() => void toggleSession(undefined, "codex")}><Plus size={14}/> Agent</button>
+          {sessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""}`} key={s.id} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}><Bot size={14}/></span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]}{s.model ? ` · ${s.model}` : ""}</small></span></button>)}
+          <button className="new-session" onClick={() => void toggleSession(undefined, health?.adapters.find(adapter => adapter.id === "claude" && adapter.available) ? "claude" : "codex")}><Plus size={14}/> Agent</button>
           <div className="session-metrics"><span>ELAPSED <b>{formatElapsed(session?.startedAt, clock)}</b></span><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
         </div>
         <div className="content-tabs"><button className={activeTab === "agent" ? "active" : ""} onClick={() => setActiveTab("agent")}><MessageSquareText size={14}/> Agent</button><button className={activeTab === "changes" ? "active" : ""} onClick={() => setActiveTab("changes")}><FileCode2 size={14}/> Changes <span>{selected.dirtyFiles}</span></button><button className={activeTab === "events" ? "active" : ""} onClick={() => setActiveTab("events")}><Activity size={14}/> Events</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}><TerminalSquare size={14}/> Terminal</button></div>
         <section className="content-body">
           {activeTab === "agent" && <AgentConversation session={session} events={sessionEvents} onResolve={(eventId, decision) => void resolveApproval(eventId, decision)}/>}
-          {activeTab === "changes" && <ChangesPanel workspace={selected}/>} 
-          {activeTab === "events" && <EventPanel state={state} workspace={selected}/>} 
+          {activeTab === "changes" && <ChangesPanel workspace={selected}/>}
+          {activeTab === "events" && <EventPanel state={state} workspace={selected}/>}
           {activeTab === "terminal" && <div className="terminal-layer"><TerminalPane workspaceId={selected.id}/></div>}
         </section>
-        {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? `Steer ${session.label}…` : "Start an agent to send a task…"} disabled={!sessionConnected}/><div className="composer-tools"><button className="tool-select"><Code2 size={13}/>{session?.harness ?? harness}<ChevronDown size={12}/></button><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><Send size={14}/></button></div></div></div>}
-      </> : <Welcome onAdd={() => setModal("project")}/>} 
+        {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={sessionConnected ? `Message ${session.label}…` : busy ? "Starting agent…" : "Agent will start automatically…"} disabled={!sessionConnected}/><div className="composer-tools"><label className="model-select"><Code2 size={13}/><select value={selectedModel} disabled={!modelChoices.length || busy} onChange={e => void changeModel(e.target.value)} aria-label="Model">{modelChoices.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select><ChevronDown size={12}/></label><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim() || !sessionConnected}><Send size={14}/></button></div></div></div>}
+      </> : <Welcome onAdd={() => setModal("project")}/>}
     </main>
     {error && <div className="error-toast" role="alert"><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     {modal && <Modal kind={modal} onClose={() => setModal(null)}>
       {modal === "project" && <><ModalTitle icon={<FolderGit2/>} title="Add a repository" copy="Bridge works locally and never uploads your code."/><label className="field-label">REPOSITORY PATH</label><div className="path-input"><input autoFocus value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/Developer/project"/><button onClick={() => void chooseFolder()}>Choose…</button></div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!path || busy} onClick={() => void addProject()}>{busy ? "Adding…" : "Add repository"}</button></div></>}
-      {modal === "workspace" && <><ModalTitle icon={<Box/>} title="New workspace" copy="A fresh branch and isolated Git worktree for this task."/><label className="field-label">WHAT SHOULD THE AGENT DO?</label><textarea className="task-input" autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Add keyboard navigation to the command palette"/><label className="field-label">STRUCTURED ADAPTER</label><div className="harness-picker">{health?.adapters.map(adapter => <button key={adapter.id} disabled={!adapter.available} className={harness === adapter.id ? "selected" : ""} onClick={() => setHarness(adapter.id as Harness)}><span className={`harness-icon ${adapter.id}`}><Bot/></span><b>{adapter.label}</b><small>{adapter.available ? `${adapter.capabilities.length} primitives` : adapter.unavailableReason}</small></button>)}</div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!title.trim() || !state.projects.length || busy || !health?.adapters.some(adapter => adapter.id === harness && adapter.available)} onClick={() => void createWorkspace()}>{busy ? "Creating worktree…" : "Create workspace"}</button></div></>}
-      {modal === "palette" && <CommandPalette workspaces={state.workspaces} onChoose={id => { setSelectedId(id); setModal(null); }}/>} 
+      {modal === "workspace" && <><ModalTitle icon={<Box/>} title="New workspace" copy="A fresh branch and isolated Git worktree. The agent starts ready—you send the first message."/><label className="field-label">WORKSPACE NAME</label><textarea className="task-input" autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Keyboard navigation"/><label className="field-label">STRUCTURED ADAPTER</label><div className="harness-picker">{health?.adapters.map(adapter => <button key={adapter.id} disabled={!adapter.available} className={harness === adapter.id ? "selected" : ""} onClick={() => chooseHarness(adapter.id as Harness)}><span className={`harness-icon ${adapter.id}`}><Bot/></span><b>{adapter.label}</b><small>{adapter.available ? `${adapter.capabilities.length} primitives` : adapter.unavailableReason}</small></button>)}</div><label className="field-label">MODEL</label><div className="model-picker">{(health?.adapters.find(adapter => adapter.id === harness)?.models ?? []).map(option => <button key={option.id} className={model === option.id ? "selected" : ""} onClick={() => setModel(option.id)}><b>{option.label}</b><small>{option.id}</small></button>)}</div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!title.trim() || !state.projects.length || busy || !health?.adapters.some(adapter => adapter.id === harness && adapter.available)} onClick={() => void createWorkspace()}>{busy ? "Starting agent…" : "Create workspace"}</button></div></>}
+      {modal === "palette" && <CommandPalette workspaces={state.workspaces} onChoose={id => { setSelectedId(id); setModal(null); autoStartRef.current = undefined; }}/>}
     </Modal>}
   </div>;
 }

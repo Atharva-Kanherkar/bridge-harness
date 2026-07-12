@@ -1,4 +1,8 @@
-use crate::{agent, codex_adapter, model::AdapterDescriptor, BridgeError};
+use crate::{
+    agent, binary, claude_adapter, codex_adapter,
+    model::{AdapterDescriptor, ModelOption},
+    BridgeError,
+};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -23,12 +27,22 @@ pub struct StartedAdapter {
 
 pub trait HarnessAdapter: Send + Sync {
     fn descriptor(&self) -> AdapterDescriptor;
-    fn start(&self, cwd: &str) -> Result<StartedAdapter, BridgeError>;
+    fn start(&self, cwd: &str, model: Option<&str>) -> Result<StartedAdapter, BridgeError>;
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
 }
 
 pub struct AdapterRegistry {
     adapters: HashMap<String, Box<dyn HarnessAdapter>>,
+}
+
+fn model_options(items: &[(&str, &str)]) -> Vec<ModelOption> {
+    items
+        .iter()
+        .map(|(id, label)| ModelOption {
+            id: (*id).into(),
+            label: (*label).into(),
+        })
+        .collect()
 }
 
 impl AdapterRegistry {
@@ -37,11 +51,8 @@ impl AdapterRegistry {
             adapters: HashMap::new(),
         };
         registry.register(Box::new(CodexAdapter))?;
-        registry.register(Box::new(UnavailableAdapter {
-            descriptor: AdapterDescriptor {
-                id: "claude".into(), label: "Claude Code".into(), available: false, version: None, capabilities: vec![],
-                unavailable_reason: Some("Structured Claude adapter is not installed; Bridge will never fall back to its TUI".into()),
-            },
+        registry.register(Box::new(ClaudeAdapter {
+            streams: Mutex::new(HashMap::new()),
         }))?;
         Ok(registry)
     }
@@ -71,7 +82,12 @@ impl AdapterRegistry {
         descriptors
     }
 
-    pub fn start(&self, id: &str, cwd: &str) -> Result<StartedAdapter, BridgeError> {
+    pub fn start(
+        &self,
+        id: &str,
+        cwd: &str,
+        model: Option<&str>,
+    ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
         })?;
@@ -83,7 +99,7 @@ impl AdapterRegistry {
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        adapter.start(cwd)
+        adapter.start(cwd, model)
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -119,13 +135,20 @@ impl HarnessAdapter for CodexAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            unavailable_reason: which::which("codex")
-                .is_err()
+            unavailable_reason: binary::resolve("codex")
+                .is_none()
                 .then(|| "Codex binary is not installed".into()),
+            models: model_options(&[
+                ("gpt-5.6-sol", "GPT-5.6 Sol"),
+                ("gpt-5.3-codex", "GPT-5.3 Codex"),
+                ("o3", "o3"),
+                ("o4-mini", "o4-mini"),
+            ]),
+            default_model: Some("gpt-5.6-sol".into()),
         }
     }
-    fn start(&self, cwd: &str) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::start(cwd)?;
+    fn start(&self, cwd: &str, model: Option<&str>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::start(cwd, model)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -141,23 +164,59 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
-struct UnavailableAdapter {
-    descriptor: AdapterDescriptor,
+struct ClaudeAdapter {
+    streams: Mutex<HashMap<String, agent::ClaudeStreamState>>,
 }
-impl HarnessAdapter for UnavailableAdapter {
+impl HarnessAdapter for ClaudeAdapter {
     fn descriptor(&self) -> AdapterDescriptor {
-        self.descriptor.clone()
+        let version = claude_adapter::binary_version();
+        AdapterDescriptor {
+            id: "claude".into(),
+            label: "Claude Code".into(),
+            available: version.is_some(),
+            version,
+            capabilities: [
+                "messages",
+                "streaming",
+                "reasoning",
+                "tools",
+                "commands",
+                "approvals",
+                "usage",
+                "interrupt",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            unavailable_reason: binary::resolve("claude")
+                .is_none()
+                .then(|| "Claude Code binary is not installed".into()),
+            models: model_options(&[
+                ("sonnet", "Claude Sonnet"),
+                ("opus", "Claude Opus"),
+                ("haiku", "Claude Haiku"),
+                ("fable", "Claude Fable"),
+            ]),
+            default_model: Some("sonnet".into()),
+        }
     }
-    fn start(&self, _cwd: &str) -> Result<StartedAdapter, BridgeError> {
-        Err(BridgeError::Invalid(
-            self.descriptor
-                .unavailable_reason
-                .clone()
-                .unwrap_or_else(|| "Adapter unavailable".into()),
-        ))
+    fn start(&self, cwd: &str, model: Option<&str>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::start(cwd, model)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime),
+            reader: Box::new(started.reader),
+            startup_messages: started.startup_messages,
+        })
     }
-    fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {
-        vec![]
+    fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
+        let session_key = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_owned();
+        let mut streams = self.streams.lock().unwrap();
+        let state = streams.entry(session_key).or_default();
+        agent::normalize_claude_message_with_state(value, state)
     }
 }
 
@@ -174,9 +233,11 @@ mod tests {
                 version: Some("1".into()),
                 capabilities: vec!["messages".into()],
                 unavailable_reason: None,
+                models: vec![],
+                default_model: None,
             }
         }
-        fn start(&self, _cwd: &str) -> Result<StartedAdapter, BridgeError> {
+        fn start(&self, _cwd: &str, _model: Option<&str>) -> Result<StartedAdapter, BridgeError> {
             Err(BridgeError::Invalid("not launched in registry test".into()))
         }
         fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {
