@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Archive, ArrowUp, Bot, Box, CircleDot, Clock3, Command, FileCode2, FileDiff, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, ArrowUp, Bot, Box, CircleDot, Clock3, Command, FileCode2, FileDiff, FileText, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
-import type { BridgeState, Health, Project, Session, SessionStatus, Workspace } from "./types";
+import type { BridgeState, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { MOCK_CONVERSATION } from "./mockConversation";
 import { AgentConversation } from "./components/AgentConversation";
 import { TerminalPane } from "./components/TerminalPane";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
+import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [], agentEvents: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
@@ -45,6 +46,7 @@ export function App() {
   const [error, setError] = useState<string>();
   const [clock, setClock] = useState(Date.now());
   const [home, setHome] = useState(true);
+  const [forest, setForest] = useState<SessionForestSnapshot>();
   const autoStartRef = useRef<string>();
 
   const reload = useCallback(async () => {
@@ -83,6 +85,15 @@ export function App() {
   const orderedSessions = useMemo(() => orderSessionTree(sessions), [sessions]);
   const grouped = useMemo(() => state.projects.map(project => ({ project, workspaces: state.workspaces.filter(w => w.projectId === project.id) })), [state]);
   const orchestratorReady = !!health?.adapters.find(adapter => adapter.id === "codex" && adapter.available);
+
+  useEffect(() => {
+    if (!session?.id) { setForest(undefined); return; }
+    let active = true;
+    const refresh = () => void bridgeApi.sessionForest(session.id).then(value => { if (active) setForest(value); }).catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [session?.id]);
 
   useEffect(() => {
     if (home || !selectedId || !("__TAURI_INTERNALS__" in window) || busy || !orchestratorReady) return;
@@ -146,6 +157,16 @@ export function App() {
   }
   async function sendPrompt() { if (!session || !composer.trim()) return; const text = composer.trim(); setComposer(""); try { await bridgeApi.sendTurn(session.id, text); } catch (e) { setComposer(text); setError(errorMessage(e)); } }
   async function resolveApproval(eventId: number, decision: string) { try { await bridgeApi.resolveApproval(eventId, decision); await reload(); } catch (e) { setError(errorMessage(e)); } }
+  async function selectConversationLeaf(entryId: string) {
+    if (!session || !window.confirm("Switch conversation history? This changes the active conversation branch only. Files and Git state will not be rewound.")) return;
+    try { setForest(await bridgeApi.activateSessionEntry(session.id, entryId)); }
+    catch (e) { setError(errorMessage(e)); }
+  }
+  async function compactConversation() {
+    if (!session) return;
+    try { await bridgeApi.compactSession(session.id); window.setTimeout(() => void bridgeApi.sessionForest(session.id).then(setForest), 250); }
+    catch (e) { setError(errorMessage(e)); }
+  }
   async function archiveSelected() {
     if (!selected || !window.confirm(`Archive ${selected.city}? The clean worktree will be removed; its branch is preserved.`)) return;
     setBusy(true); setError(undefined);
@@ -192,7 +213,9 @@ export function App() {
                 <AgentConversation
                   session={session}
                   events={sessionEvents.length ? sessionEvents : MOCK_CONVERSATION}
-                  preview={!sessionEvents.length}
+                  forestEntries={forest?.entries}
+                  activeLeafId={forest?.head?.activeEntryId}
+                  preview={!sessionEvents.length && !forest?.entries.length}
                   onResolve={(eventId, decision) => void resolveApproval(eventId, decision)}
                 />
               </div>
@@ -215,7 +238,16 @@ export function App() {
             {activeTab === "events" && <EventPanel state={state} workspace={selected}/>}
             {activeTab === "terminal" && <div className="terminal-layer"><TerminalPane workspaceId={selected.id}/></div>}
           </div>
-          {activeTab === "agent" && <EnvPanel workspace={selected} project={selectedProject} session={session} sessions={state.sessions} onChanges={() => setActiveTab("changes")}/>}
+          {activeTab === "agent" && <EnvPanel
+            workspace={selected}
+            project={selectedProject}
+            session={session}
+            sessions={state.sessions}
+            forest={forest}
+            onChanges={() => setActiveTab("changes")}
+            onSelectLeaf={entryId => void selectConversationLeaf(entryId)}
+            onCompact={() => void compactConversation()}
+          />}
         </section>
       </> : <Welcome onAdd={() => setModal("project")}/>}
     </main>
@@ -229,9 +261,11 @@ export function App() {
   </div>;
 }
 
-function EnvPanel({ workspace, project, session, sessions, onChanges }: { workspace: Workspace; project?: Project; session?: Session; sessions: Session[]; onChanges: () => void }) {
+function EnvPanel({ workspace, project, session, sessions, forest, onChanges, onSelectLeaf, onCompact }: { workspace: Workspace; project?: Project; session?: Session; sessions: Session[]; forest?: SessionForestSnapshot; onChanges: () => void; onSelectLeaf: (entryId: string) => void; onCompact: () => void }) {
   const workers = sessions.filter(s => s.parentSessionId && s.parentSessionId === session?.id);
   const doneWorkers = workers.filter(s => s.status === "stopped" || s.status === "ready").length;
+  const budget = turnBudget(forest, session?.activeTurnId);
+  const restoration = restorationPresentation(session?.restorationMode ?? "fresh");
   return <aside className="env-panel">
     <div className="env-label">Environment</div>
     <button className="env-row" onClick={onChanges}><FileDiff size={14}/><span>Changes</span>{workspace.dirtyFiles ? <small className="dstat"><b className="add">+{workspace.additions}</b><b className="del">−{workspace.deletions}</b></small> : <small>clean</small>}</button>
@@ -239,14 +273,27 @@ function EnvPanel({ workspace, project, session, sessions, onChanges }: { worksp
     <button className="env-row"><GitBranch size={14}/><span>{workspace.branch}</span></button>
     <button className="env-row"><GitCommitHorizontal size={14}/><span>Commit or push</span></button>
     <button className="env-row"><GitPullRequest size={14}/><span>Create pull request</span></button>
+    <div className="env-label">Session forest</div>
+    <div className={`restoration-badge ${session?.restorationMode ?? "fresh"}`}><span>{restoration.label}</span><small>{restoration.detail}</small></div>
+    <div className="budget-card"><span>Turn budget</span><b>{budget.units}/{forest?.policyLimits.maxCapabilityUnitsPerTurn ?? 24} units</b><small>{budget.workers}/{forest?.policyLimits.maxWorkersPerTurn ?? 3} workers · {budget.strongWorkers}/{forest?.policyLimits.maxStrongWorkersPerTurn ?? 1} strong</small></div>
+    <button className="env-row" onClick={onCompact}><FileText size={14}/><span>Compact context</span><small>{session?.contextPercent == null ? "manual" : `${session.contextPercent}%`}</small></button>
+    <div className="rewind-warning">Conversation rewind never rewinds files or Git state.</div>
+    {(forest?.leaves ?? []).map(leaf => <button className={`env-row forest-leaf ${leaf.id === forest?.head?.activeEntryId ? "active" : ""}`} key={leaf.id} onClick={() => onSelectLeaf(leaf.id)}><GitBranch size={14}/><span>{leaf.payload.summary ? String(leaf.payload.summary) : `${leaf.kind} · ${leaf.sequence}`}</span><small>{leaf.id === forest?.head?.activeEntryId ? "active" : "switch"}</small></button>)}
     <div className="env-label">Subagents</div>
     {workers.length
-      ? workers.map(worker => <button className="env-row" key={worker.id}><StatusDot status={worker.status}/><span>{worker.label}</span><small>{worker.status === "working" ? "running" : "done"}</small></button>)
+      ? workers.map(worker => {
+          const lease = forest?.workerLeases.find(item => item.sessionId === worker.id);
+          const runtime = forest?.workerRuntimes.find(item => item.sessionId === worker.id);
+          return <details className="worker-drilldown" key={worker.id}><summary><StatusDot status={worker.status}/><span>{worker.label}</span><small>{runtime?.lifecycleState ?? worker.status}</small></summary><div><p><b>{lease?.role ?? "worker"}</b> · {lease?.writeMode ?? "—"} · {lease?.leaseStatus ?? "—"}</p><p>{(lease?.ownedPaths ?? []).join(", ") || "No owned paths"}</p><p>{tierRuntimeLabel(worker.requestedTier, worker.model, worker.effort)}</p>{runtime?.lastResult && <pre>{JSON.stringify(runtime.lastResult, null, 2)}</pre>}</div></details>;
+        })
       : <div className="env-empty">{doneWorkers ? `${doneWorkers} done` : "None spawned yet"}</div>}
+    {(forest?.workerQueue ?? []).map(item => <details className="queue-explanation" key={item.id}><summary><Clock3 size={13}/><span>{item.queueStatus}: {String(item.request.objective ?? "worker request")}</span></summary><p>{queueExplanation(item, forest?.workerLeases ?? [])}</p><code>{Array.isArray(item.request.ownedPaths) ? item.request.ownedPaths.join(", ") : ""}</code><small>runtime {item.actualModel}</small></details>)}
+    {!!forest?.reasons.length && <details className="reason-log"><summary><CircleDot size={13}/> Inspect lifecycle reasons</summary>{forest.reasons.map(reason => <div key={reason.id}><b>{reason.kind}</b><p>{reason.body}</p></div>)}</details>}
     <div className="env-label">Sources</div>
     <button className="env-row"><FolderGit2 size={14}/><span>{project?.path ?? workspace.path}</span></button>
   </aside>;
 }
+
 
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="panel-view"><div className="panel-kicker">CHANGE STORY</div><h2>{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p>Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="diff-stat"><b className="add">+{workspace.additions}</b><b className="del">−{workspace.deletions}</b><span/><small>{workspace.branch}</small></div><div className="placeholder-lines">{[78,92,64,85,51,70].map((n,i)=><i key={i} style={{width:`${n}%`}}/>)}</div></div>; }
 function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="event-list">{events.length ? events.map(e => <article key={e.id}><CircleDot size={14}/><div><b>{e.kind.replaceAll(".", " ")}</b><p>{e.body}</p><small>{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="empty-panel">No events for this workspace yet.</div>}</div>; }

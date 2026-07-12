@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, GitFork, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { reduceConversation, type ConversationItem } from "../conversation";
-import type { AgentEvent, Session } from "../types";
+import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
+import type { AgentEvent, Session, SessionEntry } from "../types";
 import { Markdown } from "./Markdown";
 
 // Codex-style conversation: prose messages, quiet collapsible thinking, and
@@ -73,8 +73,8 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export function AgentConversation({ session, events, onResolve, preview }: { session?: Session; events: AgentEvent[]; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
-  const items = reduceConversation(events);
+export function AgentConversation({ session, events, forestEntries, activeLeafId, onResolve, preview }: { session?: Session; events: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
+  const items = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : reduceConversation(events);
   if (!session && !preview) return <Empty title="No agent yet" copy="Open a workspace and Bridge starts the orchestrator for you."/>;
   if (!items.length) return <Empty title="What should we build?" copy={`${session?.label ?? "The orchestrator"} is ready. Describe the work — Bridge routes it to the right harness and model.`}/>;
   return <div className="conversation-scroll">
@@ -100,8 +100,26 @@ function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eve
   if (item.type === "plan") return <PlanCard item={item}/>;
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
   if (item.type === "delegation") return <DelegationRow item={item}/>;
+  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
+  if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <div className="error-row"><AlertTriangle size={14}/><div><b>Agent error</b><p>{item.text || "The adapter reported an error."}</p></div></div>;
   return <ActivityGroup items={[item]}/>;
+}
+
+function ForestCard({ item }: { item: ConversationItem }) {
+  const label = item.type === "checkpoint" ? "Checkpoint" : item.type === "compaction" ? "Context" : "Branch";
+  return <div className={`forest-card ${item.type}`}>
+    <header><GitFork size={13}/><b>{item.title || label}</b><small>{item.status || "durable"}</small></header>
+    {item.text && <p>{item.text}</p>}
+    {item.data.reason ? <code>{String(item.data.reason)}</code> : null}
+  </div>;
+}
+
+function RawEvent({ item }: { item: ConversationItem }) {
+  return <details className="raw-event">
+    <summary><SquareTerminal size={12}/>{item.title || "Raw provider event"}<small>inspect</small></summary>
+    <pre>{JSON.stringify(item.data, null, 2)}</pre>
+  </details>;
 }
 
 function Reasoning({ item }: { item: ConversationItem }) {

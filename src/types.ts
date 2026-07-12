@@ -2,6 +2,7 @@ export type Harness = "claude" | "codex" | "shell";
 export type SessionStatus = "idle" | "starting" | "working" | "waiting" | "warm" | "checkpointing" | "ready" | "stopped" | "resuming" | "restored" | "failed" | "completed" | "cancelled";
 export type CapabilityTier = "fast" | "standard" | "strong";
 export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
+export type ResumeEligibility = "none" | "native" | "checkpoint_restored";
 
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Workspace {
@@ -22,6 +23,47 @@ export interface AgentEvent {
   id: number; sessionId: string; sequence: number; protocolVersion: number; kind: string;
   itemId: string | null; role: string | null; status: string | null; title: string | null;
   text: string | null; data: Record<string, unknown>; providerMeta: Record<string, unknown>; createdAt: string;
+}
+export interface SessionEntry {
+  id: string; sessionId: string; parentEntryId: string | null; sequence: number; kind: string;
+  payload: Record<string, unknown>; providerEventId: string | null; contextVisibility: string;
+  tokenEstimate: number | null; createdAt: string;
+}
+export interface SessionHead {
+  sessionId: string; activeEntryId: string | null; nativeProviderSessionId: string | null;
+  restorationMode: RestorationMode; resumeEligibility: ResumeEligibility;
+  latestCheckpointEntryId: string | null; updatedAt: string;
+}
+export interface WorkerLease {
+  sessionId: string; workspaceId: string; role: string; capabilityTier: string; taskFamily: string;
+  ownedPaths: string[]; writeMode: string; leaseStatus: string; expiresAt: string | null;
+  createdAt: string; updatedAt: string;
+}
+export interface WorkerRuntimeRecord {
+  sessionId: string; parentSessionId: string; lifecycleState: string; taskFamily: string;
+  compatibilityKey: string; resultStatus: string; retryCount: number; warmUntil: string | null;
+  worktreePath: string | null; worktreeBranch: string | null; lastResult: Record<string, unknown> | null;
+  updatedAt: string;
+}
+export interface QueuedWorkerRequest {
+  id: string; parentSessionId: string; workspaceId: string; turnId: string;
+  request: Record<string, unknown>; actualModel: string; queueStatus: string; sequence: number;
+  dispatchedSessionId: string | null; createdAt: string; updatedAt: string;
+}
+export interface UsageLedgerRow {
+  id: number; workspaceId: string; sessionId: string | null; turnId: string | null;
+  inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null;
+  cacheWriteTokens: number | null; contextPercent: number | null; capabilityUnits: number;
+  runtimeMs: number | null; source: string; createdAt: string;
+}
+export interface PolicyLimits {
+  maxWorkersPerTurn: number; maxStrongWorkersPerTurn: number; maxCapabilityUnitsPerTurn: number;
+}
+export interface SessionForestSnapshot {
+  sessionId: string; entries: SessionEntry[]; head: SessionHead | null; leaves: SessionEntry[];
+  workerLeases: WorkerLease[]; workerRuntimes: WorkerRuntimeRecord[];
+  workerQueue: QueuedWorkerRequest[]; usage: UsageLedgerRow[]; reasons: BridgeEvent[];
+  policyLimits: PolicyLimits;
 }
 export interface ModelOption { id: string; label: string; tier: CapabilityTier; defaultForTier: boolean }
 export interface AdapterDescriptor {
