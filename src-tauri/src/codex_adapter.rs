@@ -55,7 +55,10 @@ pub fn start(
     )?;
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     write_value(&writer, &json!({"method":"initialized"}))?;
-    let mut params = json!({"cwd":cwd,"approvalPolicy":"on-request","sandbox":"workspace-write","ephemeral":false,"serviceName":"Bridge"});
+    // Full auto-accept: the user runs Bridge in unattended auto-accept mode, so
+    // agents never wait on approval prompts and can perform local actions
+    // (e.g. `open <file>` to launch the browser) without escalation.
+    let mut params = json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":false,"serviceName":"Bridge"});
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = json!(model);
     }

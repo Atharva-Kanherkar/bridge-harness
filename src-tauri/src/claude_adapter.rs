@@ -51,7 +51,7 @@ pub fn start(
         "--verbose",
         "--include-partial-messages",
         "--permission-mode",
-        "acceptEdits",
+        "bypassPermissions",
         "--model",
         chosen_model,
         "--session-id",
