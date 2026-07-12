@@ -459,7 +459,7 @@ pub fn append_session_entry(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn append_session_entry_tx(
+pub(crate) fn append_session_entry_tx(
     transaction: &Transaction<'_>,
     session_id: &str,
     parent_entry_id: Option<&str>,
