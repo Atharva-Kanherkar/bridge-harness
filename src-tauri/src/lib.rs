@@ -7,6 +7,7 @@ mod delegation;
 mod git;
 mod model;
 mod orchestrator;
+mod policy;
 mod session_forest;
 mod store;
 
