@@ -10,13 +10,19 @@ import { Markdown } from "./Markdown";
 
 type Rendered =
   | { kind: "item"; item: ConversationItem }
-  | { kind: "group"; key: string; items: ConversationItem[] };
+  | { kind: "group"; key: string; items: ConversationItem[] }
+  | { kind: "raw-group"; key: string; items: ConversationItem[] };
 
 const GROUPABLE = new Set(["activity", "diff", "artifact"]);
 
 function groupItems(items: ConversationItem[]): Rendered[] {
   const out: Rendered[] = [];
+  const rawItems: ConversationItem[] = [];
   for (const item of items) {
+    if (item.type === "raw") {
+      rawItems.push(item);
+      continue;
+    }
     if (GROUPABLE.has(item.type)) {
       const last = out[out.length - 1];
       if (last?.kind === "group") { last.items.push(item); continue; }
@@ -25,6 +31,7 @@ function groupItems(items: ConversationItem[]): Rendered[] {
     }
     out.push({ kind: "item", item });
   }
+  if (rawItems.length) out.push({ kind: "raw-group", key: "raw-provider-events", items: rawItems });
   return out;
 }
 
@@ -82,6 +89,7 @@ export function AgentConversation({ session, events, forestEntries, activeLeafId
       {preview && <div className="preview-chip">Design preview — sample conversation</div>}
       {groupItems(items).map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
+        : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
         : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve}/>)}
     </div>
   </div>;
@@ -119,6 +127,13 @@ function RawEvent({ item }: { item: ConversationItem }) {
   return <details className="raw-event">
     <summary><SquareTerminal size={12}/>{item.title || "Raw provider event"}<small>inspect</small></summary>
     <pre>{JSON.stringify(item.data, null, 2)}</pre>
+  </details>;
+}
+
+function RawEventGroup({ items }: { items: ConversationItem[] }) {
+  return <details className="raw-event raw-group">
+    <summary><SquareTerminal size={12}/>{items.length} raw provider event{items.length === 1 ? "" : "s"}<small>inspect</small></summary>
+    <div>{items.map(item => <RawEvent key={item.key} item={item}/>)}</div>
   </details>;
 }
 
