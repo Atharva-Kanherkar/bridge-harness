@@ -35,6 +35,7 @@ pub enum RouteReason {
     CapabilityBudgetExhausted,
     UserApprovalRequired,
     InvalidOwnedPath,
+    ChildWorktreeUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +98,7 @@ pub struct PolicyInput {
     pub retry_count: usize,
     pub parent_can_execute: bool,
     pub requires_user_approval: bool,
+    pub child_worktrees_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +198,18 @@ impl PolicyEngine {
         if writer_conflict(input, self.config.max_writers_per_worktree) {
             return outcome(RouteDecision::Queue, RouteReason::WriterConflict, units);
         }
+        let requires_child_worktree = input.request.write_mode == WriteMode::Isolated
+            && input
+                .active_workers
+                .iter()
+                .any(|worker| worker.write_mode != WriteMode::ReadOnly);
+        if requires_child_worktree && !input.child_worktrees_available {
+            return outcome(
+                RouteDecision::Queue,
+                RouteReason::ChildWorktreeUnavailable,
+                units,
+            );
+        }
         if let Some(worker) = warm {
             return outcome(
                 RouteDecision::ResumeWorker {
@@ -209,7 +223,7 @@ impl PolicyEngine {
         outcome(
             RouteDecision::SpawnWorker(WorkerSpec {
                 request: input.request.clone(),
-                requires_child_worktree: input.request.write_mode == WriteMode::Isolated,
+                requires_child_worktree,
                 capability_units: units,
             }),
             RouteReason::EligibleFreshSpawn,
@@ -414,6 +428,24 @@ impl UsageReport {
 
 fn integer_alias(value: &Value, keys: &[&str]) -> Option<i64> {
     keys.iter().find_map(|key| value.get(*key)?.as_i64())
+}
+
+pub fn record_provider_usage(
+    db: &Connection,
+    workspace_id: &str,
+    session_id: &str,
+    turn_id: Option<&str>,
+    source: &str,
+    data: &Value,
+) -> Result<bool, BridgeError> {
+    let Some(report) = UsageReport::from_normalized(data) else {
+        return Ok(false);
+    };
+    store::append_usage_ledger(
+        db,
+        &report.ledger_row(workspace_id, session_id, turn_id, source),
+    )?;
+    Ok(true)
 }
 
 pub fn load_request_budget(
@@ -675,6 +707,7 @@ mod tests {
             retry_count: 0,
             parent_can_execute: false,
             requires_user_approval: false,
+            child_worktrees_available: true,
         }
     }
 
@@ -809,6 +842,12 @@ mod tests {
             panic!("disjoint writer did not spawn: {outcome:?}");
         };
         assert!(spec.requires_child_worktree);
+
+        writers.child_worktrees_available = false;
+        assert_eq!(
+            engine.decide(&writers).reason,
+            RouteReason::ChildWorktreeUnavailable
+        );
     }
 
     #[test]
@@ -952,6 +991,29 @@ mod tests {
         assert_eq!(claude.output_tokens, Some(5));
         assert_eq!(claude.cache_write_tokens, Some(1));
         assert_eq!(claude.runtime_ms, Some(100));
+    }
+
+    #[test]
+    fn provider_usage_is_recorded_with_parent_turn_id() {
+        let db = database();
+        assert!(record_provider_usage(
+            &db,
+            "w",
+            "parent",
+            Some("turn-usage"),
+            "provider.claude",
+            &json!({
+                "usage": {"input_tokens": 7, "output_tokens": 3},
+                "duration_ms": 42
+            }),
+        )
+        .unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].turn_id.as_deref(), Some("turn-usage"));
+        assert_eq!(rows[0].input_tokens, Some(7));
+        assert_eq!(rows[0].runtime_ms, Some(42));
+        assert_eq!(rows[0].source, "provider.claude");
     }
 
     fn database() -> Connection {

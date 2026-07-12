@@ -399,21 +399,26 @@ fn handle_agent_value(
     value: &serde_json::Value,
 ) {
     let state = app.state::<AppState>();
-    let mut pending_directives: Vec<delegation::DelegationRequest> = Vec::new();
+    let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut turn_completed = false;
 
     {
         let db = state.db.lock().unwrap();
-        let session_context: Option<(String, String, i64)> = db
+        let session_context: Option<(String, String, i64, Option<String>)> = db
             .query_row(
-                "SELECT workspace_id,harness,COALESCE(depth,0) FROM sessions WHERE id=?1",
+                "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id FROM sessions WHERE id=?1",
                 params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .ok();
-        let Some((workspace_id, adapter_id, own_depth)) = session_context else {
+        let Some((workspace_id, adapter_id, own_depth, stored_turn_id)) = session_context else {
             return;
         };
+        let observed_turn_id = current_turn
+            .lock()
+            .unwrap()
+            .clone()
+            .or(stored_turn_id);
         let normalized = state.adapter_registry.normalize(&adapter_id, value);
         for event in &normalized {
             match event.kind.as_str() {
@@ -447,6 +452,16 @@ fn handle_agent_value(
                     let _ = db.execute(
                         "UPDATE workspaces SET status='waiting' WHERE id=?1",
                         params![workspace_id],
+                    );
+                }
+                "usage.updated" => {
+                    let _ = policy::record_provider_usage(
+                        &db,
+                        &workspace_id,
+                        session_id,
+                        observed_turn_id.as_deref(),
+                        &format!("provider.{adapter_id}"),
+                        &event.data,
                     );
                 }
                 "error" if event.status.as_deref() == Some("failed") => {
@@ -486,7 +501,16 @@ fn handle_agent_value(
                                     delegation::MAX_FANOUT,
                                 );
                                 accepted_count = selection.accepted.len();
-                                pending_directives.extend(selection.accepted);
+                                let turn_id = observed_turn_id
+                                    .clone()
+                                    .or_else(|| normalized_event.item_id.clone())
+                                    .unwrap_or_else(|| format!("turn-{}", Uuid::new_v4()));
+                                pending_directives.extend(
+                                    selection
+                                        .accepted
+                                        .into_iter()
+                                        .map(|request| (request, turn_id.clone())),
+                                );
                                 for rejection in selection.rejections {
                                     rejection_message = Some(match rejection.reason {
                                         delegation::DelegationRejectionReason::DepthLimit => {
@@ -548,8 +572,8 @@ fn handle_agent_value(
         }
     }
 
-    for directive in &pending_directives {
-        launch_worker(app, session_id, directive);
+    for (directive, turn_id) in &pending_directives {
+        launch_worker(app, session_id, turn_id, directive);
     }
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
@@ -598,37 +622,158 @@ fn record_delegation_rejection(
 }
 
 /// Spawn a child worker session in the parent's workspace and hand it its task.
+struct WorkerLaunchReservation {
+    session_id: String,
+    workspace_id: String,
+    depth: i64,
+    path: String,
+    branch: String,
+    outcome: policy::PolicyOutcome,
+}
+
+fn reserve_worker_launch(
+    db: &Connection,
+    parent_session_id: &str,
+    turn_id: &str,
+    directive: &delegation::DelegationRequest,
+) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
+    let (workspace_id, parent_depth, path, branch): (String, i64, String, String) = db
+        .query_row(
+            "SELECT s.workspace_id,COALESCE(s.depth,0),w.path,w.branch FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            params![parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
+    let active_workers = policy::load_workers(db, &workspace_id, "active")?;
+    let warm_workers = policy::load_workers(db, &workspace_id, "warm")?;
+    let input = policy::PolicyInput {
+        workspace_id: workspace_id.clone(),
+        worktree_id: workspace_id.clone(),
+        parent_session_id: parent_session_id.into(),
+        turn_id: turn_id.into(),
+        parent_depth,
+        request: directive.clone(),
+        requested_harness: directive.runtime_harness(),
+        task_family: policy::role_name(directive.role).into(),
+        active_workers,
+        warm_workers,
+        budget: budget.clone(),
+        retry_count: 0,
+        parent_can_execute: false,
+        requires_user_approval: false,
+        // Issue #11 supplies the child-worktree coordinator. Until then, the
+        // policy queues a second disjoint writer instead of running it shared.
+        child_worktrees_available: false,
+    };
+    let outcome = policy::PolicyEngine::default().decide(&input);
+    policy::record_decision(
+        db,
+        parent_session_id,
+        turn_id,
+        directive,
+        &outcome,
+        &budget,
+    )?;
+    let policy::RouteDecision::SpawnWorker(_) = &outcome.decision else {
+        return Ok(None);
+    };
+
+    let session_id = Uuid::new_v4().to_string();
+    let depth = parent_depth + 1;
+    let harness = directive.runtime_harness();
+    let model = directive.runtime_model();
+    let effort = directive.effort.as_str();
+    let now = Utc::now().to_rfc3339();
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,model,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'starting',?5,'reported',?6,?7,?8,?9)",
+        params![
+            session_id,
+            workspace_id,
+            harness,
+            directive.label(),
+            now,
+            model,
+            effort,
+            parent_session_id,
+            depth,
+        ],
+    )?;
+    store::upsert_worker_lease(
+        &transaction,
+        &WorkerLease {
+            session_id: session_id.clone(),
+            workspace_id: workspace_id.clone(),
+            role: policy::role_name(directive.role).into(),
+            capability_tier: policy::tier_name(directive.capability_tier).into(),
+            owned_paths: serde_json::json!(directive.owned_paths),
+            write_mode: policy::write_mode_name(directive.write_mode).into(),
+            lease_status: "active".into(),
+            expires_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        },
+    )?;
+    policy::record_spawn_usage(
+        &transaction,
+        &workspace_id,
+        &session_id,
+        turn_id,
+        &outcome,
+        directive.capability_tier,
+    )?;
+    transaction.commit()?;
+    Ok(Some(WorkerLaunchReservation {
+        session_id,
+        workspace_id,
+        depth,
+        path,
+        branch,
+        outcome,
+    }))
+}
+
 fn launch_worker(
     app: &AppHandle,
     parent_session_id: &str,
+    turn_id: &str,
     directive: &delegation::DelegationRequest,
 ) {
     let state = app.state::<AppState>();
-    let info: Option<(String, i64, String, String)> = {
+    let reservation = {
         let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT s.workspace_id,COALESCE(s.depth,0),w.path,w.branch FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
-            params![parent_session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .ok()
+        reserve_worker_launch(&db, parent_session_id, turn_id, directive)
     };
-    let Some((workspace_id, parent_depth, path, branch)) = info else {
-        return;
+    let reservation = match reservation {
+        Ok(Some(reservation)) => reservation,
+        Ok(None) => {
+            let _ = app.emit("state-changed", ());
+            return;
+        }
+        Err(error) => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "policy",
+                "policy.decision_failed",
+                parent_session_id,
+                &error.to_string(),
+            );
+            drop(db);
+            let _ = app.emit("state-changed", ());
+            return;
+        }
     };
-    let depth = parent_depth + 1;
-    if depth > delegation::DEFAULT_MAX_DEPTH {
-        return;
-    }
     let harness = directive.runtime_harness();
     let model = directive.runtime_model();
     let effort = directive.effort.as_str().to_owned();
     let label = directive.label();
-    let instructions = delegation::worker_briefing(directive, depth, &branch);
+    let instructions =
+        delegation::worker_briefing(directive, reservation.depth, &reservation.branch);
 
     let started = match state.adapter_registry.start(
         &harness,
-        &path,
+        &reservation.path,
         Some(model.as_str()),
         Some(&effort),
         Some(instructions.as_str()),
@@ -636,6 +781,15 @@ fn launch_worker(
         Ok(started) => started,
         Err(error) => {
             let db = state.db.lock().unwrap();
+            let now = Utc::now().to_rfc3339();
+            let _ = db.execute(
+                "UPDATE sessions SET status='failed',ended_at=?2 WHERE id=?1",
+                params![reservation.session_id, now],
+            );
+            let _ = db.execute(
+                "UPDATE worker_leases SET lease_status='expired',updated_at=?2 WHERE session_id=?1",
+                params![reservation.session_id, Utc::now().to_rfc3339()],
+            );
             let _ = store::event(
                 &db,
                 "delegation",
@@ -648,7 +802,7 @@ fn launch_worker(
             return;
         }
     };
-    let session_id = Uuid::new_v4().to_string();
+    let session_id = reservation.session_id;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let reader = started.reader;
@@ -656,23 +810,18 @@ fn launch_worker(
     {
         let db = state.db.lock().unwrap();
         let _ = db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,?10)",
+            "UPDATE sessions SET status='working',provider_session_id=?2,label=?3,model=?4,effort=?5 WHERE id=?1",
             params![
                 session_id,
-                workspace_id,
-                harness,
-                label,
-                Utc::now().to_rfc3339(),
                 thread_id,
+                label,
                 model,
                 effort,
-                parent_session_id,
-                depth
             ],
         );
         let _ = db.execute(
             "UPDATE workspaces SET status='working' WHERE id=?1",
-            params![workspace_id],
+            params![reservation.workspace_id],
         );
         for message in &started.startup_messages {
             let _ = persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
@@ -691,7 +840,9 @@ fn launch_worker(
                 "model": model,
                 "modelLabel": delegation::model_display(&model),
                 "effort": effort,
-                "depth": depth,
+                "depth": reservation.depth,
+                "turnId": turn_id,
+                "policy": reservation.outcome,
             }),
         };
         if let Ok(stored) =
@@ -914,6 +1065,10 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, framed_text: &str) 
                 params![parent_id],
             );
         }
+        let _ = db.execute(
+            "UPDATE worker_leases SET lease_status='released',updated_at=?2 WHERE session_id=?1",
+            params![child_session_id, Utc::now().to_rfc3339()],
+        );
     }
     {
         let mut delegations = state.delegations.lock().unwrap();
@@ -1391,6 +1546,39 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn policy_request(paths: &[&str]) -> delegation::DelegationRequest {
+        delegation::DelegationRequest {
+            schema_version: 1,
+            role: delegation::WorkerRole::Implementation,
+            objective: "Implement auth".into(),
+            acceptance_criteria: vec!["Tests pass".into()],
+            known_facts: Vec::new(),
+            decisions: Vec::new(),
+            relevant_files: Vec::new(),
+            owned_paths: paths.iter().map(|path| (*path).into()).collect(),
+            write_mode: delegation::WriteMode::Isolated,
+            capability_tier: delegation::CapabilityTier::Standard,
+            effort: delegation::Effort::Medium,
+            verification: vec!["cargo test".into()],
+            output_contract: delegation::OutputContract::ImplementationResult,
+            harness: Some("codex".into()),
+            model: None,
+        }
+    }
+
+    fn policy_fixture() -> Connection {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/policy-demo','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/policy-workspace','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','working','reported',0)", []).unwrap();
+        db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('parent','fresh','now')", []).unwrap();
+        db
+    }
+
     fn archive_fixture() -> Connection {
         let db = store::open(Path::new(":memory:")).unwrap();
         db.execute(
@@ -1542,5 +1730,97 @@ mod tests {
             .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn policy_reservation_precedes_spawn_and_queues_overlapping_writer() {
+        let db = policy_fixture();
+        let request = policy_request(&["src/auth/**"]);
+        let first = reserve_worker_launch(&db, "parent", "turn-1", &request)
+            .unwrap()
+            .expect("first writer should reserve");
+        assert!(matches!(
+            first.outcome.decision,
+            policy::RouteDecision::SpawnWorker(_)
+        ));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM worker_leases WHERE workspace_id='w' AND lease_status='active'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT turn_id FROM usage_ledger WHERE session_id=?1",
+                params![first.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "turn-1"
+        );
+
+        let second = reserve_worker_launch(&db, "parent", "turn-1", &request).unwrap();
+        assert!(second.is_none());
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE workspace_id='w'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+        let entries = store::session_entries(&db, "parent").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].payload["decision"], "queue");
+        assert_eq!(entries[1].payload["reason"], "writer_conflict");
+    }
+
+    #[test]
+    fn policy_budget_is_scoped_to_parent_turn() {
+        let db = policy_fixture();
+        let request = policy_request(&["src/auth/**"]);
+        let outcome = policy::PolicyEngine::default().decide(&policy::PolicyInput {
+            workspace_id: "w".into(),
+            worktree_id: "w".into(),
+            parent_session_id: "parent".into(),
+            turn_id: "turn-1".into(),
+            parent_depth: 0,
+            request: request.clone(),
+            requested_harness: "codex".into(),
+            task_family: "implementation".into(),
+            active_workers: Vec::new(),
+            warm_workers: Vec::new(),
+            budget: policy::RequestBudget::default(),
+            retry_count: 0,
+            parent_can_execute: false,
+            requires_user_approval: false,
+            child_worktrees_available: false,
+        });
+        for index in 0..3 {
+            policy::record_spawn_usage(
+                &db,
+                "w",
+                "parent",
+                "turn-1",
+                &outcome,
+                delegation::CapabilityTier::Standard,
+            )
+            .unwrap();
+            assert!(index < 3);
+        }
+        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request)
+            .unwrap()
+            .is_none());
+        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request)
+            .unwrap()
+            .expect("new turn should reset request counters");
+        assert!(matches!(
+            next_turn.outcome.decision,
+            policy::RouteDecision::SpawnWorker(_)
+        ));
     }
 }
