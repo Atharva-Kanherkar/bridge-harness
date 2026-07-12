@@ -7,7 +7,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -78,6 +78,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             2 => migration_2_session_forest(&transaction)?,
             3 => migration_3_capability_tiers(&transaction)?,
             4 => migration_4_resume_eligibility(&transaction)?,
+            5 => migration_5_durable_worker_pool(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -301,6 +302,55 @@ fn migration_4_resume_eligibility(transaction: &Transaction<'_>) -> Result<(), B
         "resume_eligibility",
         "TEXT NOT NULL DEFAULT 'fresh'",
     )
+}
+
+fn migration_5_durable_worker_pool(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "worker_leases",
+        "task_family",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS worker_runtime (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            lifecycle_state TEXT NOT NULL,
+            task_family TEXT NOT NULL,
+            compatibility_key TEXT NOT NULL,
+            result_status TEXT NOT NULL DEFAULT 'pending',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            warm_until TEXT,
+            last_result TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_worker_runtime_parent
+            ON worker_runtime(parent_session_id, result_status, lifecycle_state);
+        CREATE INDEX IF NOT EXISTS idx_worker_runtime_compatibility
+            ON worker_runtime(compatibility_key, lifecycle_state);
+        CREATE TABLE IF NOT EXISTS delegation_receipts (
+            dedupe_key TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            item_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS worker_queue (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL,
+            request TEXT NOT NULL,
+            actual_model TEXT NOT NULL,
+            queue_status TEXT NOT NULL DEFAULT 'queued',
+            dispatched_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_worker_queue_dispatch
+            ON worker_queue(workspace_id, queue_status, sequence);",
+    )?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -675,14 +725,15 @@ pub fn task_knowledge(
 
 pub fn upsert_worker_lease(db: &Connection, lease: &WorkerLease) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-         ON CONFLICT(session_id) DO UPDATE SET workspace_id=excluded.workspace_id,role=excluded.role,capability_tier=excluded.capability_tier,owned_paths=excluded.owned_paths,write_mode=excluded.write_mode,lease_status=excluded.lease_status,expires_at=excluded.expires_at,updated_at=excluded.updated_at",
+        "INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+         ON CONFLICT(session_id) DO UPDATE SET workspace_id=excluded.workspace_id,role=excluded.role,capability_tier=excluded.capability_tier,task_family=excluded.task_family,owned_paths=excluded.owned_paths,write_mode=excluded.write_mode,lease_status=excluded.lease_status,expires_at=excluded.expires_at,updated_at=excluded.updated_at",
         params![
             lease.session_id,
             lease.workspace_id,
             lease.role,
             lease.capability_tier,
+            lease.task_family,
             lease.owned_paths.to_string(),
             lease.write_mode,
             lease.lease_status,
@@ -697,7 +748,7 @@ pub fn upsert_worker_lease(db: &Connection, lease: &WorkerLease) -> Result<(), B
 pub fn worker_leases(db: &Connection, workspace_id: &str) -> Result<Vec<WorkerLease>, BridgeError> {
     query_with_params(
         db,
-        "SELECT session_id,workspace_id,role,capability_tier,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at
+        "SELECT session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at
          FROM worker_leases WHERE workspace_id=?1 ORDER BY created_at,session_id",
         params![workspace_id],
         |row| {
@@ -706,14 +757,82 @@ pub fn worker_leases(db: &Connection, workspace_id: &str) -> Result<Vec<WorkerLe
                 workspace_id: row.get(1)?,
                 role: row.get(2)?,
                 capability_tier: row.get(3)?,
-                owned_paths: parse_json_column(row, 4),
-                write_mode: row.get(5)?,
-                lease_status: row.get(6)?,
-                expires_at: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+                task_family: row.get(4)?,
+                owned_paths: parse_json_column(row, 5),
+                write_mode: row.get(6)?,
+                lease_status: row.get(7)?,
+                expires_at: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             })
         },
+    )
+}
+
+pub fn claim_delegation_receipt(
+    db: &Connection,
+    session_id: &str,
+    item_id: &str,
+) -> Result<bool, BridgeError> {
+    let dedupe_key = format!("{session_id}::{item_id}");
+    Ok(db.execute(
+        "INSERT OR IGNORE INTO delegation_receipts(dedupe_key,session_id,item_id,created_at) VALUES(?1,?2,?3,?4)",
+        params![dedupe_key, session_id, item_id, Utc::now().to_rfc3339()],
+    )? == 1)
+}
+
+pub fn upsert_worker_runtime(
+    db: &Connection,
+    runtime: &WorkerRuntimeRecord,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,last_result,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,last_result=excluded.last_result,updated_at=excluded.updated_at",
+        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.updated_at],
+    )?;
+    Ok(())
+}
+
+pub fn worker_runtime(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<WorkerRuntimeRecord>, BridgeError> {
+    db.query_row(
+        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,last_result,updated_at FROM worker_runtime WHERE session_id=?1",
+        params![session_id],
+        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, last_result:row.get::<_,Option<String>>(8)?.and_then(|value| serde_json::from_str(&value).ok()), updated_at:row.get(9)? }),
+    ).optional().map_err(BridgeError::from)
+}
+
+pub fn outstanding_children(db: &Connection, parent_session_id: &str) -> Result<i64, BridgeError> {
+    Ok(db.query_row(
+        "SELECT COUNT(*) FROM worker_runtime WHERE parent_session_id=?1 AND result_status!='reported'",
+        params![parent_session_id],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn enqueue_worker_request(
+    db: &Connection,
+    request: &QueuedWorkerRequest,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,dispatched_session_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![request.id,request.parent_session_id,request.workspace_id,request.turn_id,request.request.to_string(),request.actual_model,request.queue_status,request.dispatched_session_id,request.created_at,request.updated_at],
+    )?;
+    Ok(())
+}
+
+pub fn queued_worker_requests(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<Vec<QueuedWorkerRequest>, BridgeError> {
+    query_with_params(
+        db,
+        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,created_at,updated_at FROM worker_queue WHERE workspace_id=?1 AND queue_status='queued' ORDER BY sequence",
+        params![workspace_id],
+        |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, created_at:row.get(9)?, updated_at:row.get(10)? }),
     )
 }
 
@@ -948,6 +1067,9 @@ mod tests {
             "session_heads",
             "task_knowledge",
             "worker_leases",
+            "worker_runtime",
+            "delegation_receipts",
+            "worker_queue",
             "usage_ledger",
         ];
         for table in tables {
@@ -1019,7 +1141,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5]);
         assert_eq!(state(&db).unwrap().agent_events.len(), 2);
         drop(db);
         let backups = backup_paths(dir.path());
@@ -1034,7 +1156,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1308,6 +1430,7 @@ mod tests {
             workspace_id: "w".into(),
             role: "implementation".into(),
             capability_tier: "standard".into(),
+            task_family: "implementation".into(),
             owned_paths: json!(["src/**"]),
             write_mode: "isolated".into(),
             lease_status: "active".into(),
@@ -1339,6 +1462,41 @@ mod tests {
         assert_eq!(rows[0].id, id);
         assert_eq!(rows[0].turn_id.as_deref(), Some("turn-1"));
         assert_eq!(rows[0].capability_units, 3);
+    }
+
+    #[test]
+    fn durable_worker_bookkeeping_deduplicates_counts_and_queues_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Worker','working','reported','s',1)", []).unwrap();
+
+        assert!(claim_delegation_receipt(&db, "s", "message-1").unwrap());
+        assert!(!claim_delegation_receipt(&db, "s", "message-1").unwrap());
+        let runtime = WorkerRuntimeRecord {
+            session_id: "child".into(),
+            parent_session_id: "s".into(),
+            lifecycle_state: "working".into(),
+            task_family: "implementation".into(),
+            compatibility_key: "w|implementation|claude|standard|implementation|src/**".into(),
+            result_status: "pending".into(),
+            retry_count: 0,
+            warm_until: None,
+            last_result: None,
+            updated_at: "now".into(),
+        };
+        upsert_worker_runtime(&db, &runtime).unwrap();
+        assert_eq!(worker_runtime(&db, "child").unwrap(), Some(runtime));
+        assert_eq!(outstanding_children(&db, "s").unwrap(), 1);
+
+        for id in ["q1", "q2"] {
+            enqueue_worker_request(&db, &QueuedWorkerRequest {
+                id: id.into(), parent_session_id: "s".into(), workspace_id: "w".into(), turn_id: "turn".into(), request: json!({"role":"implementation"}), actual_model: "runtime-model".into(), queue_status: "queued".into(), sequence: 0, dispatched_session_id: None, created_at: "now".into(), updated_at: "now".into(),
+            }).unwrap();
+        }
+        let queued = queued_worker_requests(&db, "w").unwrap();
+        assert_eq!(queued.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["q1", "q2"]);
+        assert!(queued[0].sequence < queued[1].sequence);
     }
 
     #[test]

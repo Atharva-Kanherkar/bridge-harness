@@ -931,6 +931,7 @@ fn reserve_worker_launch(
             workspace_id: workspace_id.clone(),
             role: policy::role_name(directive.role).into(),
             capability_tier: policy::tier_name(directive.capability_tier).into(),
+            task_family: policy::role_name(directive.role).into(),
             owned_paths: serde_json::json!(directive.owned_paths),
             write_mode: policy::write_mode_name(directive.write_mode).into(),
             lease_status: "active".into(),
