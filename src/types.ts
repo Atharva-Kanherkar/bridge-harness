@@ -1,5 +1,5 @@
 export type Harness = "claude" | "codex" | "shell";
-export type SessionStatus = "idle" | "working" | "waiting" | "ready" | "stopped" | "failed";
+export type SessionStatus = "idle" | "starting" | "working" | "waiting" | "warm" | "checkpointing" | "ready" | "stopped" | "resuming" | "restored" | "failed" | "completed" | "cancelled";
 export type CapabilityTier = "fast" | "standard" | "strong";
 export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
 

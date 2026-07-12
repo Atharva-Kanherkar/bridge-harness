@@ -80,11 +80,18 @@ impl Harness {
 #[serde(rename_all = "lowercase")]
 pub enum SessionStatus {
     Idle,
+    Starting,
     Working,
     Waiting,
+    Warm,
+    Checkpointing,
     Ready,
     Stopped,
+    Resuming,
+    Restored,
     Failed,
+    Completed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +277,8 @@ pub struct WorkerRuntimeRecord {
     pub result_status: String,
     pub retry_count: i64,
     pub warm_until: Option<String>,
+    pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
     pub last_result: Option<serde_json::Value>,
     pub updated_at: String,
 }

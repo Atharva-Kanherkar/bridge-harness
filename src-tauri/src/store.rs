@@ -324,6 +324,8 @@ fn migration_5_durable_worker_pool(transaction: &Transaction<'_>) -> Result<(), 
             result_status TEXT NOT NULL DEFAULT 'pending',
             retry_count INTEGER NOT NULL DEFAULT 0,
             warm_until TEXT,
+            worktree_path TEXT,
+            worktree_branch TEXT,
             last_result TEXT,
             updated_at TEXT NOT NULL
         );
@@ -509,11 +511,18 @@ pub fn event(
 }
 pub fn status(value: &str) -> SessionStatus {
     match value {
+        "starting" => SessionStatus::Starting,
         "working" => SessionStatus::Working,
         "waiting" => SessionStatus::Waiting,
+        "warm" => SessionStatus::Warm,
+        "checkpointing" => SessionStatus::Checkpointing,
         "ready" => SessionStatus::Ready,
         "failed" => SessionStatus::Failed,
         "stopped" => SessionStatus::Stopped,
+        "resuming" => SessionStatus::Resuming,
+        "restored" => SessionStatus::Restored,
+        "completed" => SessionStatus::Completed,
+        "cancelled" => SessionStatus::Cancelled,
         _ => SessionStatus::Idle,
     }
 }
@@ -789,10 +798,10 @@ pub fn upsert_worker_runtime(
     runtime: &WorkerRuntimeRecord,
 ) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,last_result,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,last_result=excluded.last_result,updated_at=excluded.updated_at",
-        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.updated_at],
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,worktree_path=excluded.worktree_path,worktree_branch=excluded.worktree_branch,last_result=excluded.last_result,updated_at=excluded.updated_at",
+        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.worktree_path,runtime.worktree_branch,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.updated_at],
     )?;
     Ok(())
 }
@@ -802,9 +811,9 @@ pub fn worker_runtime(
     session_id: &str,
 ) -> Result<Option<WorkerRuntimeRecord>, BridgeError> {
     db.query_row(
-        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,last_result,updated_at FROM worker_runtime WHERE session_id=?1",
+        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,updated_at FROM worker_runtime WHERE session_id=?1",
         params![session_id],
-        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, last_result:row.get::<_,Option<String>>(8)?.and_then(|value| serde_json::from_str(&value).ok()), updated_at:row.get(9)? }),
+        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), updated_at:row.get(11)? }),
     ).optional().map_err(BridgeError::from)
 }
 
@@ -837,6 +846,18 @@ pub fn queued_worker_requests(
         params![workspace_id],
         |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, created_at:row.get(9)?, updated_at:row.get(10)? }),
     )
+}
+
+pub fn update_worker_queue(
+    db: &Connection,
+    id: &str,
+    queue_status: &str,
+    dispatched_session_id: Option<&str>,
+) -> Result<bool, BridgeError> {
+    Ok(db.execute(
+        "UPDATE worker_queue SET queue_status=?2,dispatched_session_id=COALESCE(?3,dispatched_session_id),updated_at=?4 WHERE id=?1",
+        params![id, queue_status, dispatched_session_id, Utc::now().to_rfc3339()],
+    )? == 1)
 }
 
 pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i64, BridgeError> {
@@ -1485,6 +1506,8 @@ mod tests {
             result_status: "pending".into(),
             retry_count: 0,
             warm_until: None,
+            worktree_path: None,
+            worktree_branch: None,
             last_result: None,
             updated_at: "now".into(),
         };

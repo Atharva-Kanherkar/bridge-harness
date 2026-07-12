@@ -483,11 +483,23 @@ pub fn load_workers(
     lease_status: &str,
 ) -> Result<Vec<WorkerSnapshot>, BridgeError> {
     let leases = store::worker_leases(db, workspace_id)?;
-    leases
-        .into_iter()
-        .filter(|lease| lease.lease_status == lease_status)
-        .map(|lease| worker_from_lease(db, lease))
-        .collect()
+    let mut workers = Vec::new();
+    for lease in leases {
+        let eligible = if lease_status == "warm" {
+            matches!(lease.lease_status.as_str(), "warm" | "checkpointed" | "expired")
+                && db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state IN ('warm','stopped') AND result_status='reported')",
+                    params![lease.session_id],
+                    |row| row.get::<_, bool>(0),
+                )?
+        } else {
+            lease.lease_status == lease_status
+        };
+        if eligible {
+            workers.push(worker_from_lease(db, lease)?);
+        }
+    }
+    Ok(workers)
 }
 
 fn worker_from_lease(db: &Connection, lease: WorkerLease) -> Result<WorkerSnapshot, BridgeError> {
@@ -503,7 +515,7 @@ fn worker_from_lease(db: &Connection, lease: WorkerLease) -> Result<WorkerSnapsh
         role: parse_role(&lease.role),
         harness,
         capability_tier: parse_tier(&lease.capability_tier),
-        task_family: lease.role,
+        task_family: lease.task_family,
         owned_paths: serde_json::from_value(lease.owned_paths).unwrap_or_default(),
         write_mode: parse_write_mode(&lease.write_mode),
     })

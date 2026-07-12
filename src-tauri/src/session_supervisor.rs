@@ -204,7 +204,7 @@ mod tests {
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/supervisor-w','idle','now')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Worker','starting','reported','parent',1)", []).unwrap();
-        store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:"child".into(), parent_session_id:"parent".into(), lifecycle_state:"starting".into(), task_family:"implementation".into(), compatibility_key:"key".into(), result_status:"pending".into(), retry_count:0, warm_until:None, last_result:None, updated_at:"now".into() }).unwrap();
+        store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:"child".into(), parent_session_id:"parent".into(), lifecycle_state:"starting".into(), task_family:"implementation".into(), compatibility_key:"key".into(), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, updated_at:"now".into() }).unwrap();
         db
     }
 
@@ -282,7 +282,7 @@ mod tests {
         db.execute("UPDATE worker_runtime SET lifecycle_state='working' WHERE session_id='child'", []).unwrap();
         for (session_id, lifecycle) in [("waiting-child", "waiting"), ("warm-child", "warm")] {
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES(?1,'w','claude','Worker',?2,'reported','parent',1)", params![session_id,lifecycle]).unwrap();
-            store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:session_id.into(), parent_session_id:"parent".into(), lifecycle_state:lifecycle.into(), task_family:"implementation".into(), compatibility_key:format!("key-{session_id}"), result_status:"pending".into(), retry_count:0, warm_until:None, last_result:None, updated_at:"now".into() }).unwrap();
+            store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:session_id.into(), parent_session_id:"parent".into(), lifecycle_state:lifecycle.into(), task_family:"implementation".into(), compatibility_key:format!("key-{session_id}"), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, updated_at:"now".into() }).unwrap();
         }
         for session_id in ["child", "waiting-child", "warm-child"] {
             db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,write_mode,lease_status,created_at,updated_at) VALUES(?1,'w','implementation','standard','implementation','shared','active','now','now')", params![session_id]).unwrap();
@@ -296,12 +296,36 @@ mod tests {
             let runtime = store::worker_runtime(&db, session_id).unwrap().unwrap();
             assert_eq!((runtime.lifecycle_state.as_str(), runtime.result_status.as_str()), ("stopped", "reported"));
             let lease: String = db.query_row("SELECT lease_status FROM worker_leases WHERE session_id=?1", params![session_id], |row| row.get(0)).unwrap();
-            assert_eq!(lease, "released");
+            assert_eq!(lease, "checkpointed");
             let entries = store::session_entries(&db, session_id).unwrap();
             assert!(entries.iter().any(|entry| entry.kind == "session.status"));
             assert_eq!(entries.last().unwrap().kind, "worker.result");
         }
         let parent_results = store::session_entries(&db, "parent").unwrap().into_iter().filter(|entry| entry.kind == "worker.result").count();
         assert_eq!(parent_results, 3);
+    }
+
+    #[test]
+    fn cancellation_releases_lease_reports_parent_and_never_increments_retry() {
+        let db = database();
+        db.execute("UPDATE sessions SET status='waiting' WHERE id='parent'", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','standard','implementation','shared','active','now','now')", []).unwrap();
+        SessionSupervisor::transition(&db, "child", WorkerLifecycleState::Working, Some("provider_started")).unwrap();
+        SessionSupervisor::transition(&db, "child", WorkerLifecycleState::Cancelled, Some("user_cancelled")).unwrap();
+        let result = WorkerResult {
+            schema_version: crate::delegation::SCHEMA_VERSION,
+            status: WorkerResultStatus::Cancelled,
+            summary: "Worker cancelled by user".into(),
+            files_changed: vec![], tests: vec![], decisions: vec![], risks: vec![], remaining_work: vec!["Cancelled work was not completed".into()],
+            suggested_next_action: SuggestedNextAction::Finish,
+            suggested_role: None, suggested_task: None,
+        };
+        assert_eq!(SessionSupervisor::record_result(&db, "child", &result).unwrap(), Some("parent".into()));
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!((runtime.lifecycle_state.as_str(), runtime.result_status.as_str(), runtime.retry_count), ("cancelled", "reported", 0));
+        assert_eq!(runtime.last_result.unwrap()["status"], "cancelled");
+        let lease: String = db.query_row("SELECT lease_status FROM worker_leases WHERE session_id='child'", [], |row| row.get(0)).unwrap();
+        assert_eq!(lease, "released");
+        assert_eq!(store::outstanding_children(&db, "parent").unwrap(), 0);
     }
 }
