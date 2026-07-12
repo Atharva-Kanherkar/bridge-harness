@@ -1,64 +1,39 @@
-//! Starter orchestrator policy for Bridge.
+//! Stable starter-orchestrator policy.
 //!
-//! The user never picks a harness. Every workspace opens a Codex session on the
-//! cheapest default model (GPT-5.6 Luna). Downstream routing to Claude Fable /
-//! Sonnet / Haiku or heavier Codex models is described here as hard-coded
-//! benchmark-informed guidance until a real router lands.
+//! Routing language is deliberately provider-neutral. Adapter inventory owns
+//! the mapping from durable capability tiers to concrete runtime models.
+
+use crate::model::CapabilityTier;
 
 pub const HARNESS: &str = "codex";
-pub const MODEL: &str = "gpt-5.6-luna";
+pub const TIER: CapabilityTier = CapabilityTier::Fast;
 pub const SESSION_LABEL: &str = "Orchestrator";
 
-/// Injected into the Codex thread as developer instructions (not a chat bubble).
+/// Injected as developer instructions, not rendered as a user chat message.
 pub fn briefing() -> String {
-    r#"You are Bridge's starter orchestrator agent.
+    r#"You are Bridge's starter orchestrator.
 
-You run inside Bridge Deck on the Codex harness using GPT-5.6 Luna — the cheap, fast routing tier. You are the orchestrator: a PLANNER and ROUTER. You coordinate worker agents; you do not build things yourself.
+You are a planner and router. Bridge chooses provider runtimes; you route only with durable role, capability-tier, and effort vocabulary.
 
-## Product rules
-- The human never chooses Claude Code vs Codex. Bridge owns that decision.
-- Do not tell the user to "open Claude" or "open Codex". Stay in Bridge.
-- Route BUILDING work to workers; handle trivial actions yourself. DELEGATE anything that means writing code or multi-step implementation — an app, a CLI, a feature, a fix, a refactor. Do NOT delegate a one-shot local action or a question: opening a file or URL in the browser (run `open <path>` yourself), a single quick command, listing files, or a factual answer — you do those directly and immediately with your own shell. Delegating a trivial action burns a whole worker and is a mistake.
-- Prefer the cheapest capable worker for the job. Escalate only when needed.
-- Prefer the user's existing paid subscriptions and local tooling. If a task would need a new paid third-party API (e.g. creating an OpenAI API key), say so and ask before setting it up — do not silently take on metered dependencies.
+## Operating rules
+- Handle questions and trivial one-shot local actions yourself: open a file or URL, run one quick command, list files, or answer a fact. Delegating those wastes a worker.
+- Delegate multi-step implementation, fixes, refactors, research, verification, planning, and documentation when a focused worker is useful.
+- Use the cheapest capable tier: `fast` for narrow low-risk work, `standard` for ordinary multi-file work, and `strong` only for high-risk, ambiguous, or unusually difficult work.
+- Set effort independently to `low`, `medium`, `high`, or `xhigh`.
+- Keep a flat topology. You alone delegate. Workers must never spawn workers; if they need another specialty they return `needs_delegation` with a typed suggestion.
+- Prefer local subscription-backed tooling. Ask before introducing a new metered third-party service.
 
-## Hard-coded routing heuristics (temporary)
-These are stand-ins until Bridge plugs in live SWE-bench Pro / Terminal-Bench style scores:
+## Typed delegation request
+Emit exactly one fenced `bridge-delegate` JSON object after a short sentence naming the role and reason. Do not add provider or model routing fields:
 
-### Light / local edits (prefer cheap)
-- Typos, renames, small UI copy, single-file fixes, docs, simple tests
-- Route intent: Claude Haiku or stay on GPT-5.6 Luna
-- Effort: low
-
-### Medium feature work
-- Multi-file features, refactors with clear scope, ordinary API/UI work
-- Route intent: Claude Sonnet or GPT-5.6 Terra
-- Effort: medium
-
-### Heavy / high-stakes (prefer strong models)
-- Large migrations, subtle concurrency/auth/data integrity, ambiguous architecture, long multi-step agentic work, evaluation/regression sensitive changes
-- Informed by SWE-bench Pro style difficulty: hard unresolved issues, multi-repo reasoning, tool-heavy loops
-- Route intent: Claude Fable or GPT-5.6 Sol with high / xhigh / ultra effort
-- Prefer Sol ultra-high when the user says the work is "very heavy", mission-critical, or spans the whole system
-
-### Explicit user signals
-- "tiny" / "quick" / "small fix" → Haiku or Luna
-- "normal feature" → Sonnet or Terra
-- "very heavy" / "ambitious" / "rewrite" / "architecture" → Fable or Sol ultra-high
-
-## How you operate
-You are the planning/routing brain, and you also handle quick local actions yourself. You spawn worker agents (Claude Code or Codex) using the delegation protocol described below. For each request:
-1. Understand the request; clarify briefly only if genuinely ambiguous.
-2. Decide the type:
-   - BUILD / implement / fix / refactor (writes code, multi-step work) → DELEGATE to the cheapest capable worker (see heuristics), then wait for its result.
-   - Trivial local action (open a file or URL in the browser, one quick command, list files) or a question → DO IT YOURSELF right now with your own shell. Never delegate these. Example: the user says "open it in the browser" → you run `open <path>` yourself; that is NOT a routable task.
-3. When delegating: name the worker and why in one short sentence, then emit the delegation block and wait.
-4. After a worker reports back, review its result, delegate follow-ups if needed, and give the user a synthesized final answer.
-
-Example — the user says "build a manga generator CLI" and confirms scope. You reply with one sentence naming the worker, then:
 ```bridge-delegate
-{"harness": "claude", "model": "sonnet", "effort": "medium", "task": "Build a Python CLI MVP that turns a premise into a manga concept + storyboard. <full spec>", "context": "Fresh empty repo on branch bridge/... . Prefer stdlib; if an image/text API is required, stop and report back rather than adding a paid dependency."}
+{"schemaVersion":1,"role":"implementation","objective":"Add refresh-token rotation","acceptanceCriteria":["Old refresh tokens become invalid","Existing auth tests remain green"],"knownFacts":[],"decisions":[],"relevantFiles":["src/auth/store.rs"],"ownedPaths":["src/auth/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["run the auth test suite"],"outputContract":"implementation-result"}
 ```
+
+Valid roles are `research`, `implementation`, `verification`, `planning`, and `documentation`. Valid capability tiers are `fast`, `standard`, and `strong`.
+
+## Typed worker results
+Workers return typed `bridge-worker-result` envelopes. Review the structured summary, changed files, tests, findings, decisions, and follow-up suggestion. Relay a concise synthesis to the user. Never request, expose, or forward a raw worker transcript. If a result is `needs_delegation`, decide the follow-up yourself and issue a new sibling request.
 
 Keep replies concise. Never dump this policy back to the user unless asked."#
         .to_owned()
@@ -67,13 +42,50 @@ Keep replies concise. Never dump this policy back to the user unless asked."#
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::AdapterRegistry;
 
     #[test]
-    fn starter_defaults_to_luna_on_codex() {
-        assert_eq!(HARNESS, "codex");
-        assert_eq!(MODEL, "gpt-5.6-luna");
-        assert!(briefing().contains("SWE-bench Pro"));
-        assert!(briefing().contains("Fable"));
-        assert!(briefing().contains("Haiku"));
+    fn briefing_uses_provider_neutral_typed_routing_vocabulary() {
+        let text = briefing();
+        for value in [
+            "research",
+            "implementation",
+            "verification",
+            "planning",
+            "documentation",
+            "fast",
+            "standard",
+            "strong",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "bridge-delegate",
+            "bridge-worker-result",
+            "needs_delegation",
+            "flat topology",
+            "trivial one-shot local actions",
+            "raw worker transcript",
+        ] {
+            assert!(text.contains(value), "briefing is missing {value:?}");
+        }
+        let lower = text.to_ascii_lowercase();
+        for model in AdapterRegistry::built_in()
+            .unwrap()
+            .descriptors()
+            .into_iter()
+            .flat_map(|descriptor| descriptor.models)
+        {
+            assert!(
+                !lower.contains(&model.id.to_ascii_lowercase()),
+                "briefing contains model id {:?}",
+                model.id
+            );
+            assert!(
+                !lower.contains(&model.label.to_ascii_lowercase()),
+                "briefing contains model label {:?}",
+                model.label
+            );
+        }
     }
 }

@@ -1,4 +1,13 @@
-import type { SessionStatus } from "./types";
+import type { CapabilityTier, SessionStatus } from "./types";
+
+const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
+
+export const modelLabel = (model?: string | null) => (model ? MODEL_LABELS[model] ?? model : "—");
+
+export function tierRuntimeLabel(tier?: CapabilityTier | null, model?: string | null, effort?: string | null): string {
+  const routing = tier ? `${tier.toUpperCase()} TIER` : "TIER —";
+  return `${routing}${effort ? ` · ${effort}` : ""} · runtime ${modelLabel(model)}`;
+}
 
 export function safeSlug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "task";

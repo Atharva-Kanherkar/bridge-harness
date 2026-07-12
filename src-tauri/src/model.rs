@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum CapabilityTier {
+    Fast,
+    Standard,
+    Strong,
+}
+
+impl CapabilityTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Standard => "standard",
+            Self::Strong => "strong",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Harness {
@@ -59,6 +77,8 @@ pub struct Workspace {
 pub struct ModelOption {
     pub id: String,
     pub label: String,
+    pub tier: CapabilityTier,
+    pub default_for_tier: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +110,7 @@ pub struct Session {
     pub provider_session_id: Option<String>,
     pub active_turn_id: Option<String>,
     pub model: Option<String>,
+    pub requested_tier: Option<CapabilityTier>,
     pub effort: Option<String>,
     pub parent_session_id: Option<String>,
     pub depth: Option<i64>,

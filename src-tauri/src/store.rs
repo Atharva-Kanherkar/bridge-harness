@@ -7,7 +7,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 2;
+const LATEST_SCHEMA_VERSION: i64 = 3;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -52,6 +52,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
         match version {
             1 => migration_1_current_schema(&transaction)?,
             2 => migration_2_session_forest(&transaction)?,
+            3 => migration_3_capability_tiers(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -264,6 +265,10 @@ fn migration_2_session_forest(transaction: &Transaction<'_>) -> Result<(), Bridg
     Ok(())
 }
 
+fn migration_3_capability_tiers(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "sessions", "requested_tier", "TEXT")
+}
+
 #[derive(Debug)]
 struct LegacyAgentEvent {
     id: i64,
@@ -369,7 +374,7 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model,effort,parent_session_id,depth FROM sessions ORDER BY rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, effort:r.get(13)?, parent_session_id:r.get(14)?, depth:r.get(15)? }))?;
+    let sessions = query(db, "SELECT id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model,requested_tier,effort,parent_session_id,depth FROM sessions ORDER BY rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -430,6 +435,14 @@ pub fn harness(value: &str) -> Harness {
         "claude" => Harness::Claude,
         "codex" => Harness::Codex,
         _ => Harness::Shell,
+    }
+}
+fn capability_tier(value: Option<String>) -> Option<CapabilityTier> {
+    match value.as_deref() {
+        Some("fast") => Some(CapabilityTier::Fast),
+        Some("standard") => Some(CapabilityTier::Standard),
+        Some("strong") => Some(CapabilityTier::Strong),
+        _ => None,
     }
 }
 pub fn harness_name(value: &Harness) -> &'static str {
@@ -956,7 +969,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3]);
         assert_eq!(state(&db).unwrap().agent_events.len(), 2);
         drop(db);
         let backups = backup_paths(dir.path());
@@ -971,7 +984,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -985,6 +998,52 @@ mod tests {
         let upgraded = open(&upgraded_path).unwrap();
         assert_eq!(schema_signature(&fresh), schema_signature(&upgraded));
         assert_eq!(migration_versions(&fresh), migration_versions(&upgraded));
+    }
+
+    #[test]
+    fn capability_tier_migration_preserves_actual_models_and_is_idempotent() {
+        let mut db = Connection::open(":memory:").unwrap();
+        {
+            let transaction = db.transaction().unwrap();
+            migration_1_current_schema(&transaction).unwrap();
+            transaction
+                .execute("INSERT INTO schema_version VALUES(1,'now')", [])
+                .unwrap();
+            transaction.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/tier-migration','now')", []).unwrap();
+            transaction.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/tier-workspace','idle','now')", []).unwrap();
+            transaction.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model) VALUES('s','w','codex','Worker','ready','reported','runtime-model')", []).unwrap();
+            migration_2_session_forest(&transaction).unwrap();
+            transaction
+                .execute("INSERT INTO schema_version VALUES(2,'now')", [])
+                .unwrap();
+            transaction.commit().unwrap();
+        }
+        {
+            let transaction = db.transaction().unwrap();
+            migration_3_capability_tiers(&transaction).unwrap();
+            migration_3_capability_tiers(&transaction).unwrap();
+            transaction
+                .execute("INSERT INTO schema_version VALUES(3,'now')", [])
+                .unwrap();
+            transaction.commit().unwrap();
+        }
+        let (model, tier): (String, Option<String>) = db
+            .query_row(
+                "SELECT model,requested_tier FROM sessions WHERE id='s'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(model, "runtime-model");
+        assert_eq!(tier, None);
+        let tier_columns: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='requested_tier'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tier_columns, 1);
     }
 
     #[test]
