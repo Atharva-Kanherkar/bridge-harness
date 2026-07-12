@@ -4,6 +4,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { bridgeApi } from "../api";
 import type { Session } from "../types";
 
+const scrollback = new Map<string, string>();
+
 export function TerminalPane({ session }: { session?: Session }) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal>();
@@ -18,6 +20,8 @@ export function TerminalPane({ session }: { session?: Session }) {
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit(); terminal.current = term;
     if (!session) {
       term.writeln("\x1b[90m  Select a workspace to open its session.\x1b[0m");
+    } else if (scrollback.has(session.id)) {
+      term.write(scrollback.get(session.id)!);
     } else if (!("__TAURI_INTERNALS__" in window)) {
       term.writeln(`\x1b[90m╭─ \x1b[32m${session.label}\x1b[90m · supervised session\x1b[0m`);
       term.writeln("\x1b[90m│\x1b[0m I’m implementing the session supervisor and event ledger now.");
@@ -31,7 +35,11 @@ export function TerminalPane({ session }: { session?: Session }) {
     const resize = new ResizeObserver(() => { fit.fit(); if (session) void bridgeApi.resizeSession(session.id, term.rows, term.cols); });
     resize.observe(host.current);
     let unlisten: (() => void) | undefined;
-    void bridgeApi.onTerminal(chunk => { if (chunk.sessionId === session?.id) term.write(chunk.data); }).then(fn => { unlisten = fn; });
+    void bridgeApi.onTerminal(chunk => {
+      const buffered = `${scrollback.get(chunk.sessionId) ?? ""}${chunk.data}`;
+      scrollback.set(chunk.sessionId, buffered.slice(-1_000_000));
+      if (chunk.sessionId === session?.id) term.write(chunk.data);
+    }).then(fn => { unlisten = fn; });
     return () => { unlisten?.(); resize.disconnect(); data.dispose(); term.dispose(); terminal.current = undefined; };
   }, [session?.id]);
 

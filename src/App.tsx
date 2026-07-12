@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Bot, Box, ChevronDown, CircleDot, Clock3, Code2, Command, FileCode2, FolderGit2, GitBranch, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, Send, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Box, ChevronDown, CircleDot, Clock3, Code2, Command, FileCode2, FolderGit2, GitBranch, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, Send, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import type { BridgeState, Harness, Health, Session, SessionStatus, Workspace } from "./types";
 import { TerminalPane } from "./components/TerminalPane";
@@ -18,6 +18,7 @@ export function App() {
   const [state, setState] = useState<BridgeState>(emptyState);
   const [health, setHealth] = useState<Health>();
   const [selectedId, setSelectedId] = useState<string>();
+  const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events">("agent");
   const [modal, setModal] = useState<"workspace" | "project" | "palette" | null>(null);
   const [title, setTitle] = useState("");
@@ -25,6 +26,7 @@ export function App() {
   const [harness, setHarness] = useState<Harness>("codex");
   const [composer, setComposer] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
 
   const reload = useCallback(async () => {
     const next = await bridgeApi.state(); setState(next);
@@ -40,28 +42,49 @@ export function App() {
       if (e.key === "Escape") setModal(null);
     }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [state.workspaces]);
+  useEffect(() => {
+    if (!selectedId || !("__TAURI_INTERNALS__" in window)) return;
+    const refresh = () => { void bridgeApi.refreshWorkspace(selectedId).then(setState).catch(() => undefined); };
+    refresh(); const timer = window.setInterval(refresh, 5000); return () => window.clearInterval(timer);
+  }, [selectedId]);
 
   const selected = state.workspaces.find(w => w.id === selectedId);
   const selectedProject = state.projects.find(p => p.id === selected?.projectId);
   const sessions = state.sessions.filter(s => s.workspaceId === selectedId);
-  const session = sessions.find(s => s.status === "working" || s.status === "waiting") ?? sessions[0];
+  const session = sessions.find(s => s.id === selectedSessionId) ?? sessions.find(s => s.status === "working" || s.status === "waiting") ?? sessions[0];
   const grouped = useMemo(() => state.projects.map(project => ({ project, workspaces: state.workspaces.filter(w => w.projectId === project.id) })), [state]);
 
   async function chooseFolder() {
     if (!("__TAURI_INTERNALS__" in window)) return setPath("/Users/you/Developer/new-project");
     const value = await open({ directory: true, multiple: false, title: "Add a Git repository" }); if (value) setPath(value);
   }
-  async function addProject() { setBusy(true); try { setState(await bridgeApi.addProject(path)); setModal(null); setPath(""); } finally { setBusy(false); } }
+  const errorMessage = (value: unknown) => value instanceof Error ? value.message : String(value);
+  async function addProject() { setBusy(true); setError(undefined); try { setState(await bridgeApi.addProject(path)); setModal(null); setPath(""); } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); } }
   async function createWorkspace() {
     const projectId = selectedProject?.id ?? state.projects[0]?.id; if (!projectId || !title.trim()) return;
-    setBusy(true); try { const next = await bridgeApi.createWorkspace(projectId, title.trim(), harness); setState(next); setSelectedId(next.workspaces.at(-1)?.id); setModal(null); setTitle(""); } finally { setBusy(false); }
+    setBusy(true); setError(undefined); try { const next = await bridgeApi.createWorkspace(projectId, title.trim(), harness); setState(next); setSelectedId(next.workspaces.at(-1)?.id); setModal(null); setTitle(""); } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); }
   }
   async function toggleSession(target?: Session, requestedHarness: Harness = harness) {
     if (!selected) return; setBusy(true);
-    try { setState(target && (target.status === "working" || target.status === "waiting") ? await bridgeApi.stopSession(target.id) : await bridgeApi.startSession(selected.id, target?.harness ?? requestedHarness)); }
+    try {
+      setError(undefined);
+      const next = target && (target.status === "working" || target.status === "waiting") ? await bridgeApi.stopSession(target.id) : await bridgeApi.startSession(selected.id, target?.harness ?? requestedHarness);
+      setState(next);
+      if (!target || (target.status !== "working" && target.status !== "waiting")) {
+        const started = [...next.sessions].reverse().find(item => item.workspaceId === selected.id && item.status === "working");
+        setSelectedSessionId(started?.id);
+      }
+    } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
   async function sendPrompt() { if (!session || !composer.trim()) return; await bridgeApi.writeSession(session.id, `${composer}\r`); setComposer(""); }
+  async function archiveSelected() {
+    if (!selected || !window.confirm(`Archive ${selected.city}? The clean worktree will be removed; its branch is preserved.`)) return;
+    setBusy(true); setError(undefined);
+    try { const next = await bridgeApi.archiveWorkspace(selected.id); setState(next); setSelectedId(next.workspaces[0]?.id); }
+    catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  }
 
   return <div className="app-shell">
     <header className="top-rail" data-tauri-drag-region>
@@ -75,7 +98,7 @@ export function App() {
       <div className="workspace-scroll">
         {grouped.map(({ project, workspaces }) => <section className="project-group" key={project.id}>
           <div className="project-title"><div className="repo-icon">{project.name.slice(0,1).toUpperCase()}</div><strong>{project.name}</strong><ChevronDown size={13}/></div>
-          {workspaces.map((workspace, index) => <button key={workspace.id} className={`workspace-row ${workspace.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(workspace.id)}>
+          {workspaces.map((workspace, index) => <button key={workspace.id} className={`workspace-row ${workspace.id === selectedId ? "selected" : ""}`} onClick={() => { setSelectedId(workspace.id); setSelectedSessionId(undefined); }}>
             <span className="workspace-index">{index + 1}</span><span className="workspace-main"><b>{workspace.title}</b><small>{workspace.city} · {workspace.branch}</small></span><span className="workspace-status"><StatusDot status={workspace.status}/><small>{statusCopy[workspace.status]}</small></span>
           </button>)}
         </section>)}
@@ -88,10 +111,10 @@ export function App() {
       {selected ? <>
         <div className="workspace-header">
           <div><div className="eyebrow"><StatusDot status={selected.status}/>{statusCopy[selected.status]} · {selected.city.toUpperCase()}</div><h1>{selected.title}</h1><div className="branch-line"><GitBranch size={13}/>{selected.branch}<span>·</span><span className={selected.dirtyFiles ? "dirty" : ""}>{selected.dirtyFiles ? `${selected.dirtyFiles} files changed` : "clean"}</span></div></div>
-          <div className="workspace-actions"><button className="secondary"><GitPullRequest size={14}/> Review changes</button><button className={`run-button ${session?.status === "working" ? "stop" : ""}`} disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14}/> : session?.status === "working" || session?.status === "waiting" ? <Square size={13}/> : <Play size={14}/>} {session?.status === "working" || session?.status === "waiting" ? "Stop" : "Start agent"}</button></div>
+          <div className="workspace-actions"><button className="secondary"><GitPullRequest size={14}/> Review changes</button><button className="secondary archive" onClick={() => void archiveSelected()} title="Archive clean workspace"><Archive size={14}/> Archive</button><button className={`run-button ${session?.status === "working" ? "stop" : ""}`} disabled={busy} onClick={() => void toggleSession(session)}>{busy ? <LoaderCircle className="spin" size={14}/> : session?.status === "working" || session?.status === "waiting" ? <Square size={13}/> : <Play size={14}/>} {session?.status === "working" || session?.status === "waiting" ? "Stop" : "Start agent"}</button></div>
         </div>
         <div className="session-strip">
-          {sessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""}`} key={s.id}><span className={`harness-icon ${s.harness}`}>{s.harness === "shell" ? <TerminalSquare size={14}/> : <Bot size={14}/>}</span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]}</small></span></button>)}
+          {sessions.map(s => <button className={`session-chip ${s.id === session?.id ? "active" : ""}`} key={s.id} onClick={() => setSelectedSessionId(s.id)}><span className={`harness-icon ${s.harness}`}>{s.harness === "shell" ? <TerminalSquare size={14}/> : <Bot size={14}/>}</span><span><b>{s.label}</b><small><StatusDot status={s.status}/>{statusCopy[s.status]}</small></span></button>)}
           <button className="new-session" onClick={() => void toggleSession(undefined, session?.harness === "codex" ? "claude" : "codex")}><Plus size={14}/> Agent</button>
           <div className="session-metrics"><span>CONTEXT <b>{session?.contextPercent ?? "—"}{session?.contextPercent != null ? "%" : ""}</b></span><span>USAGE <b>{session?.usagePercent ?? "—"}{session?.usagePercent != null ? "%" : ""}</b></span><small>{session?.metricSource?.toUpperCase() ?? "UNAVAILABLE"}</small></div>
         </div>
@@ -104,6 +127,7 @@ export function App() {
         {activeTab === "agent" && <div className="composer"><div className="composer-inner"><textarea value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} placeholder={session?.status === "working" || session?.status === "waiting" ? `Steer ${session.label}…` : "Start an agent to send a task…"} disabled={!session || session.status === "stopped"}/><div className="composer-tools"><button className="tool-select"><Code2 size={13}/>{session?.harness ?? harness}<ChevronDown size={12}/></button><span>↵ send · ⇧↵ newline</span><button className="send" onClick={() => void sendPrompt()} disabled={!composer.trim()}><Send size={14}/></button></div></div></div>}
       </> : <Welcome onAdd={() => setModal("project")}/>} 
     </main>
+    {error && <div className="error-toast" role="alert"><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     {modal && <Modal kind={modal} onClose={() => setModal(null)}>
       {modal === "project" && <><ModalTitle icon={<FolderGit2/>} title="Add a repository" copy="Bridge works locally and never uploads your code."/><label className="field-label">REPOSITORY PATH</label><div className="path-input"><input autoFocus value={path} onChange={e => setPath(e.target.value)} placeholder="/Users/you/Developer/project"/><button onClick={() => void chooseFolder()}>Choose…</button></div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!path || busy} onClick={() => void addProject()}>{busy ? "Adding…" : "Add repository"}</button></div></>}
       {modal === "workspace" && <><ModalTitle icon={<Box/>} title="New workspace" copy="A fresh branch and isolated Git worktree for this task."/><label className="field-label">WHAT SHOULD THE AGENT DO?</label><textarea className="task-input" autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Add keyboard navigation to the command palette"/><label className="field-label">START WITH</label><div className="harness-picker">{(["codex","claude","shell"] as Harness[]).map(h => <button key={h} className={harness === h ? "selected" : ""} onClick={() => setHarness(h)}><span className={`harness-icon ${h}`}>{h === "shell" ? <TerminalSquare/> : <Bot/>}</span><b>{h[0].toUpperCase()+h.slice(1)}</b><small>{health?.harnesses[h] ? "Available" : h === "shell" ? "Available" : "Not detected"}</small></button>)}</div><div className="modal-actions"><button onClick={() => setModal(null)}>Cancel</button><button className="primary" disabled={!title.trim() || !state.projects.length || busy} onClick={() => void createWorkspace()}>{busy ? "Creating worktree…" : "Create workspace"}</button></div></>}

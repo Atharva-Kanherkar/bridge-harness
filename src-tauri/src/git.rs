@@ -68,6 +68,11 @@ pub fn create_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), Bri
     )?;
     Ok(())
 }
+
+pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), BridgeError> {
+    run(repo, ["worktree", "remove", &path.to_string_lossy()])?;
+    Ok(())
+}
 pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
     let porcelain = run(path, ["status", "--porcelain"])?;
     let dirty = porcelain.lines().count() as i64;
@@ -112,5 +117,28 @@ mod tests {
         v.sort();
         v.dedup();
         assert_eq!(v.len(), CITIES.len());
+    }
+    #[test]
+    fn clean_worktree_can_be_created_and_archived() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "bridge-test@example.invalid"]);
+        git(&["config", "user.name", "Bridge Test"]);
+        git(&["commit", "--allow-empty", "-m", "fixture", "-q"]);
+        let worktree = fixture.path().join("Kyoto");
+        create_worktree(&repo, &worktree, "bridge/archive-test").unwrap();
+        assert!(worktree.exists());
+        remove_worktree(&repo, &worktree).unwrap();
+        assert!(!worktree.exists());
     }
 }

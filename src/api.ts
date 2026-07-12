@@ -47,6 +47,12 @@ export const bridgeApi = {
   writeSession: (sessionId: string, data: string): Promise<void> => isTauri() ? invoke("write_session", { sessionId, data }) : Promise.resolve(),
   resizeSession: (sessionId: string, rows: number, cols: number): Promise<void> => isTauri() ? invoke("resize_session", { sessionId, rows, cols }) : Promise.resolve(),
   refreshWorkspace: (workspaceId: string): Promise<BridgeState> => isTauri() ? invoke("refresh_workspace", { workspaceId }) : Promise.resolve(structuredClone(mockState)),
+  archiveWorkspace: async (workspaceId: string): Promise<BridgeState> => {
+    if (isTauri()) return invoke("archive_workspace", { workspaceId });
+    mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId);
+    mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId);
+    return structuredClone(mockState);
+  },
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? listen<TerminalChunk>("session-output", e => handler(e.payload)) : () => undefined,
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? listen("state-changed", handler) : () => undefined
 };

@@ -360,6 +360,87 @@ fn refresh_workspace(
     store::state(&db)
 }
 
+#[tauri::command]
+fn archive_workspace(
+    workspace_id: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    let db = state.db.lock().unwrap();
+    let (path, repo): (String, String) = db.query_row(
+        "SELECT w.path,p.path FROM workspaces w JOIN projects p ON p.id=w.project_id WHERE w.id=?1",
+        params![workspace_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let active: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')",
+        params![workspace_id],
+        |r| r.get(0),
+    )?;
+    if active > 0 {
+        return Err(BridgeError::Invalid(
+            "Stop every running session before archiving this workspace".into(),
+        ));
+    }
+    let (dirty, _, _) = git::stats(Path::new(&path))?;
+    if dirty > 0 {
+        return Err(BridgeError::Invalid(format!(
+            "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
+        )));
+    }
+    git::remove_worktree(Path::new(&repo), Path::new(&path))?;
+    db.execute(
+        "DELETE FROM sessions WHERE workspace_id=?1",
+        params![workspace_id],
+    )?;
+    db.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
+    store::event(
+        &db,
+        "supervisor",
+        "workspace.archived",
+        &workspace_id,
+        "Archived clean workspace; branch preserved",
+    )?;
+    let _ = app.emit("state-changed", ());
+    store::state(&db)
+}
+
+fn start_health_server(database: PathBuf) {
+    thread::spawn(move || {
+        let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
+            return;
+        };
+        for request in server.incoming_requests() {
+            let (status, body) = if request.url() == "/health" {
+                (
+                    200,
+                    serde_json::json!({
+                        "ok": true,
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "database": database,
+                        "harnesses": {
+                            "claude": which::which("claude").is_ok(),
+                            "codex": which::which("codex").is_ok(),
+                            "shell": true
+                        }
+                    })
+                    .to_string(),
+                )
+            } else {
+                (
+                    404,
+                    serde_json::json!({"ok": false, "error": "not found"}).to_string(),
+                )
+            };
+            let mut response = tiny_http::Response::from_string(body).with_status_code(status);
+            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
+                response.add_header(header);
+            }
+            let _ = request.respond(response);
+        }
+    });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -368,6 +449,7 @@ pub fn run() {
             let db_path = data.join("bridge.db");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            start_health_server(db_path.clone());
             app.manage(AppState {
                 db: Mutex::new(connection),
                 runtimes: Mutex::new(HashMap::new()),
@@ -385,7 +467,8 @@ pub fn run() {
             write_session,
             resize_session,
             stop_session,
-            refresh_workspace
+            refresh_workspace,
+            archive_workspace
         ])
         .run(tauri::generate_context!())
         .expect("Bridge failed to start")
