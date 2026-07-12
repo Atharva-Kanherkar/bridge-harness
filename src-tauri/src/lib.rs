@@ -543,6 +543,10 @@ fn spawn_reader_thread(
         state.adapters.lock().unwrap().remove(&session_id);
         notify_parent_on_worker_exit(&app, &session_id);
         let db = state.db.lock().unwrap();
+        let is_worker = store::worker_runtime(&db, &session_id)
+            .ok()
+            .flatten()
+            .is_some();
         let workspace: Option<String> = db
             .query_row(
                 "SELECT workspace_id FROM sessions WHERE id=?1",
@@ -550,7 +554,9 @@ fn spawn_reader_thread(
                 |r| r.get(0),
             )
             .ok();
-        let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+        if !is_worker {
+            let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+        }
         if let Some(workspace) = workspace {
             let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
         }
@@ -588,6 +594,7 @@ fn handle_agent_value(
 ) {
     let state = app.state::<AppState>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
+    let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut turn_completed = false;
 
     {
@@ -650,10 +657,19 @@ fn handle_agent_value(
                     let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
                 }
                 "approval.requested" => {
-                    let _ = db.execute(
-                        "UPDATE sessions SET status='waiting' WHERE id=?1",
-                        params![session_id],
-                    );
+                    if own_depth > 0 {
+                        let _ = session_supervisor::SessionSupervisor::transition(
+                            &db,
+                            session_id,
+                            worker_lifecycle::WorkerLifecycleState::Waiting,
+                            Some("approval_requested"),
+                        );
+                    } else {
+                        let _ = db.execute(
+                            "UPDATE sessions SET status='waiting' WHERE id=?1",
+                            params![session_id],
+                        );
+                    }
                     let _ = db.execute(
                         "UPDATE workspaces SET status='waiting' WHERE id=?1",
                         params![workspace_id],
@@ -670,10 +686,31 @@ fn handle_agent_value(
                     );
                 }
                 "error" if event.status.as_deref() == Some("failed") => {
-                    let _ = db.execute(
-                        "UPDATE sessions SET status='failed' WHERE id=?1",
-                        params![session_id],
-                    );
+                    if own_depth > 0 {
+                        let lifecycle = store::worker_runtime(&db, session_id)
+                            .ok()
+                            .flatten()
+                            .map(|runtime| runtime.lifecycle_state);
+                        if lifecycle.as_deref() == Some("waiting") {
+                            let _ = session_supervisor::SessionSupervisor::transition(
+                                &db,
+                                session_id,
+                                worker_lifecycle::WorkerLifecycleState::Working,
+                                Some("approval_aborted_by_error"),
+                            );
+                        }
+                        let _ = session_supervisor::SessionSupervisor::transition(
+                            &db,
+                            session_id,
+                            worker_lifecycle::WorkerLifecycleState::Failed,
+                            Some("provider_error"),
+                        );
+                    } else {
+                        let _ = db.execute(
+                            "UPDATE sessions SET status='failed' WHERE id=?1",
+                            params![session_id],
+                        );
+                    }
                     let _ = db.execute(
                         "UPDATE workspaces SET status='failed' WHERE id=?1",
                         params![workspace_id],
@@ -732,7 +769,7 @@ fn handle_agent_value(
                                         session_id,
                                         &rejection,
                                     ) {
-                                        let _ = app.emit("agent-event", event);
+                                        pending_ui_events.push(event);
                                     }
                                 }
                             }
@@ -774,7 +811,7 @@ fn handle_agent_value(
                 &normalized_event,
                 &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
             ) {
-                let _ = app.emit("agent-event", event);
+                pending_ui_events.push(event);
             }
         }
     }
@@ -791,6 +828,9 @@ fn handle_agent_value(
         if idle {
             forward_turn_result(app, session_id);
         }
+    }
+    for event in pending_ui_events {
+        let _ = app.emit("agent-event", event);
     }
     let _ = app.emit("state-changed", ());
 }
@@ -1167,25 +1207,12 @@ fn launch_worker(
                     .insert(reservation.session_id.clone(), baseline);
             }
             Err(error) => {
-                let db = state.db.lock().unwrap();
-                let now = Utc::now().to_rfc3339();
-                let _ = db.execute(
-                    "UPDATE sessions SET status='failed',ended_at=?2 WHERE id=?1",
-                    params![reservation.session_id, now],
-                );
-                let _ = db.execute(
-                    "UPDATE worker_leases SET lease_status='expired',updated_at=?2 WHERE session_id=?1",
-                    params![reservation.session_id, Utc::now().to_rfc3339()],
-                );
-                let _ = store::event(
-                    &db,
-                    "sandbox",
-                    "worker.read_only_verification_failed",
+                fail_reserved_worker(
+                    app,
                     &reservation.session_id,
+                    &label,
                     &format!("Could not capture tracked-file baseline: {error}"),
                 );
-                drop(db);
-                let _ = app.emit("state-changed", ());
                 return None;
             }
         }
@@ -1266,25 +1293,12 @@ fn launch_worker(
                 .unwrap()
                 .read_only_baselines
                 .remove(&reservation.session_id);
-            let db = state.db.lock().unwrap();
-            let now = Utc::now().to_rfc3339();
-            let _ = db.execute(
-                "UPDATE sessions SET status='failed',ended_at=?2 WHERE id=?1",
-                params![reservation.session_id, now],
+            fail_reserved_worker(
+                app,
+                &reservation.session_id,
+                &label,
+                &format!("Could not start provider process: {error}"),
             );
-            let _ = db.execute(
-                "UPDATE worker_leases SET lease_status='expired',updated_at=?2 WHERE session_id=?1",
-                params![reservation.session_id, Utc::now().to_rfc3339()],
-            );
-            let _ = store::event(
-                &db,
-                "delegation",
-                "worker.failed",
-                parent_session_id,
-                &format!("Could not start {label}: {error}"),
-            );
-            drop(db);
-            let _ = app.emit("state-changed", ());
             return None;
         }
     };
@@ -1438,6 +1452,36 @@ fn launch_worker(
     }
     let _ = app.emit("state-changed", ());
     Some(session_id)
+}
+
+fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
+    let state = app.state::<AppState>();
+    if session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("startup_failed_before_process"),
+    )
+    .is_err()
+    {
+        return;
+    }
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Failed,
+        summary: format!("{label} could not start: {reason}"),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec![reason.to_owned()],
+        remaining_work: vec!["Retry or delegate the task differently".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    if settle_worker_after_result(app, session_id, &result).unwrap_or(false) {
+        report_to_parent(app, session_id, &result);
+    }
 }
 
 /// Frame a finished worker's final message and send it up to its parent.
@@ -1596,6 +1640,20 @@ fn settle_worker_after_result(
             |row| row.get::<_, String>(0),
         )
         .ok();
+    if current.as_deref() == Some("failed")
+        && matches!(
+            result.status,
+            delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+        )
+    {
+        session_supervisor::SessionSupervisor::transition(
+            &state.db.lock().unwrap(),
+            child_session_id,
+            worker_lifecycle::WorkerLifecycleState::Completed,
+            Some("terminal_failure_reported"),
+        )?;
+        return Ok(true);
+    }
     if current.as_deref() != Some("working") {
         return Ok(true);
     }
@@ -2010,6 +2068,11 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
+    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
+        return Err(BridgeError::Invalid(
+            "Worker turns are scheduled through the policy-controlled worker pool".into(),
+        ));
+    }
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
@@ -2083,12 +2146,32 @@ fn resolve_approval(
         .get("requestId")
         .cloned()
         .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
+    let is_worker = store::worker_runtime(&db, &session_id)?.is_some();
+    if is_worker {
+        session_supervisor::SessionSupervisor::transition(
+            &db,
+            &session_id,
+            worker_lifecycle::WorkerLifecycleState::Working,
+            Some("approval_resolved"),
+        )?;
+    }
     drop(db);
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.respond(request_id, &decision)?;
+    if let Err(error) = runtime.respond(request_id, &decision) {
+        drop(adapters);
+        if is_worker {
+            let _ = session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                &session_id,
+                worker_lifecycle::WorkerLifecycleState::Waiting,
+                Some("approval_delivery_failed"),
+            );
+        }
+        return Err(error);
+    }
     drop(adapters);
     let mut normalized = agent::NormalizedEvent {
         kind: "approval.resolved".into(),
@@ -2110,10 +2193,12 @@ fn resolve_approval(
         &normalized,
         &serde_json::json!({"adapter":adapter_id}),
     )?;
-    db.execute(
-        "UPDATE sessions SET status='working' WHERE id=?1",
-        params![session_id],
-    )?;
+    if !is_worker {
+        db.execute(
+            "UPDATE sessions SET status='working' WHERE id=?1",
+            params![session_id],
+        )?;
+    }
     let _ = app.emit("agent-event", event);
     let _ = app.emit("state-changed", ());
     Ok(())
@@ -2496,7 +2581,21 @@ mod tests {
 
     #[test]
     fn session_status_round_trip() {
-        assert_eq!(store::status("waiting"), SessionStatus::Waiting);
+        for (value, expected) in [
+            ("starting", SessionStatus::Starting),
+            ("working", SessionStatus::Working),
+            ("waiting", SessionStatus::Waiting),
+            ("warm", SessionStatus::Warm),
+            ("checkpointing", SessionStatus::Checkpointing),
+            ("stopped", SessionStatus::Stopped),
+            ("resuming", SessionStatus::Resuming),
+            ("restored", SessionStatus::Restored),
+            ("failed", SessionStatus::Failed),
+            ("completed", SessionStatus::Completed),
+            ("cancelled", SessionStatus::Cancelled),
+        ] {
+            assert_eq!(store::status(value), expected);
+        }
     }
 
     #[test]
