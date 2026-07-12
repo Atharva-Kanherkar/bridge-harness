@@ -77,6 +77,9 @@ struct DelegationState {
     reported: HashSet<String>,
     /// Tracks the single same-session repair allowed for malformed worker output.
     result_repairs: delegation::ResultRepairTracker,
+    /// Last observed provider turn per session, retained until the next turn
+    /// so late usage events keep the originating user-request budget key.
+    last_turn_by_session: HashMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -418,7 +421,16 @@ fn handle_agent_value(
             .lock()
             .unwrap()
             .clone()
-            .or(stored_turn_id);
+            .or(stored_turn_id)
+            .or_else(|| {
+                state
+                    .delegations
+                    .lock()
+                    .unwrap()
+                    .last_turn_by_session
+                    .get(session_id)
+                    .cloned()
+            });
         let normalized = state.adapter_registry.normalize(&adapter_id, value);
         for event in &normalized {
             match event.kind.as_str() {
@@ -430,6 +442,14 @@ fn handle_agent_value(
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_owned);
                     *current_turn.lock().unwrap() = turn_id.clone();
+                    if let Some(turn_id) = &turn_id {
+                        state
+                            .delegations
+                            .lock()
+                            .unwrap()
+                            .last_turn_by_session
+                            .insert(session_id.into(), turn_id.clone());
+                    }
                     let _ = db.execute(
                         "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
                         params![session_id, turn_id],
@@ -1775,6 +1795,7 @@ mod tests {
         );
         let entries = store::session_entries(&db, "parent").unwrap();
         assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].kind, "delegation.requested");
         assert_eq!(entries[1].payload["decision"], "queue");
         assert_eq!(entries[1].payload["reason"], "writer_conflict");
     }

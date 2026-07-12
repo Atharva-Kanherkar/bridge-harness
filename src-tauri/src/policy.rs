@@ -307,7 +307,7 @@ pub fn capability_units(
 
 pub fn normalize_owned_pattern(pattern: &str) -> Result<String, String> {
     let replaced = pattern.trim().replace('\\', "/");
-    if replaced.is_empty() || replaced.starts_with('/') {
+    if replaced.is_empty() || replaced.starts_with('/') || replaced.starts_with('~') {
         return Err("owned path must be non-empty and relative".into());
     }
     let mut parts = Vec::new();
@@ -427,7 +427,14 @@ impl UsageReport {
 }
 
 fn integer_alias(value: &Value, keys: &[&str]) -> Option<i64> {
-    keys.iter().find_map(|key| value.get(*key)?.as_i64())
+    if let Some(found) = keys.iter().find_map(|key| value.get(*key)?.as_i64()) {
+        return Some(found);
+    }
+    value.as_object().and_then(|object| {
+        object
+            .values()
+            .find_map(|child| child.is_object().then(|| integer_alias(child, keys)).flatten())
+    })
 }
 
 pub fn record_provider_usage(
@@ -510,10 +517,16 @@ pub fn record_decision(
     outcome: &PolicyOutcome,
     budget: &RequestBudget,
 ) -> Result<(), BridgeError> {
-    let kind = if matches!(outcome.decision, RouteDecision::Reject) {
-        EntryKind::DelegationRejected
-    } else {
-        EntryKind::DelegationApproved
+    let kind = match &outcome.decision {
+        RouteDecision::SpawnWorker(_) | RouteDecision::ResumeWorker { .. } => {
+            EntryKind::DelegationApproved
+        }
+        RouteDecision::Queue | RouteDecision::RequireUserApproval => {
+            EntryKind::DelegationRequested
+        }
+        RouteDecision::Reject | RouteDecision::ExecuteInParent => {
+            EntryKind::DelegationRejected
+        }
     };
     let payload = serde_json::json!({
         "requestId": turn_id,
@@ -931,6 +944,7 @@ mod tests {
         );
         assert!(owned_path_sets_overlap(&[], &paths(&["src/**"])).unwrap());
         assert!(owned_path_sets_overlap(&paths(&["../secret"]), &paths(&["src/**"])).is_err());
+        assert!(owned_path_sets_overlap(&paths(&["~/secret"]), &paths(&["src/**"])).is_err());
     }
 
     #[test]
@@ -977,6 +991,20 @@ mod tests {
         assert_eq!(codex.input_tokens, Some(10));
         assert_eq!(codex.cache_read_tokens, Some(3));
         assert_eq!(codex.runtime_ms, Some(90));
+
+        let nested_codex = UsageReport::from_normalized(&json!({
+            "rate_limits": {
+                "usage": {
+                    "inputTokens": 12,
+                    "outputTokens": 6,
+                    "cacheReadTokens": 4
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(nested_codex.input_tokens, Some(12));
+        assert_eq!(nested_codex.output_tokens, Some(6));
+        assert_eq!(nested_codex.cache_read_tokens, Some(4));
 
         let claude = UsageReport::from_normalized(&json!({
             "usage": {
