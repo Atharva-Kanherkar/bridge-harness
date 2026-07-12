@@ -17,7 +17,47 @@ pub trait AdapterRuntime: Send {
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
-    fn stop(&mut self);
+    fn stop(&mut self, reason: ShutdownReason);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownReason {
+    UserStopped,
+    Replaced,
+    Completed,
+    Failed,
+    AppShutdown,
+}
+
+impl ShutdownReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UserStopped => "user_stopped",
+            Self::Replaced => "replaced",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::AppShutdown => "app_shutdown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StartRequest<'a> {
+    pub cwd: &'a str,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub instructions: Option<&'a str>,
+    pub write_mode: Option<WriteMode>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResumeRequest<'a> {
+    pub provider_session_id: &'a str,
+    pub cwd: &'a str,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub instructions: Option<&'a str>,
+    pub write_mode: Option<WriteMode>,
 }
 
 pub struct StartedAdapter {
@@ -28,14 +68,9 @@ pub struct StartedAdapter {
 
 pub trait HarnessAdapter: Send + Sync {
     fn descriptor(&self) -> AdapterDescriptor;
-    fn start(
-        &self,
-        cwd: &str,
-        model: Option<&str>,
-        effort: Option<&str>,
-        instructions: Option<&str>,
-        write_mode: Option<WriteMode>,
-    ) -> Result<StartedAdapter, BridgeError>;
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError>;
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
+    fn supports_native_resume(&self) -> bool;
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
 }
 
@@ -102,11 +137,7 @@ impl AdapterRegistry {
     pub fn start(
         &self,
         id: &str,
-        cwd: &str,
-        model: Option<&str>,
-        effort: Option<&str>,
-        instructions: Option<&str>,
-        write_mode: Option<WriteMode>,
+        request: StartRequest<'_>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -119,7 +150,29 @@ impl AdapterRegistry {
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        adapter.start(cwd, model, effort, instructions, write_mode)
+        adapter.start(request)
+    }
+
+    pub fn resume(
+        &self,
+        id: &str,
+        request: ResumeRequest<'_>,
+    ) -> Result<StartedAdapter, BridgeError> {
+        let adapter = self.adapters.get(id).ok_or_else(|| {
+            BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
+        })?;
+        if !adapter.supports_native_resume() {
+            return Err(BridgeError::Invalid(format!(
+                "Adapter {id} does not support native resume"
+            )));
+        }
+        adapter.resume(request)
+    }
+
+    pub fn supports_native_resume(&self, id: &str) -> bool {
+        self.adapters
+            .get(id)
+            .is_some_and(|adapter| adapter.supports_native_resume())
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -138,7 +191,9 @@ impl AdapterRegistry {
         let descriptor = self
             .adapters
             .get(id)
-            .ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
+            })?
             .descriptor();
         let tier_default = descriptor
             .models
@@ -209,25 +264,34 @@ impl HarnessAdapter for CodexAdapter {
                 ("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, true),
                 ("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, true),
                 ("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, true),
-                ("gpt-5.3-codex", "GPT-5.3 Codex", CapabilityTier::Standard, false),
+                (
+                    "gpt-5.3-codex",
+                    "GPT-5.3 Codex",
+                    CapabilityTier::Standard,
+                    false,
+                ),
             ]),
             default_model: Some("gpt-5.6-luna".into()),
         }
     }
-    fn start(
-        &self,
-        cwd: &str,
-        model: Option<&str>,
-        effort: Option<&str>,
-        instructions: Option<&str>,
-        write_mode: Option<WriteMode>,
-    ) -> Result<StartedAdapter, BridgeError> {
-        let started = codex_adapter::start(cwd, model, effort, instructions, write_mode)?;
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::start(request)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
         })
+    }
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let started = codex_adapter::resume(request)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime),
+            reader: Box::new(started.reader),
+            startup_messages: started.startup_messages,
+        })
+    }
+    fn supports_native_resume(&self) -> bool {
+        codex_adapter::supports_native_resume()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         if value.get("id").is_some() && value.get("method").is_some() {
@@ -274,20 +338,24 @@ impl HarnessAdapter for ClaudeAdapter {
             default_model: Some("sonnet".into()),
         }
     }
-    fn start(
-        &self,
-        cwd: &str,
-        model: Option<&str>,
-        effort: Option<&str>,
-        instructions: Option<&str>,
-        write_mode: Option<WriteMode>,
-    ) -> Result<StartedAdapter, BridgeError> {
-        let started = claude_adapter::start(cwd, model, effort, instructions, write_mode)?;
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::start(request)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
         })
+    }
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let started = claude_adapter::resume(request)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime),
+            reader: Box::new(started.reader),
+            startup_messages: started.startup_messages,
+        })
+    }
+    fn supports_native_resume(&self) -> bool {
+        claude_adapter::supports_native_resume()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value
@@ -318,15 +386,14 @@ mod tests {
                 default_model: None,
             }
         }
-        fn start(
-            &self,
-            _cwd: &str,
-            _model: Option<&str>,
-            _effort: Option<&str>,
-            _instructions: Option<&str>,
-            _write_mode: Option<WriteMode>,
-        ) -> Result<StartedAdapter, BridgeError> {
+        fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
             Err(BridgeError::Invalid("not launched in registry test".into()))
+        }
+        fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("not resumed in registry test".into()))
+        }
+        fn supports_native_resume(&self) -> bool {
+            false
         }
         fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {
             vec![]
@@ -365,7 +432,12 @@ mod tests {
                     .iter()
                     .filter(|model| model.tier == tier)
                     .collect::<Vec<_>>();
-                assert!(!models.is_empty(), "{} lacks {}", descriptor.id, tier.as_str());
+                assert!(
+                    !models.is_empty(),
+                    "{} lacks {}",
+                    descriptor.id,
+                    tier.as_str()
+                );
                 assert_eq!(
                     models.iter().filter(|model| model.default_for_tier).count(),
                     1,
@@ -397,7 +469,10 @@ mod tests {
                 .resolve_model("claude", CapabilityTier::Strong, Some(hint))
                 .unwrap();
             assert_eq!(fallback.actual_model, "fable");
-            assert!(fallback.warning.as_deref().is_some_and(|text| text.contains(hint)));
+            assert!(fallback
+                .warning
+                .as_deref()
+                .is_some_and(|text| text.contains(hint)));
         }
     }
 }

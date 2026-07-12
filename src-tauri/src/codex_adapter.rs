@@ -1,13 +1,19 @@
-use crate::{adapters::AdapterRuntime, binary, delegation::WriteMode, BridgeError};
+use crate::{
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    binary,
+    delegation::WriteMode,
+    BridgeError,
+};
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
+use uuid::Uuid;
 
 pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
@@ -23,16 +29,36 @@ pub struct StartedCodex {
     pub startup_messages: Vec<Value>,
 }
 
-pub fn start(
-    cwd: &str,
-    model: Option<&str>,
-    effort: Option<&str>,
-    instructions: Option<&str>,
-    write_mode: Option<WriteMode>,
+pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
+    launch(request, None)
+}
+
+pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
+    launch(
+        StartRequest {
+            cwd: request.cwd,
+            model: request.model,
+            effort: request.effort,
+            instructions: request.instructions,
+            write_mode: request.write_mode,
+        },
+        Some(request.provider_session_id),
+    )
+}
+
+fn launch(
+    request: StartRequest<'_>,
+    resume_thread_id: Option<&str>,
 ) -> Result<StartedCodex, BridgeError> {
-    let binary = binary::resolve("codex").ok_or_else(|| {
-        BridgeError::Invalid("Codex binary is not installed".into())
-    })?;
+    let StartRequest {
+        cwd,
+        model,
+        effort,
+        instructions,
+        write_mode,
+    } = request;
+    let binary = binary::resolve("codex")
+        .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
     let mut child = Command::new(binary)
         .args(["app-server", "--listen", "stdio://"])
         .current_dir(cwd)
@@ -56,11 +82,18 @@ pub fn start(
     )?;
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     write_value(&writer, &json!({"method":"initialized"}))?;
-    let params = thread_start_params(cwd, model, effort, instructions, write_mode);
-    write_value(
-        &writer,
-        &json!({"method":"thread/start","id":2,"params":params}),
-    )?;
+    let (method, params) = if let Some(thread_id) = resume_thread_id {
+        (
+            "thread/resume",
+            thread_resume_params(thread_id, cwd, model, instructions, write_mode),
+        )
+    } else {
+        (
+            "thread/start",
+            thread_start_params(cwd, model, effort, instructions, write_mode),
+        )
+    };
+    write_value(&writer, &json!({"method":method,"id":2,"params":params}))?;
     let (response, mut later_messages) = wait_for_response(&mut reader, 2)?;
     startup_messages.append(&mut later_messages);
     let thread_id = response
@@ -85,6 +118,15 @@ pub fn start(
     })
 }
 
+fn sandbox_settings(write_mode: Option<WriteMode>) -> (&'static str, &'static str) {
+    match write_mode {
+        None => ("never", "danger-full-access"),
+        Some(WriteMode::ReadOnly) => ("on-request", "workspace-write"),
+        Some(WriteMode::Shared | WriteMode::Isolated) => ("on-request", "workspace-write"),
+        Some(WriteMode::Full) => ("never", "danger-full-access"),
+    }
+}
+
 fn thread_start_params(
     cwd: &str,
     model: Option<&str>,
@@ -92,12 +134,7 @@ fn thread_start_params(
     instructions: Option<&str>,
     write_mode: Option<WriteMode>,
 ) -> Value {
-    let (approval_policy, sandbox) = match write_mode {
-        None => ("never", "danger-full-access"),
-        Some(WriteMode::ReadOnly) => ("on-request", "workspace-write"),
-        Some(WriteMode::Shared | WriteMode::Isolated) => ("on-request", "workspace-write"),
-        Some(WriteMode::Full) => ("never", "danger-full-access"),
-    };
+    let (approval_policy, sandbox) = sandbox_settings(write_mode);
     let mut params = json!({"cwd":cwd,"approvalPolicy":approval_policy,"sandbox":sandbox,"ephemeral":false,"serviceName":"Bridge"});
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = json!(model);
@@ -109,12 +146,74 @@ fn thread_start_params(
         params["effort"] = json!(effort);
         params["model_reasoning_effort"] = json!(effort);
     }
-    if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(instructions) = instructions
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         // Accepted by current Codex app-server builds; unknown fields are ignored safely on older ones.
         params["developerInstructions"] = json!(instructions);
         params["instructions"] = json!(instructions);
     }
     params
+}
+
+fn thread_resume_params(
+    thread_id: &str,
+    cwd: &str,
+    model: Option<&str>,
+    instructions: Option<&str>,
+    write_mode: Option<WriteMode>,
+) -> Value {
+    let (approval_policy, sandbox) = sandbox_settings(write_mode);
+    let mut params = json!({
+        "threadId": thread_id,
+        "cwd": cwd,
+        "approvalPolicy": approval_policy,
+        "sandbox": sandbox,
+    });
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        params["model"] = json!(model);
+    }
+    if let Some(instructions) = instructions
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params["developerInstructions"] = json!(instructions);
+    }
+    params
+}
+
+pub fn supports_native_resume() -> bool {
+    static SUPPORTS: OnceLock<bool> = OnceLock::new();
+    *SUPPORTS.get_or_init(discover_native_resume)
+}
+
+fn discover_native_resume() -> bool {
+    let Some(binary) = binary::resolve("codex") else {
+        return false;
+    };
+    let output_dir = std::env::temp_dir().join(format!("bridge-codex-schema-{}", Uuid::new_v4()));
+    let generated = Command::new(binary)
+        .args([
+            "app-server",
+            "generate-json-schema",
+            "--experimental",
+            "--out",
+        ])
+        .arg(&output_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    let supported = generated
+        && std::fs::read_to_string(output_dir.join("ClientRequest.json"))
+            .is_ok_and(|schema| schema_supports_resume(&schema));
+    let _ = std::fs::remove_dir_all(output_dir);
+    supported
+}
+
+fn schema_supports_resume(schema: &str) -> bool {
+    schema.contains("thread/resume") && schema.contains("ThreadResumeParams")
 }
 
 impl CodexRuntime {
@@ -164,7 +263,7 @@ impl AdapterRuntime for CodexRuntime {
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         CodexRuntime::respond(self, request_id, decision)
     }
-    fn stop(&mut self) {
+    fn stop(&mut self, _reason: ShutdownReason) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -242,6 +341,32 @@ mod tests {
         assert_eq!(params["effort"], "high");
         assert_eq!(params["developerInstructions"], "worker rules");
     }
+
+    #[test]
+    fn native_resume_capability_is_discovered_from_protocol_schema() {
+        assert!(schema_supports_resume(
+            r#"{"method":"thread/resume","params":{"$ref":"ThreadResumeParams"}}"#
+        ));
+        assert!(!schema_supports_resume(
+            r#"{"method":"thread/start","params":{"$ref":"ThreadStartParams"}}"#
+        ));
+    }
+
+    #[test]
+    fn resume_request_uses_stored_thread_and_current_enforcement() {
+        let params = thread_resume_params(
+            "thread-existing",
+            "/tmp/work",
+            Some("runtime-model"),
+            Some("restored rules"),
+            Some(WriteMode::ReadOnly),
+        );
+        assert_eq!(params["threadId"], "thread-existing");
+        assert_eq!(params["sandbox"], "workspace-write");
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["developerInstructions"], "restored rules");
+        assert!(params.get("ephemeral").is_none());
+    }
     #[test]
     fn turn_request_is_structured_json_not_terminal_text() {
         let value = json!({"method":"turn/start","id":10,"params":{"threadId":"t","input":[{"type":"text","text":"hello","text_elements":[]}]}});
@@ -255,7 +380,14 @@ mod tests {
     fn live_app_server_emits_a_structured_turn() {
         use std::{sync::mpsc, thread, time::Duration};
         let cwd = std::env::current_dir().unwrap();
-        let started = start(cwd.to_str().unwrap(), None, None, None, None).unwrap();
+        let started = start(StartRequest {
+            cwd: cwd.to_str().unwrap(),
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode: None,
+        })
+        .unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
@@ -288,11 +420,59 @@ mod tests {
                 break;
             }
         }
-        runtime.stop();
+        runtime.stop(ShutdownReason::Completed);
         assert!(methods.iter().any(|method| method == "turn/started"));
         assert!(methods
             .iter()
             .any(|method| method == "item/agentMessage/delta" || method == "item/completed"));
         assert!(methods.iter().any(|method| method == "turn/completed"));
+    }
+
+    #[test]
+    #[ignore = "requires an installed, authenticated Codex binary and persists a provider thread"]
+    fn live_codex_thread_survives_process_restart() {
+        fn run_turn(started: &mut StartedCodex, prompt: &str) -> String {
+            started.runtime.start_turn(prompt).unwrap();
+            let mut transcript = String::new();
+            loop {
+                let mut line = String::new();
+                assert_ne!(started.reader.read_line(&mut line).unwrap(), 0);
+                transcript.push_str(&line);
+                let frame: Value = serde_json::from_str(line.trim()).unwrap();
+                if frame.get("method").and_then(Value::as_str) == Some("turn/completed") {
+                    return transcript;
+                }
+            }
+        }
+
+        let cwd = std::env::current_dir().unwrap();
+        let cwd = cwd.to_str().unwrap();
+        let mut started = start(StartRequest {
+            cwd,
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode: None,
+        })
+        .unwrap();
+        run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CODEX_RESUME_8F31. Reply only SAVED.");
+        let thread_id = started.runtime.thread_id.clone();
+        started.runtime.stop(ShutdownReason::AppShutdown);
+
+        let mut resumed = resume(ResumeRequest {
+            cwd,
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode: None,
+            provider_session_id: &thread_id,
+        })
+        .unwrap();
+        let transcript = run_turn(
+            &mut resumed,
+            "What exact token did I ask you to remember? Reply with only the token.",
+        );
+        resumed.runtime.stop(ShutdownReason::Completed);
+        assert!(transcript.contains("BRIDGE_CODEX_RESUME_8F31"));
     }
 }

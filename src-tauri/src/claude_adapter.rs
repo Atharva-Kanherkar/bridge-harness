@@ -1,11 +1,16 @@
-use crate::{adapters::AdapterRuntime, binary, delegation::WriteMode, BridgeError};
+use crate::{
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    binary,
+    delegation::WriteMode,
+    BridgeError,
+};
 use serde_json::{json, Value};
 use std::{
     io::{BufReader, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
 use uuid::Uuid;
@@ -24,39 +29,60 @@ pub struct StartedClaude {
     pub startup_messages: Vec<Value>,
 }
 
-pub fn start(
-    cwd: &str,
-    model: Option<&str>,
-    effort: Option<&str>,
-    instructions: Option<&str>,
-    write_mode: Option<WriteMode>,
+pub fn start(request: StartRequest<'_>) -> Result<StartedClaude, BridgeError> {
+    launch(request, None)
+}
+
+pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> {
+    launch(
+        StartRequest {
+            cwd: request.cwd,
+            model: request.model,
+            effort: request.effort,
+            instructions: request.instructions,
+            write_mode: request.write_mode,
+        },
+        Some(request.provider_session_id),
+    )
+}
+
+fn launch(
+    request: StartRequest<'_>,
+    resume_session_id: Option<&str>,
 ) -> Result<StartedClaude, BridgeError> {
+    let StartRequest {
+        cwd,
+        model,
+        effort,
+        instructions,
+        write_mode,
+    } = request;
     let binary = binary::resolve("claude").ok_or_else(|| {
         BridgeError::Invalid(
             "Claude Code binary is not installed (expected `claude` on PATH or in ~/.local/bin)"
                 .into(),
         )
     })?;
-    let session_id = Uuid::new_v4().to_string();
+    let session_id = resume_session_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let chosen_model = model
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("sonnet");
     let mut command = Command::new(binary);
-    command.args([
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-    ]);
-    command.args(permission_args(write_mode));
-    command.args(["--model", chosen_model, "--session-id", &session_id]);
+    command.args(claude_args(
+        &session_id,
+        chosen_model,
+        write_mode,
+        resume_session_id.is_some(),
+    ));
     // Bridge injects the delegation protocol + worker brief as an appended
-    // system prompt so the child agent can itself delegate and knows its task.
-    if let Some(instructions) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
+    // system prompt so the child agent knows its single typed task.
+    if let Some(instructions) = instructions
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         command.args(["--append-system-prompt", instructions]);
     }
     command
@@ -87,6 +113,7 @@ pub fn start(
         "session_id": session_id,
         "cwd": cwd,
         "model": chosen_model,
+        "resumed": resume_session_id.is_some(),
     })];
     Ok(StartedClaude {
         runtime: ClaudeRuntime {
@@ -98,6 +125,43 @@ pub fn start(
         },
         reader,
         startup_messages,
+    })
+}
+
+fn claude_args<'a>(
+    session_id: &'a str,
+    model: &'a str,
+    write_mode: Option<WriteMode>,
+    resume: bool,
+) -> Vec<&'a str> {
+    let mut args = vec![
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ];
+    args.extend(permission_args(write_mode));
+    args.extend(["--model", model]);
+    if resume {
+        args.extend(["--resume", session_id]);
+    } else {
+        args.extend(["--session-id", session_id]);
+    }
+    args
+}
+
+pub fn supports_native_resume() -> bool {
+    static SUPPORTS: OnceLock<bool> = OnceLock::new();
+    *SUPPORTS.get_or_init(|| {
+        binary::resolve("claude")
+            .and_then(|binary| Command::new(binary).arg("--help").output().ok())
+            .is_some_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("--resume")
+            })
     })
 }
 
@@ -189,7 +253,7 @@ impl AdapterRuntime for ClaudeRuntime {
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         ClaudeRuntime::respond(self, request_id, decision)
     }
-    fn stop(&mut self) {
+    fn stop(&mut self, _reason: ShutdownReason) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -249,7 +313,25 @@ mod tests {
         for tool in ["Edit", "Write", "NotebookEdit"] {
             assert!(args[deny_index + 1..].contains(&tool));
         }
-        assert!(args.contains(&"Bash"), "test workers need build artifact access");
+        assert!(
+            args.contains(&"Bash"),
+            "test workers need build artifact access"
+        );
+    }
+
+    #[test]
+    fn fresh_and_resume_arguments_are_mutually_exclusive() {
+        let fresh = claude_args("new-id", "sonnet", None, false);
+        assert!(fresh
+            .windows(2)
+            .any(|pair| pair == ["--session-id", "new-id"]));
+        assert!(!fresh.contains(&"--resume"));
+
+        let resumed = claude_args("stored-id", "sonnet", None, true);
+        assert!(resumed
+            .windows(2)
+            .any(|pair| pair == ["--resume", "stored-id"]));
+        assert!(!resumed.contains(&"--session-id"));
     }
 
     #[test]
@@ -277,7 +359,14 @@ mod tests {
     fn live_stream_json_emits_a_structured_turn() {
         use std::{io::BufRead, sync::mpsc, thread, time::Duration};
         let cwd = std::env::temp_dir();
-        let started = start(cwd.to_str().unwrap(), None, None, None, None).unwrap();
+        let started = start(StartRequest {
+            cwd: cwd.to_str().unwrap(),
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode: None,
+        })
+        .unwrap();
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
@@ -309,8 +398,60 @@ mod tests {
                 break;
             }
         }
-        runtime.stop();
-        assert!(types.iter().any(|kind| kind == "assistant" || kind == "stream_event"));
+        runtime.stop(ShutdownReason::Completed);
+        assert!(types
+            .iter()
+            .any(|kind| kind == "assistant" || kind == "stream_event"));
         assert!(types.iter().any(|kind| kind == "result"));
+    }
+
+    #[test]
+    #[ignore = "requires an installed, authenticated Claude Code binary and persists a provider session"]
+    fn live_claude_session_survives_process_restart() {
+        use std::io::BufRead;
+
+        fn run_turn(started: &mut StartedClaude, prompt: &str) -> String {
+            started.runtime.start_turn(prompt).unwrap();
+            let mut transcript = String::new();
+            loop {
+                let mut line = String::new();
+                assert_ne!(started.reader.read_line(&mut line).unwrap(), 0);
+                transcript.push_str(&line);
+                let frame: Value = serde_json::from_str(line.trim()).unwrap();
+                if frame.get("type").and_then(Value::as_str) == Some("result") {
+                    return transcript;
+                }
+            }
+        }
+
+        let cwd = std::env::temp_dir();
+        let cwd = cwd.to_str().unwrap();
+        let mut started = start(StartRequest {
+            cwd,
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode: None,
+        })
+        .unwrap();
+        run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CLAUDE_RESUME_5A72. Reply only SAVED.");
+        let session_id = started.runtime.session_id.clone();
+        started.runtime.stop(ShutdownReason::AppShutdown);
+
+        let mut resumed = resume(ResumeRequest {
+            cwd,
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode: None,
+            provider_session_id: &session_id,
+        })
+        .unwrap();
+        let transcript = run_turn(
+            &mut resumed,
+            "What exact token did I ask you to remember? Reply with only the token.",
+        );
+        resumed.runtime.stop(ShutdownReason::Completed);
+        assert!(transcript.contains("BRIDGE_CLAUDE_RESUME_5A72"));
     }
 }
