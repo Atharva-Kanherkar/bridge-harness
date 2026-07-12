@@ -739,4 +739,54 @@ mod tests {
             json!(["src-tauri/src/context.rs"])
         );
     }
+
+    #[test]
+    fn long_running_session_survives_three_compactions_with_all_decisions() {
+        let db = database();
+        for phase in 1..=3 {
+            CompactionController::begin(&db, "s", CompactionReason::PhaseBoundary, phase * 100)
+                .unwrap()
+                .unwrap();
+            let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+            let output = json!({
+                "schemaVersion": 1,
+                "summary": format!("phase {phase} complete"),
+                "decisions": [format!("decision {phase}")],
+                "filesTouched": [format!("src/phase-{phase}.rs")],
+                "sourceAgent": "s",
+                "firstRetainedEntryId": pending.first_retained_entry_id,
+                "tokensBefore": pending.tokens_before,
+                "reason": pending.reason.as_str(),
+            });
+            assert!(matches!(
+                CompactionController::handle_output(&db, "s", &output.to_string()).unwrap(),
+                CheckpointOutcome::Completed { .. }
+            ));
+            SessionForest::new(&db)
+                .append(
+                    "s",
+                    EntryKind::UserMessage,
+                    json!({"text": format!("continue after phase {phase}")}),
+                )
+                .unwrap();
+        }
+        let all_entries = store::session_entries(&db, "s").unwrap();
+        assert_eq!(
+            all_entries.iter().filter(|entry| entry.kind == "compaction").count(),
+            3
+        );
+        assert_eq!(all_entries[0].payload["text"], "Keep the durable decision");
+        let branch = SessionForest::new(&db).active_branch("s").unwrap();
+        let projection = ContextProjector::project(&branch, 8_000).unwrap();
+        let restoration = projection.restoration_context.unwrap();
+        assert_eq!(restoration.summary, "phase 3 complete");
+        assert_eq!(
+            restoration.decisions,
+            vec!["decision 1", "decision 2", "decision 3"]
+        );
+        assert!(projection
+            .render_entries
+            .iter()
+            .any(|entry| entry.payload["text"] == "continue after phase 3"));
+    }
 }
