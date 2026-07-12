@@ -1,41 +1,204 @@
-import { AlertTriangle, Bot, Check, ChevronRight, Circle, CornerDownRight, FileDiff, FileText, GitFork, LoaderCircle, LockKeyhole, Search, Sparkles, TerminalSquare, Wrench, X } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, GitFork, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { reduceConversation, type ConversationItem } from "../conversation";
 import type { AgentEvent, Session } from "../types";
+import { Markdown } from "./Markdown";
 
-export function AgentConversation({ session, events, onResolve }: { session?: Session; events: AgentEvent[]; onResolve: (eventId:number,decision:string)=>void }) {
+// Codex-style conversation: prose messages, quiet collapsible thinking, and
+// consecutive tool work folded into activity groups ("Edited files, read
+// files, ran commands") that expand into per-action rows.
+
+type Rendered =
+  | { kind: "item"; item: ConversationItem }
+  | { kind: "group"; key: string; items: ConversationItem[] };
+
+const GROUPABLE = new Set(["activity", "diff", "artifact"]);
+
+function groupItems(items: ConversationItem[]): Rendered[] {
+  const out: Rendered[] = [];
+  for (const item of items) {
+    if (GROUPABLE.has(item.type)) {
+      const last = out[out.length - 1];
+      if (last?.kind === "group") { last.items.push(item); continue; }
+      out.push({ kind: "group", key: `group-${item.key}`, items: [item] });
+      continue;
+    }
+    out.push({ kind: "item", item });
+  }
+  return out;
+}
+
+type ActionVerb = "edit" | "read" | "run" | "search" | "tool";
+
+function verbOf(item: ConversationItem): ActionVerb {
+  const dataType = String(item.data.type ?? "");
+  if (item.type === "diff" || dataType.includes("patch") || dataType.includes("fileChange")) return "edit";
+  if (dataType === "readFile" || /^read /i.test(item.title ?? "")) return "read";
+  if (dataType === "commandExecution" || item.data.command) return "run";
+  if (dataType === "webSearch") return "search";
+  return "tool";
+}
+
+const VERB_ICON: Record<ActionVerb, React.ReactNode> = {
+  edit: <Pencil size={13}/>, read: <FileText size={13}/>, run: <SquareTerminal size={13}/>,
+  search: <Search size={13}/>, tool: <Wrench size={13}/>,
+};
+const VERB_SUMMARY: Record<ActionVerb, string> = {
+  edit: "edited files", read: "read files", run: "ran commands", search: "searched the web", tool: "used tools",
+};
+
+function summarize(items: ConversationItem[]): string {
+  const seen: ActionVerb[] = [];
+  for (const item of items) { const verb = verbOf(item); if (!seen.includes(verb)) seen.push(verb); }
+  const parts = seen.map(verb => VERB_SUMMARY[verb]);
+  const text = parts.join(", ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function actionLabel(item: ConversationItem): { label: string; meta?: React.ReactNode } {
+  const verb = verbOf(item);
+  const additions = Number(item.data.additions ?? NaN);
+  const deletions = Number(item.data.deletions ?? NaN);
+  const durationMs = Number(item.data.durationMs ?? NaN);
+  if (verb === "edit") {
+    const file = item.title || String(item.data.path ?? "files");
+    return { label: `Edited ${file}`, meta: Number.isFinite(additions) ? <span className="dstat"><b className="add">+{additions}</b> <b className="del">−{deletions}</b></span> : undefined };
+  }
+  if (verb === "run") {
+    const command = String(item.data.command ?? item.title ?? "command");
+    return { label: `Ran ${command}`, meta: Number.isFinite(durationMs) ? <span>{Math.round(durationMs / 1000) || 1}s</span> : undefined };
+  }
+  if (verb === "read") return { label: item.title || `Read ${String(item.data.path ?? "file")}` };
+  if (verb === "search") return { label: item.title || "Searched the web" };
+  return { label: item.title || "Used a tool" };
+}
+
+export function AgentConversation({ session, events, onResolve, preview }: { session?: Session; events: AgentEvent[]; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
   const items = reduceConversation(events);
-  if (!session) return <div className="conversation-empty"><Bot size={24}/><h2>Choose a structured agent</h2><p>Harness adapters turn their native event streams into one Bridge conversation protocol.</p></div>;
-  if (!items.length) return <div className="conversation-empty"><div className={`harness-icon ${session.harness}`}><Bot size={15}/></div><h2>What should we build?</h2><p>{session.label} is ready on GPT Luna. Describe the work—Bridge owns harness routing so you never pick Claude vs Codex.</p><div className="primitive-row"><span>MESSAGES</span><span>TOOLS</span><span>PLANS</span><span>APPROVALS</span><span>DIFFS</span></div></div>;
-  return <div className="conversation-scroll"><div className="adapter-banner"><Sparkles size={12}/><span>{session.label} · STRUCTURED ADAPTER</span><i/>Protocol v1</div>{items.map(item=><ConversationItemView key={item.key} item={item} onResolve={onResolve}/>)}</div>;
+  if (!session && !preview) return <Empty title="No agent yet" copy="Open a workspace and Bridge starts the orchestrator for you."/>;
+  if (!items.length) return <Empty title="What should we build?" copy={`${session?.label ?? "The orchestrator"} is ready. Describe the work — Bridge routes it to the right harness and model.`}/>;
+  return <div className="conversation-scroll">
+    <div className="conversation-col">
+      {preview && <div className="preview-chip">Design preview — sample conversation</div>}
+      {groupItems(items).map(entry => entry.kind === "group"
+        ? <ActivityGroup key={entry.key} items={entry.items}/>
+        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve}/>)}
+    </div>
+  </div>;
 }
 
-function ConversationItemView({ item, onResolve }: { item: ConversationItem; onResolve:(eventId:number,decision:string)=>void }) {
-  if (item.type === "message") return <article className={`chat-message ${item.role ?? "assistant"}`}><div className="message-author">{item.role === "user" ? "YOU" : "BRIDGE AGENT"}{item.status === "streaming" && <LoaderCircle className="spin" size={11}/>}</div><div className="message-text">{item.text}</div></article>;
-  if (item.type === "reasoning") {
-    if (!item.text?.trim() && !stringList(item.data.summary).trim()) return null;
-    return <details className="reasoning-card"><summary><Sparkles size={13}/><span>Reasoning</span><small>{item.status === "streaming" ? "thinking…" : "summary"}</small><ChevronRight size={13}/></summary><div>{item.text || stringList(item.data.summary)}</div></details>;
-  }
-  if (item.type === "plan") return <article className="plan-card"><header><FileText size={14}/><div><b>{item.title || "Plan"}</b><small>LIVE PLAN</small></div></header>{planSteps(item.data).map((step,index)=><div className="plan-step" key={`${step.step}-${index}`}>{step.status === "completed" ? <Check size={12}/> : step.status === "inProgress" ? <LoaderCircle className="spin" size={12}/> : <Circle size={9}/>}<span>{step.step}</span><small>{step.status}</small></div>)}</article>;
-  if (item.type === "approval") return <article className="approval-card"><header><LockKeyhole size={15}/><div><b>{item.title}</b><small>NEEDS YOUR DECISION</small></div></header>{item.text && <p>{item.text}</p>}<ApprovalDetails data={item.data}/>{item.status === "pending" ? <div className="approval-actions"><button onClick={()=>onResolve(item.eventId,"decline")}><X size={12}/> Decline</button><button onClick={()=>onResolve(item.eventId,"acceptForSession")}>Allow for session</button><button className="approve" onClick={()=>onResolve(item.eventId,"accept")}><Check size={12}/> Allow once</button></div> : <div className="approval-resolved"><Check size={12}/> Resolved · {item.status}</div>}</article>;
-  if (item.type === "error") return <article className="error-card"><AlertTriangle size={15}/><div><b>Agent error</b><p>{item.text || "The adapter reported an error."}</p></div></article>;
-  if (item.type === "delegation") {
-    const isResult = "delivered" in item.data;
-    const model = item.data.modelLabel ?? item.data.model;
-    const effort = item.data.effort;
-    return <article className={`delegation-card ${isResult ? "result" : "spawn"}`}><header>{isResult ? <CornerDownRight size={14}/> : <GitFork size={14}/>}<div><small>{isResult ? "WORKER RESULT" : "DELEGATION"}</small><b>{item.title || (isResult ? "Worker result" : "Delegated task")}</b></div>{model ? <em>{String(model)}{effort ? ` · ${String(effort)}` : ""}</em> : null}</header>{item.text && <p>{item.text}</p>}</article>;
-  }
-  if (item.type === "diff") return <ActivityCard item={item} icon={<FileDiff size={14}/>} label="FILE CHANGES"/>;
-  if (item.type === "artifact") return <ActivityCard item={item} icon={<FileText size={14}/>} label="ARTIFACT"/>;
-  const isCommand = item.data.type === "commandExecution" || item.title?.includes("/");
-  return <ActivityCard item={item} icon={isCommand?<TerminalSquare size={14}/>:item.data.type === "webSearch"?<Search size={14}/>:<Wrench size={14}/>} label={isCommand?"COMMAND":"TOOL"}/>;
+function Empty({ title, copy }: { title: string; copy: string }) {
+  return <div className="conversation-empty"><Bot size={22}/><h2>{title}</h2><p>{copy}</p></div>;
 }
 
-function ActivityCard({item,icon,label}:{item:ConversationItem;icon:React.ReactNode;label:string}) {
+function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
+  if (item.type === "message") {
+    if (item.role === "user") return <div className="user-turn"><div className="user-bubble">{item.text}</div></div>;
+    return <div className="agent-prose">{item.status === "streaming" && !item.text.trim() ? <span className="thinking-line shimmer">Working…</span> : <Markdown text={item.text}/>}</div>;
+  }
+  if (item.type === "reasoning") return <Reasoning item={item}/>;
+  if (item.type === "plan") return <PlanCard item={item}/>;
+  if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
+  if (item.type === "delegation") return <DelegationRow item={item}/>;
+  if (item.type === "error") return <div className="error-row"><AlertTriangle size={14}/><div><b>Agent error</b><p>{item.text || "The adapter reported an error."}</p></div></div>;
+  return <ActivityGroup items={[item]}/>;
+}
+
+function Reasoning({ item }: { item: ConversationItem }) {
+  const streaming = item.status === "streaming";
+  const text = item.text || stringList(item.data.summary);
+  if (streaming) return <div className="thinking-live"><span className="thinking-line shimmer">{lastLine(text) || "Thinking…"}</span></div>;
+  return <details className="thinking">
+    <summary><ChevronRight size={12} className="chev"/>Thought for a moment</summary>
+    <div className="thinking-body"><Markdown text={text}/></div>
+  </details>;
+}
+
+function ActivityGroup({ items }: { items: ConversationItem[] }) {
+  const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
+  const [open, setOpen] = useState(false);
+  const expanded = open || live;
+  return <div className={`activity-group ${expanded ? "open" : ""}`}>
+    <button className="activity-summary" onClick={() => setOpen(value => !value)}>
+      {live ? <LoaderCircle size={13} className="spin"/> : <Pencil size={13}/>}
+      <span>{summarize(items)}</span>
+      <ChevronDown size={13} className="chev"/>
+    </button>
+    {expanded && <div className="activity-list">
+      {items.map(item => <ActionRow key={item.key} item={item}/>)}
+    </div>}
+  </div>;
+}
+
+function ActionRow({ item }: { item: ConversationItem }) {
+  const [open, setOpen] = useState(false);
   const output = String(item.data.aggregatedOutput ?? item.data.output ?? "");
-  return <article className="activity-card"><header><span>{icon}</span><div><small>{label}</small><b>{item.title || readableType(String(item.data.type ?? "activity"))}</b></div><em className={item.status}>{item.status ?? "complete"}</em></header>{item.text && <p>{item.text}</p>}{item.data.cwd ? <code>{String(item.data.cwd)}</code>:null}{output && <pre>{output.slice(-4000)}</pre>}</article>;
+  const live = item.status === "inProgress" || item.status === "streaming";
+  const { label, meta } = actionLabel(item);
+  return <div className="action-line">
+    <button className="action-head" onClick={() => output && setOpen(value => !value)} data-expandable={!!output}>
+      <span className="action-icon">{live ? <LoaderCircle size={12} className="spin"/> : VERB_ICON[verbOf(item)]}</span>
+      <span className="action-label">{label}</span>
+      {meta && <span className="action-meta">{meta}</span>}
+      {output && <ChevronRight size={12} className={`chev ${open ? "down" : ""}`}/>}
+    </button>
+    {open && output && <pre className="action-output">{output.slice(-4000)}</pre>}
+  </div>;
 }
 
-function ApprovalDetails({data}:{data:Record<string,unknown>}) { return <div className="approval-details">{data.command ? <><label>COMMAND</label><code>{String(data.command)}</code></>:null}{data.cwd ? <><label>WORKING DIRECTORY</label><code>{String(data.cwd)}</code></>:null}</div>; }
-function readableType(value:string){return value.replace(/([a-z])([A-Z])/g,"$1 $2").replaceAll("_"," ");}
-function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}
-function planSteps(data:Record<string,unknown>):Array<{step:string;status:string}>{return Array.isArray(data.plan)?data.plan.filter((v):v is {step:string;status:string}=>!!v&&typeof v==="object"&&"step" in v&&"status" in v):[];}
+function PlanCard({ item }: { item: ConversationItem }) {
+  return <div className="plan-card">
+    <header><FileText size={13}/><b>{item.title || "Plan"}</b></header>
+    {planSteps(item.data).map((step, index) => <div className={`plan-step ${step.status}`} key={`${step.step}-${index}`}>
+      {step.status === "completed" ? <Check size={12}/> : step.status === "inProgress" ? <LoaderCircle className="spin" size={12}/> : <Circle size={8}/>}
+      <span>{step.step}</span>
+    </div>)}
+  </div>;
+}
+
+function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
+  return <div className="approval">
+    <header><b>{item.title || "Approval needed"}</b><small>waiting for you</small></header>
+    {item.text && <p>{item.text}</p>}
+    {item.data.command ? <code>{String(item.data.command)}</code> : null}
+    {item.data.cwd ? <small className="approval-cwd">{String(item.data.cwd)}</small> : null}
+    {item.status === "pending"
+      ? <div className="approval-actions">
+          <button onClick={() => onResolve(item.eventId, "decline")}><X size={12}/> Decline</button>
+          <button onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>
+          <button className="approve" onClick={() => onResolve(item.eventId, "accept")}><Check size={12}/> Allow once</button>
+        </div>
+      : <div className="approval-resolved"><Check size={12}/> {item.status}</div>}
+  </div>;
+}
+
+function DelegationRow({ item }: { item: ConversationItem }) {
+  const isResult = "delivered" in item.data;
+  const model = String(item.data.modelLabel ?? item.data.model ?? "");
+  const effort = item.data.effort ? String(item.data.effort) : "";
+  const [open, setOpen] = useState(false);
+  return <div className={`delegation ${isResult ? "result" : ""}`}>
+    <button className="delegation-head" onClick={() => item.text && setOpen(value => !value)}>
+      {isResult ? <CornerDownRight size={13}/> : <GitFork size={13}/>}
+      <span>{isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b> · {item.title}</b>}</span>
+      {model && <em>{model}{effort ? ` · ${effort}` : ""}</em>}
+      {item.text && <ChevronRight size={12} className={`chev ${open ? "down" : ""}`}/>}
+    </button>
+    {open && item.text && <div className="delegation-body"><Markdown text={item.text}/></div>}
+  </div>;
+}
+
+function titleAddsInfo(item: ConversationItem, isResult: boolean): boolean {
+  const title = (item.title ?? "").trim();
+  if (!title) return false;
+  return isResult ? !/^worker result$/i.test(title) : true;
+}
+
+function lastLine(text: string): string {
+  const lines = text.trim().split("\n").filter(Boolean);
+  return lines[lines.length - 1] ?? "";
+}
+function stringList(value: unknown) { return Array.isArray(value) ? value.join("\n") : ""; }
+function planSteps(data: Record<string, unknown>): Array<{ step: string; status: string }> {
+  return Array.isArray(data.plan) ? data.plan.filter((v): v is { step: string; status: string } => !!v && typeof v === "object" && "step" in v && "status" in v) : [];
+}

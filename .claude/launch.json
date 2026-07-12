@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bridge-web-preview",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "dev", "--", "--port", "1468", "--strictPort"],
+      "port": 1468
+    }
+  ]
+}

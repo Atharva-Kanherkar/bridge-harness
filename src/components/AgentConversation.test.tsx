@@ -13,7 +13,6 @@ describe("AgentConversation", () => {
       event(2, "plan.updated", { title: "Plan", data: { plan: [{ step: "Render GUI", status: "completed" }] } }),
       event(3, "approval.requested", { title: "Approve command", status: "pending", data: { command: "bun test" } })
     ]}/>);
-    expect(html).toContain("STRUCTURED ADAPTER");
     expect(html).toContain("Structured response");
     expect(html).toContain("Approve command");
     expect(html).not.toContain("terminal-host");
