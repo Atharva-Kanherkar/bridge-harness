@@ -16,13 +16,6 @@ impl Harness {
             Self::Shell => "Shell",
         }
     }
-    pub fn command(&self) -> (&'static str, Vec<&'static str>) {
-        match self {
-            Self::Claude => ("claude", vec![]),
-            Self::Codex => ("codex", vec![]),
-            Self::Shell => ("zsh", vec!["-l"]),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

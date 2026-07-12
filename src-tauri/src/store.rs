@@ -138,6 +138,7 @@ pub fn agent_event(
     event: &crate::agent::NormalizedEvent,
     provider_meta: &serde_json::Value,
 ) -> Result<AgentEvent, BridgeError> {
+    event.validate().map_err(BridgeError::Invalid)?;
     let sequence: i64 = db.query_row(
         "SELECT COALESCE(MAX(sequence),0)+1 FROM agent_events WHERE session_id=?1",
         params![session_id],

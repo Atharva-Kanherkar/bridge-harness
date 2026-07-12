@@ -1,4 +1,4 @@
-use crate::BridgeError;
+use crate::{adapters::AdapterRuntime, BridgeError};
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -102,6 +102,28 @@ impl CodexRuntime {
             &self.writer,
             &json!({"method":method,"id":id,"params":params}),
         )
+    }
+}
+
+impl AdapterRuntime for CodexRuntime {
+    fn provider_session_id(&self) -> &str {
+        &self.thread_id
+    }
+    fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+        self.current_turn.clone()
+    }
+    fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+        self.start_turn(text)
+    }
+    fn interrupt(&self) -> Result<(), BridgeError> {
+        CodexRuntime::interrupt(self)
+    }
+    fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
+        CodexRuntime::respond(self, request_id, decision)
+    }
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

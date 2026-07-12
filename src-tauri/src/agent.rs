@@ -23,6 +23,20 @@ impl NormalizedEvent {
             data: json!({}),
         }
     }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.kind.trim().is_empty() {
+            return Err("normalized event kind cannot be empty".into());
+        }
+        if let Some(role) = &self.role {
+            if !matches!(role.as_str(), "user" | "assistant" | "system" | "tool") {
+                return Err(format!("unsupported normalized role: {role}"));
+            }
+        }
+        if !self.data.is_object() && !self.data.is_array() {
+            return Err("normalized event data must be structured JSON".into());
+        }
+        Ok(())
+    }
 }
 
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
@@ -70,6 +84,32 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            vec![event]
+        }
+        "item/commandExecution/outputDelta" => {
+            let mut event = with_data("command.output_delta", &params, params.clone());
+            event.text = params
+                .get("delta")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            event.status = Some("inProgress".into());
+            vec![event]
+        }
+        "item/fileChange/outputDelta" => {
+            let mut event = with_data("diff.delta", &params, params.clone());
+            event.text = params
+                .get("delta")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            vec![event]
+        }
+        "item/mcpToolCall/progress" => {
+            let mut event = with_data("tool.progress", &params, params.clone());
+            event.text = params
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            event.status = Some("inProgress".into());
             vec![event]
         }
         "turn/plan/updated" => {
@@ -248,5 +288,22 @@ mod tests {
         assert_eq!(event.kind, "approval.requested");
         assert_eq!(event.data["requestId"], 42);
         assert_eq!(event.status.as_deref(), Some("pending"));
+    }
+    #[test]
+    fn rejects_invalid_normalized_roles() {
+        let mut event = NormalizedEvent::new("message.completed");
+        event.role = Some("provider-special-role".into());
+        assert!(event
+            .validate()
+            .unwrap_err()
+            .contains("unsupported normalized role"));
+    }
+    #[test]
+    fn normalizes_command_output_delta() {
+        let events = normalize_codex_message(
+            &json!({"method":"item/commandExecution/outputDelta","params":{"itemId":"c1","delta":"ok\n"}}),
+        );
+        assert_eq!(events[0].kind, "command.output_delta");
+        assert_eq!(events[0].text.as_deref(), Some("ok\n"));
     }
 }

@@ -2,46 +2,33 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { bridgeApi } from "../api";
-import type { Session } from "../types";
 
 const scrollback = new Map<string, string>();
 
-export function TerminalPane({ session }: { session?: Session }) {
+export function TerminalPane({ workspaceId }: { workspaceId?: string }) {
   const host = useRef<HTMLDivElement>(null);
-  const terminal = useRef<Terminal>();
 
   useEffect(() => {
-    if (!host.current) return;
+    if (!host.current || !workspaceId) return;
     const term = new Terminal({
       fontFamily: "'SFMono-Regular', 'SF Mono', Menlo, monospace", fontSize: 13, lineHeight: 1.42,
       cursorBlink: true, cursorStyle: "bar", convertEol: true,
       theme: { background: "#0b0d0f", foreground: "#c7cbc7", cursor: "#d8ff63", selectionBackground: "#384122", black: "#111315", brightBlack: "#606660", green: "#a8c751", brightGreen: "#d8ff63", yellow: "#d9b861", blue: "#78a9d1", cyan: "#74b8ad", white: "#c7cbc7", brightWhite: "#f0f2ee" }
     });
-    const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit(); terminal.current = term;
-    if (!session) {
-      term.writeln("\x1b[90m  Select a workspace to open its session.\x1b[0m");
-    } else if (scrollback.has(session.id)) {
-      term.write(scrollback.get(session.id)!);
-    } else if (!("__TAURI_INTERNALS__" in window)) {
-      term.writeln(`\x1b[90m╭─ \x1b[32m${session.label}\x1b[90m · supervised session\x1b[0m`);
-      term.writeln("\x1b[90m│\x1b[0m I’m implementing the session supervisor and event ledger now.");
-      term.writeln("\x1b[90m│\x1b[0m");
-      term.writeln("\x1b[90m│\x1b[0m \x1b[32m✓\x1b[0m Added typed workspace lifecycle");
-      term.writeln("\x1b[90m│\x1b[0m \x1b[32m✓\x1b[0m Wired PTY output to the Deck");
-      term.writeln("\x1b[90m│\x1b[0m \x1b[33m◆\x1b[0m Running integration tests…");
-      term.writeln("\x1b[90m╰─\x1b[0m");
-    }
-    const data = term.onData(value => { if (session) void bridgeApi.writeSession(session.id, value); });
-    const resize = new ResizeObserver(() => { fit.fit(); if (session) void bridgeApi.resizeSession(session.id, term.rows, term.cols); });
-    resize.observe(host.current);
+    const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
+    const previous = scrollback.get(workspaceId); if (previous) term.write(previous);
+    else if (!("__TAURI_INTERNALS__" in window)) term.writeln("\x1b[90mBridge workspace shell · terminal is isolated from the agent conversation.\x1b[0m\r\n$ ");
+    void bridgeApi.openTerminal(workspaceId).catch(error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`));
+    const data = term.onData(value => void bridgeApi.writeTerminal(workspaceId, value));
+    const resize = new ResizeObserver(() => { fit.fit(); void bridgeApi.resizeTerminal(workspaceId, term.rows, term.cols); }); resize.observe(host.current);
     let unlisten: (() => void) | undefined;
     void bridgeApi.onTerminal(chunk => {
-      const buffered = `${scrollback.get(chunk.sessionId) ?? ""}${chunk.data}`;
-      scrollback.set(chunk.sessionId, buffered.slice(-1_000_000));
-      if (chunk.sessionId === session?.id) term.write(chunk.data);
+      const buffered = `${scrollback.get(chunk.sessionId) ?? ""}${chunk.data}`; scrollback.set(chunk.sessionId, buffered.slice(-1_000_000));
+      if (chunk.sessionId === workspaceId) term.write(chunk.data);
     }).then(fn => { unlisten = fn; });
-    return () => { unlisten?.(); resize.disconnect(); data.dispose(); term.dispose(); terminal.current = undefined; };
-  }, [session?.id]);
+    return () => { unlisten?.(); resize.disconnect(); data.dispose(); term.dispose(); };
+  }, [workspaceId]);
 
-  return <div className="terminal-host" ref={host} aria-label="Live agent terminal" />;
+  if (!workspaceId) return <div className="terminal-empty">Select a workspace to open its shell.</div>;
+  return <div className="terminal-host" ref={host} aria-label="Workspace terminal" />;
 }
