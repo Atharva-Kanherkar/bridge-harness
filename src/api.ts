@@ -191,6 +191,10 @@ export const bridgeApi = {
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();
   },
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? listen<TerminalChunk>("session-output", event => handler(event.payload)) : () => undefined,
+  onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return listen<AgentEvent>("agent-event", event => handler(event.payload)); 
+    return () => undefined;
+  },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return listen("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
   }

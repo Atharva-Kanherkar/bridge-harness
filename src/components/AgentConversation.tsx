@@ -81,12 +81,23 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
 }
 
 export function AgentConversation({ session, events = [], forestEntries, activeLeafId, onResolve, preview }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
-  const items = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : reduceConversation(events);
+  const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
+  const liveItems = reduceConversation(events);
+  
+  // Merge live streaming items that aren't yet in the durable forest
+  const items = [...durableItems];
+  const durableIds = new Set(durableItems.map(item => item.eventId));
+  for (const live of liveItems) {
+    if (!durableIds.has(live.eventId)) {
+      items.push(live);
+    }
+  }
+
   if (!session && !preview) return <Empty title="No agent yet" copy="Open a workspace and Bridge starts the orchestrator for you."/>;
   if (!items.length) return <Empty title="What should we build?" copy={`${session?.label ?? "The orchestrator"} is ready. Describe the work — Bridge routes it to the right harness and model.`}/>;
-  return <div className="conversation-scroll">
-    <div className="conversation-col">
-      {preview && <div className="preview-chip">Design preview — sample conversation</div>}
+  return <div className="absolute inset-0 overflow-y-auto px-8 pt-[26px] pb-[30px] scrollbar-thin scrollbar-thumb-foreground/10">
+    <div className="max-w-[760px] mx-auto">
+      {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
       {groupItems(items).map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
@@ -96,13 +107,13 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
 }
 
 function Empty({ title, copy }: { title: string; copy: string }) {
-  return <div className="conversation-empty"><Bot size={22}/><h2>{title}</h2><p>{copy}</p></div>;
+  return <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-muted-foreground"><Bot size={22} aria-hidden="true" /><h2 className="my-3 text-muted-foreground font-semibold text-[14.5px]">{title}</h2><p className="max-w-[440px] m-0 text-[12.5px] leading-relaxed">{copy}</p></div>;
 }
 
 function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
   if (item.type === "message") {
-    if (item.role === "user") return <div className="user-turn"><div className="user-bubble">{item.text}</div></div>;
-    return <div className="agent-prose">{item.status === "streaming" && !item.text.trim() ? <span className="thinking-line shimmer">Working…</span> : <Markdown text={item.text}/>}</div>;
+    if (item.role === "user") return <div className="flex justify-end my-[18px]"><div className="max-w-[78%] px-[18px] py-3 rounded-2xl bg-foreground/6 text-foreground text-[13.5px] leading-relaxed whitespace-pre-wrap border-0">{item.text}</div></div>;
+    return <div className="my-[18px] text-muted-foreground text-[14px] leading-[1.7] tracking-[-0.004em]">{item.status === "streaming" && !item.text.trim() ? <span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Working…</span> : <Markdown text={item.text}/>}</div>;
   }
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -110,29 +121,29 @@ function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eve
   if (item.type === "delegation") return <DelegationRow item={item}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
-  if (item.type === "error") return <div className="error-row"><AlertTriangle size={14}/><div><b>Agent error</b><p>{item.text || "The adapter reported an error."}</p></div></div>;
+  if (item.type === "error") return <div className="my-4 flex gap-2.5 p-3 border border-destructive/30 rounded-lg bg-destructive/5 text-destructive-foreground"><AlertTriangle size={14} aria-hidden="true" /><div><b className="text-[12px]">Agent error</b><p className="mt-1 text-destructive-foreground/85 text-[12px] leading-relaxed">{item.text || "The adapter reported an error."}</p></div></div>;
   return <ActivityGroup items={[item]}/>;
 }
 
 function ForestCard({ item }: { item: ConversationItem }) {
   const label = item.type === "checkpoint" ? "Checkpoint" : item.type === "compaction" ? "Context" : "Branch";
-  return <div className={`forest-card ${item.type}`}>
-    <header><GitFork size={13}/><b>{item.title || label}</b><small>{item.status || "durable"}</small></header>
-    {item.text && <p>{item.text}</p>}
-    {item.data.reason ? <code>{String(item.data.reason)}</code> : null}
+  return <div className={`my-2 px-3 py-2.5 border border-border rounded-lg bg-card ${item.type}`}>
+    <header className="flex gap-2 items-center"><GitFork size={13} aria-hidden="true" /><b>{item.title || label}</b><small className="ml-auto text-muted-foreground">{item.status || "durable"}</small></header>
+    {item.text && <p className="mt-2 text-muted-foreground text-[12px]">{item.text}</p>}
+    {item.data.reason ? <code className="inline-block mt-2 text-[10px]">{String(item.data.reason)}</code> : null}
   </div>;
 }
 
 function RawEvent({ item }: { item: ConversationItem }) {
-  return <details className="raw-event">
-    <summary><SquareTerminal size={12}/>{item.title || "Raw provider event"}<small>inspect</small></summary>
-    <pre>{JSON.stringify(item.data, null, 2)}</pre>
+  return <details className="my-2 p-2 border border-border rounded-lg bg-card group [&_summary::-webkit-details-marker]:hidden">
+    <summary className="flex items-center gap-[7px] cursor-pointer text-[11px] text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} aria-hidden="true" /><span className="flex-1">{item.title || "Raw provider event"}</span><small className="text-muted-foreground group-open:hidden">inspect</small></summary>
+    <pre className="max-h-[220px] overflow-auto mt-1.5 p-2 rounded-md bg-background text-[10px] whitespace-pre-wrap">{JSON.stringify(item.data, null, 2)}</pre>
   </details>;
 }
 
 function RawEventGroup({ items }: { items: ConversationItem[] }) {
-  return <details className="raw-event raw-group">
-    <summary><SquareTerminal size={12}/>{items.length} raw provider event{items.length === 1 ? "" : "s"}<small>inspect</small></summary>
+  return <details className="my-2 p-2 border border-border rounded-lg bg-card group [&_summary::-webkit-details-marker]:hidden">
+    <summary className="flex items-center gap-[7px] cursor-pointer text-[11px] text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} aria-hidden="true" /><span className="flex-1">{items.length} raw provider event{items.length === 1 ? "" : "s"}</span><small className="text-muted-foreground group-open:hidden">inspect</small></summary>
     <div>{items.map(item => <RawEvent key={item.key} item={item}/>)}</div>
   </details>;
 }
@@ -140,10 +151,10 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
 function Reasoning({ item }: { item: ConversationItem }) {
   const streaming = item.status === "streaming";
   const text = item.text || stringList(item.data.summary);
-  if (streaming) return <div className="thinking-live"><span className="thinking-line shimmer">{lastLine(text) || "Thinking…"}</span></div>;
-  return <details className="thinking">
-    <summary><ChevronRight size={12} className="chev"/>Thought for a moment</summary>
-    <div className="thinking-body"><Markdown text={text}/></div>
+  if (streaming) return <div className="my-4 flex items-center gap-[9px] before:content-[''] before:w-[7px] before:h-[7px] before:rounded-full before:bg-muted-foreground/50 before:animate-[thinking-pulse_1.6s_ease-in-out_infinite]"><span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">{lastLine(text) || "Thinking…"}</span></div>;
+  return <details className="my-[15px] group [&_summary::-webkit-details-marker]:hidden">
+    <summary className="inline-flex items-center gap-2 text-muted-foreground text-[13px] py-1 cursor-pointer transition-colors hover:text-foreground"><ChevronRight size={12} className="text-muted-foreground/70 transition-transform group-open:rotate-90" aria-hidden="true" />Thought for a moment</summary>
+    <div className="mt-2 pl-[15px] border-l-[1.5px] border-border text-muted-foreground text-[12.5px] leading-relaxed"><Markdown text={text}/></div>
   </details>;
 }
 
@@ -151,13 +162,13 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
   const [open, setOpen] = useState(false);
   const expanded = open || live;
-  return <div className={`activity-group ${expanded ? "open" : ""}`}>
-    <button className="activity-summary" onClick={() => setOpen(value => !value)}>
-      {live ? <LoaderCircle size={13} className="spin"/> : <Pencil size={13}/>}
+  return <div className="my-3">
+    <button className="inline-flex items-center gap-[9px] text-muted-foreground text-[12px] py-1 text-left transition-colors hover:text-foreground group" onClick={() => setOpen(value => !value)}>
+      {live ? <LoaderCircle size={13} className="animate-spin text-muted-foreground/70" aria-hidden="true" /> : <Pencil size={13} className="text-muted-foreground/70" aria-hidden="true" />}
       <span>{summarize(items)}</span>
-      <ChevronDown size={13} className="chev"/>
+      <ChevronDown size={13} className={`text-muted-foreground/70 transition-transform opacity-70 ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
-    {expanded && <div className="activity-list">
+    {expanded && <div className="mt-[5px] pl-[21px] border-l border-border/50 grid gap-[1px]">
       {items.map(item => <ActionRow key={item.key} item={item}/>)}
     </div>}
   </div>;
@@ -168,40 +179,40 @@ function ActionRow({ item }: { item: ConversationItem }) {
   const output = String(item.data.aggregatedOutput ?? item.data.output ?? "");
   const live = item.status === "inProgress" || item.status === "streaming";
   const { label, meta } = actionLabel(item);
-  return <div className="action-line">
-    <button className="action-head" onClick={() => output && setOpen(value => !value)} data-expandable={!!output}>
-      <span className="action-icon">{live ? <LoaderCircle size={12} className="spin"/> : VERB_ICON[verbOf(item)]}</span>
-      <span className="action-label">{label}</span>
-      {meta && <span className="action-meta">{meta}</span>}
-      {output && <ChevronRight size={12} className={`chev ${open ? "down" : ""}`}/>}
+  return <div className="min-w-0">
+    <button className="w-full flex items-center gap-[9px] min-h-[26px] py-1 pr-2 rounded-md text-left text-muted-foreground text-[12px] hover:text-foreground disabled:hover:text-muted-foreground transition-colors" disabled={!output} onClick={() => output && setOpen(value => !value)}>
+      <span className="flex-none grid place-items-center text-muted-foreground/70">{live ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : VERB_ICON[verbOf(item)]}</span>
+      <span className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis font-mono text-[11.5px]">{label}</span>
+      {meta && <span className="flex-none text-muted-foreground/70 font-mono text-[10.5px]">{meta}</span>}
+      {output && <ChevronRight size={12} className={`flex-none text-muted-foreground/70 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
     </button>
-    {open && output && <pre className="action-output">{output.slice(-4000)}</pre>}
+    {open && output && <pre className="mt-[3px] mb-2 ml-[25px] p-2.5 max-h-[260px] overflow-auto border border-border rounded-xl bg-code text-muted-foreground font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap scrollbar-thin scrollbar-thumb-foreground/10">{output.slice(-4000)}</pre>}
   </div>;
 }
 
 function PlanCard({ item }: { item: ConversationItem }) {
-  return <div className="plan-card">
-    <header><FileText size={13}/><b>{item.title || "Plan"}</b></header>
-    {planSteps(item.data).map((step, index) => <div className={`plan-step ${step.status}`} key={`${step.step}-${index}`}>
-      {step.status === "completed" ? <Check size={12}/> : step.status === "inProgress" ? <LoaderCircle className="spin" size={12}/> : <Circle size={8}/>}
+  return <div className="my-[14px] border border-border rounded-lg bg-card overflow-hidden">
+    <header className="flex items-center gap-2 p-[10px_13px] border-b border-border text-muted-foreground"><FileText size={13} aria-hidden="true" /><b className="text-[12px] font-medium text-foreground">{item.title || "Plan"}</b></header>
+    {planSteps(item.data).map((step, index) => <div className={`min-h-[30px] flex items-center gap-[9px] py-[2px] px-[13px] text-[12.5px] ${step.status === "completed" ? "text-muted-foreground/60 line-through decoration-border" : step.status === "inProgress" ? "text-foreground" : "text-muted-foreground"}`} key={`${step.step}-${index}`}>
+      {step.status === "completed" ? <Check size={12} className="flex-none text-muted-foreground/60" aria-hidden="true" /> : step.status === "inProgress" ? <LoaderCircle className="animate-spin flex-none" size={12} aria-hidden="true" /> : <Circle size={8} className="flex-none text-muted-foreground/60" aria-hidden="true" />}
       <span>{step.step}</span>
     </div>)}
   </div>;
 }
 
 function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
-  return <div className="approval">
-    <header><b>{item.title || "Approval needed"}</b><small>waiting for you</small></header>
-    {item.text && <p>{item.text}</p>}
-    {item.data.command ? <code>{String(item.data.command)}</code> : null}
-    {item.data.cwd ? <small className="approval-cwd">{String(item.data.cwd)}</small> : null}
+  return <div className="my-4 border border-warning/30 rounded-lg bg-warning/5 overflow-hidden">
+    <header className="flex items-baseline gap-[9px] pt-3 px-[15px]"><b className="text-[13px] font-semibold text-foreground">{item.title || "Approval needed"}</b><small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small></header>
+    {item.text && <p className="mt-1.5 px-[15px] text-muted-foreground text-[12.5px] leading-relaxed">{item.text}</p>}
+    {item.data.command ? <code className="block mt-2.5 mx-[15px] p-[9px_11px] border border-border rounded-md bg-background text-code-foreground font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap">{String(item.data.command)}</code> : null}
+    {item.data.cwd ? <small className="block pt-1.5 px-[15px] text-muted-foreground/70 font-mono text-[10.5px]">{String(item.data.cwd)}</small> : null}
     {item.status === "pending"
-      ? <div className="approval-actions">
-          <button onClick={() => onResolve(item.eventId, "decline")}><X size={12}/> Decline</button>
-          <button onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>
-          <button className="approve" onClick={() => onResolve(item.eventId, "accept")}><Check size={12}/> Allow once</button>
+      ? <div className="flex justify-end gap-[7px] p-[12px_13px]">
+          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-muted-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "decline")}><X size={12} aria-hidden="true" /> Decline</button>
+          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>
+          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors" onClick={() => onResolve(item.eventId, "accept")}><Check size={12} aria-hidden="true" /> Allow once</button>
         </div>
-      : <div className="approval-resolved"><Check size={12}/> {item.status}</div>}
+      : <div className="p-[10px_15px_12px] flex items-center gap-1.5 text-muted-foreground text-[11.5px]"><Check size={12} aria-hidden="true" /> {item.status}</div>}
   </div>;
 }
 
@@ -210,14 +221,14 @@ function DelegationRow({ item }: { item: ConversationItem }) {
   const model = String(item.data.modelLabel ?? item.data.model ?? "");
   const effort = item.data.effort ? String(item.data.effort) : "";
   const [open, setOpen] = useState(false);
-  return <div className={`delegation ${isResult ? "result" : ""}`}>
-    <button className="delegation-head" onClick={() => item.text && setOpen(value => !value)}>
-      {isResult ? <CornerDownRight size={13}/> : <GitFork size={13}/>}
-      <span>{isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b> · {item.title}</b>}</span>
-      {model && <em>{model}{effort ? ` · ${effort}` : ""}</em>}
-      {item.text && <ChevronRight size={12} className={`chev ${open ? "down" : ""}`}/>}
+  return <div className="my-3">
+    <button className="w-full flex items-center gap-[9px] min-h-[30px] p-[4px_8px] -ml-2 rounded-md text-left text-muted-foreground text-[12.5px] hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
+      {isResult ? <CornerDownRight size={13} aria-hidden="true" /> : <GitFork size={13} aria-hidden="true" />}
+      <span className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis">{isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {item.title}</b>}</span>
+      {model && <em className="flex-none font-mono text-[10px] text-muted-foreground/70 not-italic border border-border rounded px-1.5 py-0.5">{model}{effort ? ` · ${effort}` : ""}</em>}
+      {item.text && <ChevronRight size={12} className={`transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
     </button>
-    {open && item.text && <div className="delegation-body"><Markdown text={item.text}/></div>}
+    {open && item.text && <div className="my-1 ml-[5px] pl-[15px] border-l border-border text-muted-foreground text-[12.5px] leading-relaxed"><Markdown text={item.text}/></div>}
   </div>;
 }
 

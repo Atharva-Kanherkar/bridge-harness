@@ -1048,11 +1048,39 @@ pub fn session_event(
         "data": event.data,
         "providerMeta": provider_meta,
     });
+    let mut final_kind = event.kind.as_str();
+    if final_kind == "message.completed" {
+        final_kind = if event.role.as_deref() == Some("user") {
+            "user.message"
+        } else {
+            "assistant.message"
+        };
+    } else if final_kind == "tool.started" || final_kind == "tool.completed" || final_kind == "approval.requested" || final_kind == "approval.resolved" || final_kind == "delegation.requested" || final_kind == "delegation.approved" || final_kind == "delegation.rejected" || final_kind == "worker.result" {
+        // Keep as is, it maps directly.
+    } else if final_kind.ends_with(".delta") || final_kind.ends_with(".progress") || final_kind == "turn.started" || final_kind == "turn.completed" || final_kind == "usage.updated" || final_kind == "plan.updated" {
+        // Do not store transient or internal events in the immutable forest.
+        return Ok(AgentEvent {
+            id: 0,
+            session_id: session_id.into(),
+            sequence: 0,
+            protocol_version: 1,
+            kind: event.kind.clone(),
+            item_id: event.item_id.clone(),
+            role: event.role.clone(),
+            status: event.status.clone(),
+            title: event.title.clone(),
+            text: event.text.clone(),
+            data: event.data.clone(),
+            provider_meta: provider_meta.clone(),
+            created_at: Utc::now().to_rfc3339(),
+        });
+    }
+
     let entry = append_session_entry_tx(
         &transaction,
         session_id,
         parent_entry_id.as_deref(),
-        &event.kind,
+        final_kind,
         &payload,
         event.item_id.as_deref(),
         "eligible",
