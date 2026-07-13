@@ -4,6 +4,7 @@ export type CapabilityTier = "fast" | "standard" | "strong";
 export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
 export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
 export type ResumeEligibility = "none" | "native" | "checkpoint_restored";
+export type WorkerQueueStatus = "queued" | "blocked_on_human" | "dispatching" | "dispatched" | "expired" | "cancelled" | "rejected" | "dead_letter";
 
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Workspace {
@@ -50,8 +51,9 @@ export interface WorkerRuntimeRecord {
 }
 export interface QueuedWorkerRequest {
   id: string; parentSessionId: string; workspaceId: string; turnId: string;
-  request: Record<string, unknown>; actualModel: string; queueStatus: string; sequence: number;
-  dispatchedSessionId: string | null; createdAt: string; updatedAt: string;
+  request: Record<string, unknown>; actualModel: string; queueStatus: WorkerQueueStatus; sequence: number;
+  dispatchedSessionId: string | null; expiresAt?: string; blockedAt?: string | null;
+  claimedAt?: string | null; lastError?: string | null; createdAt: string; updatedAt: string;
 }
 export interface UsageLedgerRow {
   id: number; workspaceId: string; sessionId: string | null; turnId: string | null;

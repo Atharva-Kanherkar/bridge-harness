@@ -9,7 +9,7 @@ use crate::{
     worker_lifecycle::WorkerLifecycleState,
     BridgeError,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -136,7 +136,7 @@ impl WorkerPool {
                 queue_status: "queued".into(),
                 sequence: 0,
                 dispatched_session_id: None,
-                attempt_count: 0, expires_at, claimed_at: None, last_error: None,
+                attempt_count: 0, expires_at, blocked_at: None, claimed_at: None, last_error: None,
                 created_at: now.clone(),
                 updated_at: now,
             },
@@ -146,11 +146,45 @@ impl WorkerPool {
 
     pub fn maintain_queue(db: &Connection, now: DateTime<Utc>) -> Result<(), BridgeError> {
         let stale_before = (now - Duration::minutes(DISPATCH_LEASE_MINUTES)).to_rfc3339();
-        let now = now.to_rfc3339();
-        db.execute("UPDATE worker_queue SET queue_status='expired',last_error='queue TTL exceeded',updated_at=?1 WHERE queue_status='queued' AND expires_at IS NOT NULL AND expires_at<=?1", rusqlite::params![now])?;
-        db.execute("UPDATE worker_queue SET queue_status='cancelled',last_error='parent session cancelled',updated_at=?1 WHERE queue_status IN ('queued','dispatching') AND parent_session_id IN (SELECT id FROM sessions WHERE status='cancelled')", rusqlite::params![now])?;
-        db.execute("UPDATE worker_queue SET queue_status=CASE WHEN attempt_count>=?1 THEN 'dead_letter' ELSE 'queued' END,attempt_count=attempt_count+1,claimed_at=NULL,last_error='stale dispatch lease expired',updated_at=?2 WHERE queue_status='dispatching' AND claimed_at IS NOT NULL AND claimed_at<=?3", rusqlite::params![MAX_QUEUE_ATTEMPTS,now,stale_before])?;
+        let now_text = now.to_rfc3339();
+        db.execute("UPDATE worker_queue SET queue_status='cancelled',blocked_at=NULL,last_error='parent session cancelled',updated_at=?1 WHERE queue_status IN ('queued','dispatching','blocked_on_human') AND parent_session_id IN (SELECT id FROM sessions WHERE status='cancelled')", rusqlite::params![now_text])?;
+        db.execute("UPDATE worker_queue SET queue_status=CASE WHEN attempt_count>=?1 THEN 'dead_letter' ELSE 'queued' END,attempt_count=attempt_count+1,claimed_at=NULL,last_error='stale dispatch lease expired',updated_at=?2 WHERE queue_status='dispatching' AND claimed_at IS NOT NULL AND claimed_at<=?3", rusqlite::params![MAX_QUEUE_ATTEMPTS,now_text,stale_before])?;
+
+        let pending = {
+            let mut statement = db.prepare("SELECT id,parent_session_id,queue_status,expires_at,blocked_at FROM worker_queue WHERE queue_status IN ('queued','blocked_on_human') ORDER BY sequence")?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?)))?.collect::<Result<Vec<_>,_>>()?;
+            rows
+        };
+        for (id, parent_session_id, queue_status, expires_at, blocked_at) in pending {
+            let human_blocked = Self::has_waiting_ancestor(db, &parent_session_id)?;
+            if queue_status == "queued" && human_blocked {
+                if db.execute("UPDATE worker_queue SET queue_status='blocked_on_human',blocked_at=?2,last_error='waiting for human approval',updated_at=?2 WHERE id=?1 AND queue_status='queued'", rusqlite::params![id,now_text])? == 1 {
+                    store::event(db, "policy", "queue.blocked_on_human", &id, "Queue TTL paused while an ancestor awaits approval")?;
+                }
+            } else if queue_status == "blocked_on_human" && !human_blocked {
+                let blocked_at = blocked_at.ok_or_else(|| BridgeError::Invalid(format!("Human-blocked queue item {id} has no blocked timestamp")))?;
+                let paused_for = now.signed_duration_since(parse_queue_timestamp(&blocked_at)?);
+                let paused_for = if paused_for < Duration::zero() { Duration::zero() } else { paused_for };
+                let adjusted_expiry = (parse_queue_timestamp(&expires_at)? + paused_for).to_rfc3339();
+                if db.execute("UPDATE worker_queue SET queue_status='queued',expires_at=?2,blocked_at=NULL,last_error=NULL,updated_at=?3 WHERE id=?1 AND queue_status='blocked_on_human'", rusqlite::params![id,adjusted_expiry,now_text])? == 1 {
+                    store::event(db, "policy", "queue.released_from_human", &id, &format!("Queue TTL resumed after {} blocked seconds", paused_for.num_seconds()))?;
+                }
+            }
+        }
+        db.execute("UPDATE worker_queue SET queue_status='expired',last_error='queue TTL exceeded',updated_at=?1 WHERE queue_status='queued' AND expires_at IS NOT NULL AND expires_at<=?1", rusqlite::params![now_text])?;
         Ok(())
+    }
+
+    fn has_waiting_ancestor(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+        Ok(db.query_row(
+            "WITH RECURSIVE lineage(id,parent_session_id,status) AS (
+                SELECT id,parent_session_id,status FROM sessions WHERE id=?1
+                UNION ALL
+                SELECT s.id,s.parent_session_id,s.status FROM sessions s JOIN lineage l ON s.id=l.parent_session_id
+             ) SELECT EXISTS(SELECT 1 FROM lineage WHERE status='waiting')",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn expire_warm_workers(
@@ -240,6 +274,13 @@ impl WorkerPool {
         )?;
         Ok(())
     }
+}
+
+fn parse_queue_timestamp(value: &str) -> Result<DateTime<Utc>, BridgeError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").map(|timestamp| timestamp.and_utc()))
+        .map_err(|_| BridgeError::Invalid(format!("Invalid queue timestamp: {value}")))
 }
 
 #[cfg(test)]
@@ -352,7 +393,7 @@ mod tests {
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('active','w','implementation','standard','implementation','[\"src/**\"]','shared','active','now','now')", []).unwrap();
         let directive = request();
         for id in ["q1", "q2"] {
-            store::enqueue_worker_request(&db, &QueuedWorkerRequest { id:id.into(), parent_session_id:"parent".into(), workspace_id:"w".into(), turn_id:"turn".into(), request:serde_json::to_value(&directive).unwrap(), actual_model:"model".into(), queue_status:"queued".into(), sequence:0, dispatched_session_id:None, attempt_count:0, expires_at:"2099-01-01T00:00:00+00:00".into(), claimed_at:None, last_error:None, created_at:"now".into(), updated_at:"now".into() }).unwrap();
+            store::enqueue_worker_request(&db, &QueuedWorkerRequest { id:id.into(), parent_session_id:"parent".into(), workspace_id:"w".into(), turn_id:"turn".into(), request:serde_json::to_value(&directive).unwrap(), actual_model:"model".into(), queue_status:"queued".into(), sequence:0, dispatched_session_id:None, attempt_count:0, expires_at:"2099-01-01T00:00:00+00:00".into(), blocked_at:None, claimed_at:None, last_error:None, created_at:"now".into(), updated_at:"now".into() }).unwrap();
         }
         assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap(), None);
         db.execute("UPDATE worker_leases SET lease_status='released' WHERE session_id='active'", []).unwrap();
@@ -373,5 +414,52 @@ mod tests {
         assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap(), None);
         db.execute("UPDATE sessions SET active_turn_id=NULL WHERE id='parent'", []).unwrap();
         assert!(WorkerPool::claim_next_queued(&db, "w").unwrap().is_some());
+    }
+
+    #[test]
+    fn human_approval_pauses_transitive_queue_ttl_and_releases_with_time_restored() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/human-queue','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/human-queue-w','waiting','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('root','w','codex','Root','waiting','reported')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child','w','codex','Child','working','reported','root')", []).unwrap();
+        let directive = request();
+        store::enqueue_worker_request(&db, &QueuedWorkerRequest {
+            id:"q-human".into(), parent_session_id:"child".into(), workspace_id:"w".into(), turn_id:"turn".into(), request:serde_json::to_value(&directive).unwrap(), actual_model:"model".into(), queue_status:"queued".into(), sequence:0, dispatched_session_id:None, attempt_count:0,
+            expires_at:"2026-07-14T00:10:00+00:00".into(), blocked_at:None, claimed_at:None, last_error:None, created_at:"2026-07-13T00:00:00+00:00".into(), updated_at:"2026-07-13T00:00:00+00:00".into()
+        }).unwrap();
+
+        let blocked_at = DateTime::parse_from_rfc3339("2026-07-14T00:00:00Z").unwrap().with_timezone(&Utc);
+        WorkerPool::maintain_queue(&db, blocked_at).unwrap();
+        let blocked = store::worker_queue_requests(&db, "w").unwrap().remove(0);
+        assert_eq!(blocked.queue_status, "blocked_on_human");
+        assert_eq!(blocked.expires_at, "2026-07-14T00:10:00+00:00");
+
+        db.execute("UPDATE sessions SET status='working' WHERE id='root'", []).unwrap();
+        db.execute("UPDATE sessions SET status='waiting' WHERE id='child'", []).unwrap();
+        let directly_blocked_at = DateTime::parse_from_rfc3339("2026-07-14T00:30:00Z").unwrap().with_timezone(&Utc);
+        WorkerPool::maintain_queue(&db, directly_blocked_at).unwrap();
+        assert_eq!(store::worker_queue_requests(&db, "w").unwrap()[0].queue_status, "blocked_on_human");
+        db.execute("UPDATE sessions SET status='working' WHERE id='child'", []).unwrap();
+        let released_at = DateTime::parse_from_rfc3339("2026-07-14T01:00:00Z").unwrap().with_timezone(&Utc);
+        WorkerPool::maintain_queue(&db, released_at).unwrap();
+        let released = store::worker_queue_requests(&db, "w").unwrap().remove(0);
+        assert_eq!(released.queue_status, "queued");
+        assert_eq!(released.expires_at, "2026-07-14T01:10:00+00:00");
+        assert_eq!(released.blocked_at, None);
+        let events = store::workspace_reason_events(&db, "w").unwrap();
+        assert!(events.iter().any(|event| event.kind == "queue.blocked_on_human"));
+        assert!(events.iter().any(|event| event.kind == "queue.released_from_human"));
+    }
+
+    #[test]
+    fn cancellation_terminates_human_blocked_queue_items() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/cancel-human','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/cancel-human-w','waiting','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','cancelled','reported')", []).unwrap();
+        db.execute("INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,expires_at,blocked_at,created_at,updated_at) VALUES('q','parent','w','turn','{}','model','blocked_on_human','2099-01-01T00:00:00+00:00','2026-07-14T00:00:00+00:00','now','now')", []).unwrap();
+        WorkerPool::maintain_queue(&db, Utc::now()).unwrap();
+        assert_eq!(store::worker_queue_requests(&db, "w").unwrap()[0].queue_status, "cancelled");
     }
 }

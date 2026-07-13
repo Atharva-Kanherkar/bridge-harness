@@ -1689,6 +1689,17 @@ fn reserve_worker_launch_outcome(
             }));
         }
         policy::RouteDecision::SpawnWorker(_) => {}
+        policy::RouteDecision::RequireUserApproval => {
+            db.execute(
+                "UPDATE sessions SET status='waiting' WHERE id=?1",
+                params![parent_session_id],
+            )?;
+            db.execute(
+                "UPDATE workspaces SET status='waiting' WHERE id=?1",
+                params![workspace_id],
+            )?;
+            return Ok(WorkerReservationOutcome::Blocked);
+        }
         _ => return Ok(WorkerReservationOutcome::Blocked),
     }
 
@@ -2967,6 +2978,9 @@ fn maintain_worker_pool(app: &AppHandle) {
     }
     let workspaces = {
         let db = state.db.lock().unwrap();
+        if worker_pool::WorkerPool::maintain_queue(&db, Utc::now()).is_err() {
+            return;
+        }
         let mut statement = match db.prepare(
             "SELECT workspace_id FROM worker_queue WHERE queue_status='queued' GROUP BY workspace_id ORDER BY MIN(sequence),workspace_id",
         ) {
@@ -3475,6 +3489,14 @@ fn resolve_approval(
             params![session_id],
         )?;
     }
+    db.execute(
+        "UPDATE workspaces SET status=CASE
+            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
+            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
+            ELSE 'ready' END
+         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
+        params![session_id],
+    )?;
     let _ = app.emit("agent-event", event);
     let _ = app.emit("state-changed", ());
     Ok(())
@@ -3574,6 +3596,18 @@ fn resolve_policy_delegation_approval(
             }),
         )
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    db.execute(
+        "UPDATE sessions SET status='working' WHERE id=?1 AND status='waiting'",
+        params![session_id],
+    )?;
+    db.execute(
+        "UPDATE workspaces SET status=CASE
+            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
+            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
+            ELSE 'ready' END
+         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
+        params![session_id],
+    )?;
     Ok(matches!(decision, "accept" | "acceptForSession").then_some((turn_id, request)))
 }
 
@@ -4441,6 +4475,10 @@ mod tests {
         .unwrap()
         .is_none());
         assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(),
+            "waiting"
+        );
+        assert_eq!(
             db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             1
@@ -4474,6 +4512,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(),
+            "working"
+        );
         assert_eq!(turn_id, "turn-approval");
         assert!(reserve_worker_launch(
             &db,

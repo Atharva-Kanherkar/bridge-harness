@@ -8,6 +8,8 @@ The policy engine considers task family, compatible warm workers, requested capa
 
 Cross-harness continuations are projected rather than native: provider reasoning state cannot move between Codex and Claude. Policy therefore keeps a cross-harness request queued while its parent has an active turn, releasing it after turn completion or a durable checkpoint, compaction, or worker-result verification boundary. Every session records `native`, `projected_at_boundary`, or `projected_mid_turn`; the last value remains possible under races and is surfaced as degraded rather than hidden.
 
+Human approval pauses dependent queue TTLs. A queued request whose parent or any ancestor is waiting for approval moves to the durable `blocked_on_human` state; it cannot dispatch or expire there. Resolution returns it to `queued` and advances its expiry by the full blocked duration. Cancellation still terminates the dependent request, and block/release transitions are recorded as reason events.
+
 Default limits are three workers per user turn, one strong worker, 24 capability units, and one automatic retry. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
 
 ## Write safety

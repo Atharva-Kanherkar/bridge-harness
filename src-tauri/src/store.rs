@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 10;
+const LATEST_SCHEMA_VERSION: i64 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -231,6 +231,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             8 => migration_8_reliability_primitives(&transaction)?,
             9 => migration_9_semantic_event_version(&transaction)?,
             10 => migration_10_continuation_fidelity(&transaction)?,
+            11 => migration_11_human_blocked_queue(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -615,6 +616,10 @@ fn migration_10_continuation_fidelity(transaction: &Transaction<'_>) -> Result<(
          END;",
     )?;
     Ok(())
+}
+
+fn migration_11_human_blocked_queue(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "worker_queue", "blocked_at", "TEXT")
 }
 
 #[derive(Debug)]
@@ -1184,8 +1189,8 @@ pub fn enqueue_worker_request(
     request: &QueuedWorkerRequest,
 ) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,dispatched_session_id,attempt_count,expires_at,claimed_at,last_error,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-        params![request.id,request.parent_session_id,request.workspace_id,request.turn_id,request.request.to_string(),request.actual_model,request.queue_status,request.dispatched_session_id,request.attempt_count,request.expires_at,request.claimed_at,request.last_error,request.created_at,request.updated_at],
+        "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,dispatched_session_id,attempt_count,expires_at,blocked_at,claimed_at,last_error,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        params![request.id,request.parent_session_id,request.workspace_id,request.turn_id,request.request.to_string(),request.actual_model,request.queue_status,request.dispatched_session_id,request.attempt_count,request.expires_at,request.blocked_at,request.claimed_at,request.last_error,request.created_at,request.updated_at],
     )?;
     Ok(())
 }
@@ -1196,9 +1201,9 @@ pub fn queued_worker_requests(
 ) -> Result<Vec<QueuedWorkerRequest>, BridgeError> {
     query_with_params(
         db,
-        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,attempt_count,expires_at,claimed_at,last_error,created_at,updated_at FROM worker_queue WHERE workspace_id=?1 AND queue_status='queued' ORDER BY sequence",
+        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,attempt_count,expires_at,blocked_at,claimed_at,last_error,created_at,updated_at FROM worker_queue WHERE workspace_id=?1 AND queue_status='queued' ORDER BY sequence",
         params![workspace_id],
-        |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, attempt_count:row.get(9)?, expires_at:row.get(10)?, claimed_at:row.get(11)?, last_error:row.get(12)?, created_at:row.get(13)?, updated_at:row.get(14)? }),
+        |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, attempt_count:row.get(9)?, expires_at:row.get(10)?, blocked_at:row.get(11)?, claimed_at:row.get(12)?, last_error:row.get(13)?, created_at:row.get(14)?, updated_at:row.get(15)? }),
     )
 }
 
@@ -1208,7 +1213,7 @@ pub fn worker_queue_requests(
 ) -> Result<Vec<QueuedWorkerRequest>, BridgeError> {
     query_with_params(
         db,
-        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,attempt_count,expires_at,claimed_at,last_error,created_at,updated_at
+        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,attempt_count,expires_at,blocked_at,claimed_at,last_error,created_at,updated_at
          FROM worker_queue WHERE workspace_id=?1 ORDER BY sequence",
         params![workspace_id],
         |row| {
@@ -1222,7 +1227,7 @@ pub fn worker_queue_requests(
                 queue_status: row.get(6)?,
                 sequence: row.get(7)?,
                 dispatched_session_id: row.get(8)?,
-                attempt_count: row.get(9)?, expires_at: row.get(10)?, claimed_at: row.get(11)?, last_error: row.get(12)?, created_at: row.get(13)?, updated_at: row.get(14)?,
+                attempt_count: row.get(9)?, expires_at: row.get(10)?, blocked_at: row.get(11)?, claimed_at: row.get(12)?, last_error: row.get(13)?, created_at: row.get(14)?, updated_at: row.get(15)?,
             })
         },
     )
@@ -1656,7 +1661,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -1672,7 +1677,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1750,6 +1755,17 @@ mod tests {
         transaction.commit().unwrap();
         let values = query(&db, "SELECT continuation_fidelity FROM sessions ORDER BY CASE id WHEN 'root' THEN 1 WHEN 'boundary' THEN 2 WHEN 'mid' THEN 3 ELSE 4 END", |row| row.get::<_,String>(0)).unwrap();
         assert_eq!(values, vec!["native", "projected_at_boundary", "projected_mid_turn", "native"]);
+    }
+
+    #[test]
+    fn human_blocked_queue_migration_preserves_existing_rows() {
+        let mut db = Connection::open(":memory:").unwrap();
+        db.execute_batch("CREATE TABLE worker_queue(id TEXT PRIMARY KEY,queue_status TEXT NOT NULL,expires_at TEXT); INSERT INTO worker_queue VALUES('q','queued','2099-01-01T00:00:00+00:00');").unwrap();
+        let transaction = db.transaction().unwrap();
+        migration_11_human_blocked_queue(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let row = db.query_row("SELECT queue_status,expires_at,blocked_at FROM worker_queue WHERE id='q'", [], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).unwrap();
+        assert_eq!(row, ("queued".into(), "2099-01-01T00:00:00+00:00".into(), None));
     }
 
     #[test]
@@ -1991,7 +2007,7 @@ mod tests {
 
         for id in ["q1", "q2"] {
             enqueue_worker_request(&db, &QueuedWorkerRequest {
-                id: id.into(), parent_session_id: "s".into(), workspace_id: "w".into(), turn_id: "turn".into(), request: json!({"role":"implementation"}), actual_model: "runtime-model".into(), queue_status: "queued".into(), sequence: 0, dispatched_session_id: None, attempt_count: 0, expires_at: "2099-01-01T00:00:00+00:00".into(), claimed_at: None, last_error: None, created_at: "now".into(), updated_at: "now".into(),
+                id: id.into(), parent_session_id: "s".into(), workspace_id: "w".into(), turn_id: "turn".into(), request: json!({"role":"implementation"}), actual_model: "runtime-model".into(), queue_status: "queued".into(), sequence: 0, dispatched_session_id: None, attempt_count: 0, expires_at: "2099-01-01T00:00:00+00:00".into(), blocked_at: None, claimed_at: None, last_error: None, created_at: "now".into(), updated_at: "now".into(),
             }).unwrap();
         }
         let queued = queued_worker_requests(&db, "w").unwrap();

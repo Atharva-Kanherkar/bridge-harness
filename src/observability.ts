@@ -19,6 +19,7 @@ export function turnBudget(snapshot?: SessionForestSnapshot, preferredTurnId?: s
 }
 
 export function queueExplanation(item: QueuedWorkerRequest, leases: WorkerLease[]): string {
+  if (item.queueStatus === "blocked_on_human") return "Blocked on human approval; queue TTL is paused.";
   const explicit = typeof item.request.reason === "string" ? item.request.reason.replaceAll("_", " ") : "";
   const owned = Array.isArray(item.request.ownedPaths) ? item.request.ownedPaths.filter((value): value is string => typeof value === "string") : [];
   const conflict = leases.find(lease => lease.leaseStatus === "active" && lease.writeMode !== "readOnly" && lease.ownedPaths.some(path => owned.some(candidate => pathsOverlap(path, candidate))));
