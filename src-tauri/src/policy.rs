@@ -280,10 +280,9 @@ fn trusted_pattern_covers(scope: &str, claim: &str) -> bool {
     };
     let scope_base = scope[..scope_wildcard].trim_end_matches('/');
     let claim_wildcard = claim.find(['*', '?', '[']);
-    let claim_base = claim_wildcard
-        .map(|index| claim[..index].trim_end_matches('/'))
-        .unwrap_or(claim);
-    !scope_base.is_empty() && path_prefix(scope_base, claim_base)
+    let claim_literal = claim_wildcard.map_or(claim, |index| &claim[..index]);
+    let descendant_prefix = format!("{scope_base}/");
+    !scope_base.is_empty() && claim_literal.starts_with(&descendant_prefix)
 }
 
 fn outcome(decision: RouteDecision, reason: RouteReason, capability_units: i64) -> PolicyOutcome {
@@ -610,8 +609,24 @@ pub fn record_decision(
         "ownedPathProvenance": provenance,
     });
     if matches!(outcome.decision, RouteDecision::RequireUserApproval) {
-        payload["approvalId"] = Value::String(format!("delegation-path-scope:{turn_id}"));
+        let scope_key = normalize_owned_paths(&request.owned_paths)
+            .unwrap_or_else(|_| request.owned_paths.clone())
+            .join("|");
+        let approval_id = format!("delegation-path-scope:{turn_id}:{scope_key}");
+        let branch = SessionForest::new(db)
+            .active_branch(parent_session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let already_pending = branch.iter().any(|entry| {
+            entry.kind == "approval.requested" && entry.payload["approvalId"] == approval_id
+        }) && !branch.iter().any(|entry| {
+            entry.kind == "approval.resolved" && entry.payload["approvalId"] == approval_id
+        });
+        if already_pending {
+            return Ok(());
+        }
+        payload["approvalId"] = Value::String(approval_id);
         payload["approvalType"] = Value::String("delegation_path_scope".into());
+        payload["status"] = Value::String("pending".into());
         payload["title"] = Value::String("Approve delegation write scope".into());
         payload["text"] = Value::String(format!(
             "Allow this worker to write only within: {}",
@@ -834,6 +849,16 @@ mod tests {
         assert!(!owned_paths_are_provenanced(
             &["src/auth/nested/session.rs".into()],
             &["src/auth/*".into()]
+        ));
+        for escaping_claim in ["src/auth*", "src/auth?", "src/auth[0-9]", "src/auth*/**"] {
+            assert!(
+                !owned_paths_are_provenanced(&[escaping_claim.into()], &["src/auth/**".into()]),
+                "component-escaping claim was authorized: {escaping_claim}"
+            );
+        }
+        assert!(owned_paths_are_provenanced(
+            &["src/auth/*.rs".into()],
+            &["src/auth/**".into()]
         ));
     }
 

@@ -82,7 +82,36 @@ fn owned_path_provenance(
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let mut trusted_paths = Vec::new();
     let mut source_entry_ids = Vec::new();
-    if let Some(entry) = branch.iter().rfind(|entry| entry.kind == "user.message") {
+    let prior_write_decision = branch.iter().find(|entry| {
+        entry.payload["turnId"] == turn_id
+            && entry
+                .payload
+                .pointer("/request/writeMode")
+                .and_then(serde_json::Value::as_str)
+                != Some("readOnly")
+            && matches!(
+                entry.kind.as_str(),
+                "approval.requested"
+                    | "delegation.requested"
+                    | "delegation.approved"
+                    | "delegation.rejected"
+            )
+    });
+    let user_entry = if let Some(decision) = prior_write_decision {
+        let source_ids = decision
+            .payload
+            .pointer("/ownedPathProvenance/sourceEntryIds")
+            .and_then(serde_json::Value::as_array);
+        source_ids.and_then(|ids| {
+            branch.iter().find(|entry| {
+                entry.kind == "user.message"
+                    && ids.iter().any(|id| id.as_str() == Some(entry.id.as_str()))
+            })
+        })
+    } else {
+        branch.iter().rfind(|entry| entry.kind == "user.message")
+    };
+    if let Some(entry) = user_entry {
         let paths = entry
             .payload
             .get("text")
@@ -95,16 +124,29 @@ fn owned_path_provenance(
         }
     }
     for entry in branch.iter().filter(|entry| {
-        entry.kind == "approval.resolved"
-            && entry.payload["approvalType"] == "delegation_path_scope"
-            && entry.payload["turnId"] == turn_id
-            && matches!(
-                entry
-                    .payload
-                    .get("decision")
-                    .and_then(serde_json::Value::as_str),
-                Some("accept" | "acceptForSession")
-            )
+        if entry.kind != "approval.resolved"
+            || entry.payload["approvalType"] != "delegation_path_scope"
+            || entry.payload["turnId"] != turn_id
+        {
+            return false;
+        }
+        let accepted = matches!(
+            entry
+                .payload
+                .get("decision")
+                .and_then(serde_json::Value::as_str),
+            Some("accept")
+        );
+        let Some(request_entry_id) = entry.payload["requestEntryId"].as_str() else {
+            return false;
+        };
+        accepted
+            && branch.iter().any(|request| {
+                request.id == request_entry_id
+                    && request.kind == "approval.requested"
+                    && request.payload["approvalId"] == entry.payload["approvalId"]
+                    && request.payload["turnId"] == turn_id
+            })
     }) {
         let paths = entry
             .payload
@@ -113,7 +155,7 @@ fn owned_path_provenance(
             .into_iter()
             .flatten()
             .filter_map(serde_json::Value::as_str)
-            .filter_map(|path| policy::normalize_owned_pattern(path).ok())
+            .filter_map(|path| approved_path_token(path, workspace))
             .collect::<Vec<_>>();
         if !paths.is_empty() {
             trusted_paths.extend(paths);
@@ -134,19 +176,32 @@ fn explicit_write_scope(text: &str, workspace: &Path) -> Vec<String> {
     if !workspace.is_dir() {
         return Vec::new();
     }
-    let mut paths = text
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let prefix = "write scope:";
-            line.get(..prefix.len())
-                .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
-                .map(|_| line[prefix.len()..].trim())
-        })
-        .flat_map(|scope| scope.split([',', ';']))
-        .flat_map(str::split_whitespace)
-        .filter_map(|path| trusted_path_token(path, workspace))
-        .collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced || trimmed.starts_with('>') {
+            continue;
+        }
+        let prefix = "write scope:";
+        let Some(scope) = trimmed
+            .get(..prefix.len())
+            .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+            .map(|_| trimmed[prefix.len()..].trim())
+        else {
+            continue;
+        };
+        paths.extend(
+            scope
+                .split([',', ';'])
+                .flat_map(str::split_whitespace)
+                .filter_map(|path| trusted_path_token(path, workspace)),
+        );
+    }
     paths.sort();
     paths.dedup();
     paths
@@ -186,9 +241,16 @@ fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
         return None;
     }
     let resolved = workspace.join(base);
-    let grounded =
-        resolved.exists() || (wildcard.is_none() && resolved.parent().is_some_and(Path::is_dir));
-    if !grounded {
+    let workspace = workspace.canonicalize().ok()?;
+    let grounding_path = if resolved.exists() {
+        resolved.as_path()
+    } else if wildcard.is_none() {
+        resolved.parent().filter(|parent| parent.is_dir())?
+    } else {
+        return None;
+    };
+    let grounded = grounding_path.canonicalize().ok()?;
+    if !grounded.starts_with(&workspace) {
         return None;
     }
     if wildcard.is_none() && resolved.is_dir() {
@@ -196,6 +258,29 @@ fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
     } else {
         Some(normalized)
     }
+}
+
+fn approved_path_token(token: &str, workspace: &Path) -> Option<String> {
+    let normalized = policy::normalize_owned_pattern(token).ok()?;
+    let wildcard = normalized.find(['*', '?', '[']);
+    let base = wildcard
+        .map(|index| normalized[..index].trim_end_matches('/'))
+        .unwrap_or(normalized.as_str());
+    if base.is_empty() {
+        return None;
+    }
+    let workspace = workspace.canonicalize().ok()?;
+    let resolved = workspace.join(base);
+    let grounding_path = if resolved.exists() {
+        resolved.as_path()
+    } else {
+        resolved.parent().filter(|parent| parent.is_dir())?
+    };
+    grounding_path
+        .canonicalize()
+        .ok()?
+        .starts_with(&workspace)
+        .then_some(normalized)
 }
 
 #[cfg(test)]
@@ -358,6 +443,79 @@ mod tests {
         assert_eq!(
             explicit_write_scope("Write scope: src/missing/deep/new.rs", workspace.path()),
             vec!["src/missing/deep/new.rs"]
+        );
+    }
+
+    #[test]
+    fn fenced_or_quoted_scope_examples_do_not_authorize_writes() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/auth")).unwrap();
+        let text = "Diagnostic example:\n```text\nWrite scope: src/auth/**\n```\n> Write scope: src/auth/**";
+        assert!(explicit_write_scope(text, workspace.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_scope_cannot_escape_the_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), workspace.path().join("external")).unwrap();
+        assert!(explicit_write_scope("Write scope: external/**", workspace.path()).is_empty());
+        assert!(explicit_write_scope("Write scope: external/new.rs", workspace.path()).is_empty());
+        assert!(approved_path_token("external/**", workspace.path()).is_none());
+        std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+        assert_eq!(
+            approved_path_token("src/new/**", workspace.path()),
+            Some("src/new/**".into())
+        );
+    }
+
+    #[test]
+    fn prior_write_decision_binds_scope_to_its_originating_turn() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/auth")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/other")).unwrap();
+        let db = database(workspace.path());
+        let forest = SessionForest::new(&db);
+        forest
+            .append(
+                "parent",
+                EntryKind::UserMessage,
+                json!({"text":"Write scope: src/auth/**"}),
+            )
+            .unwrap();
+        let first = PolicyCoordinator::decide_worker_route(
+            &db,
+            "parent",
+            "turn-a",
+            &request(&["src/auth/**"]),
+            true,
+        )
+        .unwrap();
+        assert!(matches!(
+            first.outcome.decision,
+            policy::RouteDecision::SpawnWorker(_)
+        ));
+        forest
+            .append(
+                "parent",
+                EntryKind::UserMessage,
+                json!({"text":"Write scope: src/**"}),
+            )
+            .unwrap();
+        let rechecked = PolicyCoordinator::decide_worker_route(
+            &db,
+            "parent",
+            "turn-a",
+            &request(&["src/other/**"]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            rechecked.outcome.reason,
+            policy::RouteReason::OwnedPathProvenanceRequired
         );
     }
 

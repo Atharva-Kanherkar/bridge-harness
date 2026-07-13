@@ -3150,7 +3150,23 @@ fn resolve_approval(
             resolve_policy_delegation_approval(&db, &session_id, event_id, &decision, &data)?;
         drop(db);
         if let Some((turn_id, request)) = launch {
-            let _ = launch_worker(&app, &session_id, &turn_id, &request, true);
+            if launch_worker(&app, &session_id, &turn_id, &request, true).is_none() {
+                let db = state.db.lock().unwrap();
+                let queued = db
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM worker_queue WHERE parent_session_id=?1 AND turn_id=?2 AND queue_status IN ('queued','dispatching'))",
+                        params![session_id, turn_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .unwrap_or(false);
+                if !queued {
+                    record_approved_launch_failure(&db, &session_id, &turn_id, &request)?;
+                    let _ = app.emit("state-changed", ());
+                    return Err(BridgeError::Invalid(
+                        "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
+                    ));
+                }
+            }
         }
         let _ = app.emit("state-changed", ());
         return Ok(());
@@ -3217,6 +3233,37 @@ fn resolve_approval(
     Ok(())
 }
 
+fn record_approved_launch_failure(
+    db: &Connection,
+    session_id: &str,
+    turn_id: &str,
+    request: &delegation::DelegationRequest,
+) -> Result<(), BridgeError> {
+    session_forest::SessionForest::new(db)
+        .append(
+            session_id,
+            session_forest::EntryKind::DelegationRejected,
+            serde_json::json!({
+                "requestId": turn_id,
+                "turnId": turn_id,
+                "status": "failed",
+                "reason": "approved_launch_failed",
+                "title": "Approved delegation could not launch",
+                "text": "The approved same-turn scope remains available if the delegation is retried.",
+                "request": request,
+            }),
+        )
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "policy",
+        "policy.approved_launch_failed",
+        session_id,
+        turn_id,
+    )?;
+    Ok(())
+}
+
 fn resolve_policy_delegation_approval(
     db: &Connection,
     session_id: &str,
@@ -3224,8 +3271,30 @@ fn resolve_policy_delegation_approval(
     decision: &str,
     payload: &serde_json::Value,
 ) -> Result<Option<(String, delegation::DelegationRequest)>, BridgeError> {
-    if store::session_entries(db, session_id)?.iter().any(|entry| {
-        entry.kind == "approval.resolved" && entry.payload["requestEventId"] == event_id
+    if decision == "acceptForSession" {
+        return Err(BridgeError::Invalid(
+            "Delegation path scope can only be approved for this turn".into(),
+        ));
+    }
+    let branch = session_forest::SessionForest::new(db)
+        .active_branch(session_id)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let approval_id = payload
+        .get("approvalId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid("Policy approval has no approval id".into()))?;
+    let request_entry = branch
+        .iter()
+        .find(|entry| {
+            entry.sequence == event_id
+                && entry.kind == "approval.requested"
+                && entry.payload["approvalId"] == approval_id
+        })
+        .ok_or_else(|| {
+            BridgeError::Invalid("Approval is no longer on the active conversation branch".into())
+        })?;
+    if branch.iter().any(|entry| {
+        entry.kind == "approval.resolved" && entry.payload["approvalId"] == approval_id
     }) {
         return Err(BridgeError::Invalid("Approval was already resolved".into()));
     }
@@ -3243,10 +3312,6 @@ fn resolve_policy_delegation_approval(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| BridgeError::Invalid("Policy approval has no parent turn".into()))?
         .to_owned();
-    let approval_id = payload
-        .get("approvalId")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| BridgeError::Invalid("Policy approval has no approval id".into()))?;
     session_forest::SessionForest::new(db)
         .append(
             session_id,
@@ -3255,6 +3320,7 @@ fn resolve_policy_delegation_approval(
                 "approvalId": approval_id,
                 "approvalType": "delegation_path_scope",
                 "requestEventId": event_id,
+                "requestEntryId": request_entry.id,
                 "turnId": turn_id,
                 "decision": decision,
                 "approvedOwnedPaths": request.owned_paths,
@@ -4053,6 +4119,84 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn policy_approval_is_idempotent_and_stale_branches_cannot_resolve() {
+        let db = policy_fixture();
+        let forest = session_forest::SessionForest::new(&db);
+        let branch_point = forest
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Explain the auth module only"}),
+            )
+            .unwrap();
+        let request = policy_request(&["src/auth/**"]);
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-stale",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-stale",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        let entries = store::session_entries(&db, "parent").unwrap();
+        let approvals = entries
+            .iter()
+            .filter(|entry| entry.kind == "approval.requested")
+            .collect::<Vec<_>>();
+        assert_eq!(approvals.len(), 1);
+        let approval = approvals[0];
+        forest.move_head("parent", Some(&branch_point.id)).unwrap();
+        forest
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Do not make any changes"}),
+            )
+            .unwrap();
+        assert!(resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .is_err());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn approved_launch_failure_is_durable_and_retryable_for_the_turn() {
+        let db = policy_fixture();
+        let request = policy_request(&["src/auth/**"]);
+        record_approved_launch_failure(&db, "parent", "turn-retry", &request).unwrap();
+        let entries = session_forest::SessionForest::new(&db)
+            .active_branch("parent")
+            .unwrap();
+        let failure = entries.last().unwrap();
+        assert_eq!(failure.kind, "delegation.rejected");
+        assert_eq!(failure.payload["reason"], "approved_launch_failed");
+        assert_eq!(failure.payload["turnId"], "turn-retry");
+        assert!(failure.payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("retried"));
     }
 
     #[test]

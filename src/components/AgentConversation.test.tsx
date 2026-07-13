@@ -28,4 +28,10 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("Provider frame");
     expect(html).not.toContain("secret");
   });
+  it("offers only same-turn approval for delegation path scope", () => {
+    const entry: SessionEntry = { id:"approval",sessionId:"s",parentEntryId:null,sequence:4,kind:"approval.requested",payload:{status:"pending",approvalType:"delegation_path_scope",title:"Approve delegation write scope"},providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[entry]} activeLeafId="approval"/>);
+    expect(html).toContain("Allow once");
+    expect(html).not.toContain("Allow for session");
+  });
 });

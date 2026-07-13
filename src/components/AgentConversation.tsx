@@ -254,7 +254,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
     {item.status === "pending"
       ? <div className="flex justify-end gap-[7px] p-[12px_13px]">
           <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-muted-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "decline")}><X size={12} aria-hidden="true" /> Decline</button>
-          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>
+          {item.data.approvalType !== "delegation_path_scope" && <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>}
           <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors" onClick={() => onResolve(item.eventId, "accept")}><Check size={12} aria-hidden="true" /> Allow once</button>
         </div>
       : <div className="p-[10px_15px_12px] flex items-center gap-1.5 text-muted-foreground text-[11.5px]"><Check size={12} aria-hidden="true" /> {item.status}</div>}
