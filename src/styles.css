@@ -486,3 +486,61 @@ kbd:not([data-slot="kbd"]) {
   .command-trigger { margin-left: auto; width: 170px; }
   .daemon-pill { display: none; }
 }
+
+/* Minimal agent workspace: conversation first, controls only when useful. */
+.app-shell { grid-template: 44px 1fr / 238px 1fr; background: radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--foreground) 3%, transparent), transparent 34%), var(--bg); }
+.top-rail { gap: 8px; background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(22px) saturate(125%); -webkit-backdrop-filter: blur(22px) saturate(125%); }
+.traffic-space { width: 72px; }
+.wordmark { width: auto; }
+.wordmark .mark, .wordmark em { display: none; }
+.wordmark strong { font-size: 13px; color: var(--text); letter-spacing: -.02em; }
+.command-trigger { width: 190px; margin-left: auto; border-color: transparent; background: transparent; color: var(--text-3); }
+.command-trigger:hover { background: var(--hover); }
+.daemon-pill { border-color: transparent; background: transparent; font-size: 9px; }
+.sidebar { background: color-mix(in srgb, var(--bg-sidebar) 72%, transparent); backdrop-filter: blur(28px) saturate(135%); -webkit-backdrop-filter: blur(28px) saturate(135%); }
+.sidebar-heading { height: 38px; padding: 0 9px; }
+.sidebar-heading > span { font-size: 9px; letter-spacing: .12em; }
+.workspace-scroll { padding: 2px 7px 8px; }
+.project-title { padding: 0 7px; height: 28px; }
+.repo-icon, .workspace-index, .workspace-status [data-slot="badge"] { display: none; }
+.workspace-row { min-height: 42px; grid-template-columns: 1fr auto; padding: 6px 9px; border-radius: 8px; }
+.workspace-row.selected { background: color-mix(in srgb, var(--foreground) 7%, transparent); }
+.workspace-main { gap: 2px; }
+.workspace-main b { font-size: 12px; }
+.workspace-main small { font-size: 9.5px; }
+.sidebar-nav { display: none; }
+.add-repository { border: 0; justify-content: flex-start; height: 34px; margin-bottom: 10px; color: var(--text-3); }
+.workspace-view { grid-template-rows: auto auto auto 1fr; }
+.workspace-header { min-height: 58px; padding: 9px 18px; }
+.workspace-header h1 { margin-bottom: 3px; font-size: 14px; }
+.eyebrow { display: none; }
+.branch-line { font-size: 9.5px; }
+.workspace-actions .secondary { display: none; }
+.session-strip { min-height: 40px; padding: 5px 14px; border-bottom: 0; }
+.session-chip { height: 28px; padding: 0 7px; }
+.session-chip:not(.active), .session-chip small, .harness-icon { display: none; }
+.session-chip.active { background: transparent; border-color: transparent; }
+.session-chip b { font-size: 10.5px; color: var(--text-3); }
+.session-metrics { font-size: 9px; gap: 12px; }
+.session-metrics span { flex-direction: row; gap: 4px; }
+.session-metrics small, .session-metrics [data-slot="badge"] { display: none; }
+.content-tabs-wrap { border-bottom: 0; padding: 0 14px; }
+.content-tabs-wrap [data-slot="tabs-tab"] { height: 28px; padding-inline: 8px; font-size: 10.5px; color: var(--text-3); }
+.content-body { border-top: 1px solid var(--line-soft); }
+.env-panel { display: none; }
+.conversation-scroll { padding: 28px 32px 34px; }
+.conversation-col, .composer-inner, .turn-chip-row { max-width: 760px; }
+.agent-prose { font-size: 14px; line-height: 1.7; color: var(--text-2); }
+.user-bubble { border: 0; background: color-mix(in srgb, var(--foreground) 6%, transparent); }
+.thinking-live { display: flex; align-items: center; gap: 9px; }
+.thinking-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); animation: thinking-pulse 1.6s ease-in-out infinite; }
+.activity-group { margin: 12px 0; }
+.activity-summary { font-size: 12px; color: var(--text-3); }
+.activity-list { padding-left: 21px; border-left: 1px solid var(--line-soft); }
+.action-head { min-height: 26px; font-size: 12px; }
+.composer { padding-bottom: 16px; }
+.composer-inner { border-radius: 13px; box-shadow: 0 14px 38px color-mix(in srgb, #000 16%, transparent); }
+.orchestrator-pill { padding: 0 4px; }
+.error-toast { max-width: 520px; }
+@keyframes thinking-pulse { 0%, 100% { opacity: .28; transform: scale(.78); } 50% { opacity: 1; transform: scale(1.16); } }
+@media (prefers-reduced-motion: reduce) { .thinking-live::before, .shimmer, .spin { animation: none !important; } }

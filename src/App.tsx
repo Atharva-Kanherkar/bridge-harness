@@ -6,7 +6,6 @@ import type { BridgeState, Health, Project, Session, SessionForestSnapshot, Sess
 import { MOCK_CONVERSATION } from "./mockConversation";
 import { AgentConversation } from "./components/AgentConversation";
 import { TerminalPane } from "./components/TerminalPane";
-import { WelcomeScreen } from "./components/WelcomeScreen";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert";
@@ -52,7 +51,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [clock, setClock] = useState(Date.now());
-  const [home, setHome] = useState(true);
+  const [home] = useState(false);
   const [forest, setForest] = useState<SessionForestSnapshot>();
   const autoStartRef = useRef<string>();
 
@@ -292,7 +291,6 @@ export function App() {
         </section>
       </> : <Welcome onAdd={() => setModal("project")}/>}
     </main>
-    {home && <WelcomeScreen onDismiss={() => setHome(false)}/>}
     {error && (
       <Alert variant="error" className="error-toast">
         <AlertDescription>{error}</AlertDescription>
