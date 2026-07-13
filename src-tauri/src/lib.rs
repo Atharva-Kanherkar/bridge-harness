@@ -845,48 +845,22 @@ fn handle_agent_value(
                             )
                             .unwrap_or(false);
                             let mut accepted_count = 0;
-                            let mut rejection_message = None;
                             if is_new {
-                                let selection = delegation::select_transport_requests(
-                                    requests,
-                                    own_depth,
-                                    delegation::MAX_FANOUT,
-                                );
-                                accepted_count = selection.accepted.len();
+                                accepted_count = requests.len();
                                 let turn_id = observed_turn_id
                                     .clone()
                                     .or_else(|| normalized_event.item_id.clone())
                                     .unwrap_or_else(|| format!("turn-{}", Uuid::new_v4()));
                                 pending_directives.extend(
-                                    selection
-                                        .accepted
+                                    requests
                                         .into_iter()
                                         .map(|request| (request, turn_id.clone())),
                                 );
-                                for rejection in selection.rejections {
-                                    rejection_message = Some(match rejection.reason {
-                                        delegation::DelegationRejectionReason::DepthLimit => {
-                                            "Delegation rejected: workers cannot directly spawn workers."
-                                        }
-                                        delegation::DelegationRejectionReason::FanoutLimit => {
-                                            "Delegation partially rejected: fanout limit reached."
-                                        }
-                                    });
-                                    if let Ok(event) = record_delegation_rejection(
-                                        &db,
-                                        session_id,
-                                        &rejection,
-                                    ) {
-                                        pending_ui_events.push(event);
-                                    }
-                                }
                             }
                             let stripped = delegation::strip_directives(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
                                 if accepted_count > 0 {
                                     "_Delegating to a worker…_".to_owned()
-                                } else if let Some(message) = rejection_message {
-                                    format!("_{message}_")
                                 } else {
                                     "_Delegation request already processed._".to_owned()
                                 }
@@ -1181,33 +1155,6 @@ fn run_compaction_recovery(app: &AppHandle, session_id: &str) -> Result<(), Brid
         &git_status,
     )?;
     Ok(())
-}
-
-fn record_delegation_rejection(
-    db: &Connection,
-    session_id: &str,
-    rejection: &delegation::DelegationRejection,
-) -> Result<AgentEvent, BridgeError> {
-    let reason = serde_json::to_string(rejection)
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    store::event(
-        db,
-        "delegation",
-        "delegation.request.rejected",
-        session_id,
-        &reason,
-    )?;
-    let event = agent::NormalizedEvent {
-        kind: "delegation.rejected".into(),
-        item_id: Some(format!("rejection-{}", Uuid::new_v4())),
-        role: Some("system".into()),
-        status: Some("rejected".into()),
-        title: Some("Delegation rejected".into()),
-        text: Some(reason),
-        data: serde_json::to_value(rejection)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
-    };
-    store::session_event(db, session_id, &event, &serde_json::json!({"delegation":true}))
 }
 
 /// Spawn a child worker session in the parent's workspace and hand it its task.
@@ -3316,37 +3263,6 @@ mod tests {
             )
             .unwrap(),
             "worker.result.unstructured"
-        );
-    }
-
-    #[test]
-    fn delegation_rejection_is_stored_in_audit_and_normalized_history() {
-        let db = archive_fixture();
-        let rejection = delegation::DelegationRejection {
-            reason: delegation::DelegationRejectionReason::DepthLimit,
-            rejected_count: 2,
-        };
-        let event = record_delegation_rejection(&db, "s", &rejection).unwrap();
-        assert_eq!(event.kind, "delegation.rejected");
-        assert_eq!(event.data["reason"], "depth_limit");
-        assert_eq!(event.data["rejectedCount"], 2);
-        assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "delegation.request.rejected"
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT COUNT(*) FROM agent_events WHERE session_id='s' AND kind='delegation.rejected'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-            1
         );
     }
 

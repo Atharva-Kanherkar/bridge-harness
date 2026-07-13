@@ -11,7 +11,6 @@ use std::collections::HashMap;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_MAX_DEPTH: i64 = 1;
-pub const MAX_FANOUT: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -272,56 +271,6 @@ pub enum ParseOutcome<T> {
     Absent,
     Parsed(T),
     Invalid { raw: String, reason: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DelegationRejectionReason {
-    DepthLimit,
-    FanoutLimit,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DelegationRejection {
-    pub reason: DelegationRejectionReason,
-    pub rejected_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DelegationSelection {
-    pub accepted: Vec<DelegationRequest>,
-    pub rejections: Vec<DelegationRejection>,
-}
-
-pub fn select_transport_requests(
-    requests: Vec<DelegationRequest>,
-    own_depth: i64,
-    max_fanout: usize,
-) -> DelegationSelection {
-    if own_depth >= DEFAULT_MAX_DEPTH {
-        return DelegationSelection {
-            rejections: (!requests.is_empty())
-                .then_some(DelegationRejection {
-                    reason: DelegationRejectionReason::DepthLimit,
-                    rejected_count: requests.len(),
-                })
-                .into_iter()
-                .collect(),
-            accepted: Vec::new(),
-        };
-    }
-    let rejected_count = requests.len().saturating_sub(max_fanout);
-    DelegationSelection {
-        accepted: requests.into_iter().take(max_fanout).collect(),
-        rejections: (rejected_count > 0)
-            .then_some(DelegationRejection {
-                reason: DelegationRejectionReason::FanoutLimit,
-                rejected_count,
-            })
-            .into_iter()
-            .collect(),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1019,33 +968,6 @@ mod tests {
         assert_eq!(
             parse_delegation_requests("ordinary prose"),
             ParseOutcome::Absent
-        );
-    }
-
-    #[test]
-    fn delegation_rejections_report_depth_and_fanout() {
-        let depth = select_transport_requests(vec![request(), request()], 1, MAX_FANOUT);
-        assert!(depth.accepted.is_empty());
-        assert_eq!(
-            depth.rejections,
-            vec![DelegationRejection {
-                reason: DelegationRejectionReason::DepthLimit,
-                rejected_count: 2,
-            }]
-        );
-
-        let fanout = select_transport_requests(
-            vec![request(), request(), request(), request(), request()],
-            0,
-            4,
-        );
-        assert_eq!(fanout.accepted.len(), 4);
-        assert_eq!(
-            fanout.rejections,
-            vec![DelegationRejection {
-                reason: DelegationRejectionReason::FanoutLimit,
-                rejected_count: 1,
-            }]
         );
     }
 
