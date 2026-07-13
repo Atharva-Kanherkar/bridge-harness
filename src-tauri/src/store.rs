@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 11;
+const LATEST_SCHEMA_VERSION: i64 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -232,6 +232,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             9 => migration_9_semantic_event_version(&transaction)?,
             10 => migration_10_continuation_fidelity(&transaction)?,
             11 => migration_11_human_blocked_queue(&transaction)?,
+            12 => migration_12_adapter_process_claims(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -620,6 +621,11 @@ fn migration_10_continuation_fidelity(transaction: &Transaction<'_>) -> Result<(
 
 fn migration_11_human_blocked_queue(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(transaction, "worker_queue", "blocked_at", "TEXT")
+}
+
+fn migration_12_adapter_process_claims(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "sessions", "adapter_pid", "INTEGER")?;
+    add_column_if_missing(transaction, "sessions", "adapter_process_identity", "TEXT")
 }
 
 #[derive(Debug)]
@@ -1661,7 +1667,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -1677,7 +1683,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1766,6 +1772,17 @@ mod tests {
         transaction.commit().unwrap();
         let row = db.query_row("SELECT queue_status,expires_at,blocked_at FROM worker_queue WHERE id='q'", [], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).unwrap();
         assert_eq!(row, ("queued".into(), "2099-01-01T00:00:00+00:00".into(), None));
+    }
+
+    #[test]
+    fn adapter_process_claim_migration_preserves_existing_sessions() {
+        let mut db = Connection::open(":memory:").unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,status TEXT NOT NULL); INSERT INTO sessions VALUES('s','working');").unwrap();
+        let transaction = db.transaction().unwrap();
+        migration_12_adapter_process_claims(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let row = db.query_row("SELECT status,adapter_pid,adapter_process_identity FROM sessions WHERE id='s'", [], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<i64>>(1)?,row.get::<_,Option<String>>(2)?))).unwrap();
+        assert_eq!(row, ("working".into(), None, None));
     }
 
     #[test]

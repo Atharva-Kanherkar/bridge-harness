@@ -1,4 +1,5 @@
 use crate::{
+    adapters,
     delegation::{SuggestedNextAction, WorkerEvidence, WorkerResult, WorkerResultStatus, MAX_EVIDENCE_REFERENCES},
     model::SessionEntry,
     session_forest::{self, EntryKind},
@@ -18,6 +19,95 @@ pub struct ReportedWorkerResult {
 }
 
 impl SessionSupervisor {
+    pub fn track_adapter_process(
+        db: &Connection,
+        session_id: &str,
+        pid: u32,
+    ) -> Result<String, BridgeError> {
+        let identity = adapters::process_identity(pid).ok_or_else(|| {
+            BridgeError::Adapter(format!("provider process {pid} has no verifiable OS identity"))
+        })?;
+        let updated = db.execute(
+            "UPDATE sessions SET adapter_pid=?2,adapter_process_identity=?3 WHERE id=?1",
+            params![session_id, i64::from(pid), identity],
+        )?;
+        if updated != 1 {
+            return Err(BridgeError::Invalid(format!("session {session_id} not found while tracking provider process")));
+        }
+        Ok(identity)
+    }
+
+    pub fn clear_adapter_process(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
+        db.execute(
+            "UPDATE sessions SET adapter_pid=NULL,adapter_process_identity=NULL WHERE id=?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn recover_tracked_adapter_processes(db: &Connection) -> Result<usize, BridgeError> {
+        let claims = {
+            let mut statement = db.prepare(
+                "SELECT id,status,adapter_pid,adapter_process_identity,active_turn_id IS NOT NULL
+                 FROM sessions WHERE adapter_pid IS NOT NULL ORDER BY started_at,id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,bool>(4)?))
+            })?.collect::<Result<Vec<_>,_>>()?;
+            rows
+        };
+        let mut recovered = 0;
+        for (session_id, status, raw_pid, expected_identity, was_mid_turn) in claims {
+            let pid = u32::try_from(raw_pid).map_err(|_| BridgeError::Invalid(format!("session {session_id} has invalid provider PID {raw_pid}")))?;
+            let live_identity = adapters::process_identity(pid);
+            let identity_matches = expected_identity.as_ref().zip(live_identity.as_ref()).is_some_and(|(expected,live)| expected == live);
+            let recovery_kind = if identity_matches {
+                if !adapters::terminate_process_group(pid) {
+                    return Err(BridgeError::Adapter(format!("tracked orphan process group {pid} could not be terminated")));
+                }
+                "adapter.orphan_killed"
+            } else if live_identity.is_some() {
+                "adapter.orphan_identity_mismatch"
+            } else {
+                "adapter.orphan_missing"
+            };
+            let active = !matches!(status.as_str(), "completed" | "cancelled" | "stopped" | "failed");
+            let transaction = db.unchecked_transaction()?;
+            transaction.execute("UPDATE sessions SET adapter_pid=NULL,adapter_process_identity=NULL WHERE id=?1", params![session_id])?;
+            let now = Utc::now().to_rfc3339();
+            let warning = if was_mid_turn {
+                "Bridge restarted during an active provider turn; worktree changes may be partial and no checkpoint is implied"
+            } else {
+                "Bridge restarted with a tracked provider process; restoration is required before continuation"
+            };
+            if active {
+                session_forest::append_in_transaction(
+                    &transaction,
+                    &session_id,
+                    EntryKind::SessionStatus,
+                    serde_json::json!({"status":"failed","reason":"supervisor_restart_orphan","recoverable":true,"warning":warning}),
+                ).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+                transaction.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id,now])?;
+                transaction.execute("INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('adapter','adapter.request_failed',?1,?2,?3)", params![session_id,warning,now])?;
+            }
+            transaction.execute("INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor',?2,?1,?3,?4)", params![session_id,recovery_kind,warning,now])?;
+            transaction.commit()?;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
+    pub fn reconcile_workspace_statuses(db: &Connection) -> Result<(), BridgeError> {
+        db.execute_batch(
+            "UPDATE workspaces SET status=CASE
+                WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
+                WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('starting','working','warm','checkpointing','resuming','restored')) THEN 'working'
+                WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='failed') THEN 'failed'
+                ELSE 'ready' END;",
+        )?;
+        Ok(())
+    }
+
     pub fn transition(
         db: &Connection,
         session_id: &str,
@@ -209,7 +299,7 @@ impl SessionSupervisor {
                     files_changed: vec![],
                     tests: vec![],
                     decisions: vec![],
-                    risks: vec!["The provider process was not alive during restart recovery".into()],
+                    risks: vec!["The provider process was terminated or missing during restart recovery; worktree changes may be partial and no checkpoint is implied".into()],
                     remaining_work: vec!["Resume a compatible worker or delegate again".into()],
                     suggested_next_action: SuggestedNextAction::Finish,
                     suggested_role: None,
@@ -246,6 +336,8 @@ mod tests {
         model::WorkerRuntimeRecord,
         store,
     };
+    #[cfg(unix)]
+    use std::process::Command;
 
     fn database() -> Connection {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
@@ -255,6 +347,56 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Worker','starting','reported','parent',1)", []).unwrap();
         store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:"child".into(), parent_session_id:"parent".into(), lifecycle_state:"starting".into(), task_family:"implementation".into(), compatibility_key:"key".into(), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, updated_at:"now".into() }).unwrap();
         db
+    }
+
+    #[cfg(unix)]
+    fn sleeping_process() -> std::process::Child {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        adapters::configure_process_group(&mut command);
+        command.spawn().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_kills_matching_worker_process_then_reports_typed_recoverable_failure() {
+        let db = database();
+        db.execute("UPDATE sessions SET status='working',active_turn_id='turn' WHERE id='child'", []).unwrap();
+        db.execute("UPDATE worker_runtime SET lifecycle_state='working' WHERE session_id='child'", []).unwrap();
+        let mut child = sleeping_process();
+        let pid = child.id();
+        SessionSupervisor::track_adapter_process(&db, "child", pid).unwrap();
+
+        assert_eq!(SessionSupervisor::recover_tracked_adapter_processes(&db).unwrap(), 1);
+        let _ = child.wait();
+        assert!(adapters::process_identity(pid).is_none());
+        let tracked: (Option<i64>,Option<String>) = db.query_row("SELECT adapter_pid,adapter_process_identity FROM sessions WHERE id='child'", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert_eq!(tracked, (None, None));
+        assert_eq!(SessionSupervisor::recover_orphaned_workers(&db).unwrap(), 1);
+        let runtime = crate::store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!((runtime.lifecycle_state.as_str(),runtime.result_status.as_str()), ("stopped","reported"));
+        assert!(runtime.last_result.unwrap()["risks"][0].as_str().unwrap().contains("partial"));
+        let entries = crate::store::session_entries(&db, "child").unwrap();
+        assert!(entries.iter().any(|entry| entry.payload["reason"] == "supervisor_restart_orphan"));
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE entity_id='child' AND kind='adapter.orphan_killed')", [], |row| row.get::<_,bool>(0)).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_refuses_to_kill_pid_when_identity_does_not_match() {
+        let db = database();
+        let mut process = sleeping_process();
+        let pid = process.id();
+        db.execute("UPDATE sessions SET adapter_pid=?2,adapter_process_identity='different process',active_turn_id='turn' WHERE id='parent'", params!["parent",i64::from(pid)]).unwrap();
+        assert_eq!(SessionSupervisor::recover_tracked_adapter_processes(&db).unwrap(), 1);
+        assert!(process.try_wait().unwrap().is_none());
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE entity_id='parent' AND kind='adapter.orphan_identity_mismatch')", [], |row| row.get::<_,bool>(0)).unwrap());
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(), "failed");
+        db.execute("UPDATE sessions SET status='stopped' WHERE id='child'", []).unwrap();
+        SessionSupervisor::reconcile_workspace_statuses(&db).unwrap();
+        assert_eq!(db.query_row("SELECT status FROM workspaces WHERE id='w'", [], |row| row.get::<_,String>(0)).unwrap(), "failed");
+        let _ = adapters::terminate_process_group(pid);
+        let _ = process.wait();
     }
 
     #[test]
@@ -398,6 +540,8 @@ mod tests {
         assert_eq!(store::outstanding_children(&db, "parent").unwrap(), 0);
         let parent_status: String = db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get(0)).unwrap();
         assert_eq!(parent_status, "ready");
+        SessionSupervisor::reconcile_workspace_statuses(&db).unwrap();
+        assert_eq!(db.query_row("SELECT status FROM workspaces WHERE id='w'", [], |row| row.get::<_,String>(0)).unwrap(), "ready");
         for session_id in ["child", "waiting-child", "warm-child"] {
             let runtime = store::worker_runtime(&db, session_id).unwrap().unwrap();
             assert_eq!((runtime.lifecycle_state.as_str(), runtime.result_status.as_str()), ("stopped", "reported"));
