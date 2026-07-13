@@ -43,6 +43,6 @@ export function TerminalPane({ workspaceId }: { workspaceId?: string }) {
     return () => { unlisten?.(); resize.disconnect(); data.dispose(); term.dispose(); };
   }, [workspaceId]);
 
-  if (!workspaceId) return <div className="terminal-empty">Select a workspace to open its shell.</div>;
-  return <div className="terminal-host" ref={host} aria-label="Workspace terminal" />;
+  if (!workspaceId) return <div className="absolute inset-0 grid place-items-center text-muted-foreground/85 text-xs">Select a workspace to open its shell.</div>;
+  return <div className="absolute inset-0 p-[14px_12px] [&_.xterm]:h-full [&_.xterm-viewport]:scrollbar-thin [&_.xterm-viewport]:scrollbar-thumb-foreground/12 [&_.xterm-viewport]:scrollbar-track-transparent" ref={host} aria-label="Workspace terminal" />;
 }

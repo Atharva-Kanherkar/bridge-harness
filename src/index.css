@@ -1,13 +1,11 @@
 @import "tailwindcss";
-@import "@fontsource-variable/inter";
-@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-    --font-heading: 'Inter', sans-serif;
-    --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
-    --font-sans: 'Inter', sans-serif;
+    --font-heading: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-primary: var(--sidebar-primary);
@@ -19,11 +17,6 @@
     --color-code-highlight: var(--code-highlight);
     --code-foreground: var(--code-foreground);
     --color-code: var(--code);
-    --color-chart-5: var(--chart-5);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
     --color-secondary-foreground: var(--secondary-foreground);
     --color-secondary: var(--secondary);
     --color-ring: var(--ring);
@@ -59,20 +52,20 @@
 }
 
 :root {
-    --destructive-foreground: var(--color-red-700);
-    --info: var(--color-blue-500);
-    --info-foreground: var(--color-blue-700);
-    --success: var(--color-sky-500);
-    --success-foreground: var(--color-sky-700);
-    --warning: var(--color-amber-500);
-    --warning-foreground: var(--color-amber-700);
+    --destructive-foreground: var(--color-neutral-900);
+    --info: var(--color-neutral-200);
+    --info-foreground: var(--color-neutral-900);
+    --success: var(--color-neutral-200);
+    --success-foreground: var(--color-neutral-900);
+    --warning: var(--color-neutral-200);
+    --warning-foreground: var(--color-neutral-900);
     --accent: --alpha(var(--color-black) / 4%);
     --accent-foreground: var(--color-neutral-800);
     --background: var(--color-white);
     --border: --alpha(var(--color-black) / 8%);
     --card: var(--color-white);
     --card-foreground: var(--color-neutral-800);
-    --destructive: var(--color-red-500);
+    --destructive: var(--color-neutral-200);
     --foreground: var(--color-neutral-800);
     --input: --alpha(var(--color-black) / 10%);
     --muted: --alpha(var(--color-black) / 4%);
@@ -84,15 +77,10 @@
     --ring: var(--color-neutral-400);
     --secondary: --alpha(var(--color-black) / 4%);
     --secondary-foreground: var(--color-neutral-800);
-    --chart-1: var(--color-orange-600);
-    --chart-2: var(--color-teal-600);
-    --chart-3: var(--color-cyan-900);
-    --chart-4: var(--color-amber-400);
-    --chart-5: var(--color-amber-500);
     --code: var(--color-white);
     --code-foreground: var(--foreground);
     --code-highlight: --alpha(var(--color-black) / 4%);
-    --radius: 0.625rem;
+    --radius: 1.5rem;
     --sidebar: var(--color-neutral-50);
     --sidebar-accent: --alpha(var(--color-black) / 4%);
     --sidebar-accent-foreground: var(--color-neutral-800);
@@ -104,46 +92,41 @@
 }
 
 .dark {
-    --destructive-foreground: var(--color-red-400);
-    --info: var(--color-blue-500);
-    --info-foreground: var(--color-blue-400);
-    --success: var(--color-sky-500);
-    --success-foreground: var(--color-sky-400);
-    --warning: var(--color-amber-500);
-    --warning-foreground: var(--color-amber-400);
+    --destructive-foreground: var(--color-neutral-100);
+    --info: var(--color-neutral-800);
+    --info-foreground: var(--color-neutral-100);
+    --success: var(--color-neutral-800);
+    --success-foreground: var(--color-neutral-100);
+    --warning: var(--color-neutral-800);
+    --warning-foreground: var(--color-neutral-100);
     --accent: --alpha(var(--color-white) / 4%);
     --accent-foreground: var(--color-neutral-100);
-    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
-    --border: --alpha(var(--color-white) / 6%);
-    --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-black));
+    --border: --alpha(var(--color-white) / 10%);
+    --card: color-mix(in srgb, var(--background) 98%, var(--color-black));
     --card-foreground: var(--color-neutral-100);
-    --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
+    --destructive: var(--color-neutral-800);
     --foreground: var(--color-neutral-100);
-    --input: --alpha(var(--color-white) / 8%);
+    --input: --alpha(var(--color-white) / 15%);
     --muted: --alpha(var(--color-white) / 4%);
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --popover: color-mix(in srgb, var(--background) 98%, var(--color-black));
     --popover-foreground: var(--color-neutral-100);
     --primary: var(--color-neutral-100);
-    --primary-foreground: var(--color-neutral-800);
+    --primary-foreground: var(--color-neutral-900);
     --ring: var(--color-neutral-500);
-    --secondary: --alpha(var(--color-white) / 4%);
+    --secondary: --alpha(var(--color-white) / 8%);
     --secondary-foreground: var(--color-neutral-100);
-    --chart-1: var(--color-blue-700);
-    --chart-2: var(--color-sky-500);
-    --chart-3: var(--color-amber-500);
-    --chart-4: var(--color-purple-500);
-    --chart-5: var(--color-rose-500);
-    --code: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --code: color-mix(in srgb, var(--background) 98%, var(--color-black));
     --code-foreground: var(--foreground);
-    --code-highlight: --alpha(var(--color-white) / 4%);
-    --sidebar: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --code-highlight: --alpha(var(--color-white) / 8%);
+    --sidebar: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-black));
     --sidebar-accent: --alpha(var(--color-white) / 4%);
     --sidebar-accent-foreground: var(--color-neutral-100);
-    --sidebar-border: --alpha(var(--color-white) / 5%);
+    --sidebar-border: --alpha(var(--color-white) / 10%);
     --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 64%, var(--sidebar));
     --sidebar-primary: var(--color-neutral-100);
-    --sidebar-primary-foreground: var(--color-neutral-800);
+    --sidebar-primary-foreground: var(--color-neutral-900);
     --sidebar-ring: var(--color-neutral-400);
 }
 
@@ -161,4 +144,13 @@
   code, kbd, samp, pre {
     font-family: var(--font-mono);
     }
+}
+
+@keyframes home-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-home-rise {
+  animation: home-rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
