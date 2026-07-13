@@ -1668,6 +1668,27 @@ fn reserve_worker_launch(
         &outcome,
         directive.capability_tier,
     )?;
+    let outbox_created_at = Utc::now().to_rfc3339();
+    store::enqueue_outbox(
+        &transaction,
+        &OutboxMessage {
+            id: Uuid::new_v4().to_string(),
+            destination: "integration".into(),
+            event_type: "worker.spawned".into(),
+            payload: serde_json::json!({
+                "sessionId": session_id,
+                "parentSessionId": parent_session_id,
+                "turnId": turn_id,
+            }),
+            idempotency_key: format!("worker-spawn:{parent_session_id}:{turn_id}:{session_id}"),
+            status: "pending".into(),
+            attempt_count: 0,
+            next_attempt_at: outbox_created_at.clone(),
+            last_error: None,
+            created_at: outbox_created_at,
+            delivered_at: None,
+        },
+    )?;
     transaction.commit()?;
     Ok(Some(WorkerLaunchReservation {
         session_id,
