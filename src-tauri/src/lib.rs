@@ -1524,6 +1524,18 @@ struct WorkerLaunchReservation {
     reuse_existing: bool,
 }
 
+enum WorkerReservationOutcome {
+    Reserved(WorkerLaunchReservation),
+    Queued,
+    Blocked,
+}
+
+enum WorkerLaunchOutcome {
+    Launched(String),
+    Queued,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerActivation {
     Fresh,
@@ -1548,14 +1560,14 @@ fn record_model_resolution_warning(
     Ok(())
 }
 
-fn reserve_worker_launch(
+fn reserve_worker_launch_outcome(
     db: &Connection,
     parent_session_id: &str,
     turn_id: &str,
     directive: &delegation::DelegationRequest,
     actual_model: &str,
     queue_on_block: bool,
-) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
+) -> Result<WorkerReservationOutcome, BridgeError> {
     let route = policy_coordinator::PolicyCoordinator::decide_worker_route(
         db,
         parent_session_id,
@@ -1582,14 +1594,18 @@ fn reserve_worker_launch(
                     actual_model,
                 )?;
             }
-            return Ok(None);
+            return Ok(if queue_on_block {
+                WorkerReservationOutcome::Queued
+            } else {
+                WorkerReservationOutcome::Blocked
+            });
         }
         policy::RouteDecision::ResumeWorker { session_id } => {
             let runtime = store::worker_runtime(db, session_id)?
                 .ok_or_else(|| BridgeError::Invalid(format!("warm worker {session_id} has no runtime record")))?;
             let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
             let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
-            return Ok(Some(WorkerLaunchReservation {
+            return Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
                 session_id: session_id.clone(),
                 workspace_id,
                 depth: parent_depth + 1,
@@ -1601,7 +1617,7 @@ fn reserve_worker_launch(
             }));
         }
         policy::RouteDecision::SpawnWorker(_) => {}
-        _ => return Ok(None),
+        _ => return Ok(WorkerReservationOutcome::Blocked),
     }
 
     let session_id = Uuid::new_v4().to_string();
@@ -1690,7 +1706,7 @@ fn reserve_worker_launch(
         },
     )?;
     transaction.commit()?;
-    Ok(Some(WorkerLaunchReservation {
+    Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
         session_id,
         workspace_id,
         depth,
@@ -1702,13 +1718,35 @@ fn reserve_worker_launch(
     }))
 }
 
-fn launch_worker(
+#[cfg(test)]
+fn reserve_worker_launch(
+    db: &Connection,
+    parent_session_id: &str,
+    turn_id: &str,
+    directive: &delegation::DelegationRequest,
+    actual_model: &str,
+    queue_on_block: bool,
+) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
+    Ok(match reserve_worker_launch_outcome(
+        db,
+        parent_session_id,
+        turn_id,
+        directive,
+        actual_model,
+        queue_on_block,
+    )? {
+        WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
+        WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
+    })
+}
+
+fn launch_worker_outcome(
     app: &AppHandle,
     parent_session_id: &str,
     turn_id: &str,
     directive: &delegation::DelegationRequest,
     queue_on_block: bool,
-) -> Option<String> {
+) -> WorkerLaunchOutcome {
     let state = app.state::<AppState>();
     let harness = directive.runtime_harness();
     let resolution = match state.adapter_registry.resolve_model(
@@ -1728,13 +1766,13 @@ fn launch_worker(
             );
             drop(db);
             let _ = app.emit("state-changed", ());
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
     };
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
-        reserve_worker_launch(
+        reserve_worker_launch_outcome(
             &db,
             parent_session_id,
             turn_id,
@@ -1744,10 +1782,14 @@ fn launch_worker(
         )
     };
     let mut reservation = match reservation {
-        Ok(Some(reservation)) => reservation,
-        Ok(None) => {
+        Ok(WorkerReservationOutcome::Reserved(reservation)) => reservation,
+        Ok(WorkerReservationOutcome::Queued) => {
             let _ = app.emit("state-changed", ());
-            return None;
+            return WorkerLaunchOutcome::Queued;
+        }
+        Ok(WorkerReservationOutcome::Blocked) => {
+            let _ = app.emit("state-changed", ());
+            return WorkerLaunchOutcome::Failed;
         }
         Err(error) => {
             let db = state.db.lock().unwrap();
@@ -1760,7 +1802,7 @@ fn launch_worker(
             );
             drop(db);
             let _ = app.emit("state-changed", ());
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
     };
     let requires_child_worktree = matches!(
@@ -1785,18 +1827,21 @@ fn launch_worker(
                 let db = state.db.lock().unwrap();
                 let transaction = match db.unchecked_transaction() {
                     Ok(transaction) => transaction,
-                    Err(_) => return None,
+                    Err(_) => return WorkerLaunchOutcome::Failed,
                 };
                 let _ = transaction.execute("DELETE FROM worker_runtime WHERE session_id=?1", params![reservation.session_id]);
                 let _ = transaction.execute("DELETE FROM worker_leases WHERE session_id=?1", params![reservation.session_id]);
                 let _ = transaction.execute("DELETE FROM sessions WHERE id=?1", params![reservation.session_id]);
                 let _ = transaction.commit();
-                if queue_on_block {
-                    let _ = worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model);
-                }
+                let queued = queue_on_block
+                    && worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model).is_ok();
                 let _ = store::event(&db, "worktree", "worker.worktree_queued", parent_session_id, &error.to_string());
                 let _ = app.emit("state-changed", ());
-                return None;
+                return if queued {
+                    WorkerLaunchOutcome::Queued
+                } else {
+                    WorkerLaunchOutcome::Failed
+                };
             }
         }
     }
@@ -1859,12 +1904,12 @@ fn launch_worker(
             if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
                 if runtime.send_turn(&directive.objective).is_ok() {
                     let _ = app.emit("state-changed", ());
-                    return Some(reservation.session_id);
+                    return WorkerLaunchOutcome::Launched(reservation.session_id);
                 }
             }
         }
         let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
 
     if directive.write_mode == delegation::WriteMode::ReadOnly {
@@ -1884,7 +1929,7 @@ fn launch_worker(
                     &label,
                     &format!("Could not capture tracked-file baseline: {error}"),
                 );
-                return None;
+                return WorkerLaunchOutcome::Failed;
             }
         }
     }
@@ -1898,7 +1943,7 @@ fn launch_worker(
         )
         .is_err()
         {
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
         let provider_id: Option<String> = state.db.lock().unwrap().query_row(
             "SELECT provider_session_id FROM sessions WHERE id=?1",
@@ -1970,7 +2015,7 @@ fn launch_worker(
                 &label,
                 &format!("Could not start provider process: {error}"),
             );
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
     };
     let session_id = reservation.session_id;
@@ -2013,7 +2058,7 @@ fn launch_worker(
             &session_id,
             &error.to_string(),
         );
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
     let (restoration_mode, resume_eligibility) = match activation {
         WorkerActivation::Fresh => (RestorationMode::Fresh, ResumeEligibility::Fresh),
@@ -2033,7 +2078,7 @@ fn launch_worker(
     .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
 
     {
@@ -2104,7 +2149,7 @@ fn launch_worker(
         )
         .is_err()
     {
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
     state
         .adapters
@@ -2118,23 +2163,63 @@ fn launch_worker(
         current_turn,
         reader,
     );
-    if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
-        let _ = runtime.send_turn(&directive.objective);
+    if let Err(error) = deliver_worker_objective(
+        &state.adapters,
+        &session_id,
+        &directive.objective,
+    ) {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop(adapters::ShutdownReason::Failed);
+        }
+        fail_reserved_worker(
+            app,
+            &session_id,
+            &label,
+            &format!("Could not deliver worker objective: {error}"),
+        );
+        return WorkerLaunchOutcome::Failed;
     }
     let _ = app.emit("state-changed", ());
-    Some(session_id)
+    WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn deliver_worker_objective(
+    adapters: &Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    session_id: &str,
+    objective: &str,
+) -> Result<(), BridgeError> {
+    adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .ok_or_else(|| {
+            BridgeError::Invalid("Worker runtime disappeared before objective delivery".into())
+        })?
+        .send_turn(objective)
+}
+
+fn launch_worker(
+    app: &AppHandle,
+    parent_session_id: &str,
+    turn_id: &str,
+    directive: &delegation::DelegationRequest,
+    queue_on_block: bool,
+) -> Option<String> {
+    match launch_worker_outcome(
+        app,
+        parent_session_id,
+        turn_id,
+        directive,
+        queue_on_block,
+    ) {
+        WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
+        WorkerLaunchOutcome::Queued | WorkerLaunchOutcome::Failed => None,
+    }
 }
 
 fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
     let state = app.state::<AppState>();
-    if session_supervisor::SessionSupervisor::transition(
-        &state.db.lock().unwrap(),
-        session_id,
-        worker_lifecycle::WorkerLifecycleState::Working,
-        Some("startup_failed_before_process"),
-    )
-    .is_err()
-    {
+    if prepare_worker_failure_settlement(&state.db.lock().unwrap(), session_id).is_err() {
         return;
     }
     let result = delegation::WorkerResult {
@@ -2153,6 +2238,27 @@ fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: 
     if settle_worker_after_result(app, session_id, &result).unwrap_or(false) {
         report_to_parent(app, session_id, &result);
     }
+}
+
+fn prepare_worker_failure_settlement(
+    db: &Connection,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let current: String = db.query_row(
+        "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if current == "working" {
+        return Ok(());
+    }
+    session_supervisor::SessionSupervisor::transition(
+        db,
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("startup_failed_before_process"),
+    )
+    .map(|_| ())
 }
 
 /// Frame a finished worker's final message and send it up to its parent.
@@ -3144,6 +3250,27 @@ fn resolve_approval(
     )?;
     let data: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
+    if data.get("approvalType").and_then(serde_json::Value::as_str) == Some("delegation_path_scope")
+    {
+        let launch =
+            resolve_policy_delegation_approval(&db, &session_id, event_id, &decision, &data)?;
+        drop(db);
+        if let Some((turn_id, request)) = launch {
+            match launch_worker_outcome(&app, &session_id, &turn_id, &request, true) {
+                WorkerLaunchOutcome::Launched(_) | WorkerLaunchOutcome::Queued => {}
+                WorkerLaunchOutcome::Failed => {
+                    let db = state.db.lock().unwrap();
+                    record_approved_launch_failure(&db, &session_id, &turn_id, &request)?;
+                    let _ = app.emit("state-changed", ());
+                    return Err(BridgeError::Invalid(
+                        "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
+                    ));
+                }
+            }
+        }
+        let _ = app.emit("state-changed", ());
+        return Ok(());
+    }
     let request_id = data
         .get("requestId")
         .cloned()
@@ -3205,6 +3332,104 @@ fn resolve_approval(
     let _ = app.emit("state-changed", ());
     Ok(())
 }
+
+fn record_approved_launch_failure(
+    db: &Connection,
+    session_id: &str,
+    turn_id: &str,
+    request: &delegation::DelegationRequest,
+) -> Result<(), BridgeError> {
+    session_forest::SessionForest::new(db)
+        .append(
+            session_id,
+            session_forest::EntryKind::DelegationRejected,
+            serde_json::json!({
+                "requestId": turn_id,
+                "turnId": turn_id,
+                "status": "failed",
+                "reason": "approved_launch_failed",
+                "title": "Approved delegation could not launch",
+                "text": "The approved same-turn scope remains available if the delegation is retried.",
+                "request": request,
+            }),
+        )
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "policy",
+        "policy.approved_launch_failed",
+        session_id,
+        turn_id,
+    )?;
+    Ok(())
+}
+
+fn resolve_policy_delegation_approval(
+    db: &Connection,
+    session_id: &str,
+    event_id: i64,
+    decision: &str,
+    payload: &serde_json::Value,
+) -> Result<Option<(String, delegation::DelegationRequest)>, BridgeError> {
+    if decision == "acceptForSession" {
+        return Err(BridgeError::Invalid(
+            "Delegation path scope can only be approved for this turn".into(),
+        ));
+    }
+    let branch = session_forest::SessionForest::new(db)
+        .active_branch(session_id)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let approval_id = payload
+        .get("approvalId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid("Policy approval has no approval id".into()))?;
+    let request_entry = branch
+        .iter()
+        .find(|entry| {
+            entry.sequence == event_id
+                && entry.kind == "approval.requested"
+                && entry.payload["approvalId"] == approval_id
+        })
+        .ok_or_else(|| {
+            BridgeError::Invalid("Approval is no longer on the active conversation branch".into())
+        })?;
+    if branch.iter().any(|entry| {
+        entry.kind == "approval.resolved" && entry.payload["approvalId"] == approval_id
+    }) {
+        return Err(BridgeError::Invalid("Approval was already resolved".into()));
+    }
+    let request: delegation::DelegationRequest =
+        serde_json::from_value(payload.get("request").cloned().ok_or_else(|| {
+            BridgeError::Invalid("Policy approval has no delegation request".into())
+        })?)
+        .map_err(|error| {
+            BridgeError::Invalid(format!("Policy approval request is invalid: {error}"))
+        })?;
+    request.validate().map_err(BridgeError::Invalid)?;
+    let turn_id = payload
+        .get("turnId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| BridgeError::Invalid("Policy approval has no parent turn".into()))?
+        .to_owned();
+    session_forest::SessionForest::new(db)
+        .append(
+            session_id,
+            session_forest::EntryKind::ApprovalResolved,
+            serde_json::json!({
+                "approvalId": approval_id,
+                "approvalType": "delegation_path_scope",
+                "requestEventId": event_id,
+                "requestEntryId": request_entry.id,
+                "turnId": turn_id,
+                "decision": decision,
+                "approvedOwnedPaths": request.owned_paths,
+            }),
+        )
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    Ok(matches!(decision, "accept" | "acceptForSession").then_some((turn_id, request)))
+}
+
 #[tauri::command]
 fn resize_terminal(
     workspace_id: String,
@@ -3585,6 +3810,19 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    struct RejectingRuntime;
+
+    impl adapters::AdapterRuntime for RejectingRuntime {
+        fn provider_session_id(&self) -> &str { "rejecting" }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
+            Err(BridgeError::Invalid("delivery rejected".into()))
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _reason: adapters::ShutdownReason) {}
+    }
+
     fn policy_request(paths: &[&str]) -> delegation::DelegationRequest {
         delegation::DelegationRequest {
             schema_version: 1,
@@ -3605,16 +3843,94 @@ mod tests {
         }
     }
 
-    fn policy_fixture() -> Connection {
-        let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute(
-            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/policy-demo','now')",
-            [],
+    #[test]
+    fn worker_objective_delivery_failure_is_not_reported_as_launched() {
+        let adapters = Mutex::new(HashMap::from([(
+            "worker".into(),
+            Box::new(RejectingRuntime) as Box<dyn adapters::AdapterRuntime>,
+        )]));
+        assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
+        assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+    }
+
+    #[test]
+    fn post_start_delivery_failure_settles_and_releases_its_lease() {
+        let db = policy_fixture();
+        let request = policy_request(&["src/auth/**"]);
+        let reservation = reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-delivery-failure",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        prepare_worker_failure_settlement(&db, &reservation.session_id).unwrap();
+        prepare_worker_failure_settlement(&db, &reservation.session_id).unwrap();
+        session_supervisor::SessionSupervisor::transition(
+            &db,
+            &reservation.session_id,
+            worker_lifecycle::WorkerLifecycleState::Failed,
+            Some("objective_delivery_failed"),
         )
         .unwrap();
-        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/policy-workspace','idle','now')", []).unwrap();
+        session_supervisor::SessionSupervisor::transition(
+            &db,
+            &reservation.session_id,
+            worker_lifecycle::WorkerLifecycleState::Completed,
+            Some("terminal_failure_reported"),
+        )
+        .unwrap();
+        let result = delegation::WorkerResult {
+            schema_version: delegation::SCHEMA_VERSION,
+            status: delegation::WorkerResultStatus::Failed,
+            summary: "Objective delivery failed".into(),
+            files_changed: vec![],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec!["Worker received no objective".into()],
+            remaining_work: vec!["Retry the delegation".into()],
+            suggested_next_action: delegation::SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        session_supervisor::SessionSupervisor::record_result(
+            &db,
+            &reservation.session_id,
+            &result,
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT lease_status FROM worker_leases WHERE session_id=?1",
+                params![reservation.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "released"
+        );
+    }
+
+    fn policy_fixture() -> Connection {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let workspace_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+            params![workspace_path.to_string_lossy()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task',?1,'idle','now')", params![workspace_path.to_string_lossy()]).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','working','reported',0)", []).unwrap();
         db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('parent','fresh','now')", []).unwrap();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Write scope: src/**"}),
+            )
+            .unwrap();
         db
     }
 
@@ -3840,7 +4156,7 @@ mod tests {
             "standard:gpt-5.6-terra"
         );
 
-        let second = reserve_worker_launch(
+        let second = reserve_worker_launch_outcome(
             &db,
             "parent",
             "turn-1",
@@ -3849,7 +4165,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(second.is_none());
+        assert!(matches!(second, WorkerReservationOutcome::Queued));
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sessions WHERE workspace_id='w'",
@@ -3860,10 +4176,228 @@ mod tests {
             2
         );
         let entries = store::session_entries(&db, "parent").unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[1].kind, "delegation.requested");
-        assert_eq!(entries[1].payload["decision"], "queue");
-        assert_eq!(entries[1].payload["reason"], "writer_conflict");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].kind, "delegation.requested");
+        assert_eq!(entries[2].payload["decision"], "queue");
+        assert_eq!(entries[2].payload["reason"], "writer_conflict");
+    }
+
+    #[test]
+    fn policy_approval_blocks_launch_side_effects_until_accepted() {
+        let db = policy_fixture();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Please implement the auth change"}),
+            )
+            .unwrap();
+        let request = policy_request(&["src/auth/**"]);
+        assert!(reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-approval",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM usage_ledger WHERE source LIKE 'policy.spawn.%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        let approval = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(approval.kind, "approval.requested");
+        let (turn_id, approved_request) = resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(turn_id, "turn-approval");
+        assert!(reserve_worker_launch(
+            &db,
+            "parent",
+            &turn_id,
+            &approved_request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap()
+        .is_some());
+        assert!(resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn declined_policy_approval_never_launches() {
+        let db = policy_fixture();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Explain the auth module only"}),
+            )
+            .unwrap();
+        let request = policy_request(&["src/auth/**"]);
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-decline",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        let approval = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .last()
+            .unwrap();
+        assert!(resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "decline",
+            &approval.payload,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-decline",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            store::session_entries(&db, "parent")
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.kind == "approval.requested")
+                .count(),
+            1,
+            "a declined turn/scope must not create a dead follow-up card"
+        );
+    }
+
+    #[test]
+    fn policy_approval_is_idempotent_and_stale_branches_cannot_resolve() {
+        let db = policy_fixture();
+        let forest = session_forest::SessionForest::new(&db);
+        let branch_point = forest
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Explain the auth module only"}),
+            )
+            .unwrap();
+        let request = policy_request(&["src/auth/**"]);
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-stale",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-stale",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        let entries = store::session_entries(&db, "parent").unwrap();
+        let approvals = entries
+            .iter()
+            .filter(|entry| entry.kind == "approval.requested")
+            .collect::<Vec<_>>();
+        assert_eq!(approvals.len(), 1);
+        let approval = approvals[0];
+        forest.move_head("parent", Some(&branch_point.id)).unwrap();
+        forest
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Do not make any changes"}),
+            )
+            .unwrap();
+        assert!(resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .is_err());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn approved_launch_failure_is_durable_and_retryable_for_the_turn() {
+        let db = policy_fixture();
+        let request = policy_request(&["src/auth/**"]);
+        record_approved_launch_failure(&db, "parent", "turn-retry", &request).unwrap();
+        let entries = session_forest::SessionForest::new(&db)
+            .active_branch("parent")
+            .unwrap();
+        let failure = entries.last().unwrap();
+        assert_eq!(failure.kind, "delegation.rejected");
+        assert_eq!(failure.payload["reason"], "approved_launch_failed");
+        assert_eq!(failure.payload["turnId"], "turn-retry");
+        assert!(failure.payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("retried"));
     }
 
     #[test]
@@ -3902,6 +4436,10 @@ mod tests {
             turn_id: "turn-1".into(),
             parent_depth: 0,
             request: request.clone(),
+            owned_path_provenance: policy::OwnedPathProvenance {
+                trusted_paths: request.owned_paths.clone(),
+                source_entry_ids: vec!["test-user-entry".into()],
+            },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),
             active_workers: Vec::new(),

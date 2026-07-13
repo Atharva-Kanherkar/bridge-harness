@@ -63,6 +63,22 @@ describe("session forest conversation projection",()=>{
     expect(items.map(({text})=>text)).toEqual(["Saved state","Reduced context","Retained boundary"]);
   });
 
+  it("folds durable approval resolution into the pending request card",()=>{
+    const request=entry("e6",null,"approval.requested",{status:"pending",approvalId:"scope",approvalType:"delegation_path_scope",title:"Approve scope"},6);
+    const resolved=entry("e7","e6","approval.resolved",{approvalId:"scope",requestEventId:6,decision:"accept"},7);
+    const items=projectSessionConversation([resolved,request],"e7");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({type:"approval",eventId:6,status:"accept",title:"Approve scope"});
+  });
+
+  it("folds provider-shaped durable approval resolution data",()=>{
+    const request=entry("e8",null,"approval.requested",{status:"pending",title:"Approve command"},8);
+    const resolved=entry("e9","e8","approval.resolved",{status:"completed",data:{requestEventId:8,decision:"decline"}},9);
+    const items=projectSessionConversation([request,resolved],"e9");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({eventId:8,status:"decline",title:"Approve command"});
+  });
+
   it("keeps raw provider entries collapsed and inspectable",()=>{
     const raw=entry("e2","e1","provider.unknown",{title:"provider frame",text:"opaque",providerMeta:{requestId:"r"}},2,{contextVisibility:"worker_raw"});
     const items=projectSessionConversation([root,raw],"e2");

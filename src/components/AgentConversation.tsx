@@ -246,18 +246,20 @@ function PlanCard({ item }: { item: ConversationItem }) {
 }
 
 function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
+  const pending = item.status === "pending";
+  const accepted = item.status === "accept" || item.status === "acceptForSession";
   return <div className="my-4 border border-warning/30 rounded-lg bg-warning/5 overflow-hidden">
-    <header className="flex items-baseline gap-[9px] pt-3 px-[15px]"><b className="text-[13px] font-semibold text-foreground">{item.title || "Approval needed"}</b><small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small></header>
+    <header className="flex items-baseline gap-[9px] pt-3 px-[15px]"><b className="text-[13px] font-semibold text-foreground">{item.title || "Approval needed"}</b>{pending && <small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small>}</header>
     {item.text && <p className="mt-1.5 px-[15px] text-muted-foreground text-[12.5px] leading-relaxed">{item.text}</p>}
     {item.data.command ? <code className="block mt-2.5 mx-[15px] p-[9px_11px] border border-border rounded-md bg-background text-code-foreground font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap">{String(item.data.command)}</code> : null}
     {item.data.cwd ? <small className="block pt-1.5 px-[15px] text-muted-foreground/70 font-mono text-[10.5px]">{String(item.data.cwd)}</small> : null}
-    {item.status === "pending"
+    {pending
       ? <div className="flex justify-end gap-[7px] p-[12px_13px]">
           <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-muted-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "decline")}><X size={12} aria-hidden="true" /> Decline</button>
-          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>
+          {item.data.approvalType !== "delegation_path_scope" && <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-transparent border border-border text-foreground hover:bg-accent transition-colors" onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>}
           <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors" onClick={() => onResolve(item.eventId, "accept")}><Check size={12} aria-hidden="true" /> Allow once</button>
         </div>
-      : <div className="p-[10px_15px_12px] flex items-center gap-1.5 text-muted-foreground text-[11.5px]"><Check size={12} aria-hidden="true" /> {item.status}</div>}
+      : <div className="p-[10px_15px_12px] flex items-center gap-1.5 text-muted-foreground text-[11.5px]">{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {item.status}</div>}
   </div>;
 }
 

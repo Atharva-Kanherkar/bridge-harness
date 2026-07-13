@@ -29,7 +29,24 @@ export function selectActiveBranch(entries: SessionEntry[], activeLeafId: string
 
 /** Project immutable forest entries into UI items with entry-derived, branch-stable keys. */
 export function projectSessionConversation(entries: SessionEntry[], activeLeafId: string | null): ConversationItem[] {
-  return selectActiveBranch(entries, activeLeafId).map(projectSessionEntry);
+  const items: ConversationItem[] = [];
+  const approvalsBySequence = new Map<number, ConversationItem>();
+  for (const entry of selectActiveBranch(entries, activeLeafId)) {
+    if (entry.kind === "approval.resolved") {
+      const nested = objectValue(entry.payload.data);
+      const requestEventId = Number(entry.payload.requestEventId ?? nested.requestEventId);
+      const request = approvalsBySequence.get(requestEventId);
+      if (request) {
+        request.status = stringValue(entry.payload.decision) ?? stringValue(nested.decision) ?? stringValue(entry.payload.status) ?? "resolved";
+        request.data = { ...request.data, resolution: entry.payload };
+        continue;
+      }
+    }
+    const item = projectSessionEntry(entry);
+    items.push(item);
+    if (entry.kind === "approval.requested") approvalsBySequence.set(entry.sequence, item);
+  }
+  return items;
 }
 
 function projectSessionEntry(entry: SessionEntry): ConversationItem {
@@ -87,6 +104,10 @@ function isRawProviderEntry(entry: SessionEntry): boolean {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function humanizeKind(kind: string): string {
