@@ -8,6 +8,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const CONTEXT_PRESSURE_PERCENT: f64 = 75.0;
@@ -119,6 +120,60 @@ pub struct PendingCompaction {
     pub tokens_before: i64,
     pub requested_at: String,
     pub first_retained_entry_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckpointEvidence {
+    decisions: BTreeSet<String>,
+    files_touched: BTreeSet<String>,
+}
+
+impl CheckpointEvidence {
+    fn from_active_history(db: &Connection, session_id: &str) -> Result<Self, BridgeError> {
+        let branch = SessionForest::new(db)
+            .active_branch(session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let start = branch.iter().rposition(|entry| entry.kind == "compaction")
+            .map(|index| index + 1).unwrap_or(0);
+        let mut evidence = Self { decisions: BTreeSet::new(), files_touched: BTreeSet::new() };
+        for entry in &branch[start..] {
+            if matches!(entry.kind.as_str(), "worker.result" | "checkpoint") {
+                collect_strings(&entry.payload, "decisions", &mut evidence.decisions);
+            }
+            if entry.kind == "worker.result" {
+                collect_strings(&entry.payload, "filesChanged", &mut evidence.files_touched);
+            } else if entry.kind == "artifact.created" {
+                if let Some(path) = entry.payload.get("path").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) {
+                    evidence.files_touched.insert(path.to_owned());
+                }
+            }
+        }
+        Ok(evidence)
+    }
+
+    fn verify(&self, checkpoint: &Checkpoint) -> Result<(), String> {
+        let actual_decisions = checkpoint.decisions.iter().map(|value| value.trim().to_owned()).collect::<BTreeSet<_>>();
+        let actual_files = checkpoint.files_touched.iter().map(|value| value.trim().to_owned()).collect::<BTreeSet<_>>();
+        let missing_decisions = self.decisions.difference(&actual_decisions).cloned().collect::<Vec<_>>();
+        let missing_files = self.files_touched.difference(&actual_files).cloned().collect::<Vec<_>>();
+        if missing_decisions.is_empty() && missing_files.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "checkpoint omits durable evidence; missing decisions: {}; missing files: {}",
+            if missing_decisions.is_empty() { "none".into() } else { missing_decisions.join(" | ") },
+            if missing_files.is_empty() { "none".into() } else { missing_files.join(" | ") },
+        ))
+    }
+}
+
+fn collect_strings(payload: &Value, field: &str, target: &mut BTreeSet<String>) {
+    for value in payload.get(field).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        let value = value.trim();
+        if !value.is_empty() {
+            target.insert(value.to_owned());
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,7 +332,11 @@ impl CompactionController {
             Self::record_failure(db, session_id, error, pending.attempt)?;
             return Ok(CheckpointOutcome::Failed);
         }
-        Self::record_checkpoint(db, session_id, checkpoint, pending, "agent")
+        let evidence = CheckpointEvidence::from_active_history(db, session_id)?;
+        if let Err(error) = evidence.verify(&checkpoint) {
+            return Self::reject_incomplete_checkpoint(db, session_id, &pending, &error);
+        }
+        Self::record_checkpoint(db, session_id, checkpoint, pending, "agent", Some(&evidence))
     }
 
     pub fn record_reconstructed(
@@ -309,7 +368,7 @@ impl CompactionController {
             requested_at: Utc::now().to_rfc3339(),
             first_retained_entry_id: checkpoint.first_retained_entry_id.clone(),
         };
-        Self::record_checkpoint(db, session_id, checkpoint, pending, "reconstructed")
+        Self::record_checkpoint(db, session_id, checkpoint, pending, "reconstructed", None)
     }
 
     pub fn reconstruct_from_normalized_events_and_git(
@@ -400,12 +459,47 @@ impl CompactionController {
         Ok(())
     }
 
+    fn reject_incomplete_checkpoint(
+        db: &Connection,
+        session_id: &str,
+        pending: &PendingCompaction,
+        error: &str,
+    ) -> Result<CheckpointOutcome, BridgeError> {
+        if pending.attempt == 0 {
+            SessionForest::new(db)
+                .append(
+                    session_id,
+                    EntryKind::CompactionRequested,
+                    json!({
+                        "reason": pending.reason.as_str(),
+                        "attempt": 1,
+                        "tokensBefore": pending.tokens_before,
+                        "sourceAgent": session_id,
+                        "requestedAt": Utc::now().to_rfc3339(),
+                        "firstRetainedEntryId": pending.first_retained_entry_id,
+                        "repairOf": error,
+                    }),
+                )
+                .map_err(|forest_error| BridgeError::Invalid(forest_error.to_string()))?;
+            return Ok(CheckpointOutcome::Repair {
+                prompt: Self::checkpoint_prompt(
+                    session_id,
+                    &PendingCompaction { attempt: 1, ..pending.clone() },
+                    Some(error),
+                ),
+            });
+        }
+        Self::record_failure(db, session_id, error, pending.attempt)?;
+        Ok(CheckpointOutcome::Failed)
+    }
+
     fn record_checkpoint(
         db: &Connection,
         session_id: &str,
         checkpoint: Checkpoint,
         pending: PendingCompaction,
         provenance: &str,
+        evidence: Option<&CheckpointEvidence>,
     ) -> Result<CheckpointOutcome, BridgeError> {
         if checkpoint.first_retained_entry_id != pending.first_retained_entry_id
             || checkpoint.tokens_before != pending.tokens_before
@@ -472,6 +566,19 @@ impl CompactionController {
                 retained_at,
             ],
         )?;
+        if let Some(evidence) = evidence {
+            transaction.execute(
+                "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('compaction','checkpoint.evidence_verified',?1,?2,?3)",
+                params![
+                    session_id,
+                    json!({
+                        "decisionCount": evidence.decisions.len(),
+                        "fileCount": evidence.files_touched.len(),
+                    }).to_string(),
+                    retained_at,
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(CheckpointOutcome::Completed {
             checkpoint_entry_id: checkpoint_entry.id,
@@ -664,8 +771,42 @@ mod tests {
     }
 
     #[test]
+    fn schema_valid_checkpoint_with_missing_durable_evidence_repairs_then_fails() {
+        let db = database();
+        SessionForest::new(&db).append("s", EntryKind::WorkerResult, json!({
+            "status":"completed",
+            "summary":"implemented",
+            "decisions":["Keep the public API", "Keep the public API"],
+            "filesChanged":["src/api.rs", "src/api.rs"]
+        })).unwrap();
+        SessionForest::new(&db).append(
+            "s",
+            EntryKind::ArtifactCreated,
+            json!({"path":"docs/api.md"}),
+        ).unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 42).unwrap().unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        let incomplete = json!({
+            "schemaVersion":1,"summary":"looks complete","decisions":[],"filesTouched":[],
+            "sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
+            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+        }).to_string();
+        let CheckpointOutcome::Repair { prompt } = CompactionController::handle_output(&db, "s", &incomplete).unwrap() else { panic!("expected repair") };
+        assert!(prompt.contains("Keep the public API"));
+        assert!(prompt.contains("src/api.rs"));
+        assert!(prompt.contains("docs/api.md"));
+        assert_eq!(CompactionController::handle_output(&db, "s", &incomplete).unwrap(), CheckpointOutcome::Failed);
+        assert!(!store::session_entries(&db, "s").unwrap().iter().any(|entry| entry.kind == "compaction"));
+    }
+
+    #[test]
     fn valid_checkpoint_commits_immutable_boundary_and_projects_from_retained_marker() {
         let db = database();
+        SessionForest::new(&db).append("s", EntryKind::WorkerResult, json!({
+            "status":"completed","summary":"verified",
+            "decisions":["Keep SQLite as source of truth", "Keep SQLite as source of truth"],
+            "filesChanged":["src-tauri/src/context.rs", "src-tauri/src/context.rs"]
+        })).unwrap();
         CompactionController::begin(&db, "s", CompactionReason::PhaseBoundary, 55)
             .unwrap()
             .unwrap();
@@ -680,22 +821,16 @@ mod tests {
         let entries = store::session_entries(&db, "s").unwrap();
         assert_eq!(
             entries.iter().map(|entry| entry.kind.as_str()).collect::<Vec<_>>(),
-            vec![
-                "user.message",
-                "compaction.requested",
-                "checkpoint",
-                "compaction",
-                "branch.summary",
-            ]
+            vec!["user.message", "worker.result", "compaction.requested", "checkpoint", "compaction", "branch.summary"]
         );
-        assert_eq!(entries[3].payload["firstRetainedEntryId"], entries[4].id);
+        assert_eq!(entries[4].payload["firstRetainedEntryId"], entries[5].id);
         let branch = SessionForest::new(&db).active_branch("s").unwrap();
         let projection = ContextProjector::project(&branch, 8_000).unwrap();
         assert_eq!(
             projection.restoration_context.unwrap().summary,
             "Phase one is complete"
         );
-        assert_eq!(projection.render_entries[0].id, entries[4].id);
+        assert_eq!(projection.render_entries[0].id, entries[5].id);
         assert_eq!(
             db.query_row(
                 "SELECT latest_checkpoint_entry_id FROM session_heads WHERE session_id='s'",
@@ -703,8 +838,35 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-            entries[2].id
+            entries[3].id
         );
+        let audit: String = db.query_row(
+            "SELECT body FROM events WHERE entity_id='s' AND kind='checkpoint.evidence_verified'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&audit).unwrap(), json!({"decisionCount":1,"fileCount":1}));
+    }
+
+    #[test]
+    fn completed_compaction_resets_required_evidence_window() {
+        let db = database();
+        SessionForest::new(&db).append("s", EntryKind::WorkerResult, json!({
+            "status":"completed","summary":"old phase","decisions":["old decision"],"filesChanged":["src/old.rs"]
+        })).unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::PhaseBoundary, 10).unwrap().unwrap();
+        let first = CompactionController::pending(&db, "s").unwrap().unwrap();
+        let first_output = json!({
+            "schemaVersion":1,"summary":"first","decisions":["old decision"],"filesTouched":["src/old.rs"],
+            "sourceAgent":"s","firstRetainedEntryId":first.first_retained_entry_id,"tokensBefore":first.tokens_before,"reason":first.reason.as_str()
+        }).to_string();
+        assert!(matches!(CompactionController::handle_output(&db, "s", &first_output).unwrap(), CheckpointOutcome::Completed { .. }));
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 20).unwrap().unwrap();
+        let second = CompactionController::pending(&db, "s").unwrap().unwrap();
+        let second_output = json!({
+            "schemaVersion":1,"summary":"second","decisions":[],"filesTouched":[],
+            "sourceAgent":"s","firstRetainedEntryId":second.first_retained_entry_id,"tokensBefore":second.tokens_before,"reason":second.reason.as_str()
+        }).to_string();
+        assert!(matches!(CompactionController::handle_output(&db, "s", &second_output).unwrap(), CheckpointOutcome::Completed { .. }));
     }
 
     #[test]
