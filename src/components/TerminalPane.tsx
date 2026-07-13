@@ -13,7 +13,21 @@ export function TerminalPane({ workspaceId }: { workspaceId?: string }) {
     const term = new Terminal({
       fontFamily: "'SFMono-Regular', 'SF Mono', Menlo, monospace", fontSize: 13, lineHeight: 1.42,
       cursorBlink: true, cursorStyle: "bar", convertEol: true,
-      theme: { background: "#0b0d0f", foreground: "#c7cbc7", cursor: "#d8ff63", selectionBackground: "#384122", black: "#111315", brightBlack: "#606660", green: "#a8c751", brightGreen: "#d8ff63", yellow: "#d9b861", blue: "#78a9d1", cyan: "#74b8ad", white: "#c7cbc7", brightWhite: "#f0f2ee" }
+      theme: {
+        background: "#0c0c0d",
+        foreground: "#b8b8bc",
+        cursor: "#e8e8ec",
+        selectionBackground: "rgba(255,255,255,0.12)",
+        black: "#0c0c0d",
+        brightBlack: "#5c5c63",
+        green: "#8a8a90",
+        brightGreen: "#b0b0b6",
+        yellow: "#d9b861",
+        blue: "#78a9d1",
+        cyan: "#74b8ad",
+        white: "#e8e8ec",
+        brightWhite: "#f4f4f6",
+      }
     });
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
     const previous = scrollback.get(workspaceId); if (previous) term.write(previous);

@@ -4,9 +4,9 @@
 
 .home {
   position: fixed; inset: 0; z-index: 15;
-  background: #0a0a0b;
-  color: #e8e8ea;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   display: flex; flex-direction: column;
   overflow: hidden;
@@ -35,7 +35,7 @@
 }
 .home-sync .glyph { display: grid; place-items: center; opacity: .8; }
 .home-sync small { color: #5c5c63; font-size: 10.5px; font-weight: 500; letter-spacing: .02em; }
-.home-sync i { width: 5px; height: 5px; border-radius: 50%; background: #34d27b; }
+.home-sync i { width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
 .home-skip {
   height: 28px; padding: 0 11px;
   display: inline-flex; align-items: center; gap: 7px;
@@ -188,12 +188,12 @@
 .home-composer-shell:hover { border-color: rgba(255,255,255,.14); }
 .home-composer-shell > span { flex: 1; color: #616168; font-size: 13.5px; letter-spacing: -.005em; }
 .home-send {
-  width: 32px; height: 32px; border: 0; border-radius: 8px;
+  width: 32px; height: 32px; border: 0; border-radius: var(--radius-md);
   display: grid; place-items: center;
-  background: #ececef; color: #131315;
+  background: var(--primary); color: var(--primary-foreground);
   transition: transform .12s ease, background .15s ease;
 }
-.home-send:hover { background: #fff; }
+.home-send:hover { background: color-mix(in srgb, var(--primary) 90%, var(--foreground)); }
 .home-send:active { transform: scale(.93); }
 .home-hints {
   margin-top: 10px; display: flex; justify-content: center; gap: 18px;
