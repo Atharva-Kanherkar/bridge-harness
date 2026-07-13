@@ -10,7 +10,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock,
     },
 };
 use uuid::Uuid;
@@ -397,17 +397,26 @@ fn thinking_budget(effort: Option<&str>) -> Option<u32> {
 }
 
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
-    let mut writer = writer.lock().unwrap();
+    let mut writer = lock_writer(writer, "Claude")?;
     serde_json::to_writer(&mut *writer, value)
         .map_err(|e| BridgeError::Invalid(format!("Cannot encode Claude request: {e}")))?;
     writer.write_all(b"\n")?;
     writer.flush()?;
     Ok(())
 }
+fn lock_writer<'a, T>(writer: &'a Mutex<T>, provider: &str) -> Result<MutexGuard<'a, T>, BridgeError> {
+    writer.lock().map_err(|_| BridgeError::Adapter(format!("{provider} stdin lock was poisoned; restart the session")))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn poisoned_writer_is_a_typed_adapter_error() {
+        let writer = Mutex::new(());
+        let _ = std::panic::catch_unwind(|| { let _guard = writer.lock().unwrap(); panic!("provider thread failed"); });
+        assert!(matches!(lock_writer(&writer, "Claude"), Err(BridgeError::Adapter(_))));
+    }
 
     #[test]
     fn parses_claude_usage_report_into_labeled_windows() {

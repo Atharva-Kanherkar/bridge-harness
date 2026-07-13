@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const STANDARD_WARM_TIMEOUT_MINUTES: i64 = 5;
+pub const QUEUE_TTL_HOURS: i64 = 24;
+pub const DISPATCH_LEASE_MINUTES: i64 = 5;
+pub const MAX_QUEUE_ATTEMPTS: i64 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,6 +121,7 @@ impl WorkerPool {
     ) -> Result<String, BridgeError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(QUEUE_TTL_HOURS)).to_rfc3339();
         store::enqueue_worker_request(
             db,
             &QueuedWorkerRequest {
@@ -131,11 +135,21 @@ impl WorkerPool {
                 queue_status: "queued".into(),
                 sequence: 0,
                 dispatched_session_id: None,
+                attempt_count: 0, expires_at, claimed_at: None, last_error: None,
                 created_at: now.clone(),
                 updated_at: now,
             },
         )?;
         Ok(id)
+    }
+
+    pub fn maintain_queue(db: &Connection, now: DateTime<Utc>) -> Result<(), BridgeError> {
+        let stale_before = (now - Duration::minutes(DISPATCH_LEASE_MINUTES)).to_rfc3339();
+        let now = now.to_rfc3339();
+        db.execute("UPDATE worker_queue SET queue_status='expired',last_error='queue TTL exceeded',updated_at=?1 WHERE queue_status='queued' AND expires_at IS NOT NULL AND expires_at<=?1", rusqlite::params![now])?;
+        db.execute("UPDATE worker_queue SET queue_status='cancelled',last_error='parent session cancelled',updated_at=?1 WHERE queue_status IN ('queued','dispatching') AND parent_session_id IN (SELECT id FROM sessions WHERE status='cancelled')", rusqlite::params![now])?;
+        db.execute("UPDATE worker_queue SET queue_status=CASE WHEN attempt_count>=?1 THEN 'dead_letter' ELSE 'queued' END,attempt_count=attempt_count+1,claimed_at=NULL,last_error='stale dispatch lease expired',updated_at=?2 WHERE queue_status='dispatching' AND claimed_at IS NOT NULL AND claimed_at<=?3", rusqlite::params![MAX_QUEUE_ATTEMPTS,now,stale_before])?;
+        Ok(())
     }
 
     pub fn expire_warm_workers(
@@ -169,6 +183,7 @@ impl WorkerPool {
         db: &Connection,
         workspace_id: &str,
     ) -> Result<Option<QueuedWorkerRequest>, BridgeError> {
+        Self::maintain_queue(db, Utc::now())?;
         let active = policy::load_workers(db, workspace_id, "active")?;
         if active.len() >= policy::PolicyConfig::default().max_concurrent_workers {
             return Ok(None);
@@ -179,8 +194,10 @@ impl WorkerPool {
         else {
             return Ok(None);
         };
-        let directive: DelegationRequest = serde_json::from_value(request.request.clone())
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let directive: DelegationRequest = match serde_json::from_value::<DelegationRequest>(request.request.clone()) {
+            Ok(directive) if directive.validate().is_ok() => directive,
+            _ => { db.execute("UPDATE worker_queue SET queue_status='dead_letter',last_error='invalid queued delegation request',updated_at=?2 WHERE id=?1", rusqlite::params![request.id,Utc::now().to_rfc3339()])?; return Ok(None); }
+        };
         let conflicts = directive.write_mode != crate::delegation::WriteMode::ReadOnly
             && active.iter().any(|worker| {
                 worker.write_mode != crate::delegation::WriteMode::ReadOnly
@@ -194,7 +211,7 @@ impl WorkerPool {
             return Ok(None);
         }
         let claimed = db.execute(
-            "UPDATE worker_queue SET queue_status='dispatching',updated_at=?2 WHERE id=?1 AND queue_status='queued'",
+            "UPDATE worker_queue SET queue_status='dispatching',attempt_count=attempt_count+1,claimed_at=?2,updated_at=?2 WHERE id=?1 AND queue_status='queued'",
             rusqlite::params![request.id, Utc::now().to_rfc3339()],
         )? == 1;
         Ok(claimed.then_some(request))
@@ -329,7 +346,7 @@ mod tests {
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('active','w','implementation','standard','implementation','[\"src/**\"]','shared','active','now','now')", []).unwrap();
         let directive = request();
         for id in ["q1", "q2"] {
-            store::enqueue_worker_request(&db, &QueuedWorkerRequest { id:id.into(), parent_session_id:"parent".into(), workspace_id:"w".into(), turn_id:"turn".into(), request:serde_json::to_value(&directive).unwrap(), actual_model:"model".into(), queue_status:"queued".into(), sequence:0, dispatched_session_id:None, created_at:"now".into(), updated_at:"now".into() }).unwrap();
+            store::enqueue_worker_request(&db, &QueuedWorkerRequest { id:id.into(), parent_session_id:"parent".into(), workspace_id:"w".into(), turn_id:"turn".into(), request:serde_json::to_value(&directive).unwrap(), actual_model:"model".into(), queue_status:"queued".into(), sequence:0, dispatched_session_id:None, attempt_count:0, expires_at:"2099-01-01T00:00:00+00:00".into(), claimed_at:None, last_error:None, created_at:"now".into(), updated_at:"now".into() }).unwrap();
         }
         assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap(), None);
         db.execute("UPDATE worker_leases SET lease_status='released' WHERE session_id='active'", []).unwrap();
