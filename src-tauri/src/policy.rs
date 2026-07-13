@@ -34,8 +34,16 @@ pub enum RouteReason {
     RetryLimit,
     CapabilityBudgetExhausted,
     UserApprovalRequired,
+    OwnedPathProvenanceRequired,
     InvalidOwnedPath,
     ChildWorktreeUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedPathProvenance {
+    pub trusted_paths: Vec<String>,
+    pub source_entry_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +98,7 @@ pub struct PolicyInput {
     pub turn_id: String,
     pub parent_depth: i64,
     pub request: DelegationRequest,
+    pub owned_path_provenance: OwnedPathProvenance,
     pub requested_harness: String,
     pub task_family: String,
     pub active_workers: Vec<WorkerSnapshot>,
@@ -154,6 +163,21 @@ impl PolicyEngine {
                 0,
             );
         }
+        if normalize_owned_paths(&input.request.owned_paths).is_err() {
+            return outcome(RouteDecision::Reject, RouteReason::InvalidOwnedPath, 0);
+        }
+        if input.request.write_mode != WriteMode::ReadOnly
+            && !owned_paths_are_provenanced(
+                &input.request.owned_paths,
+                &input.owned_path_provenance.trusted_paths,
+            )
+        {
+            return outcome(
+                RouteDecision::RequireUserApproval,
+                RouteReason::OwnedPathProvenanceRequired,
+                0,
+            );
+        }
         if input.retry_count > self.config.max_automatic_retries {
             return outcome(RouteDecision::Reject, RouteReason::RetryLimit, 0);
         }
@@ -165,10 +189,6 @@ impl PolicyEngine {
         {
             return outcome(RouteDecision::Reject, RouteReason::StrongWorkerLimit, 0);
         }
-        if normalize_owned_paths(&input.request.owned_paths).is_err() {
-            return outcome(RouteDecision::Reject, RouteReason::InvalidOwnedPath, 0);
-        }
-
         let warm = input
             .warm_workers
             .iter()
@@ -230,6 +250,40 @@ impl PolicyEngine {
             units,
         )
     }
+}
+
+pub fn owned_paths_are_provenanced(claimed: &[String], trusted: &[String]) -> bool {
+    let Ok(claimed) = normalize_owned_paths(claimed) else {
+        return false;
+    };
+    let Ok(trusted) = normalize_owned_paths(trusted) else {
+        return false;
+    };
+    !claimed.is_empty()
+        && claimed.iter().all(|claim| {
+            trusted
+                .iter()
+                .any(|scope| trusted_pattern_covers(scope, claim))
+        })
+}
+
+fn trusted_pattern_covers(scope: &str, claim: &str) -> bool {
+    if scope == claim {
+        return true;
+    }
+    if !scope.ends_with("/**") {
+        return false;
+    }
+    let scope_wildcard = scope.find(['*', '?', '[']);
+    let Some(scope_wildcard) = scope_wildcard else {
+        return false;
+    };
+    let scope_base = scope[..scope_wildcard].trim_end_matches('/');
+    let claim_wildcard = claim.find(['*', '?', '[']);
+    let claim_base = claim_wildcard
+        .map(|index| claim[..index].trim_end_matches('/'))
+        .unwrap_or(claim);
+    !scope_base.is_empty() && path_prefix(scope_base, claim_base)
 }
 
 fn outcome(decision: RouteDecision, reason: RouteReason, capability_units: i64) -> PolicyOutcome {
@@ -431,9 +485,12 @@ fn integer_alias(value: &Value, keys: &[&str]) -> Option<i64> {
         return Some(found);
     }
     value.as_object().and_then(|object| {
-        object
-            .values()
-            .find_map(|child| child.is_object().then(|| integer_alias(child, keys)).flatten())
+        object.values().find_map(|child| {
+            child
+                .is_object()
+                .then(|| integer_alias(child, keys))
+                .flatten()
+        })
     })
 }
 
@@ -528,17 +585,14 @@ pub fn record_decision(
     request: &DelegationRequest,
     outcome: &PolicyOutcome,
     budget: &RequestBudget,
+    provenance: &OwnedPathProvenance,
 ) -> Result<(), BridgeError> {
     let kind = match &outcome.decision {
         RouteDecision::SpawnWorker(_) | RouteDecision::ResumeWorker { .. } => {
             EntryKind::DelegationApproved
         }
-        RouteDecision::Queue | RouteDecision::RequireUserApproval => {
-            EntryKind::DelegationRequested
-        }
-        RouteDecision::Reject | RouteDecision::ExecuteInParent => {
-            EntryKind::DelegationRejected
-        }
+        RouteDecision::Queue | RouteDecision::RequireUserApproval => EntryKind::DelegationRequested,
+        RouteDecision::Reject | RouteDecision::ExecuteInParent => EntryKind::DelegationRejected,
     };
     let payload = serde_json::json!({
         "requestId": turn_id,
@@ -552,6 +606,7 @@ pub fn record_decision(
             "capabilityUnitsUsed": budget.capability_units_used,
         },
         "capabilityUnits": outcome.capability_units,
+        "ownedPathProvenance": provenance,
     });
     SessionForest::new(db)
         .append(parent_session_id, kind, payload)
@@ -724,6 +779,10 @@ mod tests {
                 WriteMode::Isolated,
                 &["src/auth/**"],
             ),
+            owned_path_provenance: OwnedPathProvenance {
+                trusted_paths: vec!["src/auth/**".into()],
+                source_entry_ids: vec!["user-entry".into()],
+            },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),
             active_workers: Vec::new(),
@@ -734,6 +793,49 @@ mod tests {
             requires_user_approval: false,
             child_worktrees_available: true,
         }
+    }
+
+    #[test]
+    fn write_claim_without_provenance_requires_user_approval() {
+        let mut case = input();
+        case.owned_path_provenance = OwnedPathProvenance::default();
+        let outcome = PolicyEngine::default().decide(&case);
+        assert_eq!(outcome.reason, RouteReason::OwnedPathProvenanceRequired);
+        assert!(matches!(
+            outcome.decision,
+            RouteDecision::RequireUserApproval
+        ));
+    }
+
+    #[test]
+    fn write_claim_must_not_be_broader_than_provenance() {
+        let mut case = input();
+        case.request.owned_paths = vec!["src/**".into()];
+        case.owned_path_provenance.trusted_paths = vec!["src/auth/session.rs".into()];
+        assert_eq!(
+            PolicyEngine::default().decide(&case).reason,
+            RouteReason::OwnedPathProvenanceRequired
+        );
+        assert!(owned_paths_are_provenanced(
+            &["src/auth/session.rs".into()],
+            &["src/auth/**".into()]
+        ));
+        assert!(!owned_paths_are_provenanced(
+            &["src/auth/nested/session.rs".into()],
+            &["src/auth/*".into()]
+        ));
+    }
+
+    #[test]
+    fn read_only_request_does_not_require_write_provenance() {
+        let mut case = input();
+        case.request.write_mode = WriteMode::ReadOnly;
+        case.request.owned_paths.clear();
+        case.owned_path_provenance = OwnedPathProvenance::default();
+        assert!(matches!(
+            PolicyEngine::default().decide(&case).decision,
+            RouteDecision::SpawnWorker(_)
+        ));
     }
 
     #[test]
@@ -1108,6 +1210,7 @@ mod tests {
             &input.request,
             &outcome,
             &input.budget,
+            &input.owned_path_provenance,
         )
         .unwrap();
         let branch = SessionForest::new(&db).active_branch("parent").unwrap();
@@ -1115,6 +1218,10 @@ mod tests {
         assert_eq!(branch[0].kind, "delegation.approved");
         assert_eq!(branch[0].payload["turnId"], "turn-1");
         assert_eq!(branch[0].payload["reason"], "eligible_fresh_spawn");
+        assert_eq!(
+            branch[0].payload["ownedPathProvenance"]["trustedPaths"][0],
+            "src/auth/**"
+        );
         assert_eq!(
             db.query_row(
                 "SELECT kind FROM events ORDER BY id DESC LIMIT 1",

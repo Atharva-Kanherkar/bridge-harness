@@ -3607,14 +3607,22 @@ mod tests {
 
     fn policy_fixture() -> Connection {
         let db = store::open(Path::new(":memory:")).unwrap();
+        let workspace_path = Path::new(env!("CARGO_MANIFEST_DIR"));
         db.execute(
-            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/policy-demo','now')",
-            [],
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+            params![workspace_path.to_string_lossy()],
         )
         .unwrap();
-        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/policy-workspace','idle','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task',?1,'idle','now')", params![workspace_path.to_string_lossy()]).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','working','reported',0)", []).unwrap();
         db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('parent','fresh','now')", []).unwrap();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Implement auth under src/auth/**"}),
+            )
+            .unwrap();
         db
     }
 
@@ -3860,10 +3868,10 @@ mod tests {
             2
         );
         let entries = store::session_entries(&db, "parent").unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[1].kind, "delegation.requested");
-        assert_eq!(entries[1].payload["decision"], "queue");
-        assert_eq!(entries[1].payload["reason"], "writer_conflict");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].kind, "delegation.requested");
+        assert_eq!(entries[2].payload["decision"], "queue");
+        assert_eq!(entries[2].payload["reason"], "writer_conflict");
     }
 
     #[test]
@@ -3902,6 +3910,10 @@ mod tests {
             turn_id: "turn-1".into(),
             parent_depth: 0,
             request: request.clone(),
+            owned_path_provenance: policy::OwnedPathProvenance {
+                trusted_paths: request.owned_paths.clone(),
+                source_entry_ids: vec!["test-user-entry".into()],
+            },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),
             active_workers: Vec::new(),
