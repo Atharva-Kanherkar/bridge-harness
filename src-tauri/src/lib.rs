@@ -2163,11 +2163,39 @@ fn launch_worker_outcome(
         current_turn,
         reader,
     );
-    if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
-        let _ = runtime.send_turn(&directive.objective);
+    if let Err(error) = deliver_worker_objective(
+        &state.adapters,
+        &session_id,
+        &directive.objective,
+    ) {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop(adapters::ShutdownReason::Failed);
+        }
+        fail_reserved_worker(
+            app,
+            &session_id,
+            &label,
+            &format!("Could not deliver worker objective: {error}"),
+        );
+        return WorkerLaunchOutcome::Failed;
     }
     let _ = app.emit("state-changed", ());
     WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn deliver_worker_objective(
+    adapters: &Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    session_id: &str,
+    objective: &str,
+) -> Result<(), BridgeError> {
+    adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .ok_or_else(|| {
+            BridgeError::Invalid("Worker runtime disappeared before objective delivery".into())
+        })?
+        .send_turn(objective)
 }
 
 fn launch_worker(
@@ -3768,6 +3796,19 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    struct RejectingRuntime;
+
+    impl adapters::AdapterRuntime for RejectingRuntime {
+        fn provider_session_id(&self) -> &str { "rejecting" }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
+            Err(BridgeError::Invalid("delivery rejected".into()))
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _reason: adapters::ShutdownReason) {}
+    }
+
     fn policy_request(paths: &[&str]) -> delegation::DelegationRequest {
         delegation::DelegationRequest {
             schema_version: 1,
@@ -3786,6 +3827,16 @@ mod tests {
             harness: Some("codex".into()),
             model: None,
         }
+    }
+
+    #[test]
+    fn worker_objective_delivery_failure_is_not_reported_as_launched() {
+        let adapters = Mutex::new(HashMap::from([(
+            "worker".into(),
+            Box::new(RejectingRuntime) as Box<dyn adapters::AdapterRuntime>,
+        )]));
+        assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
+        assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
     }
 
     fn policy_fixture() -> Connection {

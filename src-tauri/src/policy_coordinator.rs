@@ -251,7 +251,7 @@ fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
     };
     let grounded = grounding_path.canonicalize().ok()?;
     if !grounded.starts_with(&workspace)
-        || (wildcard.is_some() && resolved.is_dir() && subtree_contains_symlink(&resolved))
+        || (resolved.is_dir() && subtree_has_escaping_symlink(&resolved, &workspace))
     {
         return None;
     }
@@ -280,17 +280,26 @@ fn approved_path_token(token: &str, workspace: &Path) -> Option<String> {
     };
     let grounded = grounding_path.canonicalize().ok()?;
     (grounded.starts_with(&workspace)
-        && !(wildcard.is_some() && resolved.is_dir() && subtree_contains_symlink(&resolved)))
+        && !(resolved.is_dir() && subtree_has_escaping_symlink(&resolved, &workspace)))
     .then_some(normalized)
 }
 
-fn subtree_contains_symlink(root: &Path) -> bool {
+fn subtree_has_escaping_symlink(root: &Path, workspace: &Path) -> bool {
+    subtree_has_escaping_symlink_with_limit(root, workspace, 4_096)
+}
+
+fn subtree_has_escaping_symlink_with_limit(root: &Path, workspace: &Path, limit: usize) -> bool {
     let mut pending = vec![root.to_path_buf()];
+    let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(directory) else {
             return true;
         };
         for entry in entries {
+            visited += 1;
+            if visited > limit {
+                return true;
+            }
             let Ok(entry) = entry else {
                 return true;
             };
@@ -299,7 +308,13 @@ fn subtree_contains_symlink(root: &Path) -> bool {
                 return true;
             };
             if metadata.file_type().is_symlink() {
-                return true;
+                let Ok(target) = path.canonicalize() else {
+                    return true;
+                };
+                if !target.starts_with(workspace) {
+                    return true;
+                }
+                continue;
             }
             if metadata.is_dir() {
                 pending.push(path);
@@ -495,11 +510,44 @@ mod tests {
         symlink(outside.path(), workspace.path().join("src/link")).unwrap();
         assert!(explicit_write_scope("Write scope: src/**", workspace.path()).is_empty());
         assert!(approved_path_token("src/**", workspace.path()).is_none());
+        assert!(explicit_write_scope("Write scope: src", workspace.path()).is_empty());
+        assert!(approved_path_token("src", workspace.path()).is_none());
         std::fs::remove_file(workspace.path().join("src/link")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("shared")).unwrap();
+        symlink(
+            workspace.path().join("shared"),
+            workspace.path().join("src/internal"),
+        )
+        .unwrap();
+        assert_eq!(
+            explicit_write_scope("Write scope: src/**", workspace.path()),
+            vec!["src/**"]
+        );
+        std::fs::remove_file(workspace.path().join("src/internal")).unwrap();
         assert_eq!(
             approved_path_token("src/new/**", workspace.path()),
             Some("src/new/**".into())
         );
+    }
+
+    #[test]
+    fn symlink_scan_fails_closed_at_its_entry_budget() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("src");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.join(name), "").unwrap();
+        }
+        assert!(subtree_has_escaping_symlink_with_limit(
+            &root,
+            workspace.path(),
+            2
+        ));
+        assert!(!subtree_has_escaping_symlink_with_limit(
+            &root,
+            workspace.path(),
+            3
+        ));
     }
 
     #[test]
