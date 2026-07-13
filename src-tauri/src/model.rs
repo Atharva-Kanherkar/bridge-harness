@@ -352,4 +352,13 @@ pub struct SessionForestSnapshot {
     pub usage: Vec<UsageLedgerRow>,
     pub reasons: Vec<BridgeEvent>,
     pub policy_limits: PolicyLimits,
+    pub repository_divergence: RepositoryDivergence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryDivergence {
+    pub status: String,
+    pub selected_state: Option<serde_json::Value>,
+    pub current_state: serde_json::Value,
 }

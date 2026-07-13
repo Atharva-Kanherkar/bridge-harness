@@ -536,6 +536,7 @@ impl CompactionController {
         )
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let retained_at = Utc::now().to_rfc3339();
+        let repository_state = store::repository_state_for_session(&transaction, session_id)?;
         let retained_sequence = transaction.query_row(
             "SELECT COALESCE(MAX(sequence),0)+1 FROM session_entries WHERE session_id=?1",
             params![session_id],
@@ -552,6 +553,7 @@ impl CompactionController {
                 json!({
                     "summary": "Compaction boundary; subsequent entries are retained",
                     "_bridgeTypedSchemaVersion": 1,
+                    "_bridgeRepoState": repository_state,
                 })
                 .to_string(),
                 retained_at,

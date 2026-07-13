@@ -128,10 +128,23 @@ fn session_forest_snapshot(
         |row| row.get(0),
     )?;
     let config = policy::PolicyConfig::default();
+    let entries = store::session_entries(db, session_id)?;
+    let head = store::session_head(db, session_id)?;
+    let selected_state = head.as_ref().and_then(|head| head.active_entry_id.as_deref())
+        .and_then(|id| entries.iter().find(|entry| entry.id == id))
+        .and_then(|entry| entry.payload.get("_bridgeRepoState"))
+        .cloned();
+    let current_state = store::repository_state_for_session(db, session_id)?;
+    let comparable = |value: &serde_json::Value| value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable");
+    let divergence_status = match selected_state.as_ref() {
+        Some(selected) if comparable(selected) && comparable(&current_state) && selected == &current_state => "aligned",
+        Some(selected) if comparable(selected) && comparable(&current_state) => "diverged",
+        _ => "unknown",
+    };
     Ok(SessionForestSnapshot {
         session_id: session_id.to_owned(),
-        entries: store::session_entries(db, session_id)?,
-        head: store::session_head(db, session_id)?,
+        entries,
+        head,
         leaves: session_forest::SessionForest::new(db)
             .branch_leaves(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?,
@@ -144,6 +157,11 @@ fn session_forest_snapshot(
             max_workers_per_turn: config.max_workers_per_turn as i64,
             max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
             max_capability_units_per_turn: config.max_capability_units_per_turn,
+        },
+        repository_divergence: RepositoryDivergence {
+            status: divergence_status.into(),
+            selected_state,
+            current_state,
         },
     })
 }
@@ -4062,6 +4080,7 @@ mod tests {
             .query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get(0))
             .unwrap();
         let initial = session_forest_snapshot(&db, "s").unwrap();
+        assert_eq!(initial.repository_divergence.status, "unknown");
         assert_eq!(initial.head.unwrap().active_entry_id.as_deref(), Some("e2"));
         assert_eq!(initial.entries.len(), 2);
         assert_eq!(initial.leaves.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), vec!["e2"]);
@@ -4079,6 +4098,59 @@ mod tests {
         assert!(rewound.reasons.iter().any(|event| {
             event.kind == "session.head_moved" && event.body.contains("files were not changed")
         }));
+        assert_eq!(rewound.repository_divergence.status, "unknown");
+    }
+
+    #[test]
+    fn repository_stamps_detect_clean_dirty_and_conversation_rewind_divergence() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path();
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {arguments:?}: {}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "bridge@example.invalid"]);
+        git(&["config", "user.name", "Bridge Test"]);
+        std::fs::write(repository.join("tracked.txt"), "first\n").unwrap();
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "--quiet", "-m", "initial"]);
+
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let path = repository.to_string_lossy();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+            params![path.as_ref()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task',?1,'idle','now')",
+            params![path.as_ref()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','working','reported')", []).unwrap();
+
+        let clean = session_forest::SessionForest::new(&db)
+            .append("s", session_forest::EntryKind::UserMessage, serde_json::json!({"text":"clean"}))
+            .unwrap();
+        assert_eq!(clean.payload["_bridgeRepoState"]["status"], "clean");
+        assert_eq!(session_forest_snapshot(&db, "s").unwrap().repository_divergence.status, "aligned");
+
+        std::fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
+        let dirty = session_forest::SessionForest::new(&db)
+            .append("s", session_forest::EntryKind::AssistantMessage, serde_json::json!({"text":"dirty"}))
+            .unwrap();
+        assert_eq!(dirty.payload["_bridgeRepoState"]["status"], "dirty");
+        assert_ne!(clean.payload["_bridgeRepoState"], dirty.payload["_bridgeRepoState"]);
+        assert_eq!(session_forest_snapshot(&db, "s").unwrap().repository_divergence.status, "aligned");
+
+        let rewound = activate_session_entry_records(&db, "s", &clean.id).unwrap();
+        assert_eq!(rewound.repository_divergence.status, "diverged");
+        assert_eq!(std::fs::read_to_string(repository.join("tracked.txt")).unwrap(), "changed\n");
     }
 
     #[test]

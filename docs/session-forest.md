@@ -9,6 +9,8 @@ root → user → assistant → checkpoint
 
 Moving the head changes only the active conversation branch. It never rewinds a worktree, commit, or filesystem change. Appending after moving the head creates a new branch and leaves the previous entries intact.
 
+Every controller append stamps the entry with the repository `HEAD` and a deterministic hash of the full porcelain dirty state. Forest snapshots compare the selected entry's stamp with the current worktree. A mismatch is surfaced as conversation/file divergence; legacy unstamped entries and non-repository sessions remain explicitly unknown. This controller-owned stamp is stripped before entries are projected into agent context.
+
 ## Stored entry shape
 
 - `id`: immutable entry identity.

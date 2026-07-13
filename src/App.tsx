@@ -372,6 +372,7 @@ export function App() {
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
+                  repositoryDivergence={forest?.repositoryDivergence.status}
                   preview={false}
                   working={!!session?.activeTurnId || pendingForSession.length > 0}
                   pendingMessages={pendingForSession}
