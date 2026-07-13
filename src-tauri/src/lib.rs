@@ -2219,14 +2219,7 @@ fn launch_worker(
 
 fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
     let state = app.state::<AppState>();
-    if session_supervisor::SessionSupervisor::transition(
-        &state.db.lock().unwrap(),
-        session_id,
-        worker_lifecycle::WorkerLifecycleState::Working,
-        Some("startup_failed_before_process"),
-    )
-    .is_err()
-    {
+    if prepare_worker_failure_settlement(&state.db.lock().unwrap(), session_id).is_err() {
         return;
     }
     let result = delegation::WorkerResult {
@@ -2245,6 +2238,27 @@ fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: 
     if settle_worker_after_result(app, session_id, &result).unwrap_or(false) {
         report_to_parent(app, session_id, &result);
     }
+}
+
+fn prepare_worker_failure_settlement(
+    db: &Connection,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let current: String = db.query_row(
+        "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if current == "working" {
+        return Ok(());
+    }
+    session_supervisor::SessionSupervisor::transition(
+        db,
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("startup_failed_before_process"),
+    )
+    .map(|_| ())
 }
 
 /// Frame a finished worker's final message and send it up to its parent.
@@ -3837,6 +3851,66 @@ mod tests {
         )]));
         assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
         assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+    }
+
+    #[test]
+    fn post_start_delivery_failure_settles_and_releases_its_lease() {
+        let db = policy_fixture();
+        let request = policy_request(&["src/auth/**"]);
+        let reservation = reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-delivery-failure",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        prepare_worker_failure_settlement(&db, &reservation.session_id).unwrap();
+        prepare_worker_failure_settlement(&db, &reservation.session_id).unwrap();
+        session_supervisor::SessionSupervisor::transition(
+            &db,
+            &reservation.session_id,
+            worker_lifecycle::WorkerLifecycleState::Failed,
+            Some("objective_delivery_failed"),
+        )
+        .unwrap();
+        session_supervisor::SessionSupervisor::transition(
+            &db,
+            &reservation.session_id,
+            worker_lifecycle::WorkerLifecycleState::Completed,
+            Some("terminal_failure_reported"),
+        )
+        .unwrap();
+        let result = delegation::WorkerResult {
+            schema_version: delegation::SCHEMA_VERSION,
+            status: delegation::WorkerResultStatus::Failed,
+            summary: "Objective delivery failed".into(),
+            files_changed: vec![],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec!["Worker received no objective".into()],
+            remaining_work: vec!["Retry the delegation".into()],
+            suggested_next_action: delegation::SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        session_supervisor::SessionSupervisor::record_result(
+            &db,
+            &reservation.session_id,
+            &result,
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT lease_status FROM worker_leases WHERE session_id=?1",
+                params![reservation.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "released"
+        );
     }
 
     fn policy_fixture() -> Connection {

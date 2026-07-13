@@ -177,14 +177,22 @@ fn explicit_write_scope(text: &str, workspace: &Path) -> Vec<String> {
         return Vec::new();
     }
     let mut paths = Vec::new();
-    let mut fenced = false;
+    let mut fence: Option<(char, usize)> = None;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
+        if let Some((marker, length, can_close)) = markdown_fence_marker(trimmed) {
+            match fence {
+                None => fence = Some((marker, length)),
+                Some((open_marker, open_length))
+                    if can_close && marker == open_marker && length >= open_length =>
+                {
+                    fence = None;
+                }
+                Some(_) => {}
+            }
             continue;
         }
-        if fenced || trimmed.starts_with('>') {
+        if fence.is_some() || trimmed.starts_with('>') {
             continue;
         }
         let prefix = "write scope:";
@@ -205,6 +213,22 @@ fn explicit_write_scope(text: &str, workspace: &Path) -> Vec<String> {
     paths.sort();
     paths.dedup();
     paths
+}
+
+fn markdown_fence_marker(line: &str) -> Option<(char, usize, bool)> {
+    let marker = line.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let length = line
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    if length < 3 {
+        return None;
+    }
+    let remainder = &line[length..];
+    Some((marker, length, remainder.trim().is_empty()))
 }
 
 fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
@@ -493,6 +517,10 @@ mod tests {
         std::fs::create_dir_all(workspace.path().join("src/auth")).unwrap();
         let text = "Diagnostic example:\n```text\nWrite scope: src/auth/**\n```\n> Write scope: src/auth/**";
         assert!(explicit_write_scope(text, workspace.path()).is_empty());
+        let mixed = "````text\n~~~\nWrite scope: src/auth/**\n```\n````";
+        assert!(explicit_write_scope(mixed, workspace.path()).is_empty());
+        let info_string = "```text\n```still-code\nWrite scope: src/auth/**\n```";
+        assert!(explicit_write_scope(info_string, workspace.path()).is_empty());
     }
 
     #[cfg(unix)]
@@ -513,9 +541,9 @@ mod tests {
         assert!(explicit_write_scope("Write scope: src", workspace.path()).is_empty());
         assert!(approved_path_token("src", workspace.path()).is_none());
         std::fs::remove_file(workspace.path().join("src/link")).unwrap();
-        std::fs::create_dir_all(workspace.path().join("shared")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/shared")).unwrap();
         symlink(
-            workspace.path().join("shared"),
+            workspace.path().join("src/shared"),
             workspace.path().join("src/internal"),
         )
         .unwrap();
@@ -523,6 +551,9 @@ mod tests {
             explicit_write_scope("Write scope: src/**", workspace.path()),
             vec!["src/**"]
         );
+        symlink(outside.path(), workspace.path().join("src/shared/external")).unwrap();
+        assert!(explicit_write_scope("Write scope: src/**", workspace.path()).is_empty());
+        std::fs::remove_file(workspace.path().join("src/shared/external")).unwrap();
         std::fs::remove_file(workspace.path().join("src/internal")).unwrap();
         assert_eq!(
             approved_path_token("src/new/**", workspace.path()),
