@@ -39,6 +39,13 @@ pub fn validate_repo(path: &Path) -> Result<String, BridgeError> {
     }
     Ok(canonical.to_string_lossy().to_string())
 }
+/// Current branch name for a repo, if resolvable and not detached.
+pub fn current_branch(path: &Path) -> Option<String> {
+    run(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "HEAD")
+}
 pub fn slug(value: &str) -> String {
     let mut out = String::new();
     let mut dash = false;

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, Harness, Health, SessionEntry, SessionForestSnapshot, TerminalChunk } from "./types";
-import { safeSlug } from "./utils";
+import type { AgentEvent, BridgeState, Harness, Health, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
+import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const now = new Date().toISOString();
@@ -105,7 +105,7 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 const mockHealth: Health = {
   ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, shell: true }, database: "demo",
   adapters: [
-    { id: "codex", label: "Orchestrator", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
+    { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
     { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" }
   ]
 };
@@ -147,11 +147,45 @@ export const bridgeApi = {
     const name = path.split("/").filter(Boolean).at(-1) || "Repository";
     mockState.projects.push({ id: crypto.randomUUID(), name, path, createdAt: new Date().toISOString() }); emitState(); return snapshot();
   },
-  createWorkspace: async (projectId: string, title: string, harness: Harness): Promise<BridgeState> => {
-    if (isTauri()) return invoke("create_workspace", { projectId, title, harness });
-    const cities = ["Oslo", "Seoul", "Tallinn", "Nairobi"]; const city = cities[mockState.workspaces.length % cities.length]; const id = crypto.randomUUID();
-    mockState.workspaces.push({ id, projectId, city, title, branch: `bridge/${safeSlug(title)}`, path: `/tmp/bridge/${city}`, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
-    mockState.sessions.push({ id: crypto.randomUUID(), workspaceId: id, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", restorationMode: "fresh" }); emitState(); return snapshot();
+  createWorkspace: async (title: string): Promise<BridgeState> => {
+    if (isTauri()) return invoke("create_workspace", { title });
+    const id = crypto.randomUUID();
+    mockState.workspaces.push({ id, projectId: null, city: null, title, branch: null, path: null, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
+    emitState(); return snapshot();
+  },
+  createChat: async (harness: Harness, model: string | null, title: string | null): Promise<BridgeState> => {
+    if (isTauri()) return invoke("create_chat", { harness, model, title });
+    const id = crypto.randomUUID();
+    mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", title, kind: "direct", cwd: null }); emitState(); return snapshot();
+  },
+  createWorkspaceSession: async (workspaceId: string): Promise<BridgeState> => {
+    if (isTauri()) return invoke("create_workspace_session", { workspaceId });
+    const id = crypto.randomUUID();
+    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", title: null, kind: "orchestrator", cwd: null }); emitState(); return snapshot();
+  },
+  updateChatModel: async (sessionId: string, harness: Harness, model: string | null): Promise<BridgeState> => {
+    if (isTauri()) return invoke("update_chat_model", { sessionId, harness, model });
+    const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; }
+    emitState(); return snapshot();
+  },
+  listSlashCommands: async (): Promise<SlashCommand[]> => {
+    if (isTauri()) return invoke("list_slash_commands");
+    return [];
+  },
+  resolveSlashCommand: async (sessionId: string, text: string): Promise<{ name: string; harness: Harness; kind: string; switchHarness: boolean } | null> => {
+    if (isTauri()) return invoke("resolve_slash_command", { sessionId, text });
+    return null;
+  },
+  connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
+    if (isTauri()) return invoke("connect_workspace_folder", { workspaceId, path });
+    const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
+    emitState(); return snapshot();
+  },
+  startChat: async (sessionId: string): Promise<BridgeState> => {
+    if (isTauri()) return invoke("start_chat", { sessionId });
+    const session = mockState.sessions.find(item => item.id === sessionId);
+    if (session) { session.status = "working"; session.startedAt = new Date().toISOString(); session.endedAt = null; session.providerSessionId = session.providerSessionId ?? `mock-${crypto.randomUUID()}`; session.restorationMode = "fresh"; appendAgent(session.id, "session.started", { status: "working" }); }
+    emitState(); return snapshot();
   },
   startSession: async (workspaceId: string, harness?: Harness | null, model?: string | null): Promise<BridgeState> => {
     if (isTauri()) return invoke("start_session", { workspaceId, harness: harness ?? null, model: model ?? null });
@@ -178,6 +212,7 @@ export const bridgeApi = {
     session.status = "ready"; session.activeTurnId = null; emitState();
   },
   interruptTurn: (sessionId: string): Promise<void> => isTauri() ? invoke("interrupt_turn", { sessionId }) : Promise.resolve(),
+  refreshAccountUsage: (): Promise<void> => isTauri() ? invoke("refresh_account_usage") : Promise.resolve(),
   resolveApproval: async (sessionId: string, eventId: number, decision: string): Promise<void> => {
     if (isTauri()) return invoke("resolve_approval", { sessionId, eventId, decision });
     const request = mockState.agentEvents.find(item => item.id === eventId); if (request) appendAgent(request.sessionId, "approval.resolved", { status: decision, data: { requestEventId: eventId, decision } }); emitState();
@@ -193,6 +228,10 @@ export const bridgeApi = {
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? listen<TerminalChunk>("session-output", event => handler(event.payload)) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) return listen<AgentEvent>("agent-event", event => handler(event.payload)); 
+    return () => undefined;
+  },
+  onAccountUsage: async (handler: (payload: AccountUsagePayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return listen<AccountUsagePayload>("account-usage", event => handler(event.payload));
     return () => undefined;
   },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {

@@ -21,8 +21,11 @@
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
       "trafficLightPosition": { "x": 18, "y": 15 },
-      "backgroundColor": "#090b0c",
-      "acceptFirstMouse": true
+      "acceptFirstMouse": true,
+      "windowEffects": {
+        "effects": ["hudWindow"],
+        "state": "active"
+      }
     }],
     "security": { "csp": null }
   },

@@ -107,11 +107,11 @@ pub struct Project {
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
-    pub project_id: String,
-    pub city: String,
+    pub project_id: Option<String>,
+    pub city: Option<String>,
     pub title: String,
-    pub branch: String,
-    pub path: String,
+    pub branch: Option<String>,
+    pub path: Option<String>,
     pub status: SessionStatus,
     pub dirty_files: i64,
     pub additions: i64,
@@ -145,7 +145,7 @@ pub struct AdapterDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
-    pub workspace_id: String,
+    pub workspace_id: Option<String>,
     pub harness: Harness,
     pub label: String,
     pub status: SessionStatus,
@@ -162,6 +162,9 @@ pub struct Session {
     pub parent_session_id: Option<String>,
     pub depth: Option<i64>,
     pub restoration_mode: RestorationMode,
+    pub title: Option<String>,
+    pub kind: String,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

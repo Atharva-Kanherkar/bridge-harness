@@ -6,17 +6,18 @@ export type ResumeEligibility = "none" | "native" | "checkpoint_restored";
 
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Workspace {
-  id: string; projectId: string; city: string; title: string; branch: string; path: string;
+  id: string; projectId: string | null; city: string | null; title: string; branch: string | null; path: string | null;
   status: SessionStatus; dirtyFiles: number; additions: number; deletions: number; createdAt: string;
 }
 export interface Session {
-  id: string; workspaceId: string; harness: Harness; label: string; status: SessionStatus;
+  id: string; workspaceId: string | null; harness: Harness; label: string; status: SessionStatus;
   startedAt: string | null; endedAt: string | null; contextPercent: number | null;
   usagePercent: number | null; metricSource: "reported" | "measured" | "estimated";
   providerSessionId?: string | null; activeTurnId?: string | null; model?: string | null;
   requestedTier?: CapabilityTier | null;
   effort?: string | null; parentSessionId?: string | null; depth?: number | null;
   restorationMode: RestorationMode;
+  title?: string | null; kind?: string; cwd?: string | null;
 }
 export interface BridgeEvent { id: number; source: string; kind: string; entityId: string; body: string; createdAt: string }
 export interface AgentEvent {
@@ -73,3 +74,4 @@ export interface AdapterDescriptor {
 export interface BridgeState { projects: Project[]; workspaces: Workspace[]; sessions: Session[]; events: BridgeEvent[] }
 export interface Health { ok: boolean; version: string; harnesses: Record<Harness, boolean>; database: string; adapters: AdapterDescriptor[] }
 export interface TerminalChunk { sessionId: string; data: string }
+export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }

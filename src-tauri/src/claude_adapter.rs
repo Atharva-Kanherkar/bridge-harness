@@ -153,6 +153,129 @@ fn claude_args<'a>(
     args
 }
 
+/// Query Claude Code's subscription usage via the headless `/usage` command.
+/// This is a read-only, zero-cost account query (no turn, no quota). Returns a
+/// `{ "rateLimits": { ... } }` snapshot shaped like the Codex payload so the UI
+/// can render both providers uniformly, or None when nothing parses.
+pub fn read_usage_snapshot(cwd: &str) -> Option<Value> {
+    // Headless `/usage` only includes the "% used" windows once its network fetch
+    // resolves, which is racy. Retry a few times; the frontend keeps the last good
+    // snapshot, so returning None just means "no fresh windows this poll".
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+        }
+        if let Some(snapshot) = read_usage_once(cwd) {
+            return Some(snapshot);
+        }
+    }
+    None
+}
+
+fn read_usage_once(cwd: &str) -> Option<Value> {
+    let binary = binary::resolve("claude")?;
+    let output = Command::new(binary)
+        .args(["-p", "/usage", "--output-format", "json"])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed = parse_json_object(&stdout)?;
+    let text = parsed.get("result").and_then(Value::as_str)?;
+    let rate_limits = parse_usage_text(text);
+    if rate_limits.as_object().map(|map| map.is_empty()).unwrap_or(true) {
+        return None;
+    }
+    Some(json!({ "rateLimits": rate_limits }))
+}
+
+/// Best-effort extraction of the single JSON object printed by `--output-format json`.
+fn parse_json_object(stdout: &str) -> Option<Value> {
+    if let Ok(value) = serde_json::from_str::<Value>(stdout.trim()) {
+        return Some(value);
+    }
+    let start = stdout.find('{')?;
+    let end = stdout.rfind('}')?;
+    serde_json::from_str::<Value>(&stdout[start..=end]).ok()
+}
+
+/// Parse Claude's `/usage` report into labeled rate-limit windows. Lines look like:
+/// `Current session: 38% used · resets Jul 13 at 7:09pm (Asia/Calcutta)`
+fn parse_usage_text(text: &str) -> Value {
+    let mut map = serde_json::Map::new();
+    let mut order = 1usize;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if !line.contains("% used") {
+            continue;
+        }
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
+        let head = line[..colon].trim();
+        let rest = &line[colon + 1..];
+        let Some(percent_pos) = rest.find('%') else {
+            continue;
+        };
+        let digits: String = rest[..percent_pos]
+            .chars()
+            .rev()
+            .take_while(|character| character.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let Ok(percent) = digits.parse::<i64>() else {
+            continue;
+        };
+        let resets = rest.find("resets").map(|index| {
+            let mut phrase = rest[index..].trim().to_string();
+            if let Some(timezone) = phrase.rfind(" (") {
+                phrase.truncate(timezone);
+            }
+            phrase.trim().to_string()
+        });
+        let label = classify_usage_label(head);
+        let key = format!("{order}_{}", label.to_lowercase().replace(' ', "_"));
+        let mut window = serde_json::Map::new();
+        window.insert("label".into(), json!(label));
+        window.insert("usedPercent".into(), json!(percent));
+        if let Some(resets) = resets.filter(|value| !value.is_empty()) {
+            window.insert("resetsLabel".into(), json!(resets));
+        }
+        map.insert(key, Value::Object(window));
+        order += 1;
+    }
+    Value::Object(map)
+}
+
+fn classify_usage_label(head: &str) -> String {
+    let lower = head.to_lowercase();
+    if lower.contains("session") {
+        return "Session".into();
+    }
+    if let Some(open) = head.find('(') {
+        let close = head.rfind(')').unwrap_or(head.len());
+        let inside = head[open + 1..close].trim();
+        if inside.to_lowercase().contains("all models") {
+            return "Week".into();
+        }
+        if !inside.is_empty() {
+            return inside.to_string();
+        }
+    }
+    if lower.contains("week") {
+        return "Week".into();
+    }
+    head.to_string()
+}
+
 pub fn supports_native_resume() -> bool {
     static SUPPORTS: OnceLock<bool> = OnceLock::new();
     *SUPPORTS.get_or_init(|| {
@@ -285,6 +408,25 @@ fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), Bri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_claude_usage_report_into_labeled_windows() {
+        let text = "You are currently using your subscription to power your Claude Code usage\n\n\
+            Current session: 38% used · resets Jul 13 at 7:09pm (Asia/Calcutta)\n\
+            Current week (all models): 60% used · resets Jul 14 at 3:29am (Asia/Calcutta)\n\
+            Current week (Fable): 81% used · resets Jul 14 at 3:29am (Asia/Calcutta)\n\n\
+            What's contributing to your limits usage?";
+        let value = parse_usage_text(text);
+        let map = value.as_object().unwrap();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map["1_session"]["label"], "Session");
+        assert_eq!(map["1_session"]["usedPercent"], 38);
+        assert_eq!(map["1_session"]["resetsLabel"], "resets Jul 13 at 7:09pm");
+        assert_eq!(map["2_week"]["label"], "Week");
+        assert_eq!(map["2_week"]["usedPercent"], 60);
+        assert_eq!(map["3_fable"]["label"], "Fable");
+        assert_eq!(map["3_fable"]["usedPercent"], 81);
+    }
 
     #[test]
     fn worker_permissions_follow_write_mode() {

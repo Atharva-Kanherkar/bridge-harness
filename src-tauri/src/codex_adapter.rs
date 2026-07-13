@@ -263,6 +263,12 @@ impl AdapterRuntime for CodexRuntime {
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         CodexRuntime::respond(self, request_id, decision)
     }
+    fn read_usage(&self) -> Result<(), BridgeError> {
+        // `account/rateLimits/read` is a read-only account query (no quota cost).
+        // Its response lands on the event stream and is normalized to usage.updated.
+        // The protocol requires a null params field.
+        self.request("account/rateLimits/read", Value::Null)
+    }
     fn stop(&mut self, _reason: ShutdownReason) {
         let _ = self.child.kill();
         let _ = self.child.wait();

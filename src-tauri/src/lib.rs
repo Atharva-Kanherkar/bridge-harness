@@ -14,6 +14,7 @@ mod policy_coordinator;
 mod restoration;
 mod session_forest;
 mod session_supervisor;
+mod slash;
 mod store;
 mod worker_guard;
 mod worker_lifecycle;
@@ -207,73 +208,230 @@ fn add_project(path: String, state: State<AppState>) -> Result<BridgeState, Brid
     store::state(&db)
 }
 
-fn available_project_repo(path: &str) -> Result<&Path, BridgeError> {
-    let repo = Path::new(path);
-    if !repo.is_dir() {
-        return Err(BridgeError::Invalid(
-            "This repository is no longer available at its saved location. Re-add the repository to continue.".into(),
-        ));
-    }
-    Ok(repo)
+/// Scratch working directory for a chat that has no connected folder/repo.
+fn chat_scratch_dir(state: &AppState, session_id: &str) -> PathBuf {
+    state
+        .database_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("chats")
+        .join(session_id)
 }
 
+fn chat_label(title: Option<&str>) -> String {
+    title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("New chat")
+        .to_string()
+}
+
+/// Create a repo-less workspace. A folder/git repo can be connected later.
 #[tauri::command]
-fn create_workspace(
-    project_id: String,
-    title: String,
-    _harness: Harness,
-    state: State<AppState>,
-) -> Result<BridgeState, BridgeError> {
-    if title.trim().is_empty() {
+fn create_workspace(title: String, state: State<AppState>) -> Result<BridgeState, BridgeError> {
+    let name = title.trim();
+    if name.is_empty() {
         return Err(BridgeError::Invalid("Workspace name is required".into()));
     }
-    let db = state.db.lock().unwrap();
-    let (project_name, repo): (String, String) = db.query_row(
-        "SELECT name,path FROM projects WHERE id=?1",
-        params![project_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let repo = available_project_repo(&repo)?;
-    let used: Vec<String> = {
-        let mut stmt = db.prepare("SELECT city FROM workspaces")?;
-        let values = stmt
-            .query_map([], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
-        values
-    };
-    let city = git::CITIES
-        .iter()
-        .find(|c| !used.iter().any(|u| u == **c))
-        .unwrap_or(&"Atlas")
-        .to_string();
     let id = Uuid::new_v4().to_string();
-    let slug = git::slug(&title);
-    let branch = format!(
-        "bridge/{}-{}",
-        if slug.is_empty() { "task" } else { &slug },
-        city.to_lowercase()
-    );
-    let path = git::workspace_path(&state.worktrees, &project_name, &city);
-    git::create_worktree(repo, &path, &branch)?;
-    db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,'idle',?7)",params![id,project_id,city,title,branch,path.to_string_lossy(),Utc::now().to_rfc3339()])?;
-    let sid = Uuid::new_v4().to_string();
+    let db = state.db.lock().unwrap();
     db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,requested_tier) VALUES(?1,?2,?3,?4,'idle','estimated',?5)",
-        params![
-            sid,
-            id,
-            orchestrator::HARNESS,
-            orchestrator::SESSION_LABEL,
-            orchestrator::TIER.as_str()
-        ],
+        "INSERT INTO workspaces(id,title,status,created_at) VALUES(?1,?2,'idle',?3)",
+        params![id, name, Utc::now().to_rfc3339()],
     )?;
-    store::event(
-        &db,
-        "supervisor",
-        "workspace.created",
-        &id,
-        &format!("Created {city} on {branch}"),
+    store::event(&db, "supervisor", "workspace.created", &id, &format!("Created workspace {name}"))?;
+    store::state(&db)
+}
+
+/// Create a standalone direct chat (no workspace). Runs in a private scratch dir.
+#[tauri::command]
+fn create_chat(
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    let adapter_id = store::harness_name(&harness);
+    let id = Uuid::new_v4().to_string();
+    let cwd = chat_scratch_dir(state.inner(), &id);
+    let label = chat_label(title.as_deref());
+    let db = state.db.lock().unwrap();
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,NULL,?2,?3,'idle','estimated',?4,'direct',?5,?6,0)",
+        params![id, adapter_id, label, model, title, cwd.to_string_lossy()],
     )?;
+    store::event(&db, "chat", "chat.created", &id, &format!("Created chat {label}"))?;
+    store::state(&db)
+}
+
+/// Create an orchestrator session inside a workspace (the classic Bridge agent
+/// that plans and delegates to workers). Multiple are allowed per workspace.
+#[tauri::command]
+fn create_workspace_session(
+    workspace_id: String,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    let id = Uuid::new_v4().to_string();
+    let db = state.db.lock().unwrap();
+    let ws_path: Option<String> = db
+        .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .ok()
+        .flatten();
+    let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
+    db.execute(
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,requested_tier,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'orchestrator',?6,0)",
+        params![id, workspace_id, orchestrator::HARNESS, orchestrator::SESSION_LABEL, orchestrator::TIER.as_str(), cwd],
+    )?;
+    store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
+    store::state(&db)
+}
+
+/// Change a direct chat's harness/model. Stops any running adapter so the next
+/// message starts a fresh provider session with the new model.
+#[tauri::command]
+fn update_chat_model(
+    session_id: String,
+    harness: Harness,
+    model: Option<String>,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    let adapter_id = store::harness_name(&harness);
+    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+        runtime.stop(adapters::ShutdownReason::Replaced);
+    }
+    let db = state.db.lock().unwrap();
+    db.execute(
+        "UPDATE sessions SET harness=?2,model=?3,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND kind='direct'",
+        params![session_id, adapter_id, model],
+    )?;
+    store::state(&db)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommandResolve {
+    name: String,
+    harness: String,
+    kind: String,
+    /// When true, the frontend should switch the direct chat to `harness` before sending.
+    switch_harness: bool,
+}
+
+/// Enumerate slash commands + skills from every signed-in provider, so the UI
+/// can offer a labeled `/` menu.
+#[tauri::command]
+fn list_slash_commands(state: State<AppState>) -> Result<Vec<slash::SlashCommand>, BridgeError> {
+    let available: std::collections::HashSet<String> = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.available)
+        .map(|descriptor| descriptor.id)
+        .collect();
+    Ok(slash::list_commands(&available))
+}
+
+/// Resolve a composer `/command` against the catalog so the UI can auto-switch
+/// harness before sending.
+#[tauri::command]
+fn resolve_slash_command(
+    text: String,
+    session_id: String,
+    state: State<AppState>,
+) -> Result<Option<SlashCommandResolve>, BridgeError> {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return Ok(None);
+    };
+    let name = rest
+        .split_whitespace()
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
+    let available: std::collections::HashSet<String> = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.available)
+        .map(|descriptor| descriptor.id)
+        .collect();
+    let (kind, session_harness): (String, String) = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT kind, harness FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+    };
+    let catalog = slash::list_commands(&available);
+    let matches: Vec<_> = catalog
+        .iter()
+        .filter(|command| command.name.eq_ignore_ascii_case(name))
+        .collect();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    let chosen = matches
+        .iter()
+        .find(|command| command.harness == session_harness)
+        .or_else(|| {
+            // Prefer the command's own harness when the name is unique to one provider.
+            if matches.len() == 1 {
+                matches.first()
+            } else {
+                None
+            }
+        })
+        .or_else(|| matches.first())
+        .map(|command| (*command).clone())
+        .expect("matches non-empty");
+    let switch_harness = kind == "direct" && chosen.harness != session_harness;
+    Ok(Some(SlashCommandResolve {
+        name: chosen.name.clone(),
+        harness: chosen.harness.clone(),
+        kind: chosen.kind.clone(),
+        switch_harness,
+    }))
+}
+
+/// Attach a folder (optionally a git repo) to a workspace as its working directory.
+#[tauri::command]
+fn connect_workspace_folder(
+    workspace_id: String,
+    path: String,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    let folder = Path::new(&path);
+    if !folder.is_dir() {
+        return Err(BridgeError::Invalid("That folder no longer exists".into()));
+    }
+    let db = state.db.lock().unwrap();
+    let (resolved_path, project_id, branch) = match git::validate_repo(folder) {
+        Ok(root) => {
+            let name = Path::new(&root)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Repository")
+                .to_string();
+            db.execute(
+                "INSERT OR IGNORE INTO projects(id,name,path,created_at) VALUES(?1,?2,?3,?4)",
+                params![Uuid::new_v4().to_string(), name, root, Utc::now().to_rfc3339()],
+            )?;
+            let project_id: Option<String> = db
+                .query_row("SELECT id FROM projects WHERE path=?1", params![root], |r| r.get(0))
+                .ok();
+            (root.clone(), project_id, git::current_branch(folder))
+        }
+        Err(_) => (folder.to_string_lossy().to_string(), None, None),
+    };
+    db.execute(
+        "UPDATE workspaces SET path=?2,project_id=?3,branch=?4 WHERE id=?1",
+        params![workspace_id, resolved_path, project_id, branch],
+    )?;
+    store::event(&db, "supervisor", "workspace.connected", &workspace_id, &format!("Connected {resolved_path}"))?;
     store::state(&db)
 }
 
@@ -586,6 +744,177 @@ fn start_session(
     store::state(&state.db.lock().unwrap())
 }
 
+/// Start (or hot-return) a session by id. A `direct` chat runs the stored
+/// harness/model with no briefing; an `orchestrator` session runs codex with the
+/// routing briefing + delegation protocol (workers enabled via the reader gate).
+#[tauri::command]
+fn start_chat(
+    session_id: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<BridgeState, BridgeError> {
+    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT harness,kind,model,cwd,workspace_id,provider_session_id,effort FROM sessions WHERE id=?1",
+            params![session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        )?
+    };
+    if state.adapters.lock().unwrap().contains_key(&session_id) {
+        return store::state(&state.db.lock().unwrap());
+    }
+    let is_orchestrator = kind == "orchestrator";
+    let cwd = match cwd_col.filter(|value| !value.is_empty()) {
+        Some(value) => value,
+        None => {
+            let workspace_path = workspace_id.as_ref().and_then(|workspace| {
+                state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT path FROM workspaces WHERE id=?1",
+                        params![workspace],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .ok()
+                    .flatten()
+            });
+            workspace_path
+                .unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string())
+        }
+    };
+    std::fs::create_dir_all(&cwd)?;
+    let adapter_id: &str = if is_orchestrator { orchestrator::HARNESS } else { harness.as_str() };
+    let tier = if is_orchestrator { orchestrator::TIER } else { CapabilityTier::Fast };
+    let chosen_model = if is_orchestrator {
+        state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model)
+    } else {
+        match model {
+            Some(value) if !value.is_empty() => Some(value),
+            _ => state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model),
+        }
+    };
+    let orchestrator_instructions = if is_orchestrator {
+        Some(format!("{}\n\n{}", orchestrator::briefing(), delegation::protocol(0)))
+    } else {
+        None
+    };
+    let instructions_ref = orchestrator_instructions.as_deref();
+    let effort_ref = effort.as_deref().filter(|value| !value.is_empty());
+    let resumable = provider_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .filter(|_| state.adapter_registry.supports_native_resume(adapter_id));
+    let (started, mode, eligibility) = match resumable {
+        Some(provider) => match state.adapter_registry.resume(
+            adapter_id,
+            adapters::ResumeRequest {
+                provider_session_id: provider,
+                cwd: &cwd,
+                model: chosen_model.as_deref(),
+                effort: effort_ref,
+                instructions: instructions_ref,
+                write_mode: None,
+            },
+        ) {
+            Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
+            Err(_) => (
+                state.adapter_registry.start(
+                    adapter_id,
+                    adapters::StartRequest {
+                        cwd: &cwd,
+                        model: chosen_model.as_deref(),
+                        effort: effort_ref,
+                        instructions: instructions_ref,
+                        write_mode: None,
+                    },
+                )?,
+                RestorationMode::Fresh,
+                ResumeEligibility::Fresh,
+            ),
+        },
+        None => (
+            state.adapter_registry.start(
+                adapter_id,
+                adapters::StartRequest {
+                    cwd: &cwd,
+                    model: chosen_model.as_deref(),
+                    effort: effort_ref,
+                    instructions: instructions_ref,
+                    write_mode: None,
+                },
+            )?,
+            RestorationMode::Fresh,
+            ResumeEligibility::Fresh,
+        ),
+    };
+    let thread_id = started.runtime.provider_session_id().to_owned();
+    let current_turn = started.runtime.current_turn();
+    let reader = started.reader;
+    let started_at = Utc::now().to_rfc3339();
+    {
+        let db = state.db.lock().unwrap();
+        if is_orchestrator {
+            db.execute(
+                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
+                params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL],
+            )?;
+        } else {
+            db.execute(
+                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
+                params![session_id, started_at, thread_id, chosen_model, cwd],
+            )?;
+        }
+        restoration::set_head_state(&db, &session_id, mode, eligibility, Some(&thread_id))?;
+        if let Some(workspace) = &workspace_id {
+            let _ = db.execute(
+                "UPDATE workspaces SET status='working' WHERE id=?1",
+                params![workspace],
+            );
+        }
+        store::event(
+            &db,
+            "adapter",
+            "session.started",
+            &session_id,
+            &format!("Started {} on {}", if is_orchestrator { "orchestrator" } else { "chat" }, chosen_model.as_deref().unwrap_or("default")),
+        )?;
+        if is_orchestrator {
+            let context = agent::NormalizedEvent {
+                kind: "session.context".into(),
+                item_id: Some("orchestrator-briefing".into()),
+                role: Some("system".into()),
+                status: Some("ready".into()),
+                title: Some("Orchestrator routing policy".into()),
+                text: Some(orchestrator::briefing()),
+                data: serde_json::json!({"source": "capability-policy", "requestedTier": tier, "runtimeModel": chosen_model}),
+            };
+            let _ = store::session_event(&db, &session_id, &context, &serde_json::json!({"adapter": adapter_id, "hidden": true}));
+        }
+        for message in &started.startup_messages {
+            persist_agent_value(&db, &state.adapter_registry, adapter_id, &session_id, message)?;
+        }
+    }
+    state
+        .adapters
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), started.runtime);
+    spawn_reader_thread(app.clone(), session_id.clone(), started_at, current_turn, reader);
+    let _ = app.emit("state-changed", ());
+    store::state(&state.db.lock().unwrap())
+}
+
 /// Drive one structured session's stdout: normalize every frame, then on exit
 /// mark the session stopped and unblock any parent that was waiting on it.
 fn spawn_reader_thread(
@@ -673,6 +1002,13 @@ fn handle_agent_value(
     current_turn: &Arc<Mutex<Option<String>>>,
     value: &serde_json::Value,
 ) {
+    // Codex account rate-limit frames (the reply to `account/rateLimits/read`
+    // and its rolling push) are subscription telemetry, not conversation. Route
+    // them straight to the ambient usage channel without persisting.
+    if let Some(rate_limits) = codex_rate_limits_from_frame(value) {
+        emit_account_usage(app, "codex", rate_limits);
+        return;
+    }
     let state = app.state::<AppState>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
@@ -686,16 +1022,20 @@ fn handle_agent_value(
 
     {
         let db = state.db.lock().unwrap();
-        let session_context: Option<(String, String, i64, Option<String>)> = db
+        let session_context: Option<(Option<String>, String, i64, Option<String>, String)> = db
             .query_row(
-                "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id FROM sessions WHERE id=?1",
+                "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind FROM sessions WHERE id=?1",
                 params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .ok();
-        let Some((workspace_id, adapter_id, own_depth, stored_turn_id)) = session_context else {
+        let Some((workspace_id, adapter_id, own_depth, stored_turn_id, session_kind)) =
+            session_context
+        else {
             return;
         };
+        // Direct chats are single-agent: no worker delegation and no auto-compaction.
+        let is_direct = session_kind == "direct";
         let observed_turn_id = current_turn
             .lock()
             .unwrap()
@@ -762,7 +1102,9 @@ fn handle_agent_value(
                             params![session_id],
                         );
                     }
-                    let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
+                    if let Some(workspace_id) = &workspace_id {
+                        let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
+                    }
                 }
                 "approval.requested" => {
                     if own_depth > 0 {
@@ -778,15 +1120,18 @@ fn handle_agent_value(
                             params![session_id],
                         );
                     }
-                    let _ = db.execute(
-                        "UPDATE workspaces SET status='waiting' WHERE id=?1",
-                        params![workspace_id],
-                    );
+                    if let Some(workspace_id) = &workspace_id {
+                        let _ = db.execute(
+                            "UPDATE workspaces SET status='waiting' WHERE id=?1",
+                            params![workspace_id],
+                        );
+                    }
                 }
                 "usage.updated" => {
+                    let scope = workspace_id.as_deref().unwrap_or(session_id);
                     let _ = policy::record_provider_usage(
                         &db,
-                        &workspace_id,
+                        scope,
                         session_id,
                         observed_turn_id.as_deref(),
                         &format!("provider.{adapter_id}"),
@@ -819,10 +1164,12 @@ fn handle_agent_value(
                             params![session_id],
                         );
                     }
-                    let _ = db.execute(
-                        "UPDATE workspaces SET status='failed' WHERE id=?1",
-                        params![workspace_id],
-                    );
+                    if let Some(workspace_id) = &workspace_id {
+                        let _ = db.execute(
+                            "UPDATE workspaces SET status='failed' WHERE id=?1",
+                            params![workspace_id],
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -831,7 +1178,8 @@ fn handle_agent_value(
             // A completed assistant message may carry delegation directives.
             // Spawn the workers (after the lock is released) and strip the raw
             // directive block so the conversation shows prose, not machine JSON.
-            if normalized_event.kind == "message.completed"
+            if !is_direct
+                && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
             {
                 if let Some(text) = normalized_event.text.clone() {
@@ -955,6 +1303,7 @@ fn handle_agent_value(
             && checkpoint_prompt_after_turn.is_none()
             && !checkpoint_response_seen
             && own_depth == 0
+            && !is_direct
         {
             if let Ok(Some(prompt)) = begin_pressure_compaction(&db, session_id) {
                 checkpoint_prompt_after_turn = Some(prompt);
@@ -2480,11 +2829,74 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
             "Worker turns are scheduled through the policy-controlled worker pool".into(),
         ));
     }
+
+    let available: std::collections::HashSet<String> = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.available)
+        .map(|descriptor| descriptor.id)
+        .collect();
+    let session_harness: String = state.db.lock().unwrap().query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+
+    let outbound = match slash::dispatch(&text, &session_harness, &available) {
+        slash::SlashDispatch::Usage => {
+            refresh_account_usage(app.clone(), state.clone())?;
+            emit_local_assistant(
+                &app,
+                &state,
+                &session_id,
+                &session_harness,
+                "Refreshed account usage. Check the meter in the title bar.",
+            )?;
+            return Ok(());
+        }
+        slash::SlashDispatch::Compact { .. } => {
+            compact_session(session_id.clone(), app.clone(), state.clone())?;
+            return Ok(());
+        }
+        slash::SlashDispatch::Clear => {
+            if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+                runtime.stop(adapters::ShutdownReason::UserStopped);
+            }
+            let db = state.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1",
+                params![session_id],
+            )?;
+            emit_local_assistant(
+                &app,
+                &state,
+                &session_id,
+                &session_harness,
+                "Cleared this chat’s provider session. Send a message to start fresh.",
+            )?;
+            let _ = app.emit("state-changed", ());
+            return Ok(());
+        }
+        slash::SlashDispatch::Unsupported { name, harness } => {
+            emit_local_assistant(
+                &app,
+                &state,
+                &session_id,
+                &session_harness,
+                &format!("`/{name}` is a {harness} terminal UI command and isn’t available inside Bridge yet."),
+            )?;
+            return Ok(());
+        }
+        slash::SlashDispatch::Expand { text } => text,
+        slash::SlashDispatch::Forward { text } => text,
+    };
+
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.send_turn(&text)?;
+    runtime.send_turn(&outbound)?;
     drop(adapters);
     let db = state.db.lock().unwrap();
     let adapter_id: String = db.query_row(
@@ -2493,6 +2905,8 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         |r| r.get(0),
     )?;
     // Claude stream-json does not reliably echo the submitted user turn; persist it locally.
+    // Prefer the original slash text for the transcript when we expanded a skill/prompt.
+    let display_text = if outbound != text { text.clone() } else { outbound.clone() };
     if adapter_id == "claude" {
         let user_event = agent::NormalizedEvent {
             kind: "message.completed".into(),
@@ -2500,7 +2914,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
             role: Some("user".into()),
             status: Some("completed".into()),
             title: None,
-            text: Some(text),
+            text: Some(display_text),
             data: serde_json::json!({}),
         };
         let event = store::session_event(
@@ -2516,6 +2930,32 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         params![session_id],
     );
     let _ = app.emit("state-changed", ());
+    Ok(())
+}
+
+fn emit_local_assistant(
+    app: &AppHandle,
+    state: &State<AppState>,
+    session_id: &str,
+    adapter_id: &str,
+    text: &str,
+) -> Result<(), BridgeError> {
+    let db = state.db.lock().unwrap();
+    let event = store::session_event(
+        &db,
+        session_id,
+        &agent::NormalizedEvent {
+            kind: "message.completed".into(),
+            item_id: Some(format!("bridge-{}", Uuid::new_v4())),
+            role: Some("assistant".into()),
+            status: Some("completed".into()),
+            title: None,
+            text: Some(text.into()),
+            data: serde_json::json!({ "bridgeLocal": true }),
+        },
+        &serde_json::json!({ "adapter": adapter_id }),
+    )?;
+    let _ = app.emit("agent-event", event);
     Ok(())
 }
 
@@ -2578,6 +3018,68 @@ fn interrupt_turn(session_id: String, state: State<AppState>) -> Result<(), Brid
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     runtime.interrupt()
+}
+
+/// Refresh subscription usage for every provider, independent of which session
+/// is on screen. Claude is queried out-of-band via its headless `/usage`
+/// command; Codex is asked on a live session and answers on its event stream.
+/// Both results are broadcast on the `account-usage` channel.
+#[tauri::command]
+fn refresh_account_usage(app: AppHandle, state: State<AppState>) -> Result<(), BridgeError> {
+    // Claude: a global, read-only account query — no running session required.
+    if binary::resolve("claude").is_some() {
+        let app = app.clone();
+        thread::spawn(move || {
+            let cwd = std::env::temp_dir();
+            let cwd = cwd.to_string_lossy();
+            if let Some(data) = claude_adapter::read_usage_snapshot(cwd.as_ref()) {
+                if let Some(rate_limits) = data.get("rateLimits") {
+                    emit_account_usage(&app, "claude", rate_limits.clone());
+                }
+            }
+        });
+    }
+    // Codex: rate limits are account-wide, so a single running session answers
+    // for the whole account. Its reply routes back through handle_agent_value.
+    let codex_sessions: Vec<String> = {
+        let db = state.db.lock().unwrap();
+        let mut statement =
+            db.prepare("SELECT id FROM sessions WHERE harness='codex' AND ended_at IS NULL")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        ids
+    };
+    let adapters = state.adapters.lock().unwrap();
+    for session_id in codex_sessions {
+        if let Some(runtime) = adapters.get(&session_id) {
+            let _ = runtime.read_usage();
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Rate-limit snapshot carried by a Codex account frame, if this is one.
+fn codex_rate_limits_from_frame(value: &serde_json::Value) -> Option<serde_json::Value> {
+    if let Some(rate_limits) = value.pointer("/result/rateLimits") {
+        return Some(rate_limits.clone());
+    }
+    if value.get("method").and_then(|m| m.as_str()) == Some("account/rateLimits/updated") {
+        if let Some(rate_limits) = value.pointer("/params/rateLimits") {
+            return Some(rate_limits.clone());
+        }
+    }
+    None
+}
+
+/// Broadcast a provider's subscription usage to the UI's ambient meter.
+fn emit_account_usage(app: &AppHandle, provider: &str, rate_limits: serde_json::Value) {
+    let _ = app.emit(
+        "account-usage",
+        serde_json::json!({ "provider": provider, "rateLimits": rate_limits }),
+    );
 }
 
 #[tauri::command]
@@ -3017,13 +3519,21 @@ pub fn run() {
             activate_session_entry,
             add_project,
             create_workspace,
+            create_chat,
+            create_workspace_session,
+            connect_workspace_folder,
+            update_chat_model,
+            list_slash_commands,
+            resolve_slash_command,
             start_session,
+            start_chat,
             open_terminal,
             write_terminal,
             resize_terminal,
             send_turn,
             compact_session,
             interrupt_turn,
+            refresh_account_usage,
             resolve_approval,
             stop_session,
             refresh_workspace,
@@ -3036,16 +3546,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unavailable_project_repo_has_actionable_error() {
-        let missing = std::env::temp_dir().join(format!("bridge-missing-{}", Uuid::new_v4()));
-        let error = available_project_repo(missing.to_str().unwrap()).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "This repository is no longer available at its saved location. Re-add the repository to continue."
-        );
-    }
 
     fn policy_request(paths: &[&str]) -> delegation::DelegationRequest {
         delegation::DelegationRequest {
@@ -3091,7 +3591,6 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','stopped','reported')", []).unwrap();
         db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{\"text\":\"one\"}','now'),('e2','s','e1',2,'assistant.message','{\"text\":\"two\"}','now')", []).unwrap();
         db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,latest_checkpoint_entry_id,updated_at) VALUES('s','e2','fresh','e1','now')", []).unwrap();
-        db.execute("INSERT INTO agent_events(session_id,sequence,kind,data,provider_meta,created_at) VALUES('s',1,'message.completed','{}','{}','now')", []).unwrap();
         db.execute("INSERT INTO task_knowledge(id,workspace_id,session_id,kind,body,source_entry_id,created_at) VALUES('k','w','s','decision','Keep history','e1','now')", []).unwrap();
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,write_mode,lease_status,created_at,updated_at) VALUES('s','w','implementation','standard','shared','expired','now','now')", []).unwrap();
         db.execute("INSERT INTO usage_ledger(workspace_id,session_id,turn_id,capability_units,source,created_at) VALUES('w','s','turn',3,'test','now')", []).unwrap();
@@ -3154,7 +3653,6 @@ mod tests {
             "worker_leases",
             "session_heads",
             "session_entries",
-            "agent_events",
             "usage_ledger",
             "sessions",
             "workspaces",
@@ -3208,7 +3706,6 @@ mod tests {
             "worker_leases",
             "session_heads",
             "session_entries",
-            "agent_events",
             "usage_ledger",
             "sessions",
             "workspaces",
