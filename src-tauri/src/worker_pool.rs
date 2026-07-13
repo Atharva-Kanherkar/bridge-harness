@@ -1,6 +1,7 @@
 use crate::{
     compaction_controller::CompactionController,
     delegation::DelegationRequest,
+    handoff,
     model::QueuedWorkerRequest,
     policy,
     session_supervisor::SessionSupervisor,
@@ -198,6 +199,10 @@ impl WorkerPool {
             Ok(directive) if directive.validate().is_ok() => directive,
             _ => { db.execute("UPDATE worker_queue SET queue_status='dead_letter',last_error='invalid queued delegation request',updated_at=?2 WHERE id=?1", rusqlite::params![request.id,Utc::now().to_rfc3339()])?; return Ok(None); }
         };
+        let handoff = handoff::assess(db, &request.parent_session_id, &directive.runtime_harness())?;
+        if handoff.cross_harness && !handoff.at_phase_boundary {
+            return Ok(None);
+        }
         let conflicts = directive.write_mode != crate::delegation::WriteMode::ReadOnly
             && active.iter().any(|worker| {
                 worker.write_mode != crate::delegation::WriteMode::ReadOnly
@@ -354,5 +359,19 @@ mod tests {
         assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap().unwrap().id, "q1");
         store::update_worker_queue(&db, "q1", "dispatched", Some("active")).unwrap();
         assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap().unwrap().id, "q2");
+    }
+
+    #[test]
+    fn cross_harness_queue_waits_for_parent_phase_boundary() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/handoff-queue','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/handoff-queue-w','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,active_turn_id) VALUES('parent','w','codex','Parent','working','reported','turn')", []).unwrap();
+        let mut directive = request();
+        directive.harness = Some("claude".into());
+        WorkerPool::enqueue(&db, "parent", "w", "turn", &directive, "model").unwrap();
+        assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap(), None);
+        db.execute("UPDATE sessions SET active_turn_id=NULL WHERE id='parent'", []).unwrap();
+        assert!(WorkerPool::claim_next_queued(&db, "w").unwrap().is_some());
     }
 }

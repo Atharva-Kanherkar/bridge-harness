@@ -2,6 +2,7 @@ export type Harness = "claude" | "codex" | "shell";
 export type SessionStatus = "idle" | "starting" | "working" | "waiting" | "warm" | "checkpointing" | "ready" | "stopped" | "resuming" | "restored" | "failed" | "completed" | "cancelled";
 export type CapabilityTier = "fast" | "standard" | "strong";
 export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
+export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
 export type ResumeEligibility = "none" | "native" | "checkpoint_restored";
 
 export interface Project { id: string; name: string; path: string; createdAt: string }
@@ -17,6 +18,7 @@ export interface Session {
   requestedTier?: CapabilityTier | null;
   effort?: string | null; parentSessionId?: string | null; depth?: number | null;
   restorationMode: RestorationMode;
+  continuationFidelity?: ContinuationFidelity;
   title?: string | null; kind?: string; cwd?: string | null;
 }
 export interface BridgeEvent { id: number; source: string; kind: string; entityId: string; body: string; createdAt: string }
