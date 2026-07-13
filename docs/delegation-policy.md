@@ -11,8 +11,9 @@ Default limits are three workers per user turn, one strong worker, 24 capability
 ## Write safety
 
 - Read-only workers may run concurrently.
-- Write-capable workers must claim paths covered by repository-relative path literals from durable user turns on the parent session's active branch. Bridge grounds those literals against the real workspace tree; `ownedPaths`, `relevantFiles`, and assistant prose cannot authorize themselves.
-- A missing or broader-than-proven claim is recorded and routed to user approval before worker reuse, budget consumption, lease acquisition, or process spawn.
+- Write-capable workers must claim paths covered by an explicit `write scope:` declaration in the latest durable user message on the parent session's active branch, or by a policy approval the user accepted for the same parent turn. Historical mentions and arbitrary prose do not grant ambient authority.
+- Bridge normalizes repository-relative declarations and grounds them against the real workspace tree. Existing files and directories are eligible; a new file is eligible only when its immediate parent exists. `ownedPaths`, `relevantFiles`, assistant prose, diagnostics, negated instructions, and unaccepted approval requests cannot authorize themselves.
+- A missing or broader-than-proven claim creates a durable, resolvable approval request before worker reuse, budget consumption, lease acquisition, or process spawn. Acceptance records the exact approved scope and re-evaluates the same-turn request; decline or cancellation never launches it.
 - A shared writer requires non-overlapping ownership.
 - Overlapping writers are queued FIFO.
 - Independent writers receive isolated child worktrees.

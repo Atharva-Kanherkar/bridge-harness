@@ -591,10 +591,11 @@ pub fn record_decision(
         RouteDecision::SpawnWorker(_) | RouteDecision::ResumeWorker { .. } => {
             EntryKind::DelegationApproved
         }
-        RouteDecision::Queue | RouteDecision::RequireUserApproval => EntryKind::DelegationRequested,
+        RouteDecision::RequireUserApproval => EntryKind::ApprovalRequested,
+        RouteDecision::Queue => EntryKind::DelegationRequested,
         RouteDecision::Reject | RouteDecision::ExecuteInParent => EntryKind::DelegationRejected,
     };
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "requestId": turn_id,
         "turnId": turn_id,
         "decision": outcome.decision,
@@ -608,6 +609,16 @@ pub fn record_decision(
         "capabilityUnits": outcome.capability_units,
         "ownedPathProvenance": provenance,
     });
+    if matches!(outcome.decision, RouteDecision::RequireUserApproval) {
+        payload["approvalId"] = Value::String(format!("delegation-path-scope:{turn_id}"));
+        payload["approvalType"] = Value::String("delegation_path_scope".into());
+        payload["title"] = Value::String("Approve delegation write scope".into());
+        payload["text"] = Value::String(format!(
+            "Allow this worker to write only within: {}",
+            request.owned_paths.join(", ")
+        ));
+        payload["requestedOwnedPaths"] = serde_json::json!(request.owned_paths);
+    }
     SessionForest::new(db)
         .append(parent_session_id, kind, payload)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;

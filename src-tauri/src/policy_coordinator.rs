@@ -27,7 +27,12 @@ impl PolicyCoordinator {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
         let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
-        let owned_path_provenance = owned_path_provenance(db, parent_session_id, Path::new(&path))?;
+        let owned_path_provenance = if request.write_mode == crate::delegation::WriteMode::ReadOnly
+        {
+            policy::OwnedPathProvenance::default()
+        } else {
+            owned_path_provenance(db, parent_session_id, turn_id, Path::new(&path))?
+        };
         let input = policy::PolicyInput {
             workspace_id: workspace_id.clone(),
             worktree_id: workspace_id.clone(),
@@ -69,6 +74,7 @@ impl PolicyCoordinator {
 fn owned_path_provenance(
     db: &Connection,
     parent_session_id: &str,
+    turn_id: &str,
     workspace: &Path,
 ) -> Result<policy::OwnedPathProvenance, BridgeError> {
     let branch = SessionForest::new(db)
@@ -76,15 +82,39 @@ fn owned_path_provenance(
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let mut trusted_paths = Vec::new();
     let mut source_entry_ids = Vec::new();
-    for entry in branch.iter().filter(|entry| entry.kind == "user.message") {
-        let Some(text) = entry
+    if let Some(entry) = branch.iter().rfind(|entry| entry.kind == "user.message") {
+        let paths = entry
             .payload
             .get("text")
             .and_then(serde_json::Value::as_str)
-        else {
-            continue;
-        };
-        let paths = trusted_paths_from_user_text(text, workspace);
+            .map(|text| explicit_write_scope(text, workspace))
+            .unwrap_or_default();
+        if !paths.is_empty() {
+            trusted_paths.extend(paths);
+            source_entry_ids.push(entry.id.clone());
+        }
+    }
+    for entry in branch.iter().filter(|entry| {
+        entry.kind == "approval.resolved"
+            && entry.payload["approvalType"] == "delegation_path_scope"
+            && entry.payload["turnId"] == turn_id
+            && matches!(
+                entry
+                    .payload
+                    .get("decision")
+                    .and_then(serde_json::Value::as_str),
+                Some("accept" | "acceptForSession")
+            )
+    }) {
+        let paths = entry
+            .payload
+            .get("approvedOwnedPaths")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .filter_map(|path| policy::normalize_owned_pattern(path).ok())
+            .collect::<Vec<_>>();
         if !paths.is_empty() {
             trusted_paths.extend(paths);
             source_entry_ids.push(entry.id.clone());
@@ -100,13 +130,22 @@ fn owned_path_provenance(
     })
 }
 
-fn trusted_paths_from_user_text(text: &str, workspace: &Path) -> Vec<String> {
+fn explicit_write_scope(text: &str, workspace: &Path) -> Vec<String> {
     if !workspace.is_dir() {
         return Vec::new();
     }
     let mut paths = text
-        .split_whitespace()
-        .filter_map(|token| trusted_path_token(token, workspace))
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let prefix = "write scope:";
+            line.get(..prefix.len())
+                .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+                .map(|_| line[prefix.len()..].trim())
+        })
+        .flat_map(|scope| scope.split([',', ';']))
+        .flat_map(str::split_whitespace)
+        .filter_map(|path| trusted_path_token(path, workspace))
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
@@ -146,11 +185,9 @@ fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
     if base.is_empty() {
         return None;
     }
-    let first_component = base.split('/').next()?;
     let resolved = workspace.join(base);
-    let grounded = resolved.exists()
-        || workspace.join(first_component).exists()
-        || (!base.contains('/') && base.rsplit_once('.').is_some());
+    let grounded =
+        resolved.exists() || (wildcard.is_none() && resolved.parent().is_some_and(Path::is_dir));
     if !grounded {
         return None;
     }
@@ -207,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn user_path_evidence_uses_active_branch_and_workspace_facts() {
+    fn user_path_evidence_uses_latest_explicit_scope_and_workspace_facts() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workspace.path().join("src/auth")).unwrap();
         std::fs::write(workspace.path().join("src/auth/session.rs"), "").unwrap();
@@ -217,7 +254,7 @@ mod tests {
             .append(
                 "parent",
                 EntryKind::UserMessage,
-                json!({"text":"Please update `src/auth/session.rs`."}),
+                json!({"text":"Write scope: src/auth/session.rs"}),
             )
             .unwrap();
         let branch_point = forest
@@ -231,7 +268,7 @@ mod tests {
             .append(
                 "parent",
                 EntryKind::UserMessage,
-                json!({"text":"Also change src/secret.rs"}),
+                json!({"text":"Write scope: src/secret.rs"}),
             )
             .unwrap();
         forest.move_head("parent", Some(&branch_point.id)).unwrap();
@@ -268,6 +305,63 @@ mod tests {
     }
 
     #[test]
+    fn historical_negated_and_diagnostic_paths_do_not_authorize_writes() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/auth")).unwrap();
+        std::fs::write(workspace.path().join("src/auth/session.rs"), "").unwrap();
+        let db = database(workspace.path());
+        let forest = SessionForest::new(&db);
+        forest
+            .append(
+                "parent",
+                EntryKind::UserMessage,
+                json!({"text":"Write scope: src/auth/session.rs"}),
+            )
+            .unwrap();
+        forest
+            .append(
+                "parent",
+                EntryKind::AssistantMessage,
+                json!({"text":"Earlier task completed"}),
+            )
+            .unwrap();
+        forest
+            .append(
+                "parent",
+                EntryKind::UserMessage,
+                json!({"text":"Do not modify src/auth/session.rs; explain this diagnostic only"}),
+            )
+            .unwrap();
+        let route = PolicyCoordinator::decide_worker_route(
+            &db,
+            "parent",
+            "turn-2",
+            &request(&["src/auth/session.rs"]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            route.outcome.reason,
+            policy::RouteReason::OwnedPathProvenanceRequired
+        );
+    }
+
+    #[test]
+    fn new_file_scope_requires_existing_immediate_parent() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+        assert!(
+            explicit_write_scope("Write scope: src/missing/deep/new.rs", workspace.path())
+                .is_empty()
+        );
+        std::fs::create_dir_all(workspace.path().join("src/missing/deep")).unwrap();
+        assert_eq!(
+            explicit_write_scope("Write scope: src/missing/deep/new.rs", workspace.path()),
+            vec!["src/missing/deep/new.rs"]
+        );
+    }
+
+    #[test]
     fn assistant_and_request_paths_do_not_create_provenance() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workspace.path().join("src")).unwrap();
@@ -295,5 +389,10 @@ mod tests {
             route.outcome.decision,
             policy::RouteDecision::RequireUserApproval
         ));
+        let entry = SessionForest::new(&db).active_branch("parent").unwrap();
+        let entry = entry.last().unwrap();
+        assert_eq!(entry.kind, "approval.requested");
+        assert_eq!(entry.payload["approvalType"], "delegation_path_scope");
+        assert_eq!(entry.payload["requestedOwnedPaths"], json!(["src/**"]));
     }
 }

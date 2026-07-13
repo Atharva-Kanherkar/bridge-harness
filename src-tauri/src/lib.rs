@@ -3144,6 +3144,17 @@ fn resolve_approval(
     )?;
     let data: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
+    if data.get("approvalType").and_then(serde_json::Value::as_str) == Some("delegation_path_scope")
+    {
+        let launch =
+            resolve_policy_delegation_approval(&db, &session_id, event_id, &decision, &data)?;
+        drop(db);
+        if let Some((turn_id, request)) = launch {
+            let _ = launch_worker(&app, &session_id, &turn_id, &request, true);
+        }
+        let _ = app.emit("state-changed", ());
+        return Ok(());
+    }
     let request_id = data
         .get("requestId")
         .cloned()
@@ -3205,6 +3216,54 @@ fn resolve_approval(
     let _ = app.emit("state-changed", ());
     Ok(())
 }
+
+fn resolve_policy_delegation_approval(
+    db: &Connection,
+    session_id: &str,
+    event_id: i64,
+    decision: &str,
+    payload: &serde_json::Value,
+) -> Result<Option<(String, delegation::DelegationRequest)>, BridgeError> {
+    if store::session_entries(db, session_id)?.iter().any(|entry| {
+        entry.kind == "approval.resolved" && entry.payload["requestEventId"] == event_id
+    }) {
+        return Err(BridgeError::Invalid("Approval was already resolved".into()));
+    }
+    let request: delegation::DelegationRequest =
+        serde_json::from_value(payload.get("request").cloned().ok_or_else(|| {
+            BridgeError::Invalid("Policy approval has no delegation request".into())
+        })?)
+        .map_err(|error| {
+            BridgeError::Invalid(format!("Policy approval request is invalid: {error}"))
+        })?;
+    request.validate().map_err(BridgeError::Invalid)?;
+    let turn_id = payload
+        .get("turnId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| BridgeError::Invalid("Policy approval has no parent turn".into()))?
+        .to_owned();
+    let approval_id = payload
+        .get("approvalId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid("Policy approval has no approval id".into()))?;
+    session_forest::SessionForest::new(db)
+        .append(
+            session_id,
+            session_forest::EntryKind::ApprovalResolved,
+            serde_json::json!({
+                "approvalId": approval_id,
+                "approvalType": "delegation_path_scope",
+                "requestEventId": event_id,
+                "turnId": turn_id,
+                "decision": decision,
+                "approvedOwnedPaths": request.owned_paths,
+            }),
+        )
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    Ok(matches!(decision, "accept" | "acceptForSession").then_some((turn_id, request)))
+}
+
 #[tauri::command]
 fn resize_terminal(
     workspace_id: String,
@@ -3620,7 +3679,7 @@ mod tests {
             .append(
                 "parent",
                 session_forest::EntryKind::UserMessage,
-                serde_json::json!({"text":"Implement auth under src/auth/**"}),
+                serde_json::json!({"text":"Write scope: src/**"}),
             )
             .unwrap();
         db
@@ -3872,6 +3931,128 @@ mod tests {
         assert_eq!(entries[2].kind, "delegation.requested");
         assert_eq!(entries[2].payload["decision"], "queue");
         assert_eq!(entries[2].payload["reason"], "writer_conflict");
+    }
+
+    #[test]
+    fn policy_approval_blocks_launch_side_effects_until_accepted() {
+        let db = policy_fixture();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Please implement the auth change"}),
+            )
+            .unwrap();
+        let request = policy_request(&["src/auth/**"]);
+        assert!(reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-approval",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM usage_ledger WHERE source LIKE 'policy.spawn.%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        let approval = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .last()
+            .unwrap();
+        assert_eq!(approval.kind, "approval.requested");
+        let (turn_id, approved_request) = resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(turn_id, "turn-approval");
+        assert!(reserve_worker_launch(
+            &db,
+            "parent",
+            &turn_id,
+            &approved_request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap()
+        .is_some());
+        assert!(resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn declined_policy_approval_never_launches() {
+        let db = policy_fixture();
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Explain the auth module only"}),
+            )
+            .unwrap();
+        let request = policy_request(&["src/auth/**"]);
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-decline",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        let approval = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .last()
+            .unwrap();
+        assert!(resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "decline",
+            &approval.payload,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
