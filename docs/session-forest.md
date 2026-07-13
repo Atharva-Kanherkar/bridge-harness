@@ -2,6 +2,8 @@
 
 Bridge stores conversation history as immutable entries in `session_entries`. Each entry belongs to one session, has an insertion-order `sequence`, and optionally points to a parent entry. `session_heads.active_entry_id` selects the active leaf.
 
+This is [durable local history](local-history.md), not a tamper-proof or replicated evidence ledger.
+
 ```text
 root → user → assistant → checkpoint
                 └──────→ alternate user → assistant  (active)

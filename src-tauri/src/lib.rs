@@ -70,12 +70,15 @@ struct RuntimeSession {
 }
 struct AppState {
     db: Mutex<Connection>,
+    telemetry_db: Mutex<Connection>,
     runtimes: Mutex<HashMap<String, RuntimeSession>>,
     adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
     adapter_registry: adapters::AdapterRegistry,
     delegations: Mutex<DelegationState>,
     worktrees: PathBuf,
     database_path: PathBuf,
+    telemetry_database_path: PathBuf,
+    snapshot_dir: PathBuf,
 }
 
 /// Bookkeeping for the multi-agent delegation tree.
@@ -96,6 +99,8 @@ struct Health {
     version: &'static str,
     harnesses: HashMap<&'static str, bool>,
     database: String,
+    telemetry_database: String,
+    snapshot_directory: String,
     adapters: Vec<AdapterDescriptor>,
 }
 
@@ -110,6 +115,8 @@ fn health(state: State<AppState>) -> Health {
             ("shell", true),
         ]),
         database: state.database_path.to_string_lossy().into(),
+        telemetry_database: state.telemetry_database_path.to_string_lossy().into(),
+        snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
         adapters: state.adapter_registry.descriptors(),
     }
 }
@@ -1036,6 +1043,7 @@ fn handle_agent_value(
     let state = app.state::<AppState>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
+    let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
     let mut checkpoint_response_seen = false;
@@ -1046,14 +1054,14 @@ fn handle_agent_value(
 
     {
         let db = state.db.lock().unwrap();
-        let session_context: Option<(Option<String>, String, i64, Option<String>, String)> = db
+        let session_context: Option<(Option<String>, String, i64, Option<String>, String, String)> = db
             .query_row(
-                "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind FROM sessions WHERE id=?1",
+                "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind,COALESCE(trace_id,id) FROM sessions WHERE id=?1",
                 params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .ok();
-        let Some((workspace_id, adapter_id, own_depth, stored_turn_id, session_kind)) =
+        let Some((workspace_id, adapter_id, own_depth, stored_turn_id, session_kind, trace_id)) =
             session_context
         else {
             return;
@@ -1265,6 +1273,13 @@ fn handle_agent_value(
                 &normalized_event,
                 &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
             ) {
+                pending_telemetry.push(store::telemetry_span(
+                    &trace_id,
+                    session_id,
+                    &adapter_id,
+                    &normalized_event,
+                    &event.created_at,
+                ));
                 pending_ui_events.push(event);
             }
             let pending_compaction = compaction_controller::CompactionController::pending(
@@ -1332,6 +1347,15 @@ fn handle_agent_value(
             if let Ok(Some(prompt)) = begin_pressure_compaction(&db, session_id) {
                 checkpoint_prompt_after_turn = Some(prompt);
             }
+        }
+    }
+
+    // Telemetry is deliberately flushed only after the correctness database
+    // lock and all semantic transactions are complete. A telemetry failure is
+    // best-effort and cannot roll back durable local history.
+    if !pending_telemetry.is_empty() {
+        if let Ok(telemetry) = state.telemetry_db.try_lock() {
+            let _ = store::append_telemetry_batch(&telemetry, &pending_telemetry);
         }
     }
 
@@ -2910,6 +2934,22 @@ fn start_worker_maintenance(app: AppHandle) {
     });
 }
 
+const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
+fn start_history_snapshot_maintenance(app: AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
+        let state = app.state::<AppState>();
+        if let Ok(db) = Connection::open_with_flags(
+            &state.database_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            let _ = store::export_history_snapshot(&db, &state.snapshot_dir);
+        }
+    });
+}
+
 #[tauri::command]
 fn open_terminal(
     workspace_id: String,
@@ -3806,23 +3846,32 @@ pub fn run() {
         .setup(|app| {
             let data = app.path().app_data_dir()?;
             let db_path = data.join("bridge.db");
+            let telemetry_db_path = data.join("bridge-telemetry.db");
+            let snapshot_dir = data.join("history-snapshots");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            let telemetry_connection = store::open_telemetry(&telemetry_db_path)
+                .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            let _ = store::export_history_snapshot(&connection, &snapshot_dir);
             let adapter_registry = adapters::AdapterRegistry::built_in()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             start_health_server(db_path.clone(), adapter_registry.descriptors());
             app.manage(AppState {
                 db: Mutex::new(connection),
+                telemetry_db: Mutex::new(telemetry_connection),
                 runtimes: Mutex::new(HashMap::new()),
                 adapters: Mutex::new(HashMap::new()),
                 adapter_registry,
                 delegations: Mutex::new(DelegationState::default()),
                 worktrees: data.join("worktrees"),
                 database_path: db_path,
+                telemetry_database_path: telemetry_db_path,
+                snapshot_dir,
             });
             start_worker_maintenance(app.handle().clone());
+            start_history_snapshot_maintenance(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4024,6 +4073,11 @@ mod tests {
         ] {
             assert_eq!(store::status(value), expected);
         }
+    }
+
+    #[test]
+    fn local_history_snapshot_schedule_is_periodic() {
+        assert_eq!(HISTORY_SNAPSHOT_INTERVAL, Duration::from_secs(15 * 60));
     }
 
     #[test]

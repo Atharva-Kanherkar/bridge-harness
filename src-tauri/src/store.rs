@@ -1,6 +1,8 @@
 use crate::{model::*, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -9,6 +11,25 @@ use std::{
 use uuid::Uuid;
 
 const LATEST_SCHEMA_VERSION: i64 = 9;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetrySpan {
+    pub span_id: String,
+    pub trace_id: String,
+    pub name: String,
+    pub attributes: String,
+    pub started_at: String,
+    pub ended_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySnapshotManifest {
+    pub schema_version: u32,
+    pub database_file: String,
+    pub sha256: String,
+    pub created_at: String,
+}
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -56,6 +77,126 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         [],
     )?;
     Ok(connection)
+}
+
+pub fn open_telemetry(path: &Path) -> Result<Connection, BridgeError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let connection = Connection::open(path)?;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA busy_timeout=50;
+         CREATE TABLE IF NOT EXISTS telemetry_spans (
+            span_id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            parent_span_id TEXT,
+            name TEXT NOT NULL,
+            attributes TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_telemetry_trace ON telemetry_spans(trace_id,started_at);",
+    )?;
+    Ok(connection)
+}
+
+pub fn telemetry_span(
+    trace_id: &str,
+    session_id: &str,
+    adapter_id: &str,
+    event: &crate::agent::NormalizedEvent,
+    occurred_at: &str,
+) -> TelemetrySpan {
+    TelemetrySpan {
+        span_id: Uuid::new_v4().simple().to_string(),
+        trace_id: trace_id.to_owned(),
+        name: format!("gen_ai.{}", event.kind.replace('.', "_")),
+        attributes: serde_json::json!({
+            "gen_ai.operation.name": event.kind,
+            "gen_ai.provider.name": adapter_id,
+            "gen_ai.conversation.id": session_id,
+        })
+        .to_string(),
+        started_at: occurred_at.to_owned(),
+        ended_at: occurred_at.to_owned(),
+    }
+}
+
+pub fn append_telemetry_batch(
+    db: &Connection,
+    spans: &[TelemetrySpan],
+) -> Result<usize, BridgeError> {
+    if spans.is_empty() {
+        return Ok(0);
+    }
+    let transaction = db.unchecked_transaction()?;
+    for span in spans {
+        transaction.execute(
+            "INSERT OR IGNORE INTO telemetry_spans(span_id,trace_id,name,attributes,started_at,ended_at)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                span.span_id,
+                span.trace_id,
+                span.name,
+                span.attributes,
+                span.started_at,
+                span.ended_at,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(spans.len())
+}
+
+pub fn export_history_snapshot(
+    db: &Connection,
+    snapshot_dir: &Path,
+) -> Result<(PathBuf, PathBuf), BridgeError> {
+    std::fs::create_dir_all(snapshot_dir)?;
+    let id = format!(
+        "{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%fZ"),
+        Uuid::new_v4().simple()
+    );
+    let database_path = snapshot_dir.join(format!("bridge-history-{id}.sqlite"));
+    let escaped = database_path.to_string_lossy().replace('\'', "''");
+    db.execute_batch(&format!("VACUUM INTO '{escaped}'"))?;
+    let bytes = std::fs::read(&database_path)?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let manifest = HistorySnapshotManifest {
+        schema_version: 1,
+        database_file: database_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned(),
+        sha256,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    let manifest_path = snapshot_dir.join(format!("bridge-history-{id}.manifest.json"));
+    let pending_manifest = snapshot_dir.join(format!(".{id}.manifest.tmp"));
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    std::fs::write(&pending_manifest, manifest_bytes)?;
+    std::fs::rename(&pending_manifest, &manifest_path)?;
+    Ok((database_path, manifest_path))
+}
+
+pub fn verify_history_snapshot(
+    database_path: &Path,
+    manifest_path: &Path,
+) -> Result<bool, BridgeError> {
+    let manifest: HistorySnapshotManifest = serde_json::from_slice(&std::fs::read(manifest_path)?)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    if manifest.schema_version != 1
+        || database_path.file_name().and_then(|name| name.to_str())
+            != Some(manifest.database_file.as_str())
+    {
+        return Ok(false);
+    }
+    let actual = format!("{:x}", Sha256::digest(std::fs::read(database_path)?));
+    Ok(actual == manifest.sha256)
 }
 
 fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), BridgeError> {
@@ -1242,7 +1383,6 @@ pub fn session_event(
         "eligible",
         None,
     )?;
-    transaction.execute("INSERT INTO telemetry_spans(span_id,trace_id,name,attributes,started_at,ended_at) VALUES(?1,?2,?3,?4,?5,?5)", params![Uuid::new_v4().simple().to_string(),trace_id,format!("gen_ai.{}",final_kind.replace('.',"_")),serde_json::json!({"gen_ai.operation.name":final_kind,"gen_ai.provider.name":provider_meta.get("adapter"),"gen_ai.conversation.id":session_id}).to_string(),entry.created_at])?;
     transaction.commit()?;
     Ok(AgentEvent {
         id: entry.sequence,
@@ -1423,6 +1563,64 @@ mod tests {
         assert_eq!(snapshot.projects.len(), 1);
         assert_eq!(snapshot.events[0].kind, "second");
         assert_eq!(snapshot.events[1].kind, "first");
+    }
+
+    #[test]
+    fn telemetry_batch_uses_an_independent_writer_and_failure_cannot_rollback_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = open(&dir.path().join("bridge.db")).unwrap();
+        let telemetry = open_telemetry(&dir.path().join("bridge-telemetry.db")).unwrap();
+        seed_workspace(&primary);
+        let event = crate::agent::NormalizedEvent {
+            kind: "message.completed".into(),
+            item_id: Some("m1".into()),
+            role: Some("assistant".into()),
+            status: Some("completed".into()),
+            title: None,
+            text: Some("durable".into()),
+            data: json!({}),
+        };
+        let committed = session_event(&primary, "s", &event, &json!({"adapter":"codex"}))
+            .unwrap();
+        let write_lock = primary.unchecked_transaction().unwrap();
+        write_lock
+            .execute("UPDATE sessions SET label='locked' WHERE id='s'", [])
+            .unwrap();
+        let span = telemetry_span("trace", "s", "codex", &event, &committed.created_at);
+        assert_eq!(append_telemetry_batch(&telemetry, &[span.clone()]).unwrap(), 1);
+        write_lock.rollback().unwrap();
+        assert_eq!(telemetry.query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(primary.query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(primary.query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+
+        telemetry.execute("DROP TABLE telemetry_spans", []).unwrap();
+        assert!(append_telemetry_batch(&telemetry, &[span]).is_err());
+        assert_eq!(primary.query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn history_snapshot_is_consistent_and_checksum_detects_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary_path = dir.path().join("bridge.db");
+        let primary = open(&primary_path).unwrap();
+        event(&primary, "test", "history.saved", "entity", "durable").unwrap();
+        let readonly = Connection::open_with_flags(
+            &primary_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .unwrap();
+        let (snapshot, manifest) =
+            export_history_snapshot(&readonly, &dir.path().join("snapshots")).unwrap();
+        assert!(verify_history_snapshot(&snapshot, &manifest).unwrap());
+        let snapshot_db = Connection::open(&snapshot).unwrap();
+        assert_eq!(snapshot_db.query_row("SELECT body FROM events WHERE kind='history.saved'", [], |row| row.get::<_, String>(0)).unwrap(), "durable");
+        drop(snapshot_db);
+
+        let mut bytes = std::fs::read(&snapshot).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(&snapshot, bytes).unwrap();
+        assert!(!verify_history_snapshot(&snapshot, &manifest).unwrap());
     }
 
     #[test]
