@@ -14,6 +14,22 @@ Provider processes are not reattached after a Bridge supervisor crash. Each Code
 
 Default limits are three workers per user turn, one strong worker, 24 capability units, and one automatic retry. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
 
+## Offline policy replay
+
+New decision-log entries include a versioned snapshot of every deterministic policy input. Replay the persisted log against the current defaults without starting a provider or writing to the database:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db
+```
+
+To measure a proposed policy, provide a complete JSON `PolicyConfig` using the camel-cased fields in the report:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db --candidate candidate-policy.json
+```
+
+The JSON report separates exact matches, route/reason transitions, route totals, and capability units assessed. Pre-snapshot decisions are counted as `legacySkipped`; malformed or unknown-version records are listed as invalid instead of becoming silent evidence. This is a structural regression and sensitivity benchmark. Quality, realized provider cost, and savings still require outcome labels and billing data, so the replay report deliberately makes none of those claims.
+
 ## Write safety
 
 - Read-only workers may run concurrently.

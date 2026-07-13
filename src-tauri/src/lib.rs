@@ -11,6 +11,7 @@ mod handoff;
 mod model;
 mod orchestrator;
 mod policy;
+pub mod policy_replay;
 mod policy_coordinator;
 mod restoration;
 mod session_forest;

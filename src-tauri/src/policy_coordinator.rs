@@ -56,10 +56,8 @@ impl PolicyCoordinator {
             db,
             parent_session_id,
             turn_id,
-            request,
+            &input,
             &outcome,
-            &budget,
-            &input.owned_path_provenance,
         )?;
         Ok(WorkerRouteContext {
             workspace_id,
