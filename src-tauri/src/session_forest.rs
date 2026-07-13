@@ -429,7 +429,7 @@ mod tests {
             text: None,
             data: json!({"decision":"accept"}),
         };
-        store::agent_event(&db, "s", &event, &json!({"provider":"claude"})).unwrap();
+        store::session_event(&db, "s", &event, &json!({"provider":"claude"})).unwrap();
         let forest = SessionForest::new(&db);
         let branch = forest.active_branch("s").unwrap();
         assert_eq!(branch.len(), 1);
@@ -478,7 +478,7 @@ mod tests {
             text: None,
             data: json!({"decision":"accept"}),
         };
-        store::agent_event(&db, "s", &event, &json!({})).unwrap();
+        store::session_event(&db, "s", &event, &json!({})).unwrap();
         let forest = SessionForest::new(&db);
         let typed = forest
             .append("s", EntryKind::AssistantMessage, message("continued"))

@@ -552,7 +552,7 @@ fn start_session(
                 "runtimeModel": chosen_model
             }),
         };
-        let _ = store::agent_event(
+        let _ = store::session_event(
             &db,
             &session_id,
             &context,
@@ -657,7 +657,7 @@ fn persist_agent_value(
     normalized
         .iter()
         .map(|event| {
-            store::agent_event(
+            store::session_event(
                 db,
                 session_id,
                 event,
@@ -913,7 +913,7 @@ fn handle_agent_value(
                     }
                 }
             }
-            if let Ok(event) = store::agent_event(
+            if let Ok(event) = store::session_event(
                 &db,
                 session_id,
                 &normalized_event,
@@ -1207,7 +1207,7 @@ fn record_delegation_rejection(
         data: serde_json::to_value(rejection)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?,
     };
-    store::agent_event(db, session_id, &event, &serde_json::json!({"delegation":true}))
+    store::session_event(db, session_id, &event, &serde_json::json!({"delegation":true}))
 }
 
 /// Spawn a child worker session in the parent's workspace and hand it its task.
@@ -1755,7 +1755,7 @@ fn launch_worker(
             }),
         };
         if let Ok(stored) =
-            store::agent_event(&db, parent_session_id, &spawn_event, &serde_json::json!({"delegation": true}))
+            store::session_event(&db, parent_session_id, &spawn_event, &serde_json::json!({"delegation": true}))
         {
             let _ = app.emit("agent-event", stored);
         }
@@ -1853,7 +1853,11 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
     let raw_output: Option<String> = {
         let db = state.db.lock().unwrap();
         db.query_row(
-            "SELECT text FROM agent_events WHERE session_id=?1 AND kind='message.completed' AND role='assistant' AND text IS NOT NULL AND text<>'' ORDER BY sequence DESC LIMIT 1",
+            "SELECT json_extract(payload,'$.text') FROM session_entries
+             WHERE session_id=?1 AND kind='message.completed'
+               AND json_extract(payload,'$.role')='assistant'
+               AND COALESCE(json_extract(payload,'$.text'),'')<>''
+             ORDER BY sequence DESC LIMIT 1",
             params![child_session_id],
             |r| r.get(0),
         )
@@ -2219,7 +2223,7 @@ fn report_to_parent(
             data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered, "result": result}),
         };
         if let Ok(stored) =
-            store::agent_event(&db, &parent_id, &result_event, &serde_json::json!({"delegation": true}))
+            store::session_event(&db, &parent_id, &result_event, &serde_json::json!({"delegation": true}))
         {
             let _ = app.emit("agent-event", stored);
         }
@@ -2552,7 +2556,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
             text: Some(text),
             data: serde_json::json!({}),
         };
-        let event = store::agent_event(
+        let event = store::session_event(
             &db,
             &session_id,
             &user_event,
@@ -2631,6 +2635,7 @@ fn interrupt_turn(session_id: String, state: State<AppState>) -> Result<(), Brid
 
 #[tauri::command]
 fn resolve_approval(
+    session_id: String,
     event_id: i64,
     decision: String,
     app: AppHandle,
@@ -2643,10 +2648,12 @@ fn resolve_approval(
         return Err(BridgeError::Invalid("Unsupported approval decision".into()));
     }
     let db = state.db.lock().unwrap();
-    let (session_id, data, adapter_id): (String, String, String) = db.query_row(
-        "SELECT e.session_id,e.data,s.harness FROM agent_events e JOIN sessions s ON s.id=e.session_id WHERE e.id=?1 AND e.kind='approval.requested'",
-        params![event_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    let (data, adapter_id): (String, String) = db.query_row(
+        "SELECT e.payload,s.harness FROM session_entries e
+         JOIN sessions s ON s.id=e.session_id
+         WHERE e.session_id=?1 AND e.sequence=?2 AND e.kind='approval.requested'",
+        params![session_id, event_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let data: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
@@ -2695,7 +2702,7 @@ fn resolve_approval(
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
     let db = state.db.lock().unwrap();
-    let event = store::agent_event(
+    let event = store::session_event(
         &db,
         &session_id,
         &normalized,
@@ -2975,10 +2982,6 @@ fn archive_workspace_records(
     )?;
     transaction.execute(
         "DELETE FROM session_entries WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM agent_events WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
         params![workspace_id],
     )?;
     transaction.execute(

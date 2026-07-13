@@ -7,7 +7,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 5;
+const LATEST_SCHEMA_VERSION: i64 = 6;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -82,6 +82,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             3 => migration_3_capability_tiers(&transaction)?,
             4 => migration_4_resume_eligibility(&transaction)?,
             5 => migration_5_durable_worker_pool(&transaction)?,
+            6 => migration_6_remove_legacy_agent_events(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -358,6 +359,16 @@ fn migration_5_durable_worker_pool(transaction: &Transaction<'_>) -> Result<(), 
     Ok(())
 }
 
+fn migration_6_remove_legacy_agent_events(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS idx_agent_events_session;
+         DROP TABLE IF EXISTS agent_events;",
+    )?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct LegacyAgentEvent {
     id: i64,
@@ -478,13 +489,11 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
             })
         },
     )?;
-    let agent_events = query(db, "SELECT id,session_id,sequence,protocol_version,kind,item_id,role,status,title,text,data,provider_meta,created_at FROM agent_events ORDER BY session_id,sequence", |r| Ok(AgentEvent { id:r.get(0)?, session_id:r.get(1)?, sequence:r.get(2)?, protocol_version:r.get(3)?, kind:r.get(4)?, item_id:r.get(5)?, role:r.get(6)?, status:r.get(7)?, title:r.get(8)?, text:r.get(9)?, data:serde_json::from_str(&r.get::<_,String>(10)?).unwrap_or(serde_json::Value::Null), provider_meta:serde_json::from_str(&r.get::<_,String>(11)?).unwrap_or(serde_json::Value::Null), created_at:r.get(12)? }))?;
     Ok(BridgeState {
         projects,
         workspaces,
         sessions,
         events,
-        agent_events,
     })
 }
 
@@ -1013,7 +1022,7 @@ fn parse_json_column(row: &rusqlite::Row<'_>, index: usize) -> serde_json::Value
         .unwrap_or(serde_json::Value::Null)
 }
 
-pub fn agent_event(
+pub fn session_event(
     db: &Connection,
     session_id: &str,
     event: &crate::agent::NormalizedEvent,
@@ -1021,31 +1030,6 @@ pub fn agent_event(
 ) -> Result<AgentEvent, BridgeError> {
     event.validate().map_err(BridgeError::Invalid)?;
     let transaction = db.unchecked_transaction()?;
-    let sequence: i64 = transaction.query_row(
-        "SELECT COALESCE(MAX(sequence),0)+1 FROM agent_events WHERE session_id=?1",
-        params![session_id],
-        |r| r.get(0),
-    )?;
-    let created_at = Utc::now().to_rfc3339();
-    transaction.execute(
-        "INSERT INTO agent_events(session_id,sequence,protocol_version,kind,item_id,role,status,title,text,data,provider_meta,created_at) VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-        params![session_id,sequence,event.kind,event.item_id,event.role,event.status,event.title,event.text,event.data.to_string(),provider_meta.to_string(),created_at],
-    )?;
-    let agent_event = AgentEvent {
-        id: transaction.last_insert_rowid(),
-        session_id: session_id.into(),
-        sequence,
-        protocol_version: 1,
-        kind: event.kind.clone(),
-        item_id: event.item_id.clone(),
-        role: event.role.clone(),
-        status: event.status.clone(),
-        title: event.title.clone(),
-        text: event.text.clone(),
-        data: event.data.clone(),
-        provider_meta: provider_meta.clone(),
-        created_at: created_at.clone(),
-    };
     let parent_entry_id: Option<String> = transaction
         .query_row(
             "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
@@ -1064,7 +1048,7 @@ pub fn agent_event(
         "data": event.data,
         "providerMeta": provider_meta,
     });
-    append_session_entry_tx(
+    let entry = append_session_entry_tx(
         &transaction,
         session_id,
         parent_entry_id.as_deref(),
@@ -1075,7 +1059,21 @@ pub fn agent_event(
         None,
     )?;
     transaction.commit()?;
-    Ok(agent_event)
+    Ok(AgentEvent {
+        id: entry.sequence,
+        session_id: session_id.into(),
+        sequence: entry.sequence,
+        protocol_version: 1,
+        kind: event.kind.clone(),
+        item_id: event.item_id.clone(),
+        role: event.role.clone(),
+        status: event.status.clone(),
+        title: event.title.clone(),
+        text: event.text.clone(),
+        data: event.data.clone(),
+        provider_meta: provider_meta.clone(),
+        created_at: entry.created_at,
+    })
 }
 
 #[cfg(test)]

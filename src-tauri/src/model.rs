@@ -182,7 +182,6 @@ pub struct BridgeState {
     pub workspaces: Vec<Workspace>,
     pub sessions: Vec<Session>,
     pub events: Vec<BridgeEvent>,
-    pub agent_events: Vec<AgentEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -3,7 +3,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, ArrowUp, Bot, CircleDot, Clock3, Command, FileCode2, FileDiff, FileText, FolderGit2, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import type { BridgeState, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
-import { MOCK_CONVERSATION } from "./mockConversation";
 import { AgentConversation } from "./components/AgentConversation";
 import { TerminalPane } from "./components/TerminalPane";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
@@ -18,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
-const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [], agentEvents: [] };
+const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
 const liveStatuses: SessionStatus[] = ["working", "waiting", "ready"];
 
@@ -66,7 +65,6 @@ export function App() {
     void bridgeApi.onStateChanged(reload).then(fn => off = fn);
     return () => off?.();
   }, [reload]);
-  useEffect(() => { let off: (() => void) | undefined; void bridgeApi.onAgentEvent(event => setState(current => current.agentEvents.some(item => item.id === event.id) ? current : { ...current, agentEvents: [...current.agentEvents, event] })).then(fn => off = fn); return () => off?.(); }, []);
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -87,7 +85,6 @@ export function App() {
   const sessions = state.sessions.filter(s => s.workspaceId === selectedId && s.harness !== "shell");
   const session = sessions.find(s => s.id === selectedSessionId) ?? sessions.find(s => liveStatuses.includes(s.status)) ?? sessions[0];
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
-  const sessionEvents = state.agentEvents.filter(event => event.sessionId === session?.id);
   const orderedSessions = useMemo(() => orderSessionTree(sessions), [sessions]);
   const grouped = useMemo(() => state.projects.map(project => ({ project, workspaces: state.workspaces.filter(w => w.projectId === project.id) })), [state]);
   const orchestratorReady = !!health?.adapters.find(adapter => adapter.id === "codex" && adapter.available);
@@ -162,7 +159,7 @@ export function App() {
     finally { setBusy(false); }
   }
   async function sendPrompt() { if (!session || !composer.trim()) return; const text = composer.trim(); setComposer(""); try { await bridgeApi.sendTurn(session.id, text); } catch (e) { setComposer(text); setError(errorMessage(e)); } }
-  async function resolveApproval(eventId: number, decision: string) { try { await bridgeApi.resolveApproval(eventId, decision); await reload(); } catch (e) { setError(errorMessage(e)); } }
+  async function resolveApproval(eventId: number, decision: string) { if (!session) return; try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); } catch (e) { setError(errorMessage(e)); } }
   async function selectConversationLeaf(entryId: string) {
     if (!session || !window.confirm("Switch conversation history? This changes the active conversation branch only. Files and Git state will not be rewound.")) return;
     try { setForest(await bridgeApi.activateSessionEntry(session.id, entryId)); }
@@ -252,10 +249,9 @@ export function App() {
               <div className="convo-host">
                 <AgentConversation
                   session={session}
-                  events={sessionEvents.length ? sessionEvents : MOCK_CONVERSATION}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
-                  preview={!sessionEvents.length && !forest?.entries.length}
+                  preview={!forest?.entries.length}
                   onResolve={(eventId, decision) => void resolveApproval(eventId, decision)}
                 />
               </div>

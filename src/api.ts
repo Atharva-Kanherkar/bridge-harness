@@ -6,10 +6,9 @@ import { safeSlug } from "./utils";
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
-const agentListeners = new Set<(event: AgentEvent) => void>();
 let nextEventId = 20;
 
-let mockState: BridgeState = {
+let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
   workspaces: [
     { id: "demo-1", projectId: "demo-project", city: "Kyoto", title: "Build session supervisor", branch: "bridge/session-supervisor", path: "/Users/you/bridge/Kyoto", status: "working", dirtyFiles: 4, additions: 284, deletions: 31, createdAt: now },
@@ -100,7 +99,7 @@ function emitState() { stateListeners.forEach(listener => listener()); }
 function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent> = {}) {
   const event = agentEvent(nextEventId++, sessionId, kind, fields);
   event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence)) + 1;
-  mockState.agentEvents.push(event); agentListeners.forEach(listener => listener(structuredClone(event)));
+  mockState.agentEvents.push(event);
 }
 
 const mockHealth: Health = {
@@ -179,8 +178,8 @@ export const bridgeApi = {
     session.status = "ready"; session.activeTurnId = null; emitState();
   },
   interruptTurn: (sessionId: string): Promise<void> => isTauri() ? invoke("interrupt_turn", { sessionId }) : Promise.resolve(),
-  resolveApproval: async (eventId: number, decision: string): Promise<void> => {
-    if (isTauri()) return invoke("resolve_approval", { eventId, decision });
+  resolveApproval: async (sessionId: string, eventId: number, decision: string): Promise<void> => {
+    if (isTauri()) return invoke("resolve_approval", { sessionId, eventId, decision });
     const request = mockState.agentEvents.find(item => item.id === eventId); if (request) appendAgent(request.sessionId, "approval.resolved", { status: decision, data: { requestEventId: eventId, decision } }); emitState();
   },
   openTerminal: (workspaceId: string): Promise<void> => isTauri() ? invoke("open_terminal", { workspaceId }) : Promise.resolve(),
@@ -192,9 +191,6 @@ export const bridgeApi = {
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();
   },
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? listen<TerminalChunk>("session-output", event => handler(event.payload)) : () => undefined,
-  onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return listen<AgentEvent>("agent-event", event => handler(event.payload)); agentListeners.add(handler); return () => agentListeners.delete(handler);
-  },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return listen("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
   }

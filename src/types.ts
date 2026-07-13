@@ -70,6 +70,6 @@ export interface AdapterDescriptor {
   id: string; label: string; available: boolean; version: string | null; capabilities: string[];
   unavailableReason: string | null; models: ModelOption[]; defaultModel: string | null;
 }
-export interface BridgeState { projects: Project[]; workspaces: Workspace[]; sessions: Session[]; events: BridgeEvent[]; agentEvents: AgentEvent[] }
+export interface BridgeState { projects: Project[]; workspaces: Workspace[]; sessions: Session[]; events: BridgeEvent[] }
 export interface Health { ok: boolean; version: string; harnesses: Record<Harness, boolean>; database: string; adapters: AdapterDescriptor[] }
 export interface TerminalChunk { sessionId: string; data: string }

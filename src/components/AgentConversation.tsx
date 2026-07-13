@@ -80,7 +80,7 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export function AgentConversation({ session, events, forestEntries, activeLeafId, onResolve, preview }: { session?: Session; events: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
+export function AgentConversation({ session, events = [], forestEntries, activeLeafId, onResolve, preview }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
   const items = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : reduceConversation(events);
   if (!session && !preview) return <Empty title="No agent yet" copy="Open a workspace and Bridge starts the orchestrator for you."/>;
   if (!items.length) return <Empty title="What should we build?" copy={`${session?.label ?? "The orchestrator"} is ready. Describe the work — Bridge routes it to the right harness and model.`}/>;
