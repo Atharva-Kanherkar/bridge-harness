@@ -21,6 +21,7 @@ pub struct CodexRuntime {
     pub thread_id: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
+    stopped: bool,
 }
 
 pub struct StartedCodex {
@@ -59,13 +60,15 @@ fn launch(
     } = request;
     let binary = binary::resolve("codex")
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(["app-server", "--listen", "stdio://"])
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.spawn()?;
     let stdin = child
         .stdin
         .take()
@@ -112,6 +115,7 @@ fn launch(
             thread_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
+            stopped: false,
         },
         reader,
         startup_messages,
@@ -217,6 +221,13 @@ fn schema_supports_resume(schema: &str) -> bool {
 }
 
 impl CodexRuntime {
+    fn terminate(&mut self) {
+        if self.stopped { return; }
+        self.stopped = true;
+        let _ = crate::adapters::terminate_process_group(self.child.id());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
     pub fn start_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.request("turn/start", json!({"threadId":self.thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]}))
     }
@@ -248,6 +259,7 @@ impl CodexRuntime {
 }
 
 impl AdapterRuntime for CodexRuntime {
+    fn process_id(&self) -> u32 { self.child.id() }
     fn provider_session_id(&self) -> &str {
         &self.thread_id
     }
@@ -270,9 +282,12 @@ impl AdapterRuntime for CodexRuntime {
         self.request("account/rateLimits/read", Value::Null)
     }
     fn stop(&mut self, _reason: ShutdownReason) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.terminate();
     }
+}
+
+impl Drop for CodexRuntime {
+    fn drop(&mut self) { self.terminate(); }
 }
 
 pub fn binary_version() -> Option<String> {

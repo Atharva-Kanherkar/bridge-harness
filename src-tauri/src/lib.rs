@@ -330,6 +330,7 @@ fn update_chat_model(
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
         runtime.stop(adapters::ShutdownReason::Replaced);
     }
+    session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
     let db = state.db.lock().unwrap();
     db.execute(
         "UPDATE sessions SET harness=?2,model=?3,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND kind='direct'",
@@ -534,12 +535,14 @@ fn start_session(
             handoff::record_fidelity(&db, &session_id, ContinuationFidelity::Native)?;
             return store::state(&db);
         }
-        let db = state.db.lock().unwrap();
-        record_shutdown_reason(&db, &session_id, adapters::ShutdownReason::Replaced)?;
-        drop(db);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         }
+        record_shutdown_reason(
+            &state.db.lock().unwrap(),
+            &session_id,
+            adapters::ShutdownReason::Replaced,
+        )?;
     }
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
@@ -570,7 +573,7 @@ fn start_session(
     let checkpoint_instructions = checkpoint_context
         .as_ref()
         .map(|context| format!("{orchestrator_instructions}\n\n{context}"));
-    let (started, restoration_mode, resume_eligibility) = match plan {
+    let (mut started, restoration_mode, resume_eligibility) = match plan {
         restoration::RestorationPlan::Native => {
             let provider_id = stored_provider_id
                 .as_deref()
@@ -675,6 +678,7 @@ fn start_session(
     };
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
+    let process_id = started.runtime.process_id();
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
     let db = state.db.lock().unwrap();
@@ -705,6 +709,15 @@ fn start_session(
                 Uuid::new_v4().simple().to_string()
             ],
         )?;
+    }
+    if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
+        &db,
+        &session_id,
+        process_id,
+    ) {
+        drop(db);
+        started.runtime.stop(adapters::ShutdownReason::Failed);
+        return Err(error);
     }
     restoration::set_head_state(
         &db,
@@ -854,7 +867,7 @@ fn start_chat(
         .as_deref()
         .filter(|value| !value.is_empty())
         .filter(|_| state.adapter_registry.supports_native_resume(adapter_id));
-    let (started, mode, eligibility) = match resumable {
+    let (mut started, mode, eligibility) = match resumable {
         Some(provider) => match state.adapter_registry.resume(
             adapter_id,
             adapters::ResumeRequest {
@@ -899,6 +912,7 @@ fn start_chat(
     };
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
+    let process_id = started.runtime.process_id();
     let reader = started.reader;
     let started_at = Utc::now().to_rfc3339();
     {
@@ -913,6 +927,11 @@ fn start_chat(
                 "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd],
             )?;
+        }
+        if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(&db, &session_id, process_id) {
+            drop(db);
+            started.runtime.stop(adapters::ShutdownReason::Failed);
+            return Err(error);
         }
         restoration::set_head_state(&db, &session_id, mode, eligibility, Some(&thread_id))?;
         if let Some(workspace) = &workspace_id {
@@ -990,6 +1009,10 @@ fn spawn_reader_thread(
             return;
         }
         state.adapters.lock().unwrap().remove(&session_id);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &session_id,
+        );
         notify_parent_on_worker_exit(&app, &session_id);
         let db = state.db.lock().unwrap();
         let is_worker = store::worker_runtime(&db, &session_id)
@@ -1509,6 +1532,10 @@ fn finish_worker_checkpoint(app: &AppHandle, session_id: &str, reason: adapters:
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            session_id,
+        );
     }
 }
 
@@ -2134,6 +2161,16 @@ fn launch_worker_outcome(
     let mut runtime = started.runtime;
     let started_at = Utc::now().to_rfc3339();
 
+    if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
+        &state.db.lock().unwrap(),
+        &session_id,
+        runtime.process_id(),
+    ) {
+        runtime.stop(adapters::ShutdownReason::Failed);
+        fail_reserved_worker(app, &session_id, &label, &format!("Could not track provider process: {error}"));
+        return WorkerLaunchOutcome::Failed;
+    }
+
     let transition_result = match activation {
         WorkerActivation::Fresh | WorkerActivation::Native => {
             session_supervisor::SessionSupervisor::transition(
@@ -2159,6 +2196,7 @@ fn launch_worker_outcome(
     };
     if let Err(error) = transition_result {
         runtime.stop(adapters::ShutdownReason::Failed);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
         let _ = store::event(
             &state.db.lock().unwrap(),
             "supervisor",
@@ -2197,6 +2235,7 @@ fn launch_worker_outcome(
     .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
         return WorkerLaunchOutcome::Failed;
     }
     if handoff::record_fidelity(
@@ -2207,6 +2246,7 @@ fn launch_worker_outcome(
     .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
         return WorkerLaunchOutcome::Failed;
     }
 
@@ -2301,6 +2341,7 @@ fn launch_worker_outcome(
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Failed);
         }
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
         fail_reserved_worker(
             app,
             &session_id,
@@ -2484,6 +2525,10 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
             runtime.stop(adapters::ShutdownReason::Completed);
         }
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            child_session_id,
+        );
     }
 }
 
@@ -3158,6 +3203,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
                 runtime.stop(adapters::ShutdownReason::UserStopped);
             }
             let db = state.db.lock().unwrap();
+            session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
             db.execute(
                 "UPDATE sessions SET provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1",
                 params![session_id],
@@ -3676,6 +3722,7 @@ fn stop_session(
             runtime.stop(adapters::ShutdownReason::UserCancelled);
         }
         let db = state.db.lock().unwrap();
+        session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
         let workspace_id: String = db.query_row(
             "SELECT workspace_id FROM sessions WHERE id=?1",
             params![session_id],
@@ -3738,13 +3785,14 @@ fn stop_session(
             }
         }
     }
-    {
-        let db = state.db.lock().unwrap();
-        record_shutdown_reason(&db, &session_id, adapters::ShutdownReason::UserStopped)?;
-    }
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
+    record_shutdown_reason(
+        &state.db.lock().unwrap(),
+        &session_id,
+        adapters::ShutdownReason::UserStopped,
+    )?;
     if let Some(mut runtime) = state.runtimes.lock().unwrap().remove(&session_id) {
         runtime
             .child
@@ -3779,6 +3827,7 @@ fn record_shutdown_reason(
     session_id: &str,
     reason: adapters::ShutdownReason,
 ) -> Result<(), BridgeError> {
+    session_supervisor::SessionSupervisor::clear_adapter_process(db, session_id)?;
     session_forest::SessionForest::new(db)
         .append(
             session_id,
@@ -3943,7 +3992,11 @@ pub fn run() {
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let telemetry_connection = store::open_telemetry(&telemetry_db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             let _ = store::export_history_snapshot(&connection, &snapshot_dir);
             let adapter_registry = adapters::AdapterRegistry::built_in()
@@ -4003,6 +4056,7 @@ mod tests {
     struct RejectingRuntime;
 
     impl adapters::AdapterRuntime for RejectingRuntime {
+        fn process_id(&self) -> u32 { 0 }
         fn provider_session_id(&self) -> &str { "rejecting" }
         fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
         fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {

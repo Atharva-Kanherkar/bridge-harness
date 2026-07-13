@@ -21,6 +21,7 @@ pub struct ClaudeRuntime {
     pub session_id: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicU64,
+    stopped: bool,
 }
 
 pub struct StartedClaude {
@@ -96,6 +97,7 @@ fn launch(
     if let Some(budget) = thinking_budget(effort) {
         command.env("MAX_THINKING_TOKENS", budget.to_string());
     }
+    crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
     let stdin = child
         .stdin
@@ -122,6 +124,7 @@ fn launch(
             session_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicU64::new(1),
+            stopped: false,
         },
         reader,
         startup_messages,
@@ -313,6 +316,13 @@ fn permission_args(write_mode: Option<WriteMode>) -> Vec<&'static str> {
 }
 
 impl ClaudeRuntime {
+    fn terminate(&mut self) {
+        if self.stopped { return; }
+        self.stopped = true;
+        let _ = crate::adapters::terminate_process_group(self.child.id());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
     pub fn start_turn(&self, text: &str) -> Result<(), BridgeError> {
         let turn_id = format!("turn-{}", self.request_id.fetch_add(1, Ordering::Relaxed));
         *self.current_turn.lock().unwrap() = Some(turn_id.clone());
@@ -361,6 +371,7 @@ impl ClaudeRuntime {
 }
 
 impl AdapterRuntime for ClaudeRuntime {
+    fn process_id(&self) -> u32 { self.child.id() }
     fn provider_session_id(&self) -> &str {
         &self.session_id
     }
@@ -377,9 +388,12 @@ impl AdapterRuntime for ClaudeRuntime {
         ClaudeRuntime::respond(self, request_id, decision)
     }
     fn stop(&mut self, _reason: ShutdownReason) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.terminate();
     }
+}
+
+impl Drop for ClaudeRuntime {
+    fn drop(&mut self) { self.terminate(); }
 }
 
 pub fn binary_version() -> Option<String> {

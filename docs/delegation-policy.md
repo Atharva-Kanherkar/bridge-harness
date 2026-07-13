@@ -10,6 +10,8 @@ Cross-harness continuations are projected rather than native: provider reasoning
 
 Human approval pauses dependent queue TTLs. A queued request whose parent or any ancestor is waiting for approval moves to the durable `blocked_on_human` state; it cannot dispatch or expire there. Resolution returns it to `queued` and advances its expiry by the full blocked duration. Cancellation still terminates the dependent request, and block/release transitions are recorded as reason events.
 
+Provider processes are not reattached after a Bridge supervisor crash. Each Codex/Claude child runs in its own process group, and its leader PID plus OS process identity are persisted on the session. Startup terminates only an exact identity match, marks active sessions recoverably failed, clears the active turn, and routes workers through typed failed-result reconciliation. A PID identity mismatch is never killed. Restart recovery warns that mid-turn worktree changes may be partial and does not invent a checkpoint.
+
 Default limits are three workers per user turn, one strong worker, 24 capability units, and one automatic retry. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
 
 ## Write safety

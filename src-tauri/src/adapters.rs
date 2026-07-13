@@ -8,10 +8,14 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     io::BufRead,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
+    thread,
+    time::Duration,
 };
 
 pub trait AdapterRuntime: Send {
+    fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
     fn current_turn(&self) -> Arc<Mutex<Option<String>>>;
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
@@ -24,6 +28,73 @@ pub trait AdapterRuntime: Send {
         Ok(())
     }
     fn stop(&mut self, reason: ShutdownReason);
+}
+
+#[cfg(unix)]
+pub fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+pub fn configure_process_group(_command: &mut Command) {}
+
+pub fn process_identity(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart=", "-o", "comm="])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let identity = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (output.status.success() && !identity.is_empty()).then_some(identity)
+}
+
+fn process_group_is_running(pid: u32) -> bool {
+    let output = Command::new("ps")
+        .args(["-ax", "-o", "pgid=", "-o", "stat="])
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else { return false; };
+    output.status.success() && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next().and_then(|value| value.parse::<u32>().ok()) == Some(pid)
+            && fields.next().is_some_and(|state| !state.starts_with('Z'))
+    })
+}
+
+#[cfg(unix)]
+pub fn terminate_process_group(pid: u32) -> bool {
+    let target = format!("-{pid}");
+    let signal = |value: &str| {
+        Command::new("kill")
+            .args([value, &target])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let alive = || process_group_is_running(pid);
+    let _ = signal("-TERM");
+    for _ in 0..20 {
+        if !alive() { return true; }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let _ = signal("-KILL");
+    for _ in 0..20 {
+        if !alive() { return true; }
+        thread::sleep(Duration::from_millis(25));
+    }
+    !alive()
+}
+
+#[cfg(not(unix))]
+pub fn terminate_process_group(pid: u32) -> bool {
+    Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
