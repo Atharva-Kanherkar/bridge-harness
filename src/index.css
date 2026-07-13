@@ -120,11 +120,11 @@
     --code: color-mix(in srgb, var(--background) 98%, var(--color-black));
     --code-foreground: var(--foreground);
     --code-highlight: --alpha(var(--color-white) / 8%);
-    --sidebar: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-black));
-    --sidebar-accent: --alpha(var(--color-white) / 4%);
+    --sidebar: color-mix(in srgb, var(--color-neutral-800) 62%, var(--color-neutral-950));
+    --sidebar-accent: --alpha(var(--color-white) / 7%);
     --sidebar-accent-foreground: var(--color-neutral-100);
-    --sidebar-border: --alpha(var(--color-white) / 10%);
-    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 64%, var(--sidebar));
+    --sidebar-border: --alpha(var(--color-white) / 8%);
+    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 72%, var(--sidebar));
     --sidebar-primary: var(--color-neutral-100);
     --sidebar-primary-foreground: var(--color-neutral-900);
     --sidebar-ring: var(--color-neutral-400);
@@ -137,13 +137,33 @@
   html {
     @apply font-sans;
     color-scheme: dark;
+    background: transparent;
     }
+  /* Translucent base so the native macOS vibrancy material shows through as
+     frosted glass. Falls back to a dark tint when there is no vibrancy. */
   body {
-    @apply relative isolate bg-background text-foreground;
+    @apply relative isolate text-foreground;
+    background: color-mix(in srgb, var(--color-background) 58%, transparent);
     }
   code, kbd, samp, pre {
     font-family: var(--font-mono);
     }
+}
+
+/* Reusable macOS-style glass surface: translucent fill, heavy blur + saturation,
+   a hairline edge, a soft drop shadow, and a subtle top light (inset highlight). */
+.u-glass {
+  background: color-mix(in srgb, var(--color-card) 52%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  box-shadow:
+    0 20px 50px -18px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 11%, transparent);
+}
+
+.u-hairline-t {
+  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 9%, transparent);
 }
 
 @keyframes home-rise {
@@ -153,4 +173,16 @@
 
 .animate-home-rise {
   animation: home-rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Sweeping highlight used for "Thinking…" text while the agent works. */
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Soft breathing dot that replaces the old loading spinners. */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.72); }
+  50% { opacity: 1; transform: scale(1); }
 }

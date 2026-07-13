@@ -17,6 +17,12 @@ pub trait AdapterRuntime: Send {
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
+    /// Ask the provider to report current subscription rate-limit usage.
+    /// The response arrives asynchronously on the session's event stream.
+    /// Providers without an on-demand usage query keep the default no-op.
+    fn read_usage(&self) -> Result<(), BridgeError> {
+        Ok(())
+    }
     fn stop(&mut self, reason: ShutdownReason);
 }
 
@@ -240,7 +246,7 @@ impl HarnessAdapter for CodexAdapter {
         let version = codex_adapter::binary_version();
         AdapterDescriptor {
             id: "codex".into(),
-            label: "Orchestrator".into(),
+            label: "Codex".into(),
             available: version.is_some(),
             version,
             capabilities: [

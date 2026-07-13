@@ -18,14 +18,14 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("terminal-host");
     expect(html).not.toContain("xterm");
   });
-  it("renders active forest cards and collapsed raw events", () => {
+  it("renders active forest cards and hides raw provider frames", () => {
     const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>,sequence:number,contextVisibility="eligible"):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,kind,payload,providerEventId:null,contextVisibility,tokenEstimate:null,createdAt:"now" });
     const entries = [entry("one",null,"checkpoint",{summary:"Durable checkpoint"},1),entry("two","one","compaction",{summary:"Reduced context",reason:"manual"},2),entry("three","two","provider.unknown",{title:"Provider frame",raw:"secret"},3,"raw")];
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={entries} activeLeafId="three"/>);
     expect(html).toContain("Durable checkpoint");
     expect(html).toContain("Reduced context");
-    expect(html).toContain("Provider frame");
-    expect(html).toContain("inspect");
-    expect(html).toContain("<details");
+    // Raw provider telemetry is internal, not conversation — it must not render.
+    expect(html).not.toContain("Provider frame");
+    expect(html).not.toContain("secret");
   });
 });

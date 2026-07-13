@@ -1,6 +1,7 @@
-import { useState } from "react";
-import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, GitFork, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, GitFork, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
+import { pickGreeting } from "../greetings";
 import type { AgentEvent, Session, SessionEntry } from "../types";
 import { Markdown } from "./Markdown";
 
@@ -80,11 +81,12 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export function AgentConversation({ session, events = [], forestEntries, activeLeafId, onResolve, preview }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean }) {
+export function AgentConversation({ session, events = [], forestEntries, activeLeafId, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
   const liveItems = reduceConversation(events);
   
-  // Merge live streaming items that aren't yet in the durable forest
+  // Merge live streaming items that aren't yet in the durable forest, and drop
+  // raw provider events — they are internal telemetry, not conversation.
   const items = [...durableItems];
   const durableIds = new Set(durableItems.map(item => item.eventId));
   for (const live of liveItems) {
@@ -92,28 +94,71 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
       items.push(live);
     }
   }
+  const visibleItems = items.filter(item => item.type !== "raw");
 
-  if (!session && !preview) return <Empty title="No agent yet" copy="Open a workspace and Bridge starts the orchestrator for you."/>;
-  if (!items.length) return <Empty title="What should we build?" copy={`${session?.label ?? "The orchestrator"} is ready. Describe the work — Bridge routes it to the right harness and model.`}/>;
-  return <div className="absolute inset-0 overflow-y-auto px-8 pt-[26px] pb-[30px] scrollbar-thin scrollbar-thumb-foreground/10">
+  if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
+  if (!visibleItems.length && !working && !pendingMessages.length) return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
+  const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
+  const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
+  const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
+  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
+  return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto px-8 pt-[26px] pb-[30px] scrollbar-thin scrollbar-thumb-foreground/10">
     <div className="max-w-[760px] mx-auto">
       {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
-      {groupItems(items).map(entry => entry.kind === "group"
+      {groupItems(visibleItems).map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
         : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve}/>)}
+      {optimistic.map((text, index) => <div key={`pending-${index}`} className="flex justify-end my-[18px]"><div className="max-w-[78%] px-[18px] py-3 rounded-2xl bg-foreground/6 text-foreground text-[13.5px] leading-relaxed whitespace-pre-wrap border-0">{text}</div></div>)}
+      {working && !streaming && <ThinkingIndicator/>}
     </div>
+  </ScrollFollow>;
+}
+
+function ScrollFollow({ signature, className, children }: { signature: string; className?: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [signature]);
+  return <div ref={ref} className={className} onScroll={event => {
+    const el = event.currentTarget;
+    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }}>{children}</div>;
+}
+
+function ThinkingIndicator() {
+  return <div className="my-4 flex items-center gap-[9px]">
+    <PulseDot size={7}/>
+    <span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Thinking…</span>
   </div>;
 }
 
+function PulseDot({ size = 8 }: { size?: number }) {
+  return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
+}
+
+function GreetingEmpty({ seed }: { seed?: string }) {
+  // Stable per session so it doesn't reshuffle on every re-render, tinted by time of day.
+  const greeting = useMemo(() => pickGreeting(seed), [seed]);
+  return <Empty title={greeting.headline} copy={greeting.hint} />;
+}
+
 function Empty({ title, copy }: { title: string; copy: string }) {
-  return <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-muted-foreground"><Bot size={22} aria-hidden="true" /><h2 className="my-3 text-muted-foreground font-semibold text-[14.5px]">{title}</h2><p className="max-w-[440px] m-0 text-[12.5px] leading-relaxed">{copy}</p></div>;
+  return <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
+    <div className="animate-home-rise flex flex-col items-center max-w-[440px]">
+      <h2 className="font-heading text-[24px] leading-tight tracking-[-0.025em] text-foreground font-semibold">{title}</h2>
+      <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground/80">{copy}</p>
+    </div>
+  </div>;
 }
 
 function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className="flex justify-end my-[18px]"><div className="max-w-[78%] px-[18px] py-3 rounded-2xl bg-foreground/6 text-foreground text-[13.5px] leading-relaxed whitespace-pre-wrap border-0">{item.text}</div></div>;
-    return <div className="my-[18px] text-muted-foreground text-[14px] leading-[1.7] tracking-[-0.004em]">{item.status === "streaming" && !item.text.trim() ? <span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Working…</span> : <Markdown text={item.text}/>}</div>;
+    return <div className="my-[18px] text-muted-foreground text-[14px] leading-[1.7] tracking-[-0.004em]">{item.status === "streaming" && !item.text.trim() ? <span className="inline-flex items-center gap-[9px]"><PulseDot size={7}/><span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Thinking…</span></span> : <Markdown text={item.text}/>}</div>;
   }
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -164,7 +209,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   const expanded = open || live;
   return <div className="my-3">
     <button className="inline-flex items-center gap-[9px] text-muted-foreground text-[12px] py-1 text-left transition-colors hover:text-foreground group" onClick={() => setOpen(value => !value)}>
-      {live ? <LoaderCircle size={13} className="animate-spin text-muted-foreground/70" aria-hidden="true" /> : <Pencil size={13} className="text-muted-foreground/70" aria-hidden="true" />}
+      {live ? <PulseDot size={7}/> : <Pencil size={13} className="text-muted-foreground/70" aria-hidden="true" />}
       <span>{summarize(items)}</span>
       <ChevronDown size={13} className={`text-muted-foreground/70 transition-transform opacity-70 ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
@@ -181,7 +226,7 @@ function ActionRow({ item }: { item: ConversationItem }) {
   const { label, meta } = actionLabel(item);
   return <div className="min-w-0">
     <button className="w-full flex items-center gap-[9px] min-h-[26px] py-1 pr-2 rounded-md text-left text-muted-foreground text-[12px] hover:text-foreground disabled:hover:text-muted-foreground transition-colors" disabled={!output} onClick={() => output && setOpen(value => !value)}>
-      <span className="flex-none grid place-items-center text-muted-foreground/70">{live ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : VERB_ICON[verbOf(item)]}</span>
+      <span className="flex-none grid place-items-center text-muted-foreground/70">{live ? <PulseDot size={7}/> : VERB_ICON[verbOf(item)]}</span>
       <span className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis font-mono text-[11.5px]">{label}</span>
       {meta && <span className="flex-none text-muted-foreground/70 font-mono text-[10.5px]">{meta}</span>}
       {output && <ChevronRight size={12} className={`flex-none text-muted-foreground/70 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
@@ -194,7 +239,7 @@ function PlanCard({ item }: { item: ConversationItem }) {
   return <div className="my-[14px] border border-border rounded-lg bg-card overflow-hidden">
     <header className="flex items-center gap-2 p-[10px_13px] border-b border-border text-muted-foreground"><FileText size={13} aria-hidden="true" /><b className="text-[12px] font-medium text-foreground">{item.title || "Plan"}</b></header>
     {planSteps(item.data).map((step, index) => <div className={`min-h-[30px] flex items-center gap-[9px] py-[2px] px-[13px] text-[12.5px] ${step.status === "completed" ? "text-muted-foreground/60 line-through decoration-border" : step.status === "inProgress" ? "text-foreground" : "text-muted-foreground"}`} key={`${step.step}-${index}`}>
-      {step.status === "completed" ? <Check size={12} className="flex-none text-muted-foreground/60" aria-hidden="true" /> : step.status === "inProgress" ? <LoaderCircle className="animate-spin flex-none" size={12} aria-hidden="true" /> : <Circle size={8} className="flex-none text-muted-foreground/60" aria-hidden="true" />}
+      {step.status === "completed" ? <Check size={12} className="flex-none text-muted-foreground/60" aria-hidden="true" /> : step.status === "inProgress" ? <PulseDot size={8}/> : <Circle size={8} className="flex-none text-muted-foreground/60" aria-hidden="true" />}
       <span>{step.step}</span>
     </div>)}
   </div>;

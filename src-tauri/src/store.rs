@@ -7,14 +7,16 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 6;
+const LATEST_SCHEMA_VERSION: i64 = 7;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut connection = Connection::open(path)?;
-    connection.execute_batch("PRAGMA foreign_keys=ON;")?;
+    // Migrations run with foreign keys disabled so table rebuilds (which drop and
+    // recreate parent tables) don't trip referential checks; re-enabled after.
+    connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
     run_migrations(&mut connection, path)?;
     connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     let now = Utc::now().to_rfc3339();
@@ -83,6 +85,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             4 => migration_4_resume_eligibility(&transaction)?,
             5 => migration_5_durable_worker_pool(&transaction)?,
             6 => migration_6_remove_legacy_agent_events(&transaction)?,
+            7 => migration_7_optional_repo_and_direct_chats(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -369,6 +372,62 @@ fn migration_6_remove_legacy_agent_events(
     Ok(())
 }
 
+/// Make git optional and support direct chats:
+/// - workspaces: project_id, city, branch, path become nullable (repo-less workspaces)
+/// - sessions: workspace_id becomes nullable (standalone chats); add title, kind, cwd
+/// Runs with foreign keys disabled (see `open`), so the parent-table rebuilds are safe.
+fn migration_7_optional_repo_and_direct_chats(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE workspaces_new (
+            id TEXT PRIMARY KEY,
+            project_id TEXT REFERENCES projects(id),
+            city TEXT,
+            title TEXT NOT NULL,
+            branch TEXT,
+            path TEXT UNIQUE,
+            status TEXT NOT NULL,
+            dirty_files INTEGER NOT NULL DEFAULT 0,
+            additions INTEGER NOT NULL DEFAULT 0,
+            deletions INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO workspaces_new (id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at)
+            SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces;
+        DROP TABLE workspaces;
+        ALTER TABLE workspaces_new RENAME TO workspaces;
+
+        CREATE TABLE sessions_new (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT REFERENCES workspaces(id),
+            harness TEXT NOT NULL,
+            label TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT,
+            ended_at TEXT,
+            context_percent INTEGER,
+            usage_percent INTEGER,
+            metric_source TEXT NOT NULL DEFAULT 'estimated',
+            provider_session_id TEXT,
+            active_turn_id TEXT,
+            model TEXT,
+            effort TEXT,
+            parent_session_id TEXT,
+            depth INTEGER,
+            requested_tier TEXT,
+            title TEXT,
+            kind TEXT NOT NULL DEFAULT 'orchestrator',
+            cwd TEXT
+        );
+        INSERT INTO sessions_new (id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model,effort,parent_session_id,depth,requested_tier)
+            SELECT id,workspace_id,harness,label,status,started_at,ended_at,context_percent,usage_percent,metric_source,provider_session_id,active_turn_id,model,effort,parent_session_id,depth,requested_tier FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;",
+    )?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct LegacyAgentEvent {
     id: i64,
@@ -474,7 +533,7 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh') FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?) }))?;
+    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), title:r.get(18)?, kind:r.get(19)?, cwd:r.get(20)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -1274,8 +1333,9 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5]);
-        assert_eq!(state(&db).unwrap().agent_events.len(), 2);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7]);
+        // Legacy agent_events were backfilled into the immutable forest.
+        assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
         let backups = backup_paths(dir.path());
         assert_eq!(backups.len(), 1);
@@ -1289,7 +1349,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1466,45 +1526,6 @@ mod tests {
             [],
         );
         assert!(duplicate.is_err());
-    }
-
-    #[test]
-    fn agent_event_dual_write_is_atomic_and_equivalent() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = open(&dir.path().join("bridge.db")).unwrap();
-        seed_workspace(&db);
-        let first = crate::agent::normalize_codex_message(
-            &json!({"method":"item/agentMessage/delta","params":{"itemId":"m","delta":"hel"}}),
-        );
-        agent_event(&db, "s", &first[0], &json!({"provider":"codex"})).unwrap();
-        let snapshot = state(&db).unwrap();
-        let entries = session_entries(&db, "s").unwrap();
-        assert_eq!(snapshot.agent_events.len(), 1);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(snapshot.agent_events[0].sequence, 1);
-        assert_eq!(entries[0].sequence, 1);
-        assert_eq!(entries[0].kind, snapshot.agent_events[0].kind);
-        assert_eq!(entries[0].payload["data"], snapshot.agent_events[0].data);
-        assert_eq!(entries[0].payload["providerMeta"]["provider"], "codex");
-
-        db.execute_batch(
-            "CREATE TRIGGER reject_forest_insert BEFORE INSERT ON session_entries
-             BEGIN SELECT RAISE(FAIL, 'injected forest failure'); END;",
-        )
-        .unwrap();
-        assert!(agent_event(&db, "s", &first[0], &json!({"provider":"codex"})).is_err());
-        assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM agent_events", [], |row| row
-                .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM session_entries", [], |row| row
-                .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
     }
 
     #[test]
