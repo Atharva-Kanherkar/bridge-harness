@@ -253,6 +253,7 @@ mod tests {
             acceptance_criteria: vec!["tests pass".into()],
             known_facts: vec![],
             decisions: vec![],
+            evidence_ids: vec![],
             relevant_files: vec!["src/auth.rs".into()],
             owned_paths: vec!["src/auth/**".into(), "src/auth.rs".into()],
             write_mode: WriteMode::Shared,

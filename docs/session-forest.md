@@ -27,6 +27,8 @@ Bridge deliberately keeps these separate:
 
 1. Workspace tree: repository → task worktree → optional worker worktree.
 2. Agent tree: orchestrator → policy-authorized workers.
+
+Worker-result entry IDs are also durable evidence references. A later sibling worker receives the exact validated typed payload resolved from the parent's active branch rather than relying on an orchestrator paraphrase; active-branch membership and session ownership are checked on every resolution.
 3. Conversation tree: immutable entries → active branch.
 
 An operation on one tree does not imply a matching operation on another.

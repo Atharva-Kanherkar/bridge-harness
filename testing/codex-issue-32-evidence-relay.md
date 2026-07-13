@@ -6,6 +6,7 @@
 - A later sibling delegation references prior active-branch worker evidence by ID by default. The orchestrator may select a subset with `evidenceIds`, but it cannot synthesize or override the stored result.
 - Bridge resolves every selected ID against the same parent session and injects the exact validated typed result into the new worker's context packet. Missing, foreign-session, stale-branch, malformed, or non-worker-result IDs fail closed before provider startup.
 - The live parent notification is routing metadata (`evidenceId`, status, and summary). SQLite's typed `worker.result` entry remains the record used by later workers.
+- Provider projection reduces a parent-visible worker result to routing fields plus `evidenceId`; detailed files, tests, decisions, risks, and remaining work stay in the canonical SQLite record and are hydrated only into selected worker packets.
 - Raw worker transcripts are never included.
 
 ## Required tests
