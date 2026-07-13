@@ -119,7 +119,7 @@ impl ContextProjector {
     /// Entries are canonicalized by `(sequence, id)`. The newest *valid*
     /// compaction supplies the restoration summary and first retained entry. Raw
     /// worker streams are excluded, while typed `worker.result` entries are reduced
-    /// to their structured summary fields.
+    /// to routing fields plus their canonical evidence IDs.
     pub fn project(
         entries: &[SessionEntry],
         context_window_tokens: i64,
@@ -337,18 +337,12 @@ fn project_render_entry(entry: &SessionEntry) -> Option<SessionEntry> {
     }
 
     let allowed = [
-        "schemaVersion",
         "status",
         "summary",
-        "filesChanged",
-        "tests",
-        "decisions",
-        "risks",
-        "remainingWork",
         "suggestedNextAction",
         "suggestedRole",
         "suggestedTask",
-        "sourceAgent",
+        "childSessionId",
     ];
     let mut payload = Map::new();
     for field in allowed {
@@ -362,6 +356,7 @@ fn project_render_entry(entry: &SessionEntry) -> Option<SessionEntry> {
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     payload.insert("summary".into(), Value::String(summary.to_owned()));
+    payload.insert("evidenceId".into(), Value::String(entry.id.clone()));
     let mut projected = entry.clone();
     projected.payload = Value::Object(payload);
     projected.token_estimate = None;
@@ -580,6 +575,14 @@ mod tests {
             projection.render_entries[0].payload["summary"],
             "Tests pass"
         );
+        assert_eq!(
+            projection.render_entries[0].payload["evidenceId"],
+            "entry-2"
+        );
+        assert!(projection.render_entries[0]
+            .payload
+            .get("decisions")
+            .is_none());
         assert!(projection.render_entries[0]
             .payload
             .get("rawTranscript")

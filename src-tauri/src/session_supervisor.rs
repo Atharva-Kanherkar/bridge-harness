@@ -1,5 +1,5 @@
 use crate::{
-    delegation::{SuggestedNextAction, WorkerResult, WorkerResultStatus},
+    delegation::{SuggestedNextAction, WorkerEvidence, WorkerResult, WorkerResultStatus, MAX_EVIDENCE_REFERENCES},
     model::SessionEntry,
     session_forest::{self, EntryKind},
     worker_lifecycle::{validate_transition, WorkerLifecycleState},
@@ -7,9 +7,15 @@ use crate::{
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 
 pub struct SessionSupervisor;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedWorkerResult {
+    pub parent_session_id: String,
+    pub evidence_id: String,
+}
 
 impl SessionSupervisor {
     pub fn transition(
@@ -62,7 +68,7 @@ impl SessionSupervisor {
         db: &Connection,
         session_id: &str,
         result: &WorkerResult,
-    ) -> Result<Option<String>, BridgeError> {
+    ) -> Result<Option<ReportedWorkerResult>, BridgeError> {
         result.validate().map_err(BridgeError::Invalid)?;
         let transaction = db.unchecked_transaction()?;
         let runtime: Option<(String, String)> = transaction
@@ -88,7 +94,7 @@ impl SessionSupervisor {
             payload.clone(),
         )
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        session_forest::append_in_transaction(
+        let parent_entry = session_forest::append_in_transaction(
             &transaction,
             &parent_session_id,
             EntryKind::WorkerResult,
@@ -123,7 +129,49 @@ impl SessionSupervisor {
             params![session_id, result.status.as_str(), now],
         )?;
         transaction.commit()?;
-        Ok(Some(parent_session_id))
+        Ok(Some(ReportedWorkerResult {
+            parent_session_id,
+            evidence_id: parent_entry.id,
+        }))
+    }
+
+    pub fn worker_evidence(
+        db: &Connection,
+        parent_session_id: &str,
+        requested_ids: &[String],
+    ) -> Result<Vec<WorkerEvidence>, BridgeError> {
+        if requested_ids.len() > MAX_EVIDENCE_REFERENCES {
+            return Err(BridgeError::Invalid(format!("worker evidence cannot contain more than {MAX_EVIDENCE_REFERENCES} references")));
+        }
+        if requested_ids.iter().collect::<HashSet<_>>().len() != requested_ids.len() {
+            return Err(BridgeError::Invalid("worker evidence references cannot contain duplicates".into()));
+        }
+        let branch = session_forest::SessionForest::new(db)
+            .active_branch(parent_session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let available = branch.into_iter().filter(|entry| entry.kind == EntryKind::WorkerResult.as_str()).collect::<Vec<_>>();
+        let selected = if requested_ids.is_empty() {
+            available.iter().rev().take(MAX_EVIDENCE_REFERENCES).rev().collect::<Vec<_>>()
+        } else {
+            requested_ids.iter().map(|id| {
+                available.iter().find(|entry| entry.id == *id).ok_or_else(|| BridgeError::Invalid(format!("worker evidence {id} is not on the active parent branch")))
+            }).collect::<Result<Vec<_>, _>>()?
+        };
+        selected.into_iter().map(|entry| {
+            let child_session_id = entry.payload.get("childSessionId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| BridgeError::Invalid(format!("worker evidence {} has no child session", entry.id)))?
+                .to_owned();
+            let mut payload = entry.payload.clone();
+            let object = payload.as_object_mut().ok_or_else(|| BridgeError::Invalid(format!("worker evidence {} is not an object", entry.id)))?;
+            object.remove("childSessionId");
+            object.remove("_bridgeTypedSchemaVersion");
+            let result: WorkerResult = serde_json::from_value(payload)
+                .map_err(|error| BridgeError::Invalid(format!("worker evidence {} is malformed: {error}", entry.id)))?;
+            result.validate().map_err(BridgeError::Invalid)?;
+            Ok(WorkerEvidence { evidence_id: entry.id.clone(), child_session_id, result })
+        }).collect()
     }
 
     pub fn recover_orphaned_workers(db: &Connection) -> Result<usize, BridgeError> {
@@ -259,10 +307,16 @@ mod tests {
             suggested_role: None,
             suggested_task: None,
         };
-        assert_eq!(
-            SessionSupervisor::record_result(&db, "child", &result).unwrap(),
-            Some("parent".into())
-        );
+        let reported = SessionSupervisor::record_result(&db, "child", &result).unwrap().unwrap();
+        assert_eq!(reported.parent_session_id, "parent");
+        assert!(!reported.evidence_id.is_empty());
+        let evidence = SessionSupervisor::worker_evidence(&db, "parent", &[]).unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].evidence_id, reported.evidence_id);
+        assert_eq!(evidence[0].child_session_id, "child");
+        assert_eq!(evidence[0].result, result);
+        let child_result_id = store::session_entries(&db, "child").unwrap().last().unwrap().id.clone();
+        assert!(SessionSupervisor::worker_evidence(&db, "parent", &[child_result_id]).is_err());
         assert_eq!(SessionSupervisor::record_result(&db, "child", &result).unwrap(), None);
         assert_eq!(store::outstanding_children(&db, "parent").unwrap(), 0);
         assert_eq!(store::session_entries(&db, "child").unwrap().last().unwrap().kind, "worker.result");
@@ -272,6 +326,57 @@ mod tests {
             db.query_row("SELECT lease_status FROM worker_leases WHERE session_id='child'", [], |row| row.get(0)).unwrap(),
         );
         assert_eq!((parent_status.as_str(), lease_status.as_str()), ("ready", "released"));
+    }
+
+    #[test]
+    fn evidence_selection_is_active_branch_only_and_malformed_records_fail_closed() {
+        let db = database();
+        let result = WorkerResult {
+            schema_version: 1,
+            status: WorkerResultStatus::Completed,
+            summary: "Canonical result".into(),
+            files_changed: vec!["src/lib.rs".into()], tests: vec![], decisions: vec!["Keep the API stable".into()], risks: vec![], remaining_work: vec![],
+            suggested_next_action: SuggestedNextAction::Finish,
+            suggested_role: None, suggested_task: None,
+        };
+        let reported = SessionSupervisor::record_result(&db, "child", &result).unwrap().unwrap();
+        let forest = session_forest::SessionForest::new(&db);
+        let mut payload = serde_json::to_value(&result).unwrap();
+        payload["childSessionId"] = serde_json::json!("abandoned-child");
+        let abandoned = forest.append("parent", EntryKind::WorkerResult, payload).unwrap();
+        let selected = SessionSupervisor::worker_evidence(&db, "parent", &[abandoned.id.clone(), reported.evidence_id.clone()]).unwrap();
+        assert_eq!(selected.iter().map(|item| item.evidence_id.as_str()).collect::<Vec<_>>(), [abandoned.id.as_str(), reported.evidence_id.as_str()]);
+        assert!(SessionSupervisor::worker_evidence(&db, "parent", &[reported.evidence_id.clone(), reported.evidence_id.clone()]).is_err());
+        forest.move_head("parent", Some(&reported.evidence_id)).unwrap();
+        let non_result = forest.append("parent", EntryKind::UserMessage, serde_json::json!({"text":"continue"})).unwrap();
+        let default = SessionSupervisor::worker_evidence(&db, "parent", &[]).unwrap();
+        assert_eq!(default.len(), 1);
+        assert_eq!(default[0].evidence_id, reported.evidence_id);
+        assert!(SessionSupervisor::worker_evidence(&db, "parent", &[abandoned.id]).is_err());
+        assert!(SessionSupervisor::worker_evidence(&db, "parent", &[non_result.id]).is_err());
+        let malformed = serde_json::json!({"status":"completed","childSessionId":"child"}).to_string();
+        db.execute("UPDATE session_entries SET payload=?2 WHERE id=?1", params![reported.evidence_id, malformed]).unwrap();
+        assert!(SessionSupervisor::worker_evidence(&db, "parent", &[]).is_err());
+    }
+
+    #[test]
+    fn default_evidence_is_deterministic_and_bounded_to_recent_results() {
+        let db = database();
+        let forest = session_forest::SessionForest::new(&db);
+        for index in 0..=MAX_EVIDENCE_REFERENCES {
+            let result = WorkerResult {
+                schema_version: 1, status: WorkerResultStatus::Completed,
+                summary: format!("result-{index}"), files_changed: vec![], tests: vec![], decisions: vec![], risks: vec![], remaining_work: vec![],
+                suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None,
+            };
+            let mut payload = serde_json::to_value(result).unwrap();
+            payload["childSessionId"] = serde_json::json!(format!("child-{index}"));
+            forest.append("parent", EntryKind::WorkerResult, payload).unwrap();
+        }
+        let evidence = SessionSupervisor::worker_evidence(&db, "parent", &[]).unwrap();
+        assert_eq!(evidence.len(), MAX_EVIDENCE_REFERENCES);
+        assert_eq!(evidence.first().unwrap().result.summary, "result-1");
+        assert_eq!(evidence.last().unwrap().result.summary, format!("result-{MAX_EVIDENCE_REFERENCES}"));
     }
 
     #[test]
@@ -320,7 +425,9 @@ mod tests {
             suggested_next_action: SuggestedNextAction::Finish,
             suggested_role: None, suggested_task: None,
         };
-        assert_eq!(SessionSupervisor::record_result(&db, "child", &result).unwrap(), Some("parent".into()));
+        let reported = SessionSupervisor::record_result(&db, "child", &result).unwrap().unwrap();
+        assert_eq!(reported.parent_session_id, "parent");
+        assert!(!reported.evidence_id.is_empty());
         let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
         assert_eq!((runtime.lifecycle_state.as_str(), runtime.result_status.as_str(), runtime.retry_count), ("cancelled", "reported", 0));
         assert_eq!(runtime.last_result.unwrap()["status"], "cancelled");

@@ -381,6 +381,7 @@ mod tests {
             acceptance_criteria: vec!["Tests pass".into()],
             known_facts: Vec::new(),
             decisions: Vec::new(),
+            evidence_ids: Vec::new(),
             relevant_files: vec!["src/**".into()],
             owned_paths: paths.iter().map(|path| (*path).into()).collect(),
             write_mode: WriteMode::Isolated,

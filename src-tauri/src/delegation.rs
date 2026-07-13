@@ -7,10 +7,11 @@
 pub use crate::model::CapabilityTier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_MAX_DEPTH: i64 = 1;
+pub const MAX_EVIDENCE_REFERENCES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +74,8 @@ pub struct DelegationRequest {
     #[serde(default)]
     pub decisions: Vec<String>,
     #[serde(default)]
+    pub evidence_ids: Vec<String>,
+    #[serde(default)]
     pub relevant_files: Vec<String>,
     #[serde(default)]
     pub owned_paths: Vec<String>,
@@ -102,6 +105,16 @@ impl DelegationRequest {
         require_non_empty_list("acceptanceCriteria", &self.acceptance_criteria)?;
         validate_non_empty_items("knownFacts", &self.known_facts)?;
         validate_non_empty_items("decisions", &self.decisions)?;
+        validate_non_empty_items("evidenceIds", &self.evidence_ids)?;
+        if self.evidence_ids.len() > MAX_EVIDENCE_REFERENCES {
+            return Err(format!(
+                "evidenceIds cannot contain more than {MAX_EVIDENCE_REFERENCES} entries"
+            ));
+        }
+        let unique = self.evidence_ids.iter().collect::<HashSet<_>>();
+        if unique.len() != self.evidence_ids.len() {
+            return Err("evidenceIds cannot contain duplicates".into());
+        }
         validate_non_empty_items("relevantFiles", &self.relevant_files)?;
         validate_non_empty_items("ownedPaths", &self.owned_paths)?;
         validate_non_empty_items("verification", &self.verification)?;
@@ -121,7 +134,11 @@ impl DelegationRequest {
     }
 
     pub fn label(&self) -> String {
-        format!("{} · {}", role_label(self.role), self.capability_tier.as_str())
+        format!(
+            "{} · {}",
+            role_label(self.role),
+            self.capability_tier.as_str()
+        )
     }
 }
 
@@ -312,6 +329,7 @@ impl LegacyDirective {
             ],
             known_facts,
             decisions: Vec::new(),
+            evidence_ids: Vec::new(),
             relevant_files: Vec::new(),
             owned_paths: Vec::new(),
             write_mode: WriteMode::Shared,
@@ -607,20 +625,49 @@ You are a depth-one worker. Do not spawn or directly delegate to another worker.
 Delegate only focused, non-trivial work. Emit one fenced `bridge-delegate` JSON object using this schema:
 
 ```bridge-delegate
-{"schemaVersion":1,"role":"implementation","objective":"Add refresh-token rotation","acceptanceCriteria":["Old refresh tokens become invalid","Existing auth tests remain green"],"knownFacts":[],"decisions":["Use the existing SQLite token store"],"relevantFiles":["src/auth/store.rs"],"ownedPaths":["src/auth/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["cargo test auth"],"outputContract":"implementation-result","harness":"codex"}
+{"schemaVersion":1,"role":"implementation","objective":"Add refresh-token rotation","acceptanceCriteria":["Old refresh tokens become invalid","Existing auth tests remain green"],"knownFacts":[],"decisions":["Use the existing SQLite token store"],"evidenceIds":[],"relevantFiles":["src/auth/store.rs"],"ownedPaths":["src/auth/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["cargo test auth"],"outputContract":"implementation-result","harness":"codex"}
 ```
 
 After emitting a request, stop and wait. Default topology is flat: the worker cannot directly spawn another worker. Do trivial work in the parent."#
         .into()
 }
 
-pub fn worker_briefing(request: &DelegationRequest, depth: i64, branch: &str) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerEvidence {
+    pub evidence_id: String,
+    pub child_session_id: String,
+    pub result: WorkerResult,
+}
+
+pub fn worker_briefing(
+    request: &DelegationRequest,
+    depth: i64,
+    branch: &str,
+    evidence: &[WorkerEvidence],
+) -> String {
     let criteria = bullet_list(&request.acceptance_criteria);
     let facts = bullet_list_or_none(&request.known_facts);
     let decisions = bullet_list_or_none(&request.decisions);
     let files = bullet_list_or_none(&request.relevant_files);
     let owned = bullet_list_or_none(&request.owned_paths);
     let verification = bullet_list_or_none(&request.verification);
+    let evidence = if evidence.is_empty() {
+        "- None available".into()
+    } else {
+        evidence
+            .iter()
+            .map(|item| {
+                format!(
+                    "- Evidence ID `{}` from worker `{}`:\n```json\n{}\n```",
+                    item.evidence_id,
+                    item.child_session_id,
+                    serde_json::to_string(&item.result)
+                        .expect("validated worker evidence always serializes")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     format!(
         r#"You are a Bridge {role:?} worker assigned one focused objective on branch `{branch}`.
 
@@ -635,6 +682,9 @@ pub fn worker_briefing(request: &DelegationRequest, depth: i64, branch: &str) ->
 
 ## Locked decisions
 {decisions}
+
+## Prior worker evidence (canonical SQLite records)
+{evidence}
 
 ## Relevant files
 {files}
@@ -731,6 +781,7 @@ mod tests {
             ],
             known_facts: vec!["Auth data is stored in SQLite".into()],
             decisions: vec!["Use the existing token store".into()],
+            evidence_ids: Vec::new(),
             relevant_files: vec!["src/auth/store.rs".into()],
             owned_paths: vec!["src/auth/**".into()],
             write_mode: WriteMode::Isolated,
@@ -940,7 +991,18 @@ mod tests {
 
     #[test]
     fn worker_briefing_contains_typed_output_contract() {
-        let briefing = worker_briefing(&request(), 1, "bridge/auth-kyoto");
+        let result = result(WorkerResultStatus::Completed);
+        let evidence = WorkerEvidence {
+            evidence_id: "entry-evidence-1".into(),
+            child_session_id: "worker-1".into(),
+            result: result.clone(),
+        };
+        let briefing = worker_briefing(
+            &request(),
+            1,
+            "bridge/auth-kyoto",
+            std::slice::from_ref(&evidence),
+        );
         assert!(briefing.contains("Add refresh-token rotation"));
         assert!(briefing.contains("Old refresh tokens become invalid"));
         assert!(briefing.contains("Auth data is stored in SQLite"));
@@ -949,6 +1011,23 @@ mod tests {
         assert!(briefing.contains("bridge-worker-result"));
         assert!(briefing.contains("schemaVersion"));
         assert!(briefing.contains("Do not directly delegate"));
+        assert!(briefing.contains("entry-evidence-1"));
+        assert!(briefing.contains("worker-1"));
+        assert!(briefing.contains(&serde_json::to_string(&result).unwrap()));
+    }
+
+    #[test]
+    fn evidence_ids_are_bounded_unique_and_ordered() {
+        let mut request = request();
+        request.evidence_ids = vec!["evidence-2".into(), "evidence-1".into()];
+        request.validate().unwrap();
+        assert_eq!(request.evidence_ids, ["evidence-2", "evidence-1"]);
+        request.evidence_ids.push("evidence-2".into());
+        assert!(request.validate().unwrap_err().contains("duplicates"));
+        request.evidence_ids = (0..=MAX_EVIDENCE_REFERENCES)
+            .map(|index| format!("evidence-{index}"))
+            .collect();
+        assert!(request.validate().unwrap_err().contains("more than"));
     }
 
     #[test]

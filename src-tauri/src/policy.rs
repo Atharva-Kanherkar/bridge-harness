@@ -756,6 +756,7 @@ mod tests {
             acceptance_criteria: vec!["Verification passes".into()],
             known_facts: Vec::new(),
             decisions: Vec::new(),
+            evidence_ids: Vec::new(),
             relevant_files: Vec::new(),
             owned_paths: owned_paths.iter().map(|path| (*path).into()).collect(),
             write_mode,

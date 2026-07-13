@@ -1848,8 +1848,28 @@ fn launch_worker_outcome(
     let model = reservation.actual_model.clone();
     let effort = directive.effort.as_str().to_owned();
     let label = directive.label();
-    let instructions =
-        delegation::worker_briefing(directive, reservation.depth, &reservation.branch);
+    let evidence = match session_supervisor::SessionSupervisor::worker_evidence(
+        &state.db.lock().unwrap(),
+        parent_session_id,
+        &directive.evidence_ids,
+    ) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            fail_reserved_worker(
+                app,
+                &reservation.session_id,
+                &label,
+                &format!("Could not resolve worker evidence: {error}"),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
+    };
+    let instructions = delegation::worker_briefing(
+        directive,
+        reservation.depth,
+        &reservation.branch,
+        &evidence,
+    );
 
     if reservation.reuse_existing
         && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
@@ -1902,7 +1922,7 @@ fn launch_worker_outcome(
                 provider_session_id.as_deref(),
             );
             if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
-                if runtime.send_turn(&directive.objective).is_ok() {
+                if runtime.send_turn(&instructions).is_ok() {
                     let _ = app.emit("state-changed", ());
                     return WorkerLaunchOutcome::Launched(reservation.session_id);
                 }
@@ -2626,18 +2646,30 @@ fn report_to_parent(
     result: &delegation::WorkerResult,
 ) {
     let state = app.state::<AppState>();
-    let parent_id = {
+    let report = {
         let db = state.db.lock().unwrap();
         session_supervisor::SessionSupervisor::record_result(&db, child_session_id, result)
             .ok()
             .flatten()
     };
-    let Some(parent_id) = parent_id else {
+    let Some(report) = report else {
         return;
     };
-    let typed_result = serde_json::to_string(result).unwrap_or_else(|_| result.summary.clone());
-    let delivered = match state.adapters.lock().unwrap().get(&parent_id) {
-        Some(runtime) => runtime.send_turn(&typed_result).is_ok(),
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-evidence",
+        "evidenceId": report.evidence_id,
+        "status": result.status.as_str(),
+        "summary": result.summary,
+        "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical."
+    })
+    .to_string();
+    let delivered = match state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&report.parent_session_id)
+    {
+        Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
         None => false,
     };
     {
@@ -2649,17 +2681,17 @@ fn report_to_parent(
             status: Some("completed".into()),
             title: Some("Worker result".into()),
             text: Some(result.summary.clone()),
-            data: serde_json::json!({"childSessionId": child_session_id, "delivered": delivered, "result": result}),
+            data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str()}),
         };
         if let Ok(stored) =
-            store::session_event(&db, &parent_id, &result_event, &serde_json::json!({"delegation": true}))
+            store::session_event(&db, &report.parent_session_id, &result_event, &serde_json::json!({"delegation": true}))
         {
             let _ = app.emit("agent-event", stored);
         }
         if delivered {
             let _ = db.execute(
                 "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
-                params![parent_id],
+                params![report.parent_session_id],
             );
         }
     }
@@ -3831,6 +3863,7 @@ mod tests {
             acceptance_criteria: vec!["Tests pass".into()],
             known_facts: Vec::new(),
             decisions: Vec::new(),
+            evidence_ids: Vec::new(),
             relevant_files: Vec::new(),
             owned_paths: paths.iter().map(|path| (*path).into()).collect(),
             write_mode: delegation::WriteMode::Isolated,
