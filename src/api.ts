@@ -44,7 +44,7 @@ function agentEvent(id: number, sessionId: string, kind: string, fields: Partial
   return { id, sessionId, sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: { adapter: "fake" }, createdAt: new Date().toISOString(), ...fields };
 }
 function forestEntry(id: string, sessionId: string, sequence: number, kind: string, payload: Record<string, unknown>, parentEntryId: string | null): SessionEntry {
-  return { id, sessionId, parentEntryId, sequence, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: now };
+  return { id, sessionId, parentEntryId, sequence, semanticSchemaVersion: 2, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: now };
 }
 const demoEntries: SessionEntry[] = [
   forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor." }, null),

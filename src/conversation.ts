@@ -32,6 +32,9 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
   const items: ConversationItem[] = [];
   const approvalsBySequence = new Map<number, ConversationItem>();
   for (const entry of selectActiveBranch(entries, activeLeafId)) {
+    if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
+      throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
+    }
     if (entry.kind === "approval.resolved") {
       const nested = objectValue(entry.payload.data);
       const requestEventId = Number(entry.payload.requestEventId ?? nested.requestEventId);
