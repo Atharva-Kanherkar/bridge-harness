@@ -207,6 +207,16 @@ fn add_project(path: String, state: State<AppState>) -> Result<BridgeState, Brid
     store::state(&db)
 }
 
+fn available_project_repo(path: &str) -> Result<&Path, BridgeError> {
+    let repo = Path::new(path);
+    if !repo.is_dir() {
+        return Err(BridgeError::Invalid(
+            "This repository is no longer available at its saved location. Re-add the repository to continue.".into(),
+        ));
+    }
+    Ok(repo)
+}
+
 #[tauri::command]
 fn create_workspace(
     project_id: String,
@@ -223,6 +233,7 @@ fn create_workspace(
         params![project_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    let repo = available_project_repo(&repo)?;
     let used: Vec<String> = {
         let mut stmt = db.prepare("SELECT city FROM workspaces")?;
         let values = stmt
@@ -243,7 +254,7 @@ fn create_workspace(
         city.to_lowercase()
     );
     let path = git::workspace_path(&state.worktrees, &project_name, &city);
-    git::create_worktree(Path::new(&repo), &path, &branch)?;
+    git::create_worktree(repo, &path, &branch)?;
     db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,'idle',?7)",params![id,project_id,city,title,branch,path.to_string_lossy(),Utc::now().to_rfc3339()])?;
     let sid = Uuid::new_v4().to_string();
     db.execute(
@@ -3075,6 +3086,16 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_project_repo_has_actionable_error() {
+        let missing = std::env::temp_dir().join(format!("bridge-missing-{}", Uuid::new_v4()));
+        let error = available_project_repo(missing.to_str().unwrap()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "This repository is no longer available at its saved location. Re-add the repository to continue."
+        );
+    }
 
     fn policy_request(paths: &[&str]) -> delegation::DelegationRequest {
         delegation::DelegationRequest {
