@@ -531,6 +531,7 @@ fn start_session(
                 },
                 stored_provider_id.as_deref(),
             )?;
+            handoff::record_fidelity(&db, &session_id, ContinuationFidelity::Native)?;
             return store::state(&db);
         }
         let db = state.db.lock().unwrap();
@@ -712,6 +713,13 @@ fn start_session(
         resume_eligibility,
         Some(&thread_id),
     )?;
+    let continuation_fidelity = match restoration_mode {
+        RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
+        RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
+        RestorationMode::Fresh if existing.is_some() => ContinuationFidelity::ProjectedMidTurn,
+        RestorationMode::Fresh => ContinuationFidelity::Native,
+    };
+    handoff::record_fidelity(&db, &session_id, continuation_fidelity)?;
     db.execute(
         "UPDATE workspaces SET status='working' WHERE id=?1",
         params![workspace_id],
@@ -1624,6 +1632,28 @@ fn reserve_worker_launch_outcome(
         branch,
         outcome,
     } = route;
+    let handoff = handoff::assess(db, parent_session_id, &directive.runtime_harness())?;
+    if queue_on_block && handoff.cross_harness && !handoff.at_phase_boundary {
+        worker_pool::WorkerPool::enqueue(
+            db,
+            parent_session_id,
+            &workspace_id,
+            turn_id,
+            directive,
+            actual_model,
+        )?;
+        store::event(
+            db,
+            "handoff",
+            "handoff.deferred_for_phase_boundary",
+            parent_session_id,
+            &format!(
+                "Deferred {} to {} until the active turn reaches a phase boundary",
+                handoff.source_harness, handoff.target_harness
+            ),
+        )?;
+        return Ok(WorkerReservationOutcome::Queued);
+    }
     match &outcome.decision {
         policy::RouteDecision::Queue => {
             if queue_on_block {
@@ -1963,6 +1993,11 @@ fn launch_worker_outcome(
                 ResumeEligibility::Native,
                 provider_session_id.as_deref(),
             );
+            let _ = handoff::record_fidelity(
+                &state.db.lock().unwrap(),
+                &reservation.session_id,
+                ContinuationFidelity::Native,
+            );
             if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
                 if runtime.send_turn(&instructions).is_ok() {
                     let _ = app.emit("state-changed", ());
@@ -2130,12 +2165,33 @@ fn launch_worker_outcome(
             ResumeEligibility::CheckpointRestored,
         ),
     };
+    let continuation_fidelity = match activation {
+        WorkerActivation::Native => ContinuationFidelity::Native,
+        WorkerActivation::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
+        WorkerActivation::Fresh => handoff::assess(
+            &state.db.lock().unwrap(),
+            parent_session_id,
+            &harness,
+        )
+        .map(|assessment| handoff::fidelity_for_projection(&assessment))
+        .unwrap_or(ContinuationFidelity::ProjectedMidTurn),
+    };
     if restoration::set_head_state(
         &state.db.lock().unwrap(),
         &session_id,
         restoration_mode,
         resume_eligibility,
         Some(&thread_id),
+    )
+    .is_err()
+    {
+        runtime.stop(adapters::ShutdownReason::Failed);
+        return WorkerLaunchOutcome::Failed;
+    }
+    if handoff::record_fidelity(
+        &state.db.lock().unwrap(),
+        &session_id,
+        continuation_fidelity,
     )
     .is_err()
     {
@@ -2182,6 +2238,7 @@ fn launch_worker_outcome(
                 "turnId": turn_id,
                 "policy": reservation.outcome,
                 "restorationMode": restoration_mode,
+                "continuationFidelity": continuation_fidelity,
             }),
         };
         if let Ok(stored) =
@@ -4339,6 +4396,27 @@ mod tests {
         assert_eq!(entries[2].kind, "delegation.requested");
         assert_eq!(entries[2].payload["decision"], "queue");
         assert_eq!(entries[2].payload["reason"], "writer_conflict");
+    }
+
+    #[test]
+    fn policy_defers_cross_harness_reservation_until_phase_boundary() {
+        let db = policy_fixture();
+        db.execute("UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'", []).unwrap();
+        let mut request = policy_request(&["src/auth/**"]);
+        request.harness = Some("claude".into());
+        let outcome = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cross",
+            &request,
+            "fable",
+            true,
+        )
+        .unwrap();
+        assert!(matches!(outcome, WorkerReservationOutcome::Queued));
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(db.query_row("SELECT queue_status FROM worker_queue", [], |row| row.get::<_,String>(0)).unwrap(), "queued");
+        assert_eq!(db.query_row("SELECT kind FROM events ORDER BY id DESC LIMIT 1", [], |row| row.get::<_,String>(0)).unwrap(), "handoff.deferred_for_phase_boundary");
     }
 
     #[test]

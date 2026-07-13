@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, GitFork, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
-import type { AgentEvent, Session, SessionEntry } from "../types";
+import type { AgentEvent, ContinuationFidelity, Session, SessionEntry } from "../types";
 import { Markdown } from "./Markdown";
 
 // Codex-style conversation: prose messages, quiet collapsible thinking, and
@@ -81,7 +81,7 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, continuationFidelity, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
   const liveItems = reduceConversation(events);
   
@@ -97,7 +97,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
   const visibleItems = items.filter(item => item.type !== "raw");
 
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
-  if (!visibleItems.length && !working && !pendingMessages.length && repositoryDivergence !== "diverged") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  if (!visibleItems.length && !working && !pendingMessages.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
   const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
@@ -106,6 +106,8 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto px-8 pt-[26px] pb-[30px] scrollbar-thin scrollbar-thumb-foreground/10">
     <div className="max-w-[760px] mx-auto">
       {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
+      {continuationFidelity === "projected_at_boundary" && <div role="status" className="mb-4 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-xs text-muted-foreground">Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
+      {continuationFidelity === "projected_mid_turn" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
       {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
       {groupItems(visibleItems).map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 9;
+const LATEST_SCHEMA_VERSION: i64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -230,6 +230,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             7 => migration_7_optional_repo_and_direct_chats(&transaction)?,
             8 => migration_8_reliability_primitives(&transaction)?,
             9 => migration_9_semantic_event_version(&transaction)?,
+            10 => migration_10_continuation_fidelity(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -598,6 +599,24 @@ fn migration_9_semantic_event_version(transaction: &Transaction<'_>) -> Result<(
     )
 }
 
+fn migration_10_continuation_fidelity(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "sessions",
+        "continuation_fidelity",
+        "TEXT NOT NULL DEFAULT 'native'",
+    )?;
+    transaction.execute_batch(
+        "UPDATE sessions SET continuation_fidelity=CASE
+            WHEN parent_session_id IS NULL THEN 'native'
+            WHEN id IN (SELECT session_id FROM session_heads WHERE restoration_mode='checkpoint_restored') THEN 'projected_at_boundary'
+            WHEN id IN (SELECT session_id FROM session_heads WHERE restoration_mode IN ('native','hot')) THEN 'native'
+            ELSE 'projected_mid_turn'
+         END;",
+    )?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct LegacyAgentEvent {
     id: i64,
@@ -703,7 +722,7 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), title:r.get(18)?, kind:r.get(19)?, cwd:r.get(20)? }))?;
+    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -792,6 +811,14 @@ fn resume_eligibility(value: &str) -> ResumeEligibility {
         "native" => ResumeEligibility::Native,
         "checkpoint_restored" => ResumeEligibility::CheckpointRestored,
         _ => ResumeEligibility::Fresh,
+    }
+}
+
+fn continuation_fidelity(value: &str) -> ContinuationFidelity {
+    match value {
+        "projected_at_boundary" => ContinuationFidelity::ProjectedAtBoundary,
+        "projected_mid_turn" => ContinuationFidelity::ProjectedMidTurn,
+        _ => ContinuationFidelity::Native,
     }
 }
 pub fn harness_name(value: &Harness) -> &'static str {
@@ -1629,7 +1656,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -1645,7 +1672,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1705,6 +1732,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tier_columns, 1);
+    }
+
+    #[test]
+    fn continuation_fidelity_migration_derives_conservative_history_markers() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/fidelity','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/fidelity-w','idle','now')", []).unwrap();
+        for (id, parent) in [("root", None), ("boundary", Some("root")), ("mid", Some("root")), ("resumed", Some("root"))] {
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,continuation_fidelity) VALUES(?1,'w','codex','Session','stopped','reported',?2,'native')", params![id,parent]).unwrap();
+        }
+        for (id, mode) in [("root","fresh"),("boundary","checkpoint_restored"),("mid","fresh"),("resumed","native")] {
+            db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES(?1,?2,'now')", params![id,mode]).unwrap();
+        }
+        let transaction = db.transaction().unwrap();
+        migration_10_continuation_fidelity(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let values = query(&db, "SELECT continuation_fidelity FROM sessions ORDER BY CASE id WHEN 'root' THEN 1 WHEN 'boundary' THEN 2 WHEN 'mid' THEN 3 ELSE 4 END", |row| row.get::<_,String>(0)).unwrap();
+        assert_eq!(values, vec!["native", "projected_at_boundary", "projected_mid_turn", "native"]);
     }
 
     #[test]

@@ -51,6 +51,25 @@ pub enum ResumeEligibility {
     Fresh,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationFidelity {
+    #[default]
+    Native,
+    ProjectedAtBoundary,
+    ProjectedMidTurn,
+}
+
+impl ContinuationFidelity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::ProjectedAtBoundary => "projected_at_boundary",
+            Self::ProjectedMidTurn => "projected_mid_turn",
+        }
+    }
+}
+
 impl ResumeEligibility {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -165,6 +184,7 @@ pub struct Session {
     pub parent_session_id: Option<String>,
     pub depth: Option<i64>,
     pub restoration_mode: RestorationMode,
+    pub continuation_fidelity: ContinuationFidelity,
     pub title: Option<String>,
     pub kind: String,
     pub cwd: Option<String>,

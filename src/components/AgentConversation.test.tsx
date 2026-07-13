@@ -39,4 +39,12 @@ describe("AgentConversation", () => {
     expect(html).toContain("This branch&#x27;s context predates the current file state.");
     expect(html).toContain('role="alert"');
   });
+  it("surfaces projected continuation fidelity with stronger mid-turn warning", () => {
+    const boundary = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} continuationFidelity="projected_at_boundary"/>);
+    expect(boundary).toContain("phase-boundary projection");
+    expect(boundary).toContain('role="status"');
+    const midTurn = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} continuationFidelity="projected_mid_turn"/>);
+    expect(midTurn).toContain("Continuation fidelity degraded");
+    expect(midTurn).toContain('role="alert"');
+  });
 });

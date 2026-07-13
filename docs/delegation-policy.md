@@ -6,6 +6,8 @@ Agents may request delegation, but Rust decides whether it runs. Requests cross 
 
 The policy engine considers task family, compatible warm workers, requested capability tier, per-turn budget, active leases, owned-path overlap, retry count, and previous outcome. It returns one auditable decision: execute in parent, resume a compatible worker, spawn, queue, reject, or require approval.
 
+Cross-harness continuations are projected rather than native: provider reasoning state cannot move between Codex and Claude. Policy therefore keeps a cross-harness request queued while its parent has an active turn, releasing it after turn completion or a durable checkpoint, compaction, or worker-result verification boundary. Every session records `native`, `projected_at_boundary`, or `projected_mid_turn`; the last value remains possible under races and is surfaced as degraded rather than hidden.
+
 Default limits are three workers per user turn, one strong worker, 24 capability units, and one automatic retry. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
 
 ## Write safety
