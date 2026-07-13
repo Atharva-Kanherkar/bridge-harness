@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub const SEMANTIC_EVENT_SCHEMA_VERSION: i64 = 2;
+pub const MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION: i64 = 1;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum CapabilityTier {
@@ -219,6 +222,7 @@ pub struct SessionEntry {
     pub session_id: String,
     pub parent_entry_id: Option<String>,
     pub sequence: i64,
+    pub semantic_schema_version: i64,
     pub kind: String,
     pub payload: serde_json::Value,
     pub provider_event_id: Option<String>,

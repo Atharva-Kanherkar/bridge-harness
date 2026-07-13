@@ -1,6 +1,6 @@
 use crate::{
     context::Checkpoint,
-    model::SessionEntry,
+    model::{SessionEntry, SEMANTIC_EVENT_SCHEMA_VERSION},
     session_forest::{append_in_transaction, EntryKind, SessionForest},
     store, BridgeError,
 };
@@ -543,13 +543,14 @@ impl CompactionController {
             |row| row.get::<_, i64>(0),
         )?;
         transaction.execute(
-            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,context_visibility,created_at)
-             VALUES(?1,?2,?3,?4,'branch.summary',?5,'eligible',?6)",
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,context_visibility,created_at)
+             VALUES(?1,?2,?3,?4,?5,'branch.summary',?6,'eligible',?7)",
             params![
                 checkpoint.first_retained_entry_id,
                 session_id,
                 compaction_entry.id,
                 retained_sequence,
+                SEMANTIC_EVENT_SCHEMA_VERSION,
                 json!({
                     "summary": "Compaction boundary; subsequent entries are retained",
                     "_bridgeTypedSchemaVersion": 1,

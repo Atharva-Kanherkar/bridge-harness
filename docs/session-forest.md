@@ -17,6 +17,7 @@ Every controller append stamps the entry with the repository `HEAD` and a determ
 - `session_id`: owning adapter session.
 - `parent_entry_id`: previous entry on this branch.
 - `sequence`: deterministic insertion order across every branch in the session.
+- `semantic_schema_version`: explicit persisted-event contract version. New writes use v2; projection supports v2 and N-1 v1, while unknown future versions fail closed.
 - `kind`: provider-neutral semantic kind such as `user.message`, `tool.completed`, `checkpoint`, or `worker.result`.
 - `payload`: semantic content plus provider metadata when needed for inspection.
 - `context_visibility`: whether the projector may include the entry in restored context.

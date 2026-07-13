@@ -3,7 +3,7 @@ import { projectSessionConversation, reduceConversation, selectActiveBranch } fr
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
-const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>={},sequence=Number(id.replace(/\D/g,""))||1,overrides:Partial<SessionEntry>={}):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,kind,payload,providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now",...overrides });
+const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>={},sequence=Number(id.replace(/\D/g,""))||1,overrides:Partial<SessionEntry>={}):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,semanticSchemaVersion:2,kind,payload,providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now",...overrides });
 
 describe("normalized conversation reducer",()=>{
   it("assembles streaming assistant messages",()=>{const items=reduceConversation([event(1,"message.delta",{itemId:"m",role:"assistant",text:"hel"}),event(2,"message.delta",{itemId:"m",role:"assistant",text:"lo"}),event(3,"message.completed",{itemId:"m",role:"assistant",text:"hello",status:"completed"})]);expect(items).toHaveLength(1);expect(items[0].text).toBe("hello");expect(items[0].status).toBe("completed");});
@@ -50,6 +50,19 @@ describe("session forest conversation projection",()=>{
     const rightKeys=projectSessionConversation(forest,"e5").map(({key})=>key);
     expect(leftKeys.slice(0,2)).toEqual(["entry:e1","entry:e2"]);
     expect(rightKeys.slice(0,2)).toEqual(leftKeys.slice(0,2));
+  });
+
+  it("projects current and N-1 semantic event schemas equivalently",()=>{
+    const current=entry("current",null,"assistant.message",{text:"stable"},1,{semanticSchemaVersion:2});
+    const previous=entry("previous",null,"assistant.message",{text:"stable"},1,{semanticSchemaVersion:1});
+    const currentItem=projectSessionConversation([current],"current")[0];
+    const previousItem=projectSessionConversation([previous],"previous")[0];
+    expect({...currentItem,key:"entry",entryId:"entry"}).toEqual({...previousItem,key:"entry",entryId:"entry"});
+  });
+
+  it("fails closed on an unsupported future semantic event schema",()=>{
+    const future=entry("future",null,"assistant.message",{text:"do not guess"},1,{semanticSchemaVersion:3});
+    expect(()=>projectSessionConversation([future],"future")).toThrow("Unsupported semantic event schema version 3");
   });
 
   it("maps checkpoint, compaction, and branch summary entries to dedicated cards",()=>{

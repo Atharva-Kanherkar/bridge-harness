@@ -1,4 +1,10 @@
-use crate::{model::SessionEntry, store, BridgeError};
+use crate::{
+    model::{
+        SessionEntry, MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION,
+        SEMANTIC_EVENT_SCHEMA_VERSION,
+    },
+    store, BridgeError,
+};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -467,6 +473,26 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_future_semantic_schema_fails_closed() {
+        let db = database(&["s"]);
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,sequence,semantic_schema_version,kind,payload,created_at)
+             VALUES('future','s',1,3,'user.message','{\"text\":\"future\"}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE session_heads SET active_entry_id='future' WHERE session_id='s'",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            SessionForest::new(&db).active_branch("s"),
+            Err(ForestError::UnsupportedSemanticSchemaVersion { version: 3, .. })
+        ));
+    }
+
+    #[test]
     fn append_validates_parent_directly_after_compatibility_history() {
         let db = database(&["s"]);
         let event = crate::agent::NormalizedEvent {
@@ -682,6 +708,8 @@ pub enum ForestError {
     },
     #[error("unsupported entry kind for append: {0}")]
     UnsupportedEntryKind(String),
+    #[error("unsupported semantic event schema version {version} on entry {entry_id}")]
+    UnsupportedSemanticSchemaVersion { entry_id: String, version: i64 },
     #[error("invalid payload for {kind}: {reason}")]
     InvalidPayload { kind: String, reason: String },
     #[error("entry {entry_id} references missing parent {parent_entry_id}")]
@@ -973,6 +1001,14 @@ impl<'connection> SessionForest<'connection> {
     }
 
     fn validate_stored_entry(&self, entry: &SessionEntry) -> Result<(), ForestError> {
+        if !(MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION..=SEMANTIC_EVENT_SCHEMA_VERSION)
+            .contains(&entry.semantic_schema_version)
+        {
+            return Err(ForestError::UnsupportedSemanticSchemaVersion {
+                entry_id: entry.id.clone(),
+                version: entry.semantic_schema_version,
+            });
+        }
         if !entry.payload.is_object() {
             return Err(ForestError::InvalidPayload {
                 kind: entry.kind.clone(),

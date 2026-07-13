@@ -8,7 +8,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 8;
+const LATEST_SCHEMA_VERSION: i64 = 9;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -88,6 +88,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             6 => migration_6_remove_legacy_agent_events(&transaction)?,
             7 => migration_7_optional_repo_and_direct_chats(&transaction)?,
             8 => migration_8_reliability_primitives(&transaction)?,
+            9 => migration_9_semantic_event_version(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -447,6 +448,15 @@ fn migration_8_reliability_primitives(transaction: &Transaction<'_>) -> Result<(
     Ok(())
 }
 
+fn migration_9_semantic_event_version(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "session_entries",
+        "semantic_schema_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+}
+
 #[derive(Debug)]
 struct LegacyAgentEvent {
     id: i64,
@@ -706,6 +716,7 @@ pub(crate) fn append_session_entry_tx(
         session_id: session_id.to_owned(),
         parent_entry_id: parent_entry_id.map(str::to_owned),
         sequence,
+        semantic_schema_version: SEMANTIC_EVENT_SCHEMA_VERSION,
         kind: kind.to_owned(),
         payload: stored_payload,
         provider_event_id: provider_event_id.map(str::to_owned),
@@ -714,13 +725,14 @@ pub(crate) fn append_session_entry_tx(
         created_at: Utc::now().to_rfc3339(),
     };
     transaction.execute(
-        "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,provider_event_id,context_visibility,token_estimate,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         params![
             entry.id,
             entry.session_id,
             entry.parent_entry_id,
             entry.sequence,
+            entry.semantic_schema_version,
             entry.kind,
             entry.payload.to_string(),
             entry.provider_event_id,
@@ -791,7 +803,7 @@ pub fn session_entries(
 ) -> Result<Vec<SessionEntry>, BridgeError> {
     query_with_params(
         db,
-        "SELECT id,session_id,parent_entry_id,sequence,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
+        "SELECT id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
          FROM session_entries WHERE session_id=?1 ORDER BY sequence",
         params![session_id],
         |row| {
@@ -800,12 +812,13 @@ pub fn session_entries(
                 session_id: row.get(1)?,
                 parent_entry_id: row.get(2)?,
                 sequence: row.get(3)?,
-                kind: row.get(4)?,
-                payload: parse_json_column(row, 5),
-                provider_event_id: row.get(6)?,
-                context_visibility: row.get(7)?,
-                token_estimate: row.get(8)?,
-                created_at: row.get(9)?,
+                semantic_schema_version: row.get(4)?,
+                kind: row.get(5)?,
+                payload: parse_json_column(row, 6),
+                provider_event_id: row.get(7)?,
+                context_visibility: row.get(8)?,
+                token_estimate: row.get(9)?,
+                created_at: row.get(10)?,
             })
         },
     )
@@ -1418,7 +1431,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -1434,7 +1447,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1567,6 +1580,7 @@ mod tests {
         assert_eq!(entries[1].parent_entry_id.as_deref(), Some(&*entries[0].id));
         assert_eq!(entries[1].payload["providerMeta"]["rawId"], 2);
         assert_eq!(entries[1].provider_event_id.as_deref(), Some("m2"));
+        assert!(entries.iter().all(|entry| entry.semantic_schema_version == 1));
         let head = session_head(&db, "s").unwrap().unwrap();
         assert_eq!(head.active_entry_id.as_deref(), Some(&*entries[1].id));
         assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
@@ -1602,6 +1616,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!((first.sequence, second.sequence), (1, 2));
+        assert_eq!(first.semantic_schema_version, SEMANTIC_EVENT_SCHEMA_VERSION);
+        assert_eq!(second.semantic_schema_version, SEMANTIC_EVENT_SCHEMA_VERSION);
         assert_eq!(
             session_head(&db, "s").unwrap().unwrap().active_entry_id,
             Some(second.id.clone())

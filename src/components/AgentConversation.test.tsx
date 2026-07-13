@@ -19,7 +19,7 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("xterm");
   });
   it("renders active forest cards and hides raw provider frames", () => {
-    const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>,sequence:number,contextVisibility="eligible"):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,kind,payload,providerEventId:null,contextVisibility,tokenEstimate:null,createdAt:"now" });
+    const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>,sequence:number,contextVisibility="eligible"):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,semanticSchemaVersion:2,kind,payload,providerEventId:null,contextVisibility,tokenEstimate:null,createdAt:"now" });
     const entries = [entry("one",null,"checkpoint",{summary:"Durable checkpoint"},1),entry("two","one","compaction",{summary:"Reduced context",reason:"manual"},2),entry("three","two","provider.unknown",{title:"Provider frame",raw:"secret"},3,"raw")];
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={entries} activeLeafId="three"/>);
     expect(html).toContain("Durable checkpoint");
@@ -29,7 +29,7 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("secret");
   });
   it("offers only same-turn approval for delegation path scope", () => {
-    const entry: SessionEntry = { id:"approval",sessionId:"s",parentEntryId:null,sequence:4,kind:"approval.requested",payload:{status:"pending",approvalType:"delegation_path_scope",title:"Approve delegation write scope"},providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now" };
+    const entry: SessionEntry = { id:"approval",sessionId:"s",parentEntryId:null,sequence:4,semanticSchemaVersion:2,kind:"approval.requested",payload:{status:"pending",approvalType:"delegation_path_scope",title:"Approve delegation write scope"},providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now" };
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[entry]} activeLeafId="approval"/>);
     expect(html).toContain("Allow once");
     expect(html).not.toContain("Allow for session");

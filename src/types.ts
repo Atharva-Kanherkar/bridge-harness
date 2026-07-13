@@ -26,7 +26,7 @@ export interface AgentEvent {
   text: string | null; data: Record<string, unknown>; providerMeta: Record<string, unknown>; createdAt: string;
 }
 export interface SessionEntry {
-  id: string; sessionId: string; parentEntryId: string | null; sequence: number; kind: string;
+  id: string; sessionId: string; parentEntryId: string | null; sequence: number; semanticSchemaVersion: number; kind: string;
   payload: Record<string, unknown>; providerEventId: string | null; contextVisibility: string;
   tokenEstimate: number | null; createdAt: string;
 }

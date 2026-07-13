@@ -4,7 +4,10 @@
 //! supply the already-selected active branch, which keeps projection deterministic
 //! and makes compaction policy independently testable.
 
-use crate::model::SessionEntry;
+use crate::model::{
+    SessionEntry, MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION,
+    SEMANTIC_EVENT_SCHEMA_VERSION,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -137,6 +140,15 @@ impl ContextProjector {
                 .then_with(|| left.id.cmp(&right.id))
         });
         reject_duplicate_entry_ids(&branch)?;
+        if let Some(entry) = branch.iter().find(|entry| {
+            !(MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION..=SEMANTIC_EVENT_SCHEMA_VERSION)
+                .contains(&entry.semantic_schema_version)
+        }) {
+            return Err(ContextError::UnsupportedSemanticSchemaVersion {
+                entry_id: entry.id.clone(),
+                version: entry.semantic_schema_version,
+            });
+        }
 
         let model = latest_non_empty(&branch, "model.changed", "model");
         let effort = latest_non_empty(&branch, "effort.changed", "effort");
@@ -223,6 +235,8 @@ pub enum ContextError {
     InvalidCheckpoint(String),
     #[error("unsupported checkpoint schema version {0}")]
     UnsupportedCheckpointVersion(u32),
+    #[error("unsupported semantic event schema version {version} on entry {entry_id}")]
+    UnsupportedSemanticSchemaVersion { entry_id: String, version: i64 },
     #[error("checkpoint source agent mismatch: expected {expected}, got {actual}")]
     SourceAgentMismatch { expected: String, actual: String },
     #[error("context window must be positive, got {0}")]
@@ -402,6 +416,7 @@ mod tests {
             session_id: "session".into(),
             parent_entry_id: (sequence > 1).then(|| format!("entry-{}", sequence - 1)),
             sequence,
+            semantic_schema_version: SEMANTIC_EVENT_SCHEMA_VERSION,
             kind: kind.into(),
             payload,
             provider_event_id: None,
@@ -553,6 +568,26 @@ mod tests {
             .payload
             .get(REPOSITORY_STATE_MARKER)
             .is_none());
+    }
+
+    #[test]
+    fn projection_reads_current_and_previous_semantic_schema_and_rejects_future() {
+        let current = entry(1, "assistant.message", json!({"text":"stable"}));
+        let mut previous = current.clone();
+        previous.semantic_schema_version = MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION;
+        let current_projection = ContextProjector::project(&[current], 8_000).unwrap();
+        let previous_projection = ContextProjector::project(&[previous], 8_000).unwrap();
+        assert_eq!(
+            current_projection.render_entries[0].payload,
+            previous_projection.render_entries[0].payload
+        );
+
+        let mut future = entry(1, "assistant.message", json!({"text":"unknown"}));
+        future.semantic_schema_version = SEMANTIC_EVENT_SCHEMA_VERSION + 1;
+        assert!(matches!(
+            ContextProjector::project(&[future], 8_000),
+            Err(ContextError::UnsupportedSemanticSchemaVersion { .. })
+        ));
     }
 
     #[test]
