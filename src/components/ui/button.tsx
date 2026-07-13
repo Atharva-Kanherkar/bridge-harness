@@ -3,7 +3,7 @@
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
-import type * as React from "react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 
@@ -54,43 +54,49 @@ export interface ButtonProps extends useRender.ComponentProps<"button"> {
   loading?: boolean;
 }
 
-export function Button({
-  className,
-  variant,
-  size,
-  render,
-  children,
-  loading = false,
-  disabled: disabledProp,
-  ...props
-}: ButtonProps): React.ReactElement {
-  const isDisabled: boolean = Boolean(loading || disabledProp);
-  const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] =
-    render ? undefined : "button";
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  function Button(
+    {
+      className,
+      variant,
+      size,
+      render,
+      children,
+      loading = false,
+      disabled: disabledProp,
+      ...props
+    },
+    forwardedRef,
+  ): React.ReactElement {
+    const isDisabled: boolean = Boolean(loading || disabledProp);
+    const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] =
+      render ? undefined : "button";
 
-  const defaultProps = {
-    children: (
-      <>
-        {children}
-        {loading && (
-          <Spinner
-            className="pointer-events-none absolute"
-            data-slot="button-loading-indicator"
-          />
-        )}
-      </>
-    ),
-    className: cn(buttonVariants({ className, size, variant })),
-    "aria-disabled": loading || undefined,
-    "data-loading": loading ? "" : undefined,
-    "data-slot": "button",
-    disabled: isDisabled,
-    type: typeValue,
-  };
+    const defaultProps = {
+      children: (
+        <>
+          {children}
+          {loading && (
+            <Spinner
+              className="pointer-events-none absolute"
+              data-slot="button-loading-indicator"
+            />
+          )}
+        </>
+      ),
+      className: cn(buttonVariants({ className, size, variant })),
+      "aria-disabled": loading || undefined,
+      "data-loading": loading ? "" : undefined,
+      "data-slot": "button",
+      disabled: isDisabled,
+      type: typeValue,
+    };
 
-  return useRender({
-    defaultTagName: "button",
-    props: mergeProps<"button">(defaultProps, props),
-    render,
-  });
-}
+    return useRender({
+      defaultTagName: "button",
+      props: mergeProps<"button">(defaultProps, props),
+      ref: forwardedRef,
+      render,
+    });
+  },
+);
