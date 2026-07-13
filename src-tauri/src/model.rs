@@ -323,6 +323,7 @@ pub struct QueuedWorkerRequest {
     pub dispatched_session_id: Option<String>,
     pub attempt_count: i64,
     pub expires_at: String,
+    pub blocked_at: Option<String>,
     pub claimed_at: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
