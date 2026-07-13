@@ -34,4 +34,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("Allow once");
     expect(html).not.toContain("Allow for session");
   });
+  it("surfaces conversation and file-state divergence", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);
+    expect(html).toContain("This branch&#x27;s context predates the current file state.");
+    expect(html).toContain('role="alert"');
+  });
 });

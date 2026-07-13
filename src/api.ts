@@ -82,7 +82,8 @@ const mockForests: Record<string, SessionForestSnapshot> = {
       { id: 102, source: "restoration", kind: "session.restored", entityId: "session-1w2", body: "checkpoint_restored", createdAt: now },
       { id: 101, source: "policy", kind: "worker.spawned", entityId: "session-1w", body: "implementation strong isolated", createdAt: now }
     ],
-    policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 }
+    policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 },
+    repositoryDivergence: { status: "aligned", selectedState: { status: "clean", head: "demo", dirtyHash: "0" }, currentState: { status: "clean", head: "demo", dirtyHash: "0" } }
   }
 };
 function mockForest(sessionId: string): SessionForestSnapshot {
@@ -90,7 +91,7 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   if (existing) return structuredClone(existing);
   const session = mockState.sessions.find(item => item.id === sessionId);
   const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
-  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "none", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 } };
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "none", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} } };
   mockForests[sessionId] = created;
   return structuredClone(created);
 }

@@ -12,6 +12,7 @@ use thiserror::Error;
 
 pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 const FOREST_TYPED_SCHEMA_MARKER: &str = "_bridgeTypedSchemaVersion";
+const REPOSITORY_STATE_MARKER: &str = "_bridgeRepoState";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -79,6 +80,7 @@ impl Checkpoint {
         let mut stored = value.clone();
         if let Some(object) = stored.as_object_mut() {
             object.remove(FOREST_TYPED_SCHEMA_MARKER);
+            object.remove(REPOSITORY_STATE_MARKER);
         }
         let checkpoint: Self = serde_json::from_value(stored)
             .map_err(|error| ContextError::InvalidCheckpoint(error.to_string()))?;
@@ -333,7 +335,11 @@ fn project_render_entry(entry: &SessionEntry) -> Option<SessionEntry> {
         return None;
     }
     if entry.kind != "worker.result" {
-        return Some(entry.clone());
+        let mut projected = entry.clone();
+        if let Some(object) = projected.payload.as_object_mut() {
+            object.remove(REPOSITORY_STATE_MARKER);
+        }
+        return Some(projected);
     }
 
     let allowed = [
@@ -529,6 +535,24 @@ mod tests {
         let projection = ContextProjector::project(&branch, 8_000).unwrap();
         assert_eq!(projection.model.as_deref(), Some("new"));
         assert_eq!(projection.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn projection_never_exposes_repository_storage_metadata() {
+        let branch = vec![entry(
+            1,
+            "user.message",
+            json!({
+                "text": "continue",
+                REPOSITORY_STATE_MARKER: {"status":"dirty","head":"abc","dirtyHash":"123"}
+            }),
+        )];
+        let projection = ContextProjector::project(&branch, 8_000).unwrap();
+        assert_eq!(projection.render_entries[0].payload["text"], "continue");
+        assert!(projection.render_entries[0]
+            .payload
+            .get(REPOSITORY_STATE_MARKER)
+            .is_none());
     }
 
     #[test]

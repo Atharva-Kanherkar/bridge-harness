@@ -81,7 +81,7 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export function AgentConversation({ session, events = [], forestEntries, activeLeafId, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
   const liveItems = reduceConversation(events);
   
@@ -97,7 +97,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
   const visibleItems = items.filter(item => item.type !== "raw");
 
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
-  if (!visibleItems.length && !working && !pendingMessages.length) return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  if (!visibleItems.length && !working && !pendingMessages.length && repositoryDivergence !== "diverged") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
   const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
@@ -105,6 +105,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto px-8 pt-[26px] pb-[30px] scrollbar-thin scrollbar-thumb-foreground/10">
     <div className="max-w-[760px] mx-auto">
+      {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
       {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
       {groupItems(visibleItems).map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>

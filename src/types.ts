@@ -65,6 +65,7 @@ export interface SessionForestSnapshot {
   workerLeases: WorkerLease[]; workerRuntimes: WorkerRuntimeRecord[];
   workerQueue: QueuedWorkerRequest[]; usage: UsageLedgerRow[]; reasons: BridgeEvent[];
   policyLimits: PolicyLimits;
+  repositoryDivergence: { status: "aligned" | "diverged" | "unknown"; selectedState: Record<string, unknown> | null; currentState: Record<string, unknown> };
 }
 export interface ModelOption { id: string; label: string; tier: CapabilityTier; defaultForTier: boolean }
 export interface AdapterDescriptor {

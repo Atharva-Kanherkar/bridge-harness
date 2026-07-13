@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    process::Command,
 };
 use uuid::Uuid;
 
@@ -692,13 +693,21 @@ pub(crate) fn append_session_entry_tx(
         params![session_id],
         |row| row.get(0),
     )?;
+    let mut stored_payload = payload.clone();
+    let object = stored_payload.as_object_mut().ok_or_else(|| {
+        BridgeError::Invalid("session entry payload must be a JSON object".into())
+    })?;
+    object.insert(
+        "_bridgeRepoState".into(),
+        repository_state_for_session(transaction, session_id)?,
+    );
     let entry = SessionEntry {
         id: Uuid::new_v4().to_string(),
         session_id: session_id.to_owned(),
         parent_entry_id: parent_entry_id.map(str::to_owned),
         sequence,
         kind: kind.to_owned(),
-        payload: payload.clone(),
+        payload: stored_payload,
         provider_event_id: provider_event_id.map(str::to_owned),
         context_visibility: context_visibility.to_owned(),
         token_estimate,
@@ -727,6 +736,53 @@ pub(crate) fn append_session_entry_tx(
         params![entry.session_id, entry.id, entry.created_at],
     )?;
     Ok(entry)
+}
+
+pub fn repository_state_for_session(
+    db: &Connection,
+    session_id: &str,
+) -> Result<serde_json::Value, BridgeError> {
+    let path: Option<String> = db.query_row(
+        "SELECT COALESCE(s.cwd,w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+        params![session_id],
+        |row| row.get(0),
+    ).optional()?.flatten();
+    let Some(path) = path else {
+        return Ok(serde_json::json!({"status":"unavailable"}));
+    };
+    Ok(repository_state(Path::new(&path)))
+}
+
+fn repository_state(path: &Path) -> serde_json::Value {
+    let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(path).output();
+    let status = Command::new("git")
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .current_dir(path)
+        .output();
+    let (Ok(head), Ok(status)) = (head, status) else {
+        return serde_json::json!({"status":"unavailable"});
+    };
+    if !head.status.success() || !status.status.success() {
+        return serde_json::json!({"status":"unavailable"});
+    }
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    serde_json::json!({
+        "status": if status.stdout.is_empty() { "clean" } else { "dirty" },
+        "head": head,
+        "dirtyHash": stable_dirty_hash(&status.stdout),
+    })
+}
+
+fn stable_dirty_hash(bytes: &[u8]) -> String {
+    // FNV-1a is sufficient here: this is a deterministic change detector, not a
+    // security boundary. Keeping the algorithm local makes stamps comparable
+    // across controller restarts and Rust versions.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 pub fn session_entries(

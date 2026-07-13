@@ -167,6 +167,7 @@ impl SessionSupervisor {
             let object = payload.as_object_mut().ok_or_else(|| BridgeError::Invalid(format!("worker evidence {} is not an object", entry.id)))?;
             object.remove("childSessionId");
             object.remove("_bridgeTypedSchemaVersion");
+            object.remove("_bridgeRepoState");
             let result: WorkerResult = serde_json::from_value(payload)
                 .map_err(|error| BridgeError::Invalid(format!("worker evidence {} is malformed: {error}", entry.id)))?;
             result.validate().map_err(BridgeError::Invalid)?;
