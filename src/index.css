@@ -3,9 +3,12 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-    --font-heading: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-family-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+    --font-family-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+    --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+    --font-heading: var(--font-display);
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-primary: var(--sidebar-primary);
@@ -142,8 +145,9 @@
   /* Translucent base so the native macOS vibrancy material shows through as
      frosted glass. Falls back to a dark tint when there is no vibrancy. */
   body {
-    @apply relative isolate text-foreground;
-    background: color-mix(in srgb, var(--color-background) 58%, transparent);
+    @apply relative isolate font-sans antialiased;
+    background: transparent;
+    color: rgb(229 229 229);
     }
   code, kbd, samp, pre {
     font-family: var(--font-mono);
