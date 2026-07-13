@@ -10,7 +10,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock,
     },
 };
 use uuid::Uuid;
@@ -280,12 +280,15 @@ pub fn binary_version() -> Option<String> {
 }
 
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
-    let mut writer = writer.lock().unwrap();
+    let mut writer = lock_writer(writer, "Codex")?;
     serde_json::to_writer(&mut *writer, value)
         .map_err(|e| BridgeError::Invalid(format!("Cannot encode adapter request: {e}")))?;
     writer.write_all(b"\n")?;
     writer.flush()?;
     Ok(())
+}
+fn lock_writer<'a, T>(writer: &'a Mutex<T>, provider: &str) -> Result<MutexGuard<'a, T>, BridgeError> {
+    writer.lock().map_err(|_| BridgeError::Adapter(format!("{provider} stdin lock was poisoned; restart the session")))
 }
 fn wait_for_response(
     reader: &mut BufReader<ChildStdout>,
@@ -311,6 +314,12 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn poisoned_writer_is_a_typed_adapter_error() {
+        let writer = Mutex::new(());
+        let _ = std::panic::catch_unwind(|| { let _guard = writer.lock().unwrap(); panic!("provider thread failed"); });
+        assert!(matches!(lock_writer(&writer, "Codex"), Err(BridgeError::Adapter(_))));
+    }
 
     #[test]
     fn worker_sandbox_and_approval_follow_write_mode() {

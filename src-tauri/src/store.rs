@@ -7,7 +7,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 7;
+const LATEST_SCHEMA_VERSION: i64 = 8;
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -86,6 +86,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             5 => migration_5_durable_worker_pool(&transaction)?,
             6 => migration_6_remove_legacy_agent_events(&transaction)?,
             7 => migration_7_optional_repo_and_direct_chats(&transaction)?,
+            8 => migration_8_reliability_primitives(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -425,6 +426,23 @@ fn migration_7_optional_repo_and_direct_chats(
         DROP TABLE sessions;
         ALTER TABLE sessions_new RENAME TO sessions;",
     )?;
+    Ok(())
+}
+
+fn migration_8_reliability_primitives(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "worker_queue", "attempt_count", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(transaction, "worker_queue", "expires_at", "TEXT")?;
+    add_column_if_missing(transaction, "worker_queue", "claimed_at", "TEXT")?;
+    add_column_if_missing(transaction, "worker_queue", "last_error", "TEXT")?;
+    add_column_if_missing(transaction, "sessions", "trace_id", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "trace_id", "TEXT")?;
+    transaction.execute_batch("UPDATE worker_queue SET expires_at=COALESCE(expires_at,datetime(created_at, '+24 hours'));
+        CREATE INDEX IF NOT EXISTS idx_worker_queue_lifecycle ON worker_queue(queue_status,expires_at,claimed_at,sequence);
+        CREATE TABLE IF NOT EXISTS durable_outbox (id TEXT PRIMARY KEY,destination TEXT NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,idempotency_key TEXT NOT NULL UNIQUE,status TEXT NOT NULL DEFAULT 'pending',attempt_count INTEGER NOT NULL DEFAULT 0,next_attempt_at TEXT NOT NULL,last_error TEXT,created_at TEXT NOT NULL,delivered_at TEXT);
+        CREATE INDEX IF NOT EXISTS idx_durable_outbox_delivery ON durable_outbox(status,next_attempt_at);
+        CREATE TABLE IF NOT EXISTS integration_inbox (source TEXT NOT NULL,idempotency_key TEXT NOT NULL,received_at TEXT NOT NULL,PRIMARY KEY(source,idempotency_key));
+        CREATE TABLE IF NOT EXISTS handoff_packets (id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,trace_id TEXT NOT NULL,source_harness TEXT NOT NULL,target_harness TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS telemetry_spans (span_id TEXT PRIMARY KEY,trace_id TEXT NOT NULL,parent_span_id TEXT,name TEXT NOT NULL,attributes TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT);")?;
     Ok(())
 }
 
@@ -929,8 +947,8 @@ pub fn enqueue_worker_request(
     request: &QueuedWorkerRequest,
 ) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,dispatched_session_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![request.id,request.parent_session_id,request.workspace_id,request.turn_id,request.request.to_string(),request.actual_model,request.queue_status,request.dispatched_session_id,request.created_at,request.updated_at],
+        "INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,dispatched_session_id,attempt_count,expires_at,claimed_at,last_error,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![request.id,request.parent_session_id,request.workspace_id,request.turn_id,request.request.to_string(),request.actual_model,request.queue_status,request.dispatched_session_id,request.attempt_count,request.expires_at,request.claimed_at,request.last_error,request.created_at,request.updated_at],
     )?;
     Ok(())
 }
@@ -941,9 +959,9 @@ pub fn queued_worker_requests(
 ) -> Result<Vec<QueuedWorkerRequest>, BridgeError> {
     query_with_params(
         db,
-        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,created_at,updated_at FROM worker_queue WHERE workspace_id=?1 AND queue_status='queued' ORDER BY sequence",
+        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,attempt_count,expires_at,claimed_at,last_error,created_at,updated_at FROM worker_queue WHERE workspace_id=?1 AND queue_status='queued' ORDER BY sequence",
         params![workspace_id],
-        |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, created_at:row.get(9)?, updated_at:row.get(10)? }),
+        |row| Ok(QueuedWorkerRequest { id:row.get(0)?, parent_session_id:row.get(1)?, workspace_id:row.get(2)?, turn_id:row.get(3)?, request:parse_json_column(row,4), actual_model:row.get(5)?, queue_status:row.get(6)?, sequence:row.get(7)?, dispatched_session_id:row.get(8)?, attempt_count:row.get(9)?, expires_at:row.get(10)?, claimed_at:row.get(11)?, last_error:row.get(12)?, created_at:row.get(13)?, updated_at:row.get(14)? }),
     )
 }
 
@@ -953,7 +971,7 @@ pub fn worker_queue_requests(
 ) -> Result<Vec<QueuedWorkerRequest>, BridgeError> {
     query_with_params(
         db,
-        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,created_at,updated_at
+        "SELECT id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,sequence,dispatched_session_id,attempt_count,expires_at,claimed_at,last_error,created_at,updated_at
          FROM worker_queue WHERE workspace_id=?1 ORDER BY sequence",
         params![workspace_id],
         |row| {
@@ -967,11 +985,19 @@ pub fn worker_queue_requests(
                 queue_status: row.get(6)?,
                 sequence: row.get(7)?,
                 dispatched_session_id: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                attempt_count: row.get(9)?, expires_at: row.get(10)?, claimed_at: row.get(11)?, last_error: row.get(12)?, created_at: row.get(13)?, updated_at: row.get(14)?,
             })
         },
     )
+}
+
+pub fn fair_queued_workspaces(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    query_with_params(db, "SELECT workspace_id FROM worker_queue WHERE queue_status='queued' GROUP BY workspace_id ORDER BY MIN(sequence),workspace_id", [], |row| row.get(0))
+}
+
+pub fn enqueue_outbox(transaction: &Transaction<'_>, message: &OutboxMessage) -> Result<(), BridgeError> {
+    transaction.execute("INSERT INTO durable_outbox(id,destination,event_type,payload,idempotency_key,status,attempt_count,next_attempt_at,last_error,created_at,delivered_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(idempotency_key) DO NOTHING", params![message.id,message.destination,message.event_type,message.payload.to_string(),message.idempotency_key,message.status,message.attempt_count,message.next_attempt_at,message.last_error,message.created_at,message.delivered_at])?;
+    Ok(())
 }
 
 pub fn workspace_reason_events(
@@ -1097,6 +1123,7 @@ pub fn session_event(
         )
         .optional()?
         .flatten();
+    let trace_id: String = transaction.query_row("SELECT COALESCE(trace_id,id) FROM sessions WHERE id=?1", params![session_id], |row| row.get(0)).unwrap_or_else(|_| session_id.to_owned());
     let payload = serde_json::json!({
         "protocolVersion": 1,
         "itemId": event.item_id,
@@ -1106,6 +1133,7 @@ pub fn session_event(
         "text": event.text,
         "data": event.data,
         "providerMeta": provider_meta,
+        "traceId": trace_id,
     });
     let mut final_kind = event.kind.as_str();
     if final_kind == "message.completed" {
@@ -1145,6 +1173,7 @@ pub fn session_event(
         "eligible",
         None,
     )?;
+    transaction.execute("INSERT INTO telemetry_spans(span_id,trace_id,name,attributes,started_at,ended_at) VALUES(?1,?2,?3,?4,?5,?5)", params![Uuid::new_v4().simple().to_string(),trace_id,format!("gen_ai.{}",final_kind.replace('.',"_")),serde_json::json!({"gen_ai.operation.name":final_kind,"gen_ai.provider.name":provider_meta.get("adapter"),"gen_ai.conversation.id":session_id}).to_string(),entry.created_at])?;
     transaction.commit()?;
     Ok(AgentEvent {
         id: entry.sequence,
@@ -1333,7 +1362,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -1349,7 +1378,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -1647,7 +1676,7 @@ mod tests {
 
         for id in ["q1", "q2"] {
             enqueue_worker_request(&db, &QueuedWorkerRequest {
-                id: id.into(), parent_session_id: "s".into(), workspace_id: "w".into(), turn_id: "turn".into(), request: json!({"role":"implementation"}), actual_model: "runtime-model".into(), queue_status: "queued".into(), sequence: 0, dispatched_session_id: None, created_at: "now".into(), updated_at: "now".into(),
+                id: id.into(), parent_session_id: "s".into(), workspace_id: "w".into(), turn_id: "turn".into(), request: json!({"role":"implementation"}), actual_model: "runtime-model".into(), queue_status: "queued".into(), sequence: 0, dispatched_session_id: None, attempt_count: 0, expires_at: "2099-01-01T00:00:00+00:00".into(), claimed_at: None, last_error: None, created_at: "now".into(), updated_at: "now".into(),
             }).unwrap();
         }
         let queued = queued_worker_requests(&db, "w").unwrap();

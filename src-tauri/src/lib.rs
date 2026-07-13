@@ -7,6 +7,7 @@ mod context;
 mod codex_adapter;
 mod delegation;
 mod git;
+mod handoff;
 mod model;
 mod orchestrator;
 mod policy;
@@ -48,6 +49,8 @@ pub enum BridgeError {
     Db(#[from] rusqlite::Error),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Adapter: {0}")]
+    Adapter(String),
     #[error("PTY: {0}")]
     Pty(String),
 }
@@ -452,10 +455,10 @@ fn start_session(
         .resolve_model(adapter_id, orchestrator::TIER, None)?;
     let chosen_model = Some(resolution.actual_model);
     let db = state.db.lock().unwrap();
-    let path: String = db.query_row(
+    let path: Option<String> = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
         params![workspace_id],
-        |r| r.get(0),
+        |r| r.get::<_, Option<String>>(0),
     )?;
     let existing: Option<(String, Option<String>)> = db.query_row(
         "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
@@ -475,6 +478,8 @@ fn start_session(
         None
     };
     drop(db);
+    let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string());
+    std::fs::create_dir_all(&path)?;
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let current_model: Option<String> = state
@@ -649,7 +654,7 @@ fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,requested_tier=?5,label=?6,depth=0,parent_session_id=NULL WHERE id=?1",
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,requested_tier=?5,label=?6,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
                 started_at,
@@ -661,7 +666,7 @@ fn start_session(
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,depth) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,0)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,0,?9)",
             params![
                 session_id,
                 workspace_id,
@@ -670,7 +675,8 @@ fn start_session(
                 started_at,
                 thread_id,
                 chosen_model,
-                orchestrator::TIER.as_str()
+                orchestrator::TIER.as_str(),
+                Uuid::new_v4().simple().to_string()
             ],
         )?;
     }
@@ -2704,7 +2710,7 @@ fn maintain_worker_pool(app: &AppHandle) {
     let workspaces = {
         let db = state.db.lock().unwrap();
         let mut statement = match db.prepare(
-            "SELECT DISTINCT workspace_id FROM worker_queue WHERE queue_status='queued' ORDER BY workspace_id",
+            "SELECT workspace_id FROM worker_queue WHERE queue_status='queued' GROUP BY workspace_id ORDER BY MIN(sequence),workspace_id",
         ) {
             Ok(statement) => statement,
             Err(_) => return,
@@ -2896,7 +2902,11 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.send_turn(&outbound)?;
+    if let Err(error) = runtime.send_turn(&outbound) {
+        drop(adapters);
+        record_recoverable_adapter_failure(&state, &session_id, &error)?;
+        return Err(error);
+    }
     drop(adapters);
     let db = state.db.lock().unwrap();
     let adapter_id: String = db.query_row(
@@ -2930,6 +2940,13 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         params![session_id],
     );
     let _ = app.emit("state-changed", ());
+    Ok(())
+}
+
+fn record_recoverable_adapter_failure(state: &State<AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
+    let db = state.db.lock().unwrap();
+    db.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
+    store::event(&db, "adapter", "adapter.request_failed", session_id, &error.to_string())?;
     Ok(())
 }
 

@@ -297,8 +297,20 @@ pub struct QueuedWorkerRequest {
     pub queue_status: String,
     pub sequence: i64,
     pub dispatched_session_id: Option<String>,
+    pub attempt_count: i64,
+    pub expires_at: String,
+    pub claimed_at: Option<String>,
+    pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxMessage {
+    pub id: String, pub destination: String, pub event_type: String, pub payload: serde_json::Value,
+    pub idempotency_key: String, pub status: String, pub attempt_count: i64, pub next_attempt_at: String,
+    pub last_error: Option<String>, pub created_at: String, pub delivered_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
