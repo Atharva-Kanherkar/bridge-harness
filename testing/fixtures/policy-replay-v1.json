@@ -1,0 +1,51 @@
+[
+  {
+    "id": "fixture-parent-execution",
+    "payload": {
+      "decision": "execute_in_parent",
+      "reason": "parent_execution_preferred",
+      "capabilityUnits": 0,
+      "replaySchemaVersion": 1,
+      "replayInput": {
+        "workspaceId": "fixture-workspace",
+        "worktreeId": "fixture-workspace",
+        "parentSessionId": "fixture-parent",
+        "turnId": "fixture-turn",
+        "parentDepth": 0,
+        "request": {
+          "schemaVersion": 1,
+          "role": "verification",
+          "objective": "Verify policy replay",
+          "acceptanceCriteria": ["Reproduce the recorded decision"],
+          "knownFacts": [],
+          "decisions": [],
+          "evidenceIds": [],
+          "relevantFiles": [],
+          "ownedPaths": [],
+          "writeMode": "readOnly",
+          "capabilityTier": "fast",
+          "effort": "low",
+          "verification": [],
+          "outputContract": "verification-result"
+        },
+        "ownedPathProvenance": {
+          "trustedPaths": [],
+          "sourceEntryIds": []
+        },
+        "requestedHarness": "codex",
+        "taskFamily": "verification",
+        "activeWorkers": [],
+        "warmWorkers": [],
+        "budget": {
+          "workersUsed": 0,
+          "strongWorkersUsed": 0,
+          "capabilityUnitsUsed": 0
+        },
+        "retryCount": 0,
+        "parentCanExecute": true,
+        "requiresUserApproval": false,
+        "childWorktreesAvailable": true
+      }
+    }
+  }
+]

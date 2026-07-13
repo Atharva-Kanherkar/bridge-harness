@@ -70,7 +70,8 @@ pub enum RestorationKind {
     Fresh,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerSnapshot {
     pub session_id: String,
     pub workspace_id: String,
@@ -83,14 +84,16 @@ pub struct WorkerSnapshot {
     pub write_mode: WriteMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestBudget {
     pub workers_used: usize,
     pub strong_workers_used: usize,
     pub capability_units_used: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PolicyInput {
     pub workspace_id: String,
     pub worktree_id: String,
@@ -110,7 +113,8 @@ pub struct PolicyInput {
     pub child_worktrees_available: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyConfig {
     pub max_concurrent_workers: usize,
     pub max_writers_per_worktree: usize,
@@ -580,11 +584,10 @@ pub fn record_decision(
     db: &Connection,
     parent_session_id: &str,
     turn_id: &str,
-    request: &DelegationRequest,
+    input: &PolicyInput,
     outcome: &PolicyOutcome,
-    budget: &RequestBudget,
-    provenance: &OwnedPathProvenance,
 ) -> Result<(), BridgeError> {
+    let request = &input.request;
     let kind = match &outcome.decision {
         RouteDecision::SpawnWorker(_) | RouteDecision::ResumeWorker { .. } => {
             EntryKind::DelegationApproved
@@ -600,12 +603,14 @@ pub fn record_decision(
         "reason": outcome.reason,
         "request": request,
         "budget": {
-            "workersUsed": budget.workers_used,
-            "strongWorkersUsed": budget.strong_workers_used,
-            "capabilityUnitsUsed": budget.capability_units_used,
+            "workersUsed": input.budget.workers_used,
+            "strongWorkersUsed": input.budget.strong_workers_used,
+            "capabilityUnitsUsed": input.budget.capability_units_used,
         },
         "capabilityUnits": outcome.capability_units,
-        "ownedPathProvenance": provenance,
+        "ownedPathProvenance": input.owned_path_provenance,
+        "replaySchemaVersion": 1,
+        "replayInput": input,
     });
     if matches!(outcome.decision, RouteDecision::RequireUserApproval) {
         let scope_key = normalize_owned_paths(&request.owned_paths)
@@ -1247,10 +1252,8 @@ mod tests {
             &db,
             "parent",
             "turn-1",
-            &input.request,
+            &input,
             &outcome,
-            &input.budget,
-            &input.owned_path_provenance,
         )
         .unwrap();
         let branch = SessionForest::new(&db).active_branch("parent").unwrap();
@@ -1258,6 +1261,8 @@ mod tests {
         assert_eq!(branch[0].kind, "delegation.approved");
         assert_eq!(branch[0].payload["turnId"], "turn-1");
         assert_eq!(branch[0].payload["reason"], "eligible_fresh_spawn");
+        assert_eq!(branch[0].payload["replaySchemaVersion"], 1);
+        assert_eq!(branch[0].payload["replayInput"]["turnId"], "turn-1");
         assert_eq!(
             branch[0].payload["ownedPathProvenance"]["trustedPaths"][0],
             "src/auth/**"
