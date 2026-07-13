@@ -1524,6 +1524,18 @@ struct WorkerLaunchReservation {
     reuse_existing: bool,
 }
 
+enum WorkerReservationOutcome {
+    Reserved(WorkerLaunchReservation),
+    Queued,
+    Blocked,
+}
+
+enum WorkerLaunchOutcome {
+    Launched(String),
+    Queued,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerActivation {
     Fresh,
@@ -1548,14 +1560,14 @@ fn record_model_resolution_warning(
     Ok(())
 }
 
-fn reserve_worker_launch(
+fn reserve_worker_launch_outcome(
     db: &Connection,
     parent_session_id: &str,
     turn_id: &str,
     directive: &delegation::DelegationRequest,
     actual_model: &str,
     queue_on_block: bool,
-) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
+) -> Result<WorkerReservationOutcome, BridgeError> {
     let route = policy_coordinator::PolicyCoordinator::decide_worker_route(
         db,
         parent_session_id,
@@ -1582,14 +1594,18 @@ fn reserve_worker_launch(
                     actual_model,
                 )?;
             }
-            return Ok(None);
+            return Ok(if queue_on_block {
+                WorkerReservationOutcome::Queued
+            } else {
+                WorkerReservationOutcome::Blocked
+            });
         }
         policy::RouteDecision::ResumeWorker { session_id } => {
             let runtime = store::worker_runtime(db, session_id)?
                 .ok_or_else(|| BridgeError::Invalid(format!("warm worker {session_id} has no runtime record")))?;
             let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
             let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
-            return Ok(Some(WorkerLaunchReservation {
+            return Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
                 session_id: session_id.clone(),
                 workspace_id,
                 depth: parent_depth + 1,
@@ -1601,7 +1617,7 @@ fn reserve_worker_launch(
             }));
         }
         policy::RouteDecision::SpawnWorker(_) => {}
-        _ => return Ok(None),
+        _ => return Ok(WorkerReservationOutcome::Blocked),
     }
 
     let session_id = Uuid::new_v4().to_string();
@@ -1690,7 +1706,7 @@ fn reserve_worker_launch(
         },
     )?;
     transaction.commit()?;
-    Ok(Some(WorkerLaunchReservation {
+    Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
         session_id,
         workspace_id,
         depth,
@@ -1702,13 +1718,35 @@ fn reserve_worker_launch(
     }))
 }
 
-fn launch_worker(
+#[cfg(test)]
+fn reserve_worker_launch(
+    db: &Connection,
+    parent_session_id: &str,
+    turn_id: &str,
+    directive: &delegation::DelegationRequest,
+    actual_model: &str,
+    queue_on_block: bool,
+) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
+    Ok(match reserve_worker_launch_outcome(
+        db,
+        parent_session_id,
+        turn_id,
+        directive,
+        actual_model,
+        queue_on_block,
+    )? {
+        WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
+        WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
+    })
+}
+
+fn launch_worker_outcome(
     app: &AppHandle,
     parent_session_id: &str,
     turn_id: &str,
     directive: &delegation::DelegationRequest,
     queue_on_block: bool,
-) -> Option<String> {
+) -> WorkerLaunchOutcome {
     let state = app.state::<AppState>();
     let harness = directive.runtime_harness();
     let resolution = match state.adapter_registry.resolve_model(
@@ -1728,13 +1766,13 @@ fn launch_worker(
             );
             drop(db);
             let _ = app.emit("state-changed", ());
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
     };
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
-        reserve_worker_launch(
+        reserve_worker_launch_outcome(
             &db,
             parent_session_id,
             turn_id,
@@ -1744,10 +1782,14 @@ fn launch_worker(
         )
     };
     let mut reservation = match reservation {
-        Ok(Some(reservation)) => reservation,
-        Ok(None) => {
+        Ok(WorkerReservationOutcome::Reserved(reservation)) => reservation,
+        Ok(WorkerReservationOutcome::Queued) => {
             let _ = app.emit("state-changed", ());
-            return None;
+            return WorkerLaunchOutcome::Queued;
+        }
+        Ok(WorkerReservationOutcome::Blocked) => {
+            let _ = app.emit("state-changed", ());
+            return WorkerLaunchOutcome::Failed;
         }
         Err(error) => {
             let db = state.db.lock().unwrap();
@@ -1760,7 +1802,7 @@ fn launch_worker(
             );
             drop(db);
             let _ = app.emit("state-changed", ());
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
     };
     let requires_child_worktree = matches!(
@@ -1785,18 +1827,21 @@ fn launch_worker(
                 let db = state.db.lock().unwrap();
                 let transaction = match db.unchecked_transaction() {
                     Ok(transaction) => transaction,
-                    Err(_) => return None,
+                    Err(_) => return WorkerLaunchOutcome::Failed,
                 };
                 let _ = transaction.execute("DELETE FROM worker_runtime WHERE session_id=?1", params![reservation.session_id]);
                 let _ = transaction.execute("DELETE FROM worker_leases WHERE session_id=?1", params![reservation.session_id]);
                 let _ = transaction.execute("DELETE FROM sessions WHERE id=?1", params![reservation.session_id]);
                 let _ = transaction.commit();
-                if queue_on_block {
-                    let _ = worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model);
-                }
+                let queued = queue_on_block
+                    && worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model).is_ok();
                 let _ = store::event(&db, "worktree", "worker.worktree_queued", parent_session_id, &error.to_string());
                 let _ = app.emit("state-changed", ());
-                return None;
+                return if queued {
+                    WorkerLaunchOutcome::Queued
+                } else {
+                    WorkerLaunchOutcome::Failed
+                };
             }
         }
     }
@@ -1859,12 +1904,12 @@ fn launch_worker(
             if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
                 if runtime.send_turn(&directive.objective).is_ok() {
                     let _ = app.emit("state-changed", ());
-                    return Some(reservation.session_id);
+                    return WorkerLaunchOutcome::Launched(reservation.session_id);
                 }
             }
         }
         let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
 
     if directive.write_mode == delegation::WriteMode::ReadOnly {
@@ -1884,7 +1929,7 @@ fn launch_worker(
                     &label,
                     &format!("Could not capture tracked-file baseline: {error}"),
                 );
-                return None;
+                return WorkerLaunchOutcome::Failed;
             }
         }
     }
@@ -1898,7 +1943,7 @@ fn launch_worker(
         )
         .is_err()
         {
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
         let provider_id: Option<String> = state.db.lock().unwrap().query_row(
             "SELECT provider_session_id FROM sessions WHERE id=?1",
@@ -1970,7 +2015,7 @@ fn launch_worker(
                 &label,
                 &format!("Could not start provider process: {error}"),
             );
-            return None;
+            return WorkerLaunchOutcome::Failed;
         }
     };
     let session_id = reservation.session_id;
@@ -2013,7 +2058,7 @@ fn launch_worker(
             &session_id,
             &error.to_string(),
         );
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
     let (restoration_mode, resume_eligibility) = match activation {
         WorkerActivation::Fresh => (RestorationMode::Fresh, ResumeEligibility::Fresh),
@@ -2033,7 +2078,7 @@ fn launch_worker(
     .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
 
     {
@@ -2104,7 +2149,7 @@ fn launch_worker(
         )
         .is_err()
     {
-        return None;
+        return WorkerLaunchOutcome::Failed;
     }
     state
         .adapters
@@ -2122,7 +2167,26 @@ fn launch_worker(
         let _ = runtime.send_turn(&directive.objective);
     }
     let _ = app.emit("state-changed", ());
-    Some(session_id)
+    WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn launch_worker(
+    app: &AppHandle,
+    parent_session_id: &str,
+    turn_id: &str,
+    directive: &delegation::DelegationRequest,
+    queue_on_block: bool,
+) -> Option<String> {
+    match launch_worker_outcome(
+        app,
+        parent_session_id,
+        turn_id,
+        directive,
+        queue_on_block,
+    ) {
+        WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
+        WorkerLaunchOutcome::Queued | WorkerLaunchOutcome::Failed => None,
+    }
 }
 
 fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
@@ -3150,16 +3214,10 @@ fn resolve_approval(
             resolve_policy_delegation_approval(&db, &session_id, event_id, &decision, &data)?;
         drop(db);
         if let Some((turn_id, request)) = launch {
-            if launch_worker(&app, &session_id, &turn_id, &request, true).is_none() {
-                let db = state.db.lock().unwrap();
-                let queued = db
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM worker_queue WHERE parent_session_id=?1 AND turn_id=?2 AND queue_status IN ('queued','dispatching'))",
-                        params![session_id, turn_id],
-                        |row| row.get::<_, bool>(0),
-                    )
-                    .unwrap_or(false);
-                if !queued {
+            match launch_worker_outcome(&app, &session_id, &turn_id, &request, true) {
+                WorkerLaunchOutcome::Launched(_) | WorkerLaunchOutcome::Queued => {}
+                WorkerLaunchOutcome::Failed => {
+                    let db = state.db.lock().unwrap();
                     record_approved_launch_failure(&db, &session_id, &turn_id, &request)?;
                     let _ = app.emit("state-changed", ());
                     return Err(BridgeError::Invalid(
@@ -3973,7 +4031,7 @@ mod tests {
             "standard:gpt-5.6-terra"
         );
 
-        let second = reserve_worker_launch(
+        let second = reserve_worker_launch_outcome(
             &db,
             "parent",
             "turn-1",
@@ -3982,7 +4040,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(second.is_none());
+        assert!(matches!(second, WorkerReservationOutcome::Queued));
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sessions WHERE workspace_id='w'",
@@ -4118,6 +4176,24 @@ mod tests {
             db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             0
+        );
+        reserve_worker_launch(
+            &db,
+            "parent",
+            "turn-decline",
+            &request,
+            "gpt-5.6-terra",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            store::session_entries(&db, "parent")
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.kind == "approval.requested")
+                .count(),
+            1,
+            "a declined turn/scope must not create a dead follow-up card"
         );
     }
 

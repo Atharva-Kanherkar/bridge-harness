@@ -274,15 +274,14 @@ fn trusted_pattern_covers(scope: &str, claim: &str) -> bool {
     if !scope.ends_with("/**") {
         return false;
     }
-    let scope_wildcard = scope.find(['*', '?', '[']);
-    let Some(scope_wildcard) = scope_wildcard else {
+    let scope_base = scope.trim_end_matches("/**");
+    if scope_base.is_empty() || scope_base.contains(['*', '?', '[']) {
         return false;
-    };
-    let scope_base = scope[..scope_wildcard].trim_end_matches('/');
+    }
     let claim_wildcard = claim.find(['*', '?', '[']);
     let claim_literal = claim_wildcard.map_or(claim, |index| &claim[..index]);
     let descendant_prefix = format!("{scope_base}/");
-    !scope_base.is_empty() && claim_literal.starts_with(&descendant_prefix)
+    claim_literal.starts_with(&descendant_prefix)
 }
 
 fn outcome(decision: RouteDecision, reason: RouteReason, capability_units: i64) -> PolicyOutcome {
@@ -616,12 +615,10 @@ pub fn record_decision(
         let branch = SessionForest::new(db)
             .active_branch(parent_session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        let already_pending = branch.iter().any(|entry| {
+        let approval_already_recorded = branch.iter().any(|entry| {
             entry.kind == "approval.requested" && entry.payload["approvalId"] == approval_id
-        }) && !branch.iter().any(|entry| {
-            entry.kind == "approval.resolved" && entry.payload["approvalId"] == approval_id
         });
-        if already_pending {
+        if approval_already_recorded {
             return Ok(());
         }
         payload["approvalId"] = Value::String(approval_id);
@@ -860,6 +857,12 @@ mod tests {
             &["src/auth/*.rs".into()],
             &["src/auth/**".into()]
         ));
+        for escaping_scope in ["src/auth*/**", "src/[ab]/**", "src/auth?/**"] {
+            assert!(
+                !owned_paths_are_provenanced(&["src/secrets/**".into()], &[escaping_scope.into()]),
+                "wildcard trusted scope broadened authority: {escaping_scope}"
+            );
+        }
     }
 
     #[test]

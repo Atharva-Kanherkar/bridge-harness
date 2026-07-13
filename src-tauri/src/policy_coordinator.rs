@@ -250,7 +250,9 @@ fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
         return None;
     };
     let grounded = grounding_path.canonicalize().ok()?;
-    if !grounded.starts_with(&workspace) {
+    if !grounded.starts_with(&workspace)
+        || (wildcard.is_some() && resolved.is_dir() && subtree_contains_symlink(&resolved))
+    {
         return None;
     }
     if wildcard.is_none() && resolved.is_dir() {
@@ -276,11 +278,35 @@ fn approved_path_token(token: &str, workspace: &Path) -> Option<String> {
     } else {
         resolved.parent().filter(|parent| parent.is_dir())?
     };
-    grounding_path
-        .canonicalize()
-        .ok()?
-        .starts_with(&workspace)
-        .then_some(normalized)
+    let grounded = grounding_path.canonicalize().ok()?;
+    (grounded.starts_with(&workspace)
+        && !(wildcard.is_some() && resolved.is_dir() && subtree_contains_symlink(&resolved)))
+    .then_some(normalized)
+}
+
+fn subtree_contains_symlink(root: &Path) -> bool {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                return true;
+            };
+            if metadata.file_type().is_symlink() {
+                return true;
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -466,6 +492,10 @@ mod tests {
         assert!(explicit_write_scope("Write scope: external/new.rs", workspace.path()).is_empty());
         assert!(approved_path_token("external/**", workspace.path()).is_none());
         std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+        symlink(outside.path(), workspace.path().join("src/link")).unwrap();
+        assert!(explicit_write_scope("Write scope: src/**", workspace.path()).is_empty());
+        assert!(approved_path_token("src/**", workspace.path()).is_none());
+        std::fs::remove_file(workspace.path().join("src/link")).unwrap();
         assert_eq!(
             approved_path_token("src/new/**", workspace.path()),
             Some("src/new/**".into())

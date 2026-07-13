@@ -33,10 +33,11 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
   const approvalsBySequence = new Map<number, ConversationItem>();
   for (const entry of selectActiveBranch(entries, activeLeafId)) {
     if (entry.kind === "approval.resolved") {
-      const requestEventId = Number(entry.payload.requestEventId);
+      const nested = objectValue(entry.payload.data);
+      const requestEventId = Number(entry.payload.requestEventId ?? nested.requestEventId);
       const request = approvalsBySequence.get(requestEventId);
       if (request) {
-        request.status = stringValue(entry.payload.decision) ?? stringValue(entry.payload.status) ?? "resolved";
+        request.status = stringValue(entry.payload.decision) ?? stringValue(nested.decision) ?? stringValue(entry.payload.status) ?? "resolved";
         request.data = { ...request.data, resolution: entry.payload };
         continue;
       }
@@ -103,6 +104,10 @@ function isRawProviderEntry(entry: SessionEntry): boolean {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function humanizeKind(kind: string): string {

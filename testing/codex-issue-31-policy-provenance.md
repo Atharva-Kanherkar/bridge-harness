@@ -18,6 +18,7 @@
 - `historical_negated_and_diagnostic_paths_do_not_authorize_writes` — old turns and arbitrary prose do not grant scope.
 - `new_file_scope_requires_existing_immediate_parent` — a new file is allowed only beneath an existing immediate parent, not merely an existing top-level component.
 - `symlinked_scope_cannot_escape_the_workspace` — explicit and approved scopes cannot traverse a repository symlink to an external target.
+- Recursive scopes containing nested symlinks, and trusted scopes with non-terminal wildcard components, cannot broaden authority.
 - `prior_write_decision_binds_scope_to_its_originating_turn` — a later user turn cannot retroactively broaden an earlier deferred request.
 - `policy_approval_is_idempotent_and_stale_branches_cannot_resolve` — repeated identical requests create one card and an abandoned-branch card cannot grant current-branch authority.
 - Durable conversation projection and component tests verify resolution folding and removal of the misleading session-wide policy action.
@@ -29,7 +30,7 @@
 - Parent user turn declaring `write scope: <repository path>` → matching write delegation → `spawn_worker`/`resume_worker` remains possible and the decision entry carries provenance.
 - Parent user turn with no explicit write scope → write delegation → resolvable `approval.requested`; no worker session, lease, or spawn-usage row is created before acceptance.
 - Accepted policy approval → the still-active same-turn request is re-evaluated with component-safe, workspace-contained approval provenance and may launch; stale-branch, duplicate, session-wide, declined, or cancelled approval never launches.
-- Durable UI projection → one pending policy card with no session-wide action → resolution folds into that card after reload; accepted launch failure is persisted and surfaced as retryable.
+- Durable UI projection → one terminal card per turn/scope with no session-wide action → native and provider-shaped resolutions fold into that card after reload; accepted launch failure is persisted and surfaced as retryable.
 - Parent user turn naming a narrow file → delegation claiming a broader directory → `require_user_approval` with an auditable reason.
 
 ## Smoke Tests
