@@ -18,16 +18,18 @@ export function permissionOptions(mode) {
   }
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode }) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, plugins = [], mcpServers = {} }) {
   return {
     ...(model ? { model } : {}),
     ...(cwd ? { cwd } : {}),
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
-    // Never inherit global user settings or auto-loaded MCP servers. Project
-    // and local instructions remain available to sessions launched in a repo.
+    // Provider discovery supplies enabled plugin paths and credential-free
+    // connector endpoints explicitly. Keep project/local settings, but do not
+    // inherit unrelated global hooks, permissions, or inline credentials.
     settingSources: ["project", "local"],
-    strictMcpConfig: true,
-    mcpServers: {},
+    strictMcpConfig: false,
+    mcpServers,
+    plugins: plugins.map(path => ({ type: "local", path })),
     includePartialMessages: true,
     ...(instructions
       ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }

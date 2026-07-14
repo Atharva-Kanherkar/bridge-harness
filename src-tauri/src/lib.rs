@@ -9,6 +9,7 @@ mod delegation;
 mod git;
 mod handoff;
 mod model;
+mod marketplace;
 mod orchestrator;
 mod policy;
 pub mod policy_replay;
@@ -120,6 +121,26 @@ fn health(state: State<AppState>) -> Health {
         snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
         adapters: state.adapter_registry.descriptors(),
     }
+}
+
+#[tauri::command]
+fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
+    marketplace::catalog()
+}
+
+#[tauri::command]
+fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
+    marketplace::app_auth_states()
+}
+
+#[tauri::command]
+fn marketplace_action(
+    provider: marketplace::MarketplaceProvider,
+    plugin_id: String,
+    marketplace: Option<String>,
+    action: marketplace::MarketplaceAction,
+) -> Result<marketplace::MarketplaceActionResult, BridgeError> {
+    marketplace::execute_action(provider, &plugin_id, marketplace.as_deref(), action)
 }
 #[tauri::command]
 fn get_state(state: State<AppState>) -> Result<BridgeState, BridgeError> {
@@ -4021,6 +4042,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            marketplace_catalog,
+            marketplace_app_auth_states,
+            marketplace_action,
             get_state,
             get_session_forest,
             activate_session_entry,

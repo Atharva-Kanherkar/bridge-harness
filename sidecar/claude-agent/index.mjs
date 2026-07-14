@@ -14,7 +14,7 @@
 //     normalize_claude_message_with_state already understands.
 //
 // Config arrives as a single JSON argument (argv[2]):
-//   { sessionId, model, cwd, resume, instructions, writeMode }
+//   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers }
 
 import { createInterface } from "node:readline";
 import { query } from "@anthropic-ai/claude-agent-sdk";

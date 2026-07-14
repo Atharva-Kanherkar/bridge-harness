@@ -61,8 +61,9 @@ fn launch(
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
     // long-lived streaming query serves every turn on a single session (fixing
-    // the `claude -p` "exit after one turn" behaviour), and the sidecar isolates
-    // the child from the user's global settings/hooks and MCP servers.
+    // the `claude -p` "exit after one turn" behaviour). Provider discovery
+    // supplies enabled plugins and credential-free connector endpoints while
+    // the sidecar remains isolated from unrelated global hooks and permissions.
     let node = binary::resolve("node").ok_or_else(|| {
         BridgeError::Invalid(
             "Node.js is required to run Claude (expected `node` on PATH). Install Node 18+ to use Claude models."
@@ -77,6 +78,7 @@ fn launch(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("sonnet");
+    let sdk_configuration = crate::marketplace::claude_sdk_configuration();
     let config = json!({
         "sessionId": session_id,
         "model": chosen_model,
@@ -86,6 +88,8 @@ fn launch(
         // system prompt so the child agent knows its single typed task.
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
+        "plugins": sdk_configuration.plugins,
+        "mcpServers": sdk_configuration.mcp_servers,
     });
     let mut command = Command::new(node);
     command

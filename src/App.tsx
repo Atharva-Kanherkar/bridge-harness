@@ -9,6 +9,7 @@ import { ComposerPill } from "./components/ComposerPill";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { TerminalPane } from "./components/TerminalPane";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
+import { MarketplaceScreen } from "./components/MarketplaceScreen";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { pickGreeting } from "./greetings";
@@ -56,6 +57,7 @@ export function App() {
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [health, setHealth] = useState<Health>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
+  const [view, setView] = useState<"workspace" | "marketplace">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
   const [modal, setModal] = useState<"chat" | "workspace" | null>(null);
@@ -182,10 +184,11 @@ export function App() {
   // Load available slash commands + skills from signed-in providers.
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
 
-  function openSession(id: string) { setSelectedSessionId(id); }
+  function openSession(id: string) { setView("workspace"); setSelectedSessionId(id); }
   // New chat opens instantly (no picker up front): create a direct chat with the
   // default model and select it. The model can be changed inside the chat.
   async function openNewChat(initialMessage?: string) {
+    setView("workspace");
     const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
     const model = preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
@@ -322,9 +325,11 @@ export function App() {
       workspaces={state.workspaces}
       workspaceChats={workspaceId => topSessions.filter(s => s.workspaceId === workspaceId)}
       activeSessionId={session?.id}
+      marketplaceActive={view === "marketplace"}
       expanded={expanded}
       busy={busy}
       onOpenNewChat={() => void openNewChat()}
+      onOpenMarketplace={() => setView("marketplace")}
       onOpenSession={openSession}
       onToggleWorkspace={toggleExpanded}
       onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
@@ -332,7 +337,7 @@ export function App() {
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
-      {session ? <>
+      {view === "marketplace" ? <MarketplaceScreen /> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
