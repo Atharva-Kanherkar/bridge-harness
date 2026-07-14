@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES } from "./marketplace";
+import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, verifiedBrandLogoUrl } from "./marketplace";
 import type { MarketplaceCatalog, MarketplaceVariant } from "./types";
 
 function variant(provider: "codex" | "claude", pluginId: string, overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant {
@@ -59,6 +59,28 @@ describe("marketplace compatibility", () => {
       variant("claude", "two", { mcpEndpoint: "https://mcp.example.test", sharedAuthMechanism: "gh_cli" }),
     ])[0];
     expect(compatibilityLabels(service)).toContain("Shared auth compatible");
+  });
+});
+
+describe("verified brand logos", () => {
+  it("prefers an official website favicon over repository metadata", () => {
+    const service = groupMarketplaceServices([variant("claude", "vercel", {
+      repository: "https://github.com/vercel/vercel-plugin",
+      providerMetadata: { homepage: "https://vercel.com/products" },
+    })])[0];
+    expect(verifiedBrandLogoUrl(service)).toBe("https://vercel.com/favicon.ico");
+  });
+
+  it("derives a GitHub organization avatar from the official repository", () => {
+    const service = groupMarketplaceServices([variant("claude", "adobe", { repository: "https://github.com/adobe/skills" })])[0];
+    expect(verifiedBrandLogoUrl(service)).toBe("https://github.com/adobe.png?size=128");
+  });
+
+  it("rejects unsafe logo origins", () => {
+    for (const repository of ["http://example.com/plugin", "https://user:pass@example.com/plugin", "https://localhost/plugin", "https://127.0.0.1/plugin", "https://example.com:8443/plugin"]) {
+      const service = groupMarketplaceServices([variant("claude", "unsafe", { repository })])[0];
+      expect(verifiedBrandLogoUrl(service)).toBeNull();
+    }
   });
 });
 

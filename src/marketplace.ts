@@ -134,6 +134,60 @@ export function groupMarketplaceServices(
   return services.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function metadataString(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function safeOfficialUrl(value: string | null | undefined): URL | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname);
+    const isIpv6 = hostname.includes(":");
+    if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return null;
+    if (!hostname.includes(".") || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || isIpv4 || isIpv6) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function githubAvatar(url: URL): string | null {
+  if (url.hostname.toLowerCase() !== "github.com") return null;
+  const owner = url.pathname.split("/").filter(Boolean)[0];
+  return owner ? `https://github.com/${encodeURIComponent(owner)}.png?size=128` : null;
+}
+
+export function verifiedBrandLogoUrl(service: MarketplaceService): string | null {
+  const websiteCandidates = service.variants.flatMap(variant => {
+    const metadata = variant.providerMetadata;
+    const interfaceMetadata = metadata.interface && typeof metadata.interface === "object" && !Array.isArray(metadata.interface)
+      ? metadata.interface as Record<string, unknown>
+      : {};
+    return [
+      metadataString(interfaceMetadata, "websiteURL"),
+      metadataString(metadata, "homepage"),
+      metadataString(metadata, "websiteURL"),
+      metadataString(metadata, "website"),
+    ];
+  });
+  for (const candidate of websiteCandidates) {
+    const url = safeOfficialUrl(candidate);
+    if (!url) continue;
+    return githubAvatar(url) ?? `${url.origin}/favicon.ico`;
+  }
+
+  const repositoryCandidates = service.variants.flatMap(variant => [variant.repository, variant.source]);
+  for (const candidate of repositoryCandidates) {
+    const url = safeOfficialUrl(candidate);
+    if (!url) continue;
+    return githubAvatar(url) ?? `${url.origin}/favicon.ico`;
+  }
+  return null;
+}
+
 const sharedMechanisms = new Set(["mcp_server", "environment_token", "gh_cli", "credential_helper"]);
 
 export function compatibilityLabels(service: MarketplaceService): string[] {
