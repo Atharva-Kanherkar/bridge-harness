@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, GitFork, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, Gauge, GitFork, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
 import type { AgentEvent, ContinuationFidelity, Session, SessionEntry } from "../types";
+import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
+import { describeError } from "../errors";
 import { Markdown } from "./Markdown";
+
+function providerLabel(harness?: string | null): string | undefined {
+  if (!harness) return undefined;
+  if (harness === "claude") return "Claude";
+  if (harness === "codex") return "Codex";
+  return harness.charAt(0).toUpperCase() + harness.slice(1);
+}
 
 // Codex-style conversation: prose messages, quiet collapsible thinking, and
 // consecutive tool work folded into activity groups ("Edited files, read
@@ -101,6 +110,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
   const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
+  const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10 scrollbar-thin scrollbar-thumb-white/10">
@@ -112,7 +122,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
       {groupItems(visibleItems).map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
-        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve}/>)}
+        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} errorContext={errorContext}/>)}
       {optimistic.map((text, index) => <div key={`pending-${index}`} className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-2xl rounded-tr-sm bg-white/[0.04] px-5 py-3 text-[15px] leading-[1.7] text-neutral-100 ring-1 ring-white/[0.06] whitespace-pre-wrap">{text}</div></div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start pl-4"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
     </div>
@@ -158,7 +168,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
+function ItemView({ item, onResolve, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-2xl rounded-tr-sm bg-white/[0.04] px-5 py-3 text-[15px] leading-[1.7] text-neutral-100 ring-1 ring-white/[0.06] whitespace-pre-wrap">{item.text}</div></div>;
     return <div className="chat-message-enter flex w-full justify-start"><div className="relative max-w-[min(100%,44rem)] py-1 pl-1 text-neutral-300">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div></div>;
@@ -169,7 +179,14 @@ function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eve
   if (item.type === "delegation") return <DelegationRow item={item}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
-  if (item.type === "error") return <div className="my-4 flex gap-2.5 p-3 border border-destructive/30 rounded-lg bg-destructive/5 text-destructive-foreground"><AlertTriangle size={14} aria-hidden="true" /><div><b className="text-[12px]">Agent error</b><p className="mt-1 text-destructive-foreground/85 text-[12px] leading-relaxed">{item.text || "The adapter reported an error."}</p></div></div>;
+  if (item.type === "error") {
+    const described = describeError(item.text, errorContext);
+    const isUsage = described.kind === "usage-limit";
+    return <div className={`my-4 flex gap-2.5 p-3 rounded-lg border ${isUsage ? "border-warning/30 bg-warning/5 text-warning" : "border-destructive/30 bg-destructive/5 text-destructive-foreground"}`}>
+      {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
+      <div><b className="text-[12px]">{described.title}</b><p className={`mt-1 text-[12px] leading-relaxed ${isUsage ? "text-warning/90" : "text-destructive-foreground/85"}`}>{described.message}</p></div>
+    </div>;
+  }
   return <ActivityGroup items={[item]}/>;
 }
 

@@ -13,8 +13,9 @@ import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { pickGreeting } from "./greetings";
 import { extractUsageSnapshot, formatReset, type UsageProvider, type UsageSnapshot } from "./usage";
+import { describeError } from "./errors";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
-import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -417,14 +418,21 @@ export function App() {
         </section>
       </> : <Welcome adapters={adapters} busy={busy} onStartChat={text => void openNewChat(text)} onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}/>}
     </main>
-    {error && (
-      <Alert variant="error" className="fixed right-[18px] bottom-[18px] z-40 max-w-[520px] bg-card/70 backdrop-blur-2xl backdrop-saturate-150 border-foreground/10 shadow-[0_24px_70px_-20px_rgba(0,0,0,0.65)]">
-        <AlertDescription>{error}</AlertDescription>
-        <AlertAction>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label="Dismiss error" onClick={() => setError(undefined)}><X size={14} aria-hidden="true" /></Button>
-        </AlertAction>
-      </Alert>
-    )}
+    {error && (() => {
+      const described = describeError(error, {
+        provider: session ? harnessLabel(session.harness) : undefined,
+        snapshot: session ? usageByProvider[session.harness as UsageProvider] : undefined,
+      });
+      return (
+        <Alert variant={described.kind === "usage-limit" ? "warning" : "error"} className="fixed right-[18px] bottom-[18px] z-40 max-w-[520px] bg-card/70 backdrop-blur-2xl backdrop-saturate-150 border-foreground/10 shadow-[0_24px_70px_-20px_rgba(0,0,0,0.65)]">
+          <AlertTitle>{described.title}</AlertTitle>
+          <AlertDescription>{described.message}</AlertDescription>
+          <AlertAction>
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="Dismiss error" onClick={() => setError(undefined)}><X size={14} aria-hidden="true" /></Button>
+          </AlertAction>
+        </Alert>
+      );
+    })()}
 
     <WorkspaceCreateDialog
       open={modal === "workspace"}

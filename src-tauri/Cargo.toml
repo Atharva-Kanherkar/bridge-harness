@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Local control room for supervised coding-agent workspaces"
 authors = ["Bridge"]
 edition = "2021"
+default-run = "bridge-deck"
 
 [lib]
 name = "bridge_deck_lib"
