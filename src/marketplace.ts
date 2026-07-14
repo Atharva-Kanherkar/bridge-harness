@@ -1,4 +1,4 @@
-import type { MarketplaceActionResult, MarketplaceProvider, MarketplaceVariant } from "./types";
+import type { MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "./types";
 
 export interface MarketplaceService {
   id: string;
@@ -32,6 +32,23 @@ export function authenticationLabel(state: string): "Connected" | "Needs login" 
   if (normalized === "connected") return "Connected";
   if (normalized === "required") return "Needs login";
   return null;
+}
+
+export function applyAppAuthStates(
+  catalog: MarketplaceCatalog,
+  states: MarketplaceAppAuthState[],
+): MarketplaceCatalog {
+  const byConnector = new Map(states.map(state => [state.connectorId, state.authenticationState]));
+  return {
+    providers: catalog.providers.map(provider => ({
+      ...provider,
+      variants: provider.variants.map(variant => {
+        const explicit = variant.appConnectorIds.map(id => byConnector.get(id)).filter((state): state is "connected" | "required" => !!state);
+        const authenticationState = explicit.includes("connected") ? "connected" : explicit.includes("required") ? "required" : variant.authenticationState;
+        return authenticationState === variant.authenticationState ? variant : { ...variant, authenticationState };
+      }),
+    })),
+  };
 }
 
 function clean(value?: string | null): string | null {

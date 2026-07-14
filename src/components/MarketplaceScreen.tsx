@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import { authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, type MarketplaceService } from "../marketplace";
+import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, type MarketplaceService } from "../marketplace";
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -84,7 +84,7 @@ function ServiceCard({
         const nextToggle: MarketplaceAction = variant.enabled ? "disable" : "enable";
         const canToggle = variant.supportedActions.includes(nextToggle);
         const isCodexApp = variant.provider === "codex" && variant.connectorType === "app";
-        const canAuthenticate = variant.supportedActions.includes("authenticate") && (isCodexApp || variant.authenticationState.toLowerCase() === "required");
+        const canAuthenticate = variant.supportedActions.includes("authenticate") && ((isCodexApp && variant.authenticationState.toLowerCase() !== "connected") || variant.authenticationState.toLowerCase() === "required");
         return <div key={`${variant.provider}:${variant.pluginId}`} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center gap-2 text-xs font-medium text-neutral-200">
@@ -99,7 +99,7 @@ function ServiceCard({
               {variant.supportedActions.includes("update") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>}
               {variant.supportedActions.includes("uninstall") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>}
             </>}
-            {variant.installed && canAuthenticate && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={12} aria-hidden="true" /> {isCodexApp ? "Open in Codex" : `Connect ${providerLabel(variant.provider)}`}</Button>}
+            {variant.installed && canAuthenticate && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={12} aria-hidden="true" /> {isCodexApp ? "Connect" : `Connect ${providerLabel(variant.provider)}`}</Button>}
           </div>
         </div>;
       })}
@@ -133,6 +133,23 @@ export function MarketplaceScreen() {
   const [targets, setTargets] = useState<Record<string, InstallTarget>>({});
   const [results, setResults] = useState<Record<string, MarketplaceActionResult[]>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const catalogRef = useRef<MarketplaceCatalog>();
+  const authRefreshBusy = useRef(false);
+
+  useEffect(() => { catalogRef.current = catalog; }, [catalog]);
+
+  const refreshAuth = useCallback(async () => {
+    if (authRefreshBusy.current) return;
+    authRefreshBusy.current = true;
+    try {
+      const states = await bridgeApi.marketplaceAppAuthStates();
+      setCatalog(current => current ? applyAppAuthStates(current, states) : current);
+    } catch {
+      // Connector status is supplementary. Preserve the credential-blind local catalog on failure.
+    } finally {
+      authRefreshBusy.current = false;
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -140,6 +157,16 @@ export function MarketplaceScreen() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refreshAuth();
+    const timer = window.setInterval(() => {
+      const needsRefresh = catalogRef.current?.providers.some(item => item.variants.some(variant =>
+        variant.provider === "codex" && variant.installed && variant.connectorType === "app" && variant.authenticationState.toLowerCase() !== "connected",
+      ));
+      if (needsRefresh) void refreshAuth();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [refreshAuth]);
 
   const services = useMemo(() => {
     const variants = catalog?.providers.flatMap(item => item.variants) ?? [];
@@ -163,6 +190,7 @@ export function MarketplaceScreen() {
       const next = await installVariants(selected, bridgeApi.marketplaceAction);
       setResults(current => ({ ...current, [service.id]: retry ? [...previous.filter(item => item.success), ...next] : next }));
       await refresh();
+      void refreshAuth();
     } finally { setBusyKey(null); }
   };
 
@@ -172,6 +200,7 @@ export function MarketplaceScreen() {
       const result = await bridgeApi.marketplaceAction(variant.provider, variant.pluginId, variant.marketplace, action);
       setResults(current => ({ ...current, [service.id]: [result] }));
       await refresh();
+      void refreshAuth();
     } finally { setBusyKey(null); }
   };
 

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, MarketplaceProvider, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
+import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
 import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -112,12 +112,18 @@ const mockHealth: Health = {
 };
 
 const mockMarketplace: MarketplaceCatalog = { providers: [
-  { provider: "codex", available: true, error: null, variants: [{ provider: "codex", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: "https://mcp.vercel.com", connectorType: "mcp", installed: true, enabled: true, authenticationState: "connected", sharedAuthMechanism: null, portableMcp: true, compatibilityNotes: [], supportedActions: ["install", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
-  { provider: "claude", available: true, error: null, variants: [{ provider: "claude", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: "https://mcp.vercel.com", connectorType: "mcp", installed: false, enabled: false, authenticationState: "required", sharedAuthMechanism: null, portableMcp: true, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
+  { provider: "codex", available: true, error: null, variants: [{ provider: "codex", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: null, connectorType: "app", appConnectorIds: ["connector_vercel"], installed: true, enabled: true, authenticationState: "required", sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
+  { provider: "claude", available: true, error: null, variants: [{ provider: "claude", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: "https://mcp.vercel.com", connectorType: "mcp", appConnectorIds: [], installed: false, enabled: false, authenticationState: "required", sharedAuthMechanism: null, portableMcp: true, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
 ] };
 
 export const bridgeApi = {
   marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? invoke("marketplace_catalog") : Promise.resolve(structuredClone(mockMarketplace)),
+  marketplaceAppAuthStates: (): Promise<MarketplaceAppAuthState[]> => {
+    if (isTauri()) return invoke("marketplace_app_auth_states");
+    const variant = mockMarketplace.providers.find(item => item.provider === "codex")?.variants.find(item => item.appConnectorIds.includes("connector_vercel"));
+    const authenticationState = variant?.authenticationState === "connected" ? "connected" : "required";
+    return Promise.resolve([{ connectorId: "connector_vercel", authenticationState }]);
+  },
   marketplaceAction: async (provider: MarketplaceProvider, pluginId: string, marketplace: string | null, action: MarketplaceAction): Promise<MarketplaceActionResult> => {
     if (isTauri()) return invoke("marketplace_action", { provider, pluginId, marketplace, action });
     const entry = mockMarketplace.providers.find(item => item.provider === provider)?.variants.find(item => item.pluginId === pluginId);

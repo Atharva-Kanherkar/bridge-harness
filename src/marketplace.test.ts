@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES } from "./marketplace";
-import type { MarketplaceVariant } from "./types";
+import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES } from "./marketplace";
+import type { MarketplaceCatalog, MarketplaceVariant } from "./types";
 
 function variant(provider: "codex" | "claude", pluginId: string, overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant {
   return {
     provider, pluginId, name: "Vercel", description: null, marketplace: "official", version: null,
     source: null, repository: null, publisher: null, capabilities: [], mcpEndpoint: null,
-    connectorType: null, installed: false, enabled: false, authenticationState: "unknown",
+    connectorType: null, appConnectorIds: [], installed: false, enabled: false, authenticationState: "unknown",
     sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {}, ...overrides,
   };
 }
@@ -68,6 +68,20 @@ describe("authentication presentation", () => {
     expect(authenticationLabel("required")).toBe("Needs login");
     expect(authenticationLabel("unknown")).toBeNull();
     expect(authenticationLabel("unrecognized-provider-state")).toBeNull();
+  });
+
+  it("merges explicit connector accessibility without guessing missing states", () => {
+    const catalog: MarketplaceCatalog = { providers: [{
+      provider: "codex", available: true, error: null, variants: [
+        variant("codex", "vercel", { appConnectorIds: ["connector_vercel"], authenticationState: "unknown" }),
+        variant("codex", "missing", { appConnectorIds: ["connector_missing"], authenticationState: "unknown" }),
+      ],
+    }] };
+
+    const merged = applyAppAuthStates(catalog, [{ connectorId: "connector_vercel", authenticationState: "connected" }]);
+
+    expect(merged.providers[0].variants[0].authenticationState).toBe("connected");
+    expect(merged.providers[0].variants[1].authenticationState).toBe("unknown");
   });
 });
 
