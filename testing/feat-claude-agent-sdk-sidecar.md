@@ -6,6 +6,7 @@
 - A resumed query must pass the persisted UUID through the SDK `resume` option and must not also request a new session ID.
 - Claude availability must depend on the runtime actually used by chat (`node` plus the sidecar entrypoint), not on a separately installed global `claude` CLI.
 - Existing write-mode permission mappings and multi-turn stdin/stdout framing must remain unchanged.
+- The repository's existing `@/...` frontend imports must resolve under the ESM Vite config so the mandatory production build can run.
 
 ## Unit Tests
 
@@ -20,6 +21,7 @@
 - `bun run test` runs the sidecar tests, frontend tests, and Rust tests successfully.
 - `cargo test --lib claude_adapter` succeeds.
 - `node --check sidecar/claude-agent/index.mjs` succeeds.
+- Vite resolves `@` to the absolute `src/` directory without relying on CommonJS-only path globals.
 
 ## Smoke Tests
 
