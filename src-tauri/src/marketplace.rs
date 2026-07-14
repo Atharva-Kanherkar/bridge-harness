@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -15,6 +15,8 @@ use std::{
 const CODEX_APP_CONNECTOR: &str = "app";
 const MCP_CONNECTOR: &str = "mcp";
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(75);
+const CLAUDE_MCP_STATUS_TIMEOUT: Duration = Duration::from_secs(20);
+const CLAUDE_MCP_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -98,7 +100,10 @@ pub struct MarketplaceActionResult {
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketplaceAppAuthState {
+    pub provider: MarketplaceProvider,
     pub connector_id: String,
+    pub display_name: Option<String>,
+    pub native_connector: bool,
     pub authentication_state: String,
 }
 
@@ -177,11 +182,17 @@ fn merge_variant(existing: &mut PluginVariant, incoming: &PluginVariant) {
             existing.capabilities.push(capability.clone());
         }
     }
+    for connector_id in &incoming.app_connector_ids {
+        if !existing.app_connector_ids.contains(connector_id) {
+            existing.app_connector_ids.push(connector_id.clone());
+        }
+    }
     if incoming.connector_type.as_deref() == Some(CODEX_APP_CONNECTOR) {
         existing.connector_type = incoming.connector_type.clone();
-        existing.app_connector_ids = incoming.app_connector_ids.clone();
         existing.portable_mcp = false;
         existing.compatibility_notes = incoming.compatibility_notes.clone();
+    } else if existing.connector_type.is_none() && incoming.connector_type.is_some() {
+        existing.connector_type = incoming.connector_type.clone();
     }
 }
 
@@ -228,7 +239,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         object,
         &["connectorType", "connector_type", "transport", "type"],
     );
-    let mcp_endpoint = string_field(
+    let mut mcp_endpoint = string_field(
         object,
         &[
             "mcpEndpoint",
@@ -270,13 +281,22 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         ],
     );
     let source = source_value(object);
-    let app_connector_ids = if provider == MarketplaceProvider::Codex {
-        plugin_app_connector_ids(source.as_deref())
-    } else {
-        Vec::new()
+    let app_connector_ids = match provider {
+        MarketplaceProvider::Codex => plugin_app_connector_ids(source.as_deref()),
+        MarketplaceProvider::Claude => {
+            let (ids, endpoint) = claude_plugin_connectors(&plugin_id, object);
+            if mcp_endpoint.is_none() {
+                mcp_endpoint = endpoint;
+            }
+            ids
+        }
     };
     if !app_connector_ids.is_empty() {
-        connector_type = Some(CODEX_APP_CONNECTOR.into());
+        connector_type = Some(if provider == MarketplaceProvider::Codex {
+            CODEX_APP_CONNECTOR.into()
+        } else {
+            "connector".into()
+        });
     } else if connector_type.is_none() && mcp_endpoint.is_some() {
         connector_type = Some(MCP_CONNECTOR.into());
     }
@@ -309,7 +329,9 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         mcp_endpoint: mcp_endpoint.clone(),
         connector_type,
         app_connector_ids,
-        installed: bool_field(object, &["installed", "isInstalled", "is_installed"]),
+        installed: bool_field(object, &["installed", "isInstalled", "is_installed"])
+            || (provider == MarketplaceProvider::Claude
+                && string_field(object, &["installPath", "install_path"]).is_some()),
         enabled: bool_field(object, &["enabled", "isEnabled", "is_enabled"]),
         authentication_state,
         shared_auth_mechanism,
@@ -343,6 +365,26 @@ fn plugin_app_connector_ids(source: Option<&str>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn claude_plugin_connectors(
+    plugin_id: &str,
+    object: &serde_json::Map<String, Value>,
+) -> (Vec<String>, Option<String>) {
+    let plugin_name = plugin_id.split('@').next().unwrap_or(plugin_id);
+    let Some(servers) = object.get("mcpServers").and_then(Value::as_object) else {
+        return (Vec::new(), None);
+    };
+    let ids = servers
+        .keys()
+        .map(|server_name| format!("plugin:{plugin_name}:{server_name}"))
+        .collect();
+    let endpoint = (servers.len() == 1)
+        .then(|| servers.values().next())
+        .flatten()
+        .and_then(Value::as_object)
+        .and_then(|server| string_field(server, &["url"]));
+    (ids, endpoint)
 }
 
 fn string_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -411,7 +453,14 @@ fn action_args(
             MarketplaceProvider::Codex => {
                 Err("No supported Codex authentication route was found for this plugin".into())
             }
-            MarketplaceProvider::Claude => Ok(vec!["/mcp".into(), auth_target.into()]),
+            MarketplaceProvider::Claude
+                if plugin_id.starts_with("plugin:") || plugin_id.starts_with("claude.ai ") =>
+            {
+                Ok(vec!["mcp".into(), "login".into(), plugin_id.into()])
+            }
+            MarketplaceProvider::Claude => {
+                Err("No supported Claude connector authentication route was found".into())
+            }
         };
     }
     let has_marketplace = plugin_id.contains('@');
@@ -462,24 +511,29 @@ pub fn execute_action(
     action: MarketplaceAction,
 ) -> Result<MarketplaceActionResult, BridgeError> {
     let plugin_id = plugin_id.trim();
+    let native_claude_connector = provider == MarketplaceProvider::Claude
+        && action == MarketplaceAction::Authenticate
+        && plugin_id.starts_with("claude.ai ");
     if plugin_id.is_empty()
         || plugin_id.starts_with('-')
-        || plugin_id.chars().any(char::is_whitespace)
+        || (!native_claude_connector && plugin_id.chars().any(char::is_whitespace))
     {
         return Err(BridgeError::Invalid("Invalid provider plugin ID".into()));
     }
     let binary_path = binary::resolve(provider.binary()).ok_or_else(|| {
         BridgeError::Adapter(format!("{} CLI is not installed", provider.binary()))
     })?;
-    let connector_type = (action == MarketplaceAction::Authenticate)
+    let auth_variant = (action == MarketplaceAction::Authenticate)
         .then(|| {
             provider_catalog(provider)
                 .variants
                 .into_iter()
                 .find(|variant| variant.plugin_id == plugin_id)
-                .and_then(|variant| variant.connector_type)
         })
         .flatten();
+    let connector_type = auth_variant
+        .as_ref()
+        .and_then(|variant| variant.connector_type.clone());
     if provider == MarketplaceProvider::Codex {
         if action == MarketplaceAction::Install
             || (action == MarketplaceAction::Authenticate
@@ -490,6 +544,19 @@ pub fn execute_action(
         if action == MarketplaceAction::Uninstall {
             return codex_plugin_uninstall(&binary_path, plugin_id);
         }
+    }
+    if provider == MarketplaceProvider::Claude && action == MarketplaceAction::Authenticate {
+        let connector_id = if plugin_id.starts_with("plugin:") || native_claude_connector {
+            plugin_id.to_owned()
+        } else {
+            let variant = auth_variant.ok_or_else(|| {
+                BridgeError::Adapter(
+                    "Claude plugin is not installed or has no discoverable connectors".into(),
+                )
+            })?;
+            preferred_claude_connector(&binary_path, &variant.app_connector_ids)?
+        };
+        return claude_connector_authenticate(&binary_path, plugin_id, &connector_id);
     }
     let args = action_args(
         provider,
@@ -519,6 +586,62 @@ pub fn execute_action(
         },
         error: (!success).then_some(if stderr.is_empty() {
             "Provider command failed".into()
+        } else {
+            stderr
+        }),
+    })
+}
+
+fn preferred_claude_connector(
+    binary_path: &Path,
+    connector_ids: &[String],
+) -> Result<String, BridgeError> {
+    if connector_ids.is_empty() {
+        return Err(BridgeError::Adapter(
+            "This Claude plugin does not declare an MCP connector".into(),
+        ));
+    }
+    let states = bounded_output(binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| parse_claude_mcp_auth_states(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default();
+    Ok(connector_ids
+        .iter()
+        .find(|connector_id| {
+            states.iter().any(|state| {
+                state.connector_id == connector_id.as_str()
+                    && state.authentication_state == "required"
+            })
+        })
+        .unwrap_or(&connector_ids[0])
+        .clone())
+}
+
+fn claude_connector_authenticate(
+    binary_path: &Path,
+    plugin_id: &str,
+    connector_id: &str,
+) -> Result<MarketplaceActionResult, BridgeError> {
+    let output = bounded_output(
+        binary_path,
+        &["mcp", "login", connector_id],
+        CLAUDE_MCP_LOGIN_TIMEOUT,
+    )?;
+    let success = output.status.success();
+    let stderr = sanitize_error(String::from_utf8_lossy(&output.stderr).trim());
+    Ok(MarketplaceActionResult {
+        provider: MarketplaceProvider::Claude,
+        plugin_id: plugin_id.into(),
+        action: MarketplaceAction::Authenticate,
+        success,
+        message: if success {
+            "Connected in Claude Code".into()
+        } else {
+            "Claude Code authentication did not complete".into()
+        },
+        error: (!success).then_some(if stderr.is_empty() {
+            "Claude Code authentication did not complete".into()
         } else {
             stderr
         }),
@@ -615,14 +738,37 @@ fn codex_marketplace_path(binary_path: &Path, marketplace: &str) -> Option<PathB
 }
 
 pub fn app_auth_states() -> Result<Vec<MarketplaceAppAuthState>, BridgeError> {
-    let binary_path = binary::resolve("codex")
-        .ok_or_else(|| BridgeError::Adapter("Codex CLI is not installed".into()))?;
-    let result = codex_app_server_request(
-        &binary_path,
-        "app/list",
-        serde_json::json!({"forceRefetch": true}),
-    )?;
-    Ok(parse_app_auth_states(&result))
+    let mut states = Vec::new();
+    let mut provider_available = false;
+    if let Some(binary_path) = binary::resolve("codex") {
+        provider_available = true;
+        if let Ok(result) = codex_app_server_request(
+            &binary_path,
+            "app/list",
+            serde_json::json!({"forceRefetch": true}),
+        ) {
+            states.extend(parse_app_auth_states(&result));
+        }
+    }
+    if let Some(binary_path) = binary::resolve("claude") {
+        provider_available = true;
+        if let Ok(output) =
+            bounded_output(&binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
+        {
+            if output.status.success() {
+                states.extend(parse_claude_mcp_auth_states(&String::from_utf8_lossy(
+                    &output.stdout,
+                )));
+            }
+        }
+    }
+    if provider_available {
+        Ok(states)
+    } else {
+        Err(BridgeError::Adapter(
+            "Neither Codex nor Claude CLI is installed".into(),
+        ))
+    }
 }
 
 fn parse_app_auth_states(result: &Value) -> Vec<MarketplaceAppAuthState> {
@@ -641,11 +787,105 @@ fn parse_app_auth_states(result: &Value) -> Vec<MarketplaceAppAuthState> {
                 _ => return None,
             };
             Some(MarketplaceAppAuthState {
+                provider: MarketplaceProvider::Codex,
                 connector_id: connector_id.into(),
+                display_name: None,
+                native_connector: false,
                 authentication_state: state.into(),
             })
         })
         .collect()
+}
+
+fn parse_claude_mcp_auth_states(output: &str) -> Vec<MarketplaceAppAuthState> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let authentication_state = if line.contains("- ✔ Connected") {
+                "connected"
+            } else if line.contains("- ! Needs authentication") {
+                "required"
+            } else {
+                return None;
+            };
+            let endpoint_index = line.find("https://").or_else(|| line.find("http://"))?;
+            let connector_id = line[..endpoint_index].trim().trim_end_matches(':').trim();
+            if connector_id.is_empty() {
+                return None;
+            }
+            let native_connector = connector_id.starts_with("claude.ai ");
+            Some(MarketplaceAppAuthState {
+                provider: MarketplaceProvider::Claude,
+                connector_id: connector_id.into(),
+                display_name: native_connector
+                    .then(|| connector_id.trim_start_matches("claude.ai ").to_owned()),
+                native_connector,
+                authentication_state: authentication_state.into(),
+            })
+        })
+        .collect()
+}
+
+fn bounded_output(
+    binary_path: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<std::process::Output, BridgeError> {
+    let mut command = Command::new(binary_path);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| BridgeError::Adapter("Provider command stdout unavailable".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| BridgeError::Adapter("Provider command stderr unavailable".into()))?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = stdout_reader
+                .join()
+                .map_err(|_| BridgeError::Adapter("Provider stdout reader failed".into()))??;
+            let stderr = stderr_reader
+                .join()
+                .map_err(|_| BridgeError::Adapter("Provider stderr reader failed".into()))??;
+            return Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        if Instant::now() >= deadline {
+            let _ = crate::adapters::terminate_process_group(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(BridgeError::Adapter(format!(
+                "{} command timed out",
+                binary_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Provider")
+            )));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn codex_app_server_request(
@@ -896,13 +1136,21 @@ mod tests {
             action_args(
                 MarketplaceProvider::Claude,
                 MarketplaceAction::Authenticate,
-                "vercel@official",
+                "plugin:vercel:vercel",
                 None,
                 None,
             )
             .unwrap(),
-            vec!["/mcp", "vercel"]
+            vec!["mcp", "login", "plugin:vercel:vercel"]
         );
+        assert!(action_args(
+            MarketplaceProvider::Claude,
+            MarketplaceAction::Authenticate,
+            "vercel@official",
+            None,
+            None,
+        )
+        .is_err());
         assert_eq!(
             action_args(
                 MarketplaceProvider::Claude,
@@ -996,15 +1244,94 @@ mod tests {
             states,
             vec![
                 MarketplaceAppAuthState {
+                    provider: MarketplaceProvider::Codex,
                     connector_id: "connected".into(),
+                    display_name: None,
+                    native_connector: false,
                     authentication_state: "connected".into()
                 },
                 MarketplaceAppAuthState {
+                    provider: MarketplaceProvider::Codex,
                     connector_id: "required".into(),
+                    display_name: None,
+                    native_connector: false,
                     authentication_state: "required".into()
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parses_claude_plugin_connectors_with_canonical_namespaced_ids() {
+        let source = json!([{
+            "id": "vercel@claude-plugins-official",
+            "enabled": true,
+            "installPath": "/tmp/vercel/0.44.0",
+            "mcpServers": {"vercel": {"type": "http", "url": "https://mcp.vercel.com"}}
+        }]);
+
+        let variant = parse_variants(MarketplaceProvider::Claude, &source).remove(0);
+
+        assert_eq!(variant.connector_type.as_deref(), Some("connector"));
+        assert_eq!(variant.app_connector_ids, vec!["plugin:vercel:vercel"]);
+        assert_eq!(
+            variant.mcp_endpoint.as_deref(),
+            Some("https://mcp.vercel.com")
+        );
+        assert!(variant.installed);
+        assert!(!variant.portable_mcp);
+    }
+
+    #[test]
+    fn parses_only_explicit_claude_remote_connector_health() {
+        let states = parse_claude_mcp_auth_states(
+            "Checking MCP server health…\n\
+             claude.ai Notion: https://mcp.example/notion - ✔ Connected\n\
+             plugin:vercel:vercel: https://mcp.example/vercel (HTTP) - ! Needs authentication\n\
+             local: /tmp/local-server - ✔ Connected\n\
+             malformed remote status\n",
+        );
+
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].connector_id, "claude.ai Notion");
+        assert_eq!(states[0].display_name.as_deref(), Some("Notion"));
+        assert!(states[0].native_connector);
+        assert_eq!(states[0].authentication_state, "connected");
+        assert_eq!(states[1].connector_id, "plugin:vercel:vercel");
+        assert!(!states[1].native_connector);
+        assert_eq!(states[1].authentication_state, "required");
+    }
+
+    #[test]
+    #[ignore = "requires an installed Claude Code plugin with a remote MCP connector"]
+    fn live_claude_plugin_and_connector_state_are_discoverable() {
+        let binary = binary::resolve("claude").expect("Claude CLI must be installed");
+        let catalog_output = bounded_output(
+            &binary,
+            &["plugin", "list", "--available", "--json"],
+            CLAUDE_MCP_STATUS_TIMEOUT,
+        )
+        .expect("Claude plugin catalog must respond");
+        assert!(catalog_output.status.success());
+        let value: Value = serde_json::from_slice(&catalog_output.stdout).unwrap();
+        let variants = parse_variants(MarketplaceProvider::Claude, &value);
+        let vercel = variants
+            .iter()
+            .find(|variant| variant.plugin_id == "vercel@claude-plugins-official")
+            .expect("Vercel plugin must be listed");
+        assert!(vercel.installed);
+        assert!(vercel
+            .app_connector_ids
+            .contains(&"plugin:vercel:vercel".into()));
+
+        let status_output = bounded_output(&binary, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
+            .expect("Claude MCP status must respond");
+        assert!(status_output.status.success());
+        let states = parse_claude_mcp_auth_states(&String::from_utf8_lossy(&status_output.stdout));
+        assert!(states
+            .iter()
+            .any(|state| state.connector_id == "plugin:vercel:vercel"));
+        assert!(states.iter().any(|state| state.native_connector));
     }
 
     #[test]
