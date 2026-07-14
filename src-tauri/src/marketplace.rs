@@ -1016,6 +1016,23 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires signed-in Codex app services and opens the provider consent page"]
+    fn live_codex_app_install_opens_provider_authorization() {
+        let binary = binary::resolve("codex").expect("Codex CLI must be installed");
+        let result = codex_plugin_install(
+            &binary,
+            "vercel@openai-curated",
+            Some("openai-curated"),
+            MarketplaceAction::Install,
+        )
+        .expect("Codex app-server install should succeed");
+
+        assert!(result.success);
+        assert!(result.message.contains("finish authorization"));
+        assert!(!result.message.contains("https://"));
+    }
+
+    #[test]
     fn parses_installed_and_available_envelope_entries() {
         let source = json!({
             "installed": [{"pluginId": "one@official", "name": "one", "installed": true}],
