@@ -270,7 +270,7 @@ export function App() {
     setComposer("");
     setSlashIndex(0);
     try {
-      const prepared = await bridgeApi.prepareTurn(submittedText);
+      const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
       const text = prepared.text;
       retryText = text;
       setPending(current => [...current, { key, sessionId: target.id, text }]);

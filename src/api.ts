@@ -229,8 +229,8 @@ export const bridgeApi = {
     const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.status = "stopped"; session.endedAt = new Date().toISOString(); session.activeTurnId = null; }
     emitState(); return snapshot();
   },
-  prepareTurn: (text: string): Promise<SanitizedTurn> => isTauri()
-    ? invoke("prepare_turn", { text })
+  prepareTurn: (sessionId: string, text: string): Promise<SanitizedTurn> => isTauri()
+    ? invoke("prepare_turn", { sessionId, text })
     : Promise.resolve({ text, interceptions: [] }),
   sendTurn: async (sessionId: string, text: string): Promise<void> => {
     if (isTauri()) return invoke("send_turn", { sessionId, text });

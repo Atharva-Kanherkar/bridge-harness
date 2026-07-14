@@ -7,6 +7,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::{collections::HashMap, sync::LazyLock};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -88,11 +89,29 @@ struct Match {
     detector: &'static str,
 }
 
+pub(crate) struct CapturedSecret {
+    pub reference: String,
+    pub detector: &'static str,
+    pub value: Zeroizing<String>,
+}
+
+pub(crate) struct InterceptedTurn {
+    pub sanitized: SanitizedTurn,
+    pub captured: Vec<CapturedSecret>,
+}
+
 /// Replace credential-shaped values with opaque per-message references.
 ///
 /// References are random rather than value-derived so metadata cannot be used
 /// to correlate or brute-force intercepted credentials.
 pub fn sanitize(text: &str) -> SanitizedTurn {
+    intercept(text).sanitized
+}
+
+/// Intercept a turn while retaining captured values solely for the in-process
+/// credential broker. Captures are deliberately neither serializable nor
+/// debug-printable and their buffers are zeroized on drop.
+pub(crate) fn intercept(text: &str) -> InterceptedTurn {
     let mut matches = Vec::new();
     for detector in DETECTORS.iter() {
         for captures in detector.pattern.captures_iter(text) {
@@ -106,9 +125,12 @@ pub fn sanitize(text: &str) -> SanitizedTurn {
         }
     }
     if matches.is_empty() {
-        return SanitizedTurn {
-            text: text.to_owned(),
-            interceptions: Vec::new(),
+        return InterceptedTurn {
+            sanitized: SanitizedTurn {
+                text: text.to_owned(),
+                interceptions: Vec::new(),
+            },
+            captured: Vec::new(),
         };
     }
 
@@ -145,17 +167,26 @@ pub fn sanitize(text: &str) -> SanitizedTurn {
     }
     output.push_str(&text[cursor..]);
 
-    let mut interceptions = references
-        .into_values()
-        .map(|(reference, detector)| SecretInterception {
-            reference,
+    let mut captured = Vec::with_capacity(references.len());
+    let mut interceptions = Vec::with_capacity(references.len());
+    for (value, (reference, detector)) in references {
+        interceptions.push(SecretInterception {
+            reference: reference.clone(),
             detector: detector.into(),
-        })
-        .collect::<Vec<_>>();
+        });
+        captured.push(CapturedSecret {
+            reference,
+            detector,
+            value: Zeroizing::new(value.to_owned()),
+        });
+    }
     interceptions.sort_by(|left, right| left.reference.cmp(&right.reference));
-    SanitizedTurn {
-        text: output,
-        interceptions,
+    InterceptedTurn {
+        sanitized: SanitizedTurn {
+            text: output,
+            interceptions,
+        },
+        captured,
     }
 }
 
