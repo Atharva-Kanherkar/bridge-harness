@@ -21,6 +21,7 @@
 - Native variants are preferred over convertible MCP variants. Provider-specific connectors, hooks, skills, agents, or apps are never marked portable without an explicit mapping.
 - Command failures are actionable but redact likely secrets from all surfaced output. Marketplace sources remain visible before installation.
 - Existing supervision, session persistence, permission-mode mapping, and Codex runtime behavior remain unchanged; Claude SDK initialization additionally inherits the trusted desktop user's enabled plugins and connectors.
+- The marketplace uses a compact Codex-style information hierarchy: a concise title and search field, an installed-plugin icon strip, Public/Personal catalog tabs, and a dense two-column plugin list. Provider-specific install, lifecycle, and authentication controls remain available without turning every catalog entry into a large card.
 
 ## Unit Tests
 
@@ -44,6 +45,7 @@
 - The Tauri marketplace commands expose catalog refresh and per-provider lifecycle actions with structured results.
 - The React marketplace renders the fast provider catalog first, then asynchronously enriches Codex app and Claude connector authentication state without overlapping refresh requests.
 - The React marketplace loads catalog data, filters/searches grouped services, and invokes provider actions through the API boundary.
+- Installed services are separated from the discoverable catalog, catalog tabs and provider filters compose with search, and service rows remain keyboard-accessible while exposing provider detail controls on demand.
 - Existing API, conversation, observability, usage, sidecar, and Rust tests remain green.
 
 ## Smoke Tests
@@ -61,6 +63,7 @@ N/A — provider marketplace and native authentication flows require locally ins
 
 - Run `bun run tauri dev`, open Marketplace, and verify Codex and Claude availability/errors render independently.
 - Search and provider filters update the service cards without losing provider state.
+- Verify the installed icon strip and two-column Public catalog remain readable at desktop width and collapse cleanly to one column at narrow width.
 - Choose each install target and confirm the UI displays distinct install, enablement, and authentication results.
 - Trigger **Connect Codex** for a named MCP server and confirm Bridge starts `codex mcp login` without displaying credential material.
 - Install an app-backed Codex plugin such as Vercel and confirm it appears in Codex's installed plugin state, Bridge opens the exact provider-owned authorization page returned by Codex, and no authorization URL appears in Bridge logs/results.
