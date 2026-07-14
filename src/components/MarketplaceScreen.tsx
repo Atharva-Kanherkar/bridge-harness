@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import { compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, type MarketplaceService } from "../marketplace";
+import { compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, type MarketplaceService } from "../marketplace";
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,8 @@ function ServiceCard({
   const labels = compatibilityLabels(service);
   const failed = results.filter(result => !result.success);
   const source = service.variants.find(variant => variant.source || variant.repository);
+  const sourceUrl = source?.repository?.startsWith("http") ? source.repository : source?.source?.startsWith("http") ? source.source : null;
+  const marketplaceName = service.variants.find(variant => variant.marketplace)?.marketplace;
   const hasCodex = service.variants.some(variant => variant.provider === "codex");
   const hasClaude = service.variants.some(variant => variant.provider === "claude");
   const installable = service.variants.some(variant => !variant.installed);
@@ -72,7 +74,7 @@ function ServiceCard({
         {service.description && <p className="mt-1 max-w-2xl text-xs leading-relaxed text-neutral-500">{service.description}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-[9.5px] ${label === "Separate login required" ? "border-amber-400/20 bg-amber-400/[0.06] text-amber-300" : "border-white/[0.07] bg-white/[0.025] text-neutral-500"}`}>{label}</span>)}
-          {source && <a className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] text-neutral-500 transition-colors hover:text-neutral-200" href={source.source ?? source.repository ?? undefined} target="_blank" rel="noreferrer">Source <ExternalLink size={9} aria-hidden="true" /></a>}
+          {sourceUrl ? <a className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] text-neutral-500 transition-colors hover:text-neutral-200" href={sourceUrl} target="_blank" rel="noreferrer">Source <ExternalLink size={9} aria-hidden="true" /></a> : marketplaceName && <span className="rounded-full px-1.5 py-0.5 text-[9.5px] text-neutral-600">Source: {marketplaceName}</span>}
         </div>
       </div>
     </div>
@@ -82,6 +84,7 @@ function ServiceCard({
         const key = `${service.id}:${variant.provider}`;
         const working = busyKey === key;
         const nextToggle: MarketplaceAction = variant.enabled ? "disable" : "enable";
+        const canToggle = variant.supportedActions.includes(nextToggle);
         return <div key={`${variant.provider}:${variant.pluginId}`} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center gap-2 text-xs font-medium text-neutral-200">
@@ -92,11 +95,11 @@ function ServiceCard({
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             {variant.installed && <>
-              <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, nextToggle)}>{working ? <LoaderCircle className="animate-spin" size={12} /> : actionLabel(nextToggle)}</Button>
-              <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>
-              <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>
+              {canToggle && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, nextToggle)}>{working ? <LoaderCircle className="animate-spin" size={12} /> : actionLabel(nextToggle)}</Button>}
+              {variant.supportedActions.includes("update") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>}
+              {variant.supportedActions.includes("uninstall") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>}
             </>}
-            {variant.installed && variant.authenticationState.toLowerCase() !== "connected" && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={12} aria-hidden="true" /> Connect {providerLabel(variant.provider)}</Button>}
+            {variant.installed && variant.supportedActions.includes("authenticate") && variant.authenticationState.toLowerCase() === "required" && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={12} aria-hidden="true" /> Connect {providerLabel(variant.provider)}</Button>}
           </div>
         </div>;
       })}
@@ -141,7 +144,7 @@ export function MarketplaceScreen() {
   const services = useMemo(() => {
     const variants = catalog?.providers.flatMap(item => item.variants) ?? [];
     const needle = query.trim().toLowerCase();
-    return groupMarketplaceServices(variants).filter(service => {
+    return groupMarketplaceServices(variants, MARKETPLACE_ALIASES).filter(service => {
       const providerMatch = provider === "all" || service.variants.some(variant => variant.provider === provider);
       const searchMatch = !needle || service.name.toLowerCase().includes(needle) || service.description?.toLowerCase().includes(needle) || service.variants.some(variant => variant.capabilities.some(capability => capability.toLowerCase().includes(needle)));
       return providerMatch && searchMatch;

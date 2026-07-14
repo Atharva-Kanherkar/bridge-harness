@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants } from "./marketplace";
+import { compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES } from "./marketplace";
 import type { MarketplaceVariant } from "./types";
 
 function variant(provider: "codex" | "claude", pluginId: string, overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant {
@@ -7,7 +7,7 @@ function variant(provider: "codex" | "claude", pluginId: string, overrides: Part
     provider, pluginId, name: "Vercel", description: null, marketplace: "official", version: null,
     source: null, repository: null, publisher: null, capabilities: [], mcpEndpoint: null,
     connectorType: null, installed: false, enabled: false, authenticationState: "unknown",
-    sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], providerMetadata: {}, ...overrides,
+    sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {}, ...overrides,
   };
 }
 
@@ -32,6 +32,15 @@ describe("marketplace service grouping", () => {
     );
     expect(services).toHaveLength(1);
     expect(services[0].matchReason).toBe("alias");
+  });
+
+  it("ships explicit aliases for verified cross-provider services", () => {
+    const services = groupMarketplaceServices([
+      variant("codex", "vercel@openai-curated"),
+      variant("claude", "vercel@claude-plugins-official"),
+    ], MARKETPLACE_ALIASES);
+    expect(services).toHaveLength(1);
+    expect(services[0].id).toBe("vercel");
   });
 });
 

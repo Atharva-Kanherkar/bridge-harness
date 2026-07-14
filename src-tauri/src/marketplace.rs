@@ -40,6 +40,7 @@ pub struct PluginVariant {
     pub shared_auth_mechanism: Option<String>,
     pub portable_mcp: bool,
     pub compatibility_notes: Vec<String>,
+    pub supported_actions: Vec<MarketplaceAction>,
     pub provider_metadata: Value,
 }
 
@@ -100,14 +101,8 @@ fn provider_catalog(provider: MarketplaceProvider) -> ProviderCatalog {
     };
 
     let commands: &[&[&str]] = match provider {
-        MarketplaceProvider::Codex => &[
-            &["plugin", "list", "--available", "--json"],
-            &["plugin", "marketplace", "list", "--json"],
-        ],
-        MarketplaceProvider::Claude => &[
-            &["plugin", "list", "--json"],
-            &["plugin", "marketplace", "list", "--json"],
-        ],
+        MarketplaceProvider::Codex => &[["plugin", "list", "--available", "--json"].as_slice()],
+        MarketplaceProvider::Claude => &[["plugin", "list", "--available", "--json"].as_slice()],
     };
 
     let mut variants = BTreeMap::<String, PluginVariant>::new();
@@ -174,6 +169,7 @@ fn candidate_objects(value: &Value) -> Vec<&Value> {
     match value {
         Value::Array(items) => items.iter().filter(|item| item.is_object()).collect(),
         Value::Object(map) => {
+            let mut candidates = Vec::new();
             for key in [
                 "plugins",
                 "items",
@@ -183,10 +179,14 @@ fn candidate_objects(value: &Value) -> Vec<&Value> {
                 "marketplaces",
             ] {
                 if let Some(Value::Array(items)) = map.get(key) {
-                    return items.iter().filter(|item| item.is_object()).collect();
+                    candidates.extend(items.iter().filter(|item| item.is_object()));
                 }
             }
-            vec![value]
+            if candidates.is_empty() {
+                vec![value]
+            } else {
+                candidates
+            }
         }
         _ => Vec::new(),
     }
@@ -248,6 +248,12 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
             "connector" | "hosted_connector" | "hosted-connector"
         )
     });
+    let source = source_value(object);
+    let repository = string_field(
+        object,
+        &["repository", "repositoryUrl", "repository_url", "repo"],
+    )
+    .or_else(|| source_url(object));
 
     Some(PluginVariant {
         provider,
@@ -259,11 +265,8 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
             &["marketplace", "marketplaceName", "marketplace_name"],
         ),
         version: string_field(object, &["version"]),
-        source: string_field(object, &["source", "sourceUrl", "source_url"]),
-        repository: string_field(
-            object,
-            &["repository", "repositoryUrl", "repository_url", "repo"],
-        ),
+        source,
+        repository,
         publisher: string_field(object, &["publisher", "author", "owner"]),
         capabilities,
         mcp_endpoint: mcp_endpoint.clone(),
@@ -278,6 +281,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         } else {
             Vec::new()
         },
+        supported_actions: supported_actions(provider),
         provider_metadata: redact_sensitive_json(value),
     })
 }
@@ -296,29 +300,83 @@ fn bool_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+fn source_value(map: &serde_json::Map<String, Value>) -> Option<String> {
+    string_field(map, &["source", "sourceUrl", "source_url"]).or_else(|| {
+        map.get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| string_field(source, &["url", "path", "source"]))
+    })
+}
+
+fn source_url(map: &serde_json::Map<String, Value>) -> Option<String> {
+    map.get("source")
+        .and_then(Value::as_object)
+        .and_then(|source| string_field(source, &["url"]))
+}
+
+fn supported_actions(provider: MarketplaceProvider) -> Vec<MarketplaceAction> {
+    match provider {
+        MarketplaceProvider::Codex => vec![
+            MarketplaceAction::Install,
+            MarketplaceAction::Update,
+            MarketplaceAction::Uninstall,
+            MarketplaceAction::Authenticate,
+        ],
+        MarketplaceProvider::Claude => vec![
+            MarketplaceAction::Install,
+            MarketplaceAction::Enable,
+            MarketplaceAction::Disable,
+            MarketplaceAction::Update,
+            MarketplaceAction::Uninstall,
+            MarketplaceAction::Authenticate,
+        ],
+    }
+}
+
 fn action_args(
     provider: MarketplaceProvider,
     action: MarketplaceAction,
     plugin_id: &str,
     marketplace: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     if action == MarketplaceAction::Authenticate {
-        return match provider {
-            MarketplaceProvider::Codex => vec!["mcp".into(), "login".into(), plugin_id.into()],
-            MarketplaceProvider::Claude => vec!["/mcp".into(), plugin_id.into()],
-        };
+        let auth_target = plugin_id.split('@').next().unwrap_or(plugin_id);
+        return Ok(match provider {
+            MarketplaceProvider::Codex => vec!["mcp".into(), "login".into(), auth_target.into()],
+            MarketplaceProvider::Claude => vec!["/mcp".into(), auth_target.into()],
+        });
     }
-    let mut args = vec![
-        "plugin".into(),
-        action_name(action).into(),
-        plugin_id.into(),
-    ];
-    if action == MarketplaceAction::Install {
-        if let Some(marketplace) = marketplace.filter(|value| !value.trim().is_empty()) {
-            args.extend(["--marketplace".into(), marketplace.into()]);
+    let has_marketplace = plugin_id.contains('@');
+    let selector = if has_marketplace {
+        plugin_id.to_owned()
+    } else if let Some(marketplace) = marketplace.filter(|value| !value.trim().is_empty()) {
+        format!("{plugin_id}@{marketplace}")
+    } else {
+        plugin_id.to_owned()
+    };
+    match provider {
+        MarketplaceProvider::Codex => match action {
+            MarketplaceAction::Install | MarketplaceAction::Update => Ok(vec![
+                "plugin".into(),
+                "add".into(),
+                selector,
+                "--json".into(),
+            ]),
+            MarketplaceAction::Uninstall => Ok(vec![
+                "plugin".into(),
+                "remove".into(),
+                selector,
+                "--json".into(),
+            ]),
+            MarketplaceAction::Enable | MarketplaceAction::Disable => {
+                Err("This Codex CLI does not expose per-plugin enable or disable commands".into())
+            }
+            MarketplaceAction::Authenticate => unreachable!(),
+        },
+        MarketplaceProvider::Claude => {
+            Ok(vec!["plugin".into(), action_name(action).into(), selector])
         }
     }
-    args
 }
 
 fn action_name(action: MarketplaceAction) -> &'static str {
@@ -348,7 +406,8 @@ pub fn execute_action(
     let binary_path = binary::resolve(provider.binary()).ok_or_else(|| {
         BridgeError::Adapter(format!("{} CLI is not installed", provider.binary()))
     })?;
-    let args = action_args(provider, action, plugin_id, marketplace);
+    let args =
+        action_args(provider, action, plugin_id, marketplace).map_err(BridgeError::Adapter)?;
     let output = Command::new(binary_path).args(&args).output()?;
     let stdout = sanitize_error(String::from_utf8_lossy(&output.stdout).trim());
     let stderr = sanitize_error(String::from_utf8_lossy(&output.stderr).trim());
@@ -470,17 +529,66 @@ mod tests {
                 MarketplaceAction::Install,
                 "vercel",
                 Some("official")
-            ),
-            vec!["plugin", "install", "vercel", "--marketplace", "official"]
+            )
+            .unwrap(),
+            vec!["plugin", "add", "vercel@official", "--json"]
         );
         assert_eq!(
             action_args(
                 MarketplaceProvider::Claude,
                 MarketplaceAction::Authenticate,
-                "vercel",
+                "vercel@official",
                 None
-            ),
+            )
+            .unwrap(),
             vec!["/mcp", "vercel"]
+        );
+        assert_eq!(
+            action_args(
+                MarketplaceProvider::Claude,
+                MarketplaceAction::Install,
+                "vercel@official",
+                Some("official")
+            )
+            .unwrap(),
+            vec!["plugin", "install", "vercel@official"]
+        );
+        assert!(action_args(
+            MarketplaceProvider::Codex,
+            MarketplaceAction::Disable,
+            "vercel@official",
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parses_installed_and_available_envelope_entries() {
+        let source = json!({
+            "installed": [{"pluginId": "one@official", "name": "one", "installed": true}],
+            "available": [{"pluginId": "two@official", "name": "two", "installed": false}]
+        });
+        let variants = parse_variants(MarketplaceProvider::Codex, &source);
+        assert_eq!(variants.len(), 2);
+        assert!(variants
+            .iter()
+            .any(|variant| variant.plugin_id == "one@official"));
+        assert!(variants
+            .iter()
+            .any(|variant| variant.plugin_id == "two@official"));
+    }
+
+    #[test]
+    fn extracts_repository_url_from_structured_source() {
+        let source = json!([{"pluginId": "demo@official", "name": "demo", "source": {"source": "url", "url": "https://github.com/example/demo.git"}}]);
+        let variant = parse_variants(MarketplaceProvider::Claude, &source).remove(0);
+        assert_eq!(
+            variant.repository.as_deref(),
+            Some("https://github.com/example/demo.git")
+        );
+        assert_eq!(
+            variant.source.as_deref(),
+            Some("https://github.com/example/demo.git")
         );
     }
 

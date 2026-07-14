@@ -87,7 +87,7 @@ export interface MarketplaceVariant {
   marketplace: string | null; version: string | null; source: string | null; repository: string | null;
   publisher: string | null; capabilities: string[]; mcpEndpoint: string | null; connectorType: string | null;
   installed: boolean; enabled: boolean; authenticationState: string; sharedAuthMechanism: string | null;
-  portableMcp: boolean; compatibilityNotes: string[]; providerMetadata: Record<string, unknown>;
+  portableMcp: boolean; compatibilityNotes: string[]; supportedActions: MarketplaceAction[]; providerMetadata: Record<string, unknown>;
 }
 export interface MarketplaceProviderCatalog {
   provider: MarketplaceProvider; available: boolean; variants: MarketplaceVariant[]; error: string | null;

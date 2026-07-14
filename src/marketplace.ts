@@ -10,6 +10,23 @@ export interface MarketplaceService {
 
 export type MarketplaceAliases = Record<string, string>;
 
+// Provider IDs are intentionally explicit. Matching by the shared display name
+// would merge unrelated community plugins with the same label.
+export const MARKETPLACE_ALIASES: MarketplaceAliases = {
+  "codex:vercel@openai-curated": "vercel",
+  "claude:vercel@claude-plugins-official": "vercel",
+  "codex:github@openai-curated": "github",
+  "claude:github@claude-plugins-official": "github",
+  "codex:linear@openai-curated": "linear",
+  "claude:linear@claude-plugins-official": "linear",
+  "codex:notion@openai-curated": "notion",
+  "claude:notion@claude-plugins-official": "notion",
+  "codex:slack@openai-curated": "slack",
+  "claude:slack@claude-plugins-official": "slack",
+  "codex:stripe@openai-curated": "stripe",
+  "claude:stripe@claude-plugins-official": "stripe",
+};
+
 function clean(value?: string | null): string | null {
   const normalized = value?.trim().toLowerCase().replace(/\/$/, "") ?? "";
   return normalized || null;
