@@ -23,11 +23,13 @@ test("resumed queries use resume without requesting a new session id", () => {
   assert.equal(options.sessionId, undefined);
 });
 
-test("query options inherit Claude plugins and connectors without inline credentials", () => {
-  const options = buildOptions({ ...base, resume: false });
-  assert.deepEqual(options.settingSources, ["user", "project", "local"]);
+test("query options load explicit Claude plugins and credential-free connectors", () => {
+  const mcpServers = { "claude.ai Notion": { type: "http", url: "https://mcp.example/notion" } };
+  const options = buildOptions({ ...base, resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers });
+  assert.deepEqual(options.settingSources, ["project", "local"]);
   assert.equal(options.strictMcpConfig, false);
-  assert.deepEqual(options.mcpServers, {});
+  assert.deepEqual(options.mcpServers, mcpServers);
+  assert.deepEqual(options.plugins, [{ type: "local", path: "/tmp/claude-plugins/notion" }]);
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
     preset: "claude_code",

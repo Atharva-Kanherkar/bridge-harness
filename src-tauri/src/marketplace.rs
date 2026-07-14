@@ -107,12 +107,59 @@ pub struct MarketplaceAppAuthState {
     pub authentication_state: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSdkConfiguration {
+    pub plugins: Vec<String>,
+    pub mcp_servers: BTreeMap<String, Value>,
+}
+
 pub fn catalog() -> MarketplaceCatalog {
     MarketplaceCatalog {
         providers: [MarketplaceProvider::Codex, MarketplaceProvider::Claude]
             .into_iter()
             .map(provider_catalog)
             .collect(),
+    }
+}
+
+pub fn claude_sdk_configuration() -> ClaudeSdkConfiguration {
+    let Some(binary_path) = binary::resolve("claude") else {
+        return ClaudeSdkConfiguration::default();
+    };
+    let plugins = bounded_output(
+        &binary_path,
+        &["plugin", "list", "--json"],
+        CLAUDE_MCP_STATUS_TIMEOUT,
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
+    .map(|value| {
+        candidate_objects(&value)
+            .into_iter()
+            .filter_map(Value::as_object)
+            .filter(|plugin| bool_field(plugin, &["enabled", "isEnabled", "is_enabled"]))
+            .filter_map(|plugin| string_field(plugin, &["installPath", "install_path"]))
+            .filter(|path| Path::new(path).is_dir())
+            .fold(Vec::new(), |mut paths, path| {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+                paths
+            })
+    })
+    .unwrap_or_default();
+    let mcp_servers = bounded_output(&binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            parse_claude_native_connector_configs(&String::from_utf8_lossy(&output.stdout))
+        })
+        .unwrap_or_default();
+    ClaudeSdkConfiguration {
+        plugins,
+        mcp_servers,
     }
 }
 
@@ -826,6 +873,24 @@ fn parse_claude_mcp_auth_states(output: &str) -> Vec<MarketplaceAppAuthState> {
         .collect()
 }
 
+fn parse_claude_native_connector_configs(output: &str) -> BTreeMap<String, Value> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let endpoint_index = line.find("https://")?;
+            let connector_id = line[..endpoint_index].trim().trim_end_matches(':').trim();
+            if !connector_id.starts_with("claude.ai ") {
+                return None;
+            }
+            let endpoint = line[endpoint_index..].split_whitespace().next()?;
+            Some((
+                connector_id.to_owned(),
+                serde_json::json!({"type": "http", "url": endpoint}),
+            ))
+        })
+        .collect()
+}
+
 fn bounded_output(
     binary_path: &Path,
     args: &[&str],
@@ -1303,6 +1368,22 @@ mod tests {
     }
 
     #[test]
+    fn extracts_only_native_claude_connector_endpoints_for_sdk_configuration() {
+        let configs = parse_claude_native_connector_configs(
+            "claude.ai Notion: https://mcp.example/notion - ✔ Connected\n\
+             plugin:vercel:vercel: https://mcp.example/vercel - ! Needs authentication\n\
+             claude.ai Missing endpoint - ! Needs authentication\n",
+        );
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs["claude.ai Notion"]["type"], "http");
+        assert_eq!(
+            configs["claude.ai Notion"]["url"],
+            "https://mcp.example/notion"
+        );
+    }
+
+    #[test]
     #[ignore = "requires an installed Claude Code plugin with a remote MCP connector"]
     fn live_claude_plugin_and_connector_state_are_discoverable() {
         let binary = binary::resolve("claude").expect("Claude CLI must be installed");
@@ -1332,6 +1413,16 @@ mod tests {
             .iter()
             .any(|state| state.connector_id == "plugin:vercel:vercel"));
         assert!(states.iter().any(|state| state.native_connector));
+
+        let sdk_configuration = claude_sdk_configuration();
+        assert!(sdk_configuration
+            .plugins
+            .iter()
+            .any(|path| path.contains("/vercel/")));
+        assert!(sdk_configuration
+            .mcp_servers
+            .keys()
+            .any(|name| name.starts_with("claude.ai ")));
     }
 
     #[test]
