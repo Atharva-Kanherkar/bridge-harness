@@ -84,7 +84,7 @@ export type MarketplaceProvider = "codex" | "claude";
 export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
 export interface MarketplaceVariant {
   provider: MarketplaceProvider; pluginId: string; name: string; description: string | null;
-  marketplace: string | null; version: string | null; source: string | null; repository: string | null;
+  marketplace: string | null; version: string | null; source: string | null; repository: string | null; iconDataUrl: string | null;
   publisher: string | null; capabilities: string[]; mcpEndpoint: string | null; connectorType: string | null;
   appConnectorIds: string[];
   installed: boolean; enabled: boolean; authenticationState: string; sharedAuthMechanism: string | null;

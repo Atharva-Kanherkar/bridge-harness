@@ -35,7 +35,10 @@ const iconThemes = [
 function ServiceIcon({ service, size = "md" }: { service: MarketplaceService; size?: "sm" | "md" }) {
   const seed = [...service.name].reduce((total, letter) => total + letter.charCodeAt(0), 0);
   const initials = service.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join("").toUpperCase() || "P";
-  return <span className={`inline-flex shrink-0 items-center justify-center rounded-xl border border-white/10 bg-gradient-to-br font-display font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] ${iconThemes[seed % iconThemes.length]} ${size === "sm" ? "h-8 w-8 text-[10px]" : "h-10 w-10 text-xs"}`} aria-hidden="true">{initials}</span>;
+  const icon = service.variants.find(variant => variant.iconDataUrl)?.iconDataUrl;
+  const dimensions = size === "sm" ? "h-8 w-8" : "h-10 w-10";
+  if (icon) return <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-white/[0.06] p-1 ${dimensions}`} aria-hidden="true"><img src={icon} alt="" className="h-full w-full object-contain" /></span>;
+  return <span className={`inline-flex shrink-0 items-center justify-center rounded-xl border border-white/10 bg-gradient-to-br font-display font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] ${iconThemes[seed % iconThemes.length]} ${dimensions} ${size === "sm" ? "text-[10px]" : "text-xs"}`} aria-hidden="true">{initials}</span>;
 }
 
 function Status({ variant }: { variant: MarketplaceVariant }) {

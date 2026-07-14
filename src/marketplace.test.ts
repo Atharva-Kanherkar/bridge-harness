@@ -4,7 +4,7 @@ import type { MarketplaceCatalog, MarketplaceVariant } from "./types";
 
 function variant(provider: "codex" | "claude", pluginId: string, overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant {
   return {
-    provider, pluginId, name: "Vercel", description: null, marketplace: "official", version: null,
+    provider, pluginId, name: "Vercel", description: null, marketplace: "official", version: null, iconDataUrl: null,
     source: null, repository: null, publisher: null, capabilities: [], mcpEndpoint: null,
     connectorType: null, appConnectorIds: [], installed: false, enabled: false, authenticationState: "unknown",
     sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {}, ...overrides,

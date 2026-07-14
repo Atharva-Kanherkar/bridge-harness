@@ -1,4 +1,5 @@
 use crate::{binary, BridgeError};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -17,6 +18,7 @@ const MCP_CONNECTOR: &str = "mcp";
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(75);
 const CLAUDE_MCP_STATUS_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_MCP_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_PLUGIN_LOGO_BYTES: u64 = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +47,7 @@ pub struct PluginVariant {
     pub version: Option<String>,
     pub source: Option<String>,
     pub repository: Option<String>,
+    pub icon_data_url: Option<String>,
     pub publisher: Option<String>,
     pub capabilities: Vec<String>,
     pub mcp_endpoint: Option<String>,
@@ -358,6 +361,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         &["repository", "repositoryUrl", "repository_url", "repo"],
     )
     .or_else(|| source_url(object));
+    let icon_data_url = plugin_logo_data_url(provider, object, source.as_deref());
 
     Some(PluginVariant {
         provider,
@@ -371,6 +375,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         version: string_field(object, &["version"]),
         source,
         repository,
+        icon_data_url,
         publisher: string_field(object, &["publisher", "author", "owner"]),
         capabilities,
         mcp_endpoint: mcp_endpoint.clone(),
@@ -391,6 +396,45 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         supported_actions: supported_actions(provider),
         provider_metadata: redact_sensitive_json(value),
     })
+}
+
+fn plugin_logo_data_url(
+    provider: MarketplaceProvider,
+    object: &serde_json::Map<String, Value>,
+    source: Option<&str>,
+) -> Option<String> {
+    let root = match provider {
+        MarketplaceProvider::Codex => source
+            .filter(|value| !value.contains("://"))
+            .map(PathBuf::from),
+        MarketplaceProvider::Claude => string_field(object, &["installPath", "install_path"])
+            .map(PathBuf::from)
+            .or_else(|| source.filter(|value| !value.contains("://")).map(PathBuf::from)),
+    }?;
+    let manifest_path = [".codex-plugin/plugin.json", ".claude-plugin/plugin.json"]
+        .into_iter()
+        .map(|relative| root.join(relative))
+        .find(|path| path.is_file())?;
+    let manifest: Value = serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()?;
+    let interface = manifest.get("interface").and_then(Value::as_object)?;
+    let relative = string_field(interface, &["logoDark", "logo", "composerIcon"])?;
+    let canonical_root = root.canonicalize().ok()?;
+    let logo_path = root.join(relative).canonicalize().ok()?;
+    if !logo_path.starts_with(&canonical_root) {
+        return None;
+    }
+    let mime = match logo_path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    };
+    if fs::metadata(&logo_path).ok()?.len() > MAX_PLUGIN_LOGO_BYTES {
+        return None;
+    }
+    let encoded = BASE64.encode(fs::read(logo_path).ok()?);
+    Some(format!("data:{mime};base64,{encoded}"))
 }
 
 fn plugin_app_connector_ids(source: Option<&str>) -> Vec<String> {
@@ -1177,6 +1221,41 @@ mod tests {
         assert!(!variants[0].enabled);
         assert_eq!(variants[0].authentication_state, "required");
         assert_eq!(variants[0].provider_metadata["publisher"], "Vercel");
+    }
+
+    #[test]
+    fn resolves_only_supported_plugin_logos_inside_plugin_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin = temp.path().join("plugin");
+        fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        fs::create_dir_all(plugin.join("assets")).unwrap();
+        fs::write(plugin.join("assets/logo.png"), b"provider-logo").unwrap();
+        fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            br#"{"interface":{"logo":"./assets/logo.png"}}"#,
+        )
+        .unwrap();
+        let object = json!({}).as_object().unwrap().clone();
+        let logo = plugin_logo_data_url(
+            MarketplaceProvider::Codex,
+            &object,
+            plugin.to_str(),
+        )
+        .unwrap();
+        assert!(logo.starts_with("data:image/png;base64,"));
+
+        fs::write(temp.path().join("outside.png"), b"outside").unwrap();
+        fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            br#"{"interface":{"logo":"../outside.png"}}"#,
+        )
+        .unwrap();
+        assert!(plugin_logo_data_url(
+            MarketplaceProvider::Codex,
+            &object,
+            plugin.to_str(),
+        )
+        .is_none());
     }
 
     #[test]

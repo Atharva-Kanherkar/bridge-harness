@@ -53,7 +53,7 @@ export function applyAppAuthStates(
           for (const state of states.filter(item => item.provider === "claude" && item.nativeConnector && !represented.has(item.connectorId))) {
             variants.push({
               provider: "claude", pluginId: state.connectorId, name: state.displayName ?? state.connectorId,
-              description: "Claude connector", marketplace: null, version: null, source: "claude.ai", repository: null,
+              description: "Claude connector", marketplace: null, version: null, source: "claude.ai", repository: null, iconDataUrl: null,
               publisher: "Anthropic", capabilities: [], mcpEndpoint: null, connectorType: "connector",
               appConnectorIds: [state.connectorId], installed: true, enabled: true,
               authenticationState: state.authenticationState, sharedAuthMechanism: null, portableMcp: false,
