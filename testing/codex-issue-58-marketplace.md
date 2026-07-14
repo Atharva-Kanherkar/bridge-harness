@@ -22,6 +22,7 @@
 - Command failures are actionable but redact likely secrets from all surfaced output. Marketplace sources remain visible before installation.
 - Existing supervision, session persistence, permission-mode mapping, and Codex runtime behavior remain unchanged; Claude SDK initialization additionally inherits the trusted desktop user's enabled plugins and connectors.
 - The marketplace uses a compact Codex-style information hierarchy: a concise title and search field, an installed-plugin icon strip, Public/Personal catalog tabs, and a dense two-column plugin list. Provider-specific install, lifecycle, and authentication controls remain available without turning every catalog entry into a large card.
+- Plugin rows and the installed strip use the provider-owned logo declared by a local Codex or Claude plugin manifest when available. Logo paths must stay within the plugin directory, supported files are size-capped, and initials remain the fallback when no validated local asset exists.
 
 ## Unit Tests
 
@@ -34,6 +35,7 @@
 - Rust Claude MCP status parsing accepts only explicit connected/required health lines, discards endpoint text, and associates status with the exact canonical server ID.
 - Rust Claude authentication routing constructs `claude mcp login <canonical-server-id>` for plugin MCP servers and native connectors, never `claude /mcp …` and never an unqualified plugin name.
 - Rust error sanitization redacts token-, secret-, authorization-, and key-shaped values.
+- Rust logo resolution accepts supported manifest image assets inside the plugin root and rejects traversal, unsupported formats, and oversized files.
 - Agent SDK option tests require `settingSources: ["project", "local"]`, explicit enabled local-plugin paths, explicit credential-free native connector endpoint definitions, `strictMcpConfig: false`, and no credential-bearing MCP fields.
 - TypeScript catalog grouping follows the confidence order and refuses name-only matches.
 - TypeScript compatibility classification defaults remote OAuth to separate login and recognizes only explicit shared mechanisms.
