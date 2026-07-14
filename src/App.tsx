@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Archive, ArrowUp, Bot, Check, ChevronDown, ChevronRight, CircleDot, Clock3, FileCode2, FileDiff, FileText, FolderGit2, Gauge, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquarePlus, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, Gauge, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import type { AgentEvent, BridgeState, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
+import { BridgeSidebar } from "./components/BridgeSidebar";
+import { ComposerPill } from "./components/ComposerPill";
+import { SpaceBackground } from "./components/SpaceBackground";
 import { TerminalPane } from "./components/TerminalPane";
+import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { pickGreeting } from "./greetings";
@@ -13,12 +17,9 @@ import { queueExplanation, restorationPresentation, turnBudget } from "./observa
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
-import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
@@ -69,6 +70,7 @@ export function App() {
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string }[]>([]);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const startedRef = useRef<Set<string>>(new Set());
+  const pendingWelcomeMessageRef = useRef<string | null>(null);
 
   const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
   const errorMessage = (value: unknown) => value instanceof Error ? value.message : String(value);
@@ -182,19 +184,31 @@ export function App() {
   function openSession(id: string) { setSelectedSessionId(id); }
   // New chat opens instantly (no picker up front): create a direct chat with the
   // default model and select it. The model can be changed inside the chat.
-  async function openNewChat() {
+  async function openNewChat(initialMessage?: string) {
     const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
     const model = preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+    const draft = initialMessage?.trim() ?? "";
+    if (draft) pendingWelcomeMessageRef.current = draft;
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createChat(harness, model, null);
       const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
       setState(next);
       if (created) setSelectedSessionId(created.id);
-    } catch (e) { setError(errorMessage(e)); }
+    } catch (e) {
+      pendingWelcomeMessageRef.current = null;
+      setError(errorMessage(e));
+    }
     finally { setBusy(false); }
   }
+
+  useEffect(() => {
+    const draft = pendingWelcomeMessageRef.current;
+    if (!draft || !session) return;
+    pendingWelcomeMessageRef.current = null;
+    void sendPrompt(draft);
+  }, [session?.id]);
   // Workspace "+": start a classic orchestrator session tied to the workspace.
   async function newWorkspaceSession(workspaceId: string) {
     setBusy(true); setError(undefined);
@@ -243,9 +257,9 @@ export function App() {
   // Send a message. The agent starts lazily on the first message, like a normal
   // chat app — there is no explicit "start" step. Slash commands belonging to
   // another provider auto-switch the direct-chat harness first.
-  async function sendPrompt() {
-    if (!session || !composer.trim()) return;
-    const text = composer.trim();
+  async function sendPrompt(forcedText?: string) {
+    const text = (forcedText ?? composer).trim();
+    if (!session || !text) return;
     const key = crypto.randomUUID();
     let target = session;
     setComposer("");
@@ -295,57 +309,33 @@ export function App() {
 
   const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
-  return <div className="h-screen grid grid-rows-[44px_1fr] grid-cols-[1fr] sm:grid-cols-[248px_1fr] bg-[radial-gradient(circle_at_18%_-8%,color-mix(in_srgb,var(--color-foreground)_6%,transparent),transparent_42%),radial-gradient(circle_at_100%_0%,color-mix(in_srgb,var(--color-foreground)_4%,transparent),transparent_38%),color-mix(in_srgb,var(--color-background)_46%,transparent)]">
-    <header className="col-span-full flex items-center gap-2 border-b border-foreground/8 bg-background/35 backdrop-blur-[34px] backdrop-saturate-[1.7] select-none relative z-20 u-hairline-t" data-tauri-drag-region>
-      <div className="w-[72px] h-full shrink-0" data-tauri-drag-region />
-      <div className="w-auto flex items-center shrink-0"><strong className="text-[13px] font-semibold text-foreground tracking-[-0.02em]">Bridge</strong></div>
-      <div className="ml-auto flex items-center h-full pr-3"><UsageWidget usage={usageByProvider}/></div>
-    </header>
-    <aside className="hidden sm:flex row-start-2 bg-sidebar/45 backdrop-blur-[36px] backdrop-saturate-[1.8] border-r border-foreground/8 flex-col min-h-0 shadow-[inset_-1px_0_0_color-mix(in_srgb,var(--color-foreground)_5%,transparent),inset_1px_0_0_color-mix(in_srgb,var(--color-foreground)_6%,transparent)] transition-colors duration-300">
-      <div className="h-[42px] px-2.5 flex items-center gap-2 shrink-0">
-        <Button type="button" size="sm" className="flex-1 justify-start h-[30px] gap-2 rounded-lg" onClick={() => openNewChat()}><MessageSquarePlus size={15} aria-hidden="true" /> New chat</Button>
-      </div>
-      <div className="flex-1 overflow-auto px-[7px] pb-2 scrollbar-thin scrollbar-thumb-foreground/10">
-        <div className="h-[26px] flex items-center gap-2 px-[9px] text-muted-foreground/60 text-[9px] font-semibold tracking-[0.14em] uppercase">Chats</div>
-        {standaloneChats.map(chat => <ChatRow key={chat.id} chat={chat} active={chat.id === session?.id} onClick={() => openSession(chat.id)} />)}
-        {!standaloneChats.length && <div className="px-[10px] py-1.5 text-muted-foreground/50 text-[11px]">No chats yet.</div>}
+  return <div className="space-dark relative flex h-[100dvh] overflow-hidden text-neutral-200">
+    <SpaceBackground />
 
-        <div className="h-[26px] mt-3 flex items-center gap-2 px-[9px] text-muted-foreground/60 text-[9px] font-semibold tracking-[0.14em] uppercase">
-          <span className="flex-1">Workspaces</span>
-          <button type="button" className="text-muted-foreground/60 hover:text-foreground transition-colors" onClick={() => { setTitle(""); setModal("workspace"); }} title="New workspace" aria-label="New workspace"><Plus size={13} aria-hidden="true" /></button>
-        </div>
-        {state.workspaces.map(ws => {
-          const chats = topSessions.filter(s => s.workspaceId === ws.id);
-          const open = expanded.has(ws.id);
-          return <section key={ws.id} className="mb-0.5">
-            <div className="w-full h-[34px] rounded-lg flex items-center gap-1.5 px-[7px] transition-colors hover:bg-foreground/[0.05] group/ws">
-              <button type="button" className="flex-1 min-w-0 flex items-center gap-1.5 text-left" onClick={() => toggleExpanded(ws.id)}>
-                <ChevronRight size={13} className={`text-muted-foreground/60 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />
-                <FolderGit2 size={13} className="text-muted-foreground/70" aria-hidden="true" />
-                <b className="flex-1 min-w-0 text-[12px] text-foreground font-medium whitespace-nowrap overflow-hidden text-ellipsis">{ws.title}</b>
-              </button>
-              <span className="text-muted-foreground/50 text-[10px] font-mono group-hover/ws:hidden">{chats.length || ""}</span>
-              <button type="button" className="hidden group-hover/ws:flex text-muted-foreground/60 hover:text-foreground transition-colors" title="New agent in this workspace" aria-label="New agent" disabled={busy} onClick={() => void newWorkspaceSession(ws.id)}><Plus size={14} aria-hidden="true" /></button>
-            </div>
-            {open && <div className="ml-[13px] pl-2 border-l border-foreground/8">
-              {chats.map(chat => <ChatRow key={chat.id} chat={chat} active={chat.id === session?.id} onClick={() => openSession(chat.id)} />)}
-              <div className="flex items-center gap-1 py-0.5">
-                <button type="button" className="flex items-center gap-1.5 px-[9px] h-[26px] rounded-md text-[11px] text-muted-foreground/70 hover:text-foreground hover:bg-foreground/[0.05] transition-colors" disabled={busy} onClick={() => void newWorkspaceSession(ws.id)}><Plus size={12} aria-hidden="true" /> New agent</button>
-                {!ws.path && <button type="button" className="flex items-center gap-1.5 px-[9px] h-[26px] rounded-md text-[11px] text-muted-foreground/70 hover:text-foreground hover:bg-foreground/[0.05] transition-colors" onClick={() => void connectFolder(ws.id)}><FolderGit2 size={12} aria-hidden="true" /> Connect folder</button>}
-              </div>
-              {ws.path && <div className="px-[9px] py-1 text-[9.5px] text-muted-foreground/50 font-mono flex items-center gap-1 whitespace-nowrap overflow-hidden text-ellipsis"><GitBranch size={10} aria-hidden="true" />{ws.branch ?? "folder"} · {ws.dirtyFiles ? `${ws.dirtyFiles} changed` : "clean"}</div>}
-            </div>}
-          </section>;
-        })}
-        {!state.workspaces.length && <div className="px-[10px] py-1.5 text-muted-foreground/50 text-[11px]">Group chats and connect a repo with a workspace.</div>}
-      </div>
-    </aside>
-    <main className="row-start-2 min-w-0 min-h-0 flex flex-col bg-transparent">
+    <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
+      <UsageWidget usage={usageByProvider} />
+    </div>
+
+    <BridgeSidebar
+      standaloneChats={standaloneChats}
+      workspaces={state.workspaces}
+      workspaceChats={workspaceId => topSessions.filter(s => s.workspaceId === workspaceId)}
+      activeSessionId={session?.id}
+      expanded={expanded}
+      busy={busy}
+      onOpenNewChat={() => void openNewChat()}
+      onOpenSession={openSession}
+      onToggleWorkspace={toggleExpanded}
+      onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
+      onNewWorkspaceSession={workspaceId => void newWorkspaceSession(workspaceId)}
+      onConnectFolder={workspaceId => void connectFolder(workspaceId)}
+    />
+    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {session ? <>
-        <div className={`shrink-0 px-[18px] flex items-center border-b border-border/70 ${isDirectChat ? "h-[48px]" : "min-h-[58px] py-[9px]"}`}>
+        <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
-            <h1 className="m-0 font-heading text-[14px] leading-tight text-foreground font-semibold tracking-[-0.015em] whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
-            {!isDirectChat && <div className="mt-[3px] flex items-center gap-1.5 text-muted-foreground font-mono text-[9.5px]">
+            <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
+            {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-neutral-500 font-mono text-[10px]">
               <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}
               {hasRepo && workspace && <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>}
             </div>}
@@ -363,7 +353,7 @@ export function App() {
             </TabsList>
           </div>
         </Tabs>}
-        <section className="flex-1 min-h-0 overflow-hidden flex border-t border-border/50">
+        <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
               <div className="flex-1 min-h-0 relative">
@@ -380,41 +370,44 @@ export function App() {
                   onResolve={(eventId, decision) => void resolveApproval(eventId, decision)}
                 />
               </div>
-              <div className={`flex-none ${isDirectChat ? "pb-5 px-5" : "pb-4 px-7"}`}>
-                {hasRepo && workspace && workspace.dirtyFiles > 0 && <div className="max-w-[720px] mx-auto flex justify-center -mb-2 relative z-10">
-                  <div className="inline-flex items-center gap-2 h-[30px] px-[13px] border border-foreground/10 rounded-full bg-card/60 backdrop-blur-xl shadow-[0_10px_28px_-10px_rgba(0,0,0,0.55)] text-muted-foreground text-xs">
-                    <FileDiff size={12} className="text-muted-foreground/65" aria-hidden="true" />
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#0a0a0c] to-transparent sm:h-20" />
+              <div className="relative z-10 flex-none safe-bottom">
+                {hasRepo && workspace && workspace.dirtyFiles > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="inline-flex items-center gap-2 h-[30px] px-3 rounded-full border border-white/[0.08] bg-white/[0.03] text-neutral-400 text-xs">
+                    <FileDiff size={12} aria-hidden="true" />
                     <span>{`${workspace.dirtyFiles} file${workspace.dirtyFiles === 1 ? "" : "s"}`}</span>
-                    <em className="not-italic font-mono text-[11.5px]"><b className="text-success font-medium">+{workspace.additions}</b> <b className="text-destructive font-medium">−{workspace.deletions}</b></em>
+                    <em className="not-italic font-mono text-[11px]"><b className="text-emerald-400">+{workspace.additions}</b> <b className="text-red-400">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
-                <div className="max-w-[720px] mx-auto relative">
-                  {slashOpen && <div className="absolute left-0 right-0 bottom-full mb-2 z-20 rounded-xl border border-foreground/10 bg-popover/95 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_20px_55px_-18px_rgba(0,0,0,0.65)] overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/50 border-b border-border/60 flex items-center gap-2">
+                <div className="relative mx-auto max-w-2xl">
+                  {slashOpen && <div className="absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl border border-white/[0.08] bg-[#0c0c10]/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
                       <span>Commands & skills</span>
-                      <span className="normal-case tracking-normal text-muted-foreground/35">{slashMatches.length}</span>
+                      <span className="normal-case tracking-normal text-neutral-700">{slashMatches.length}</span>
                     </div>
-                    <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-foreground/15" onWheel={e => e.stopPropagation()}>
-                      {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-foreground/[0.08]" : "hover:bg-foreground/[0.05]"}`}>
-                        <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
-                        <span className="flex-1 min-w-0 text-[11px] text-muted-foreground/70 whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground/70 border border-border rounded px-1 py-[1px]">{harnessLabel(command.harness)}</span>
-                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground/45">{command.kind}</span>
+                    <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-white/10" onWheel={e => e.stopPropagation()}>
+                      {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
+                        <span className="font-mono text-[12px] text-neutral-100 whitespace-nowrap">/{command.name}</span>
+                        <span className="flex-1 min-w-0 text-[11px] text-neutral-500 whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
+                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-neutral-500 border border-white/[0.08] rounded px-1 py-[1px]">{harnessLabel(command.harness)}</span>
                       </button>)}
                     </div>
                   </div>}
-                  <div className="border border-foreground/10 bg-card/60 backdrop-blur-2xl rounded-2xl shadow-[0_18px_50px_-22px_rgba(0,0,0,0.55)] transition-colors focus-within:border-foreground/18 focus-within:bg-card/70">
-                    <Textarea className="w-full [&>textarea]:min-h-[48px] [&>textarea]:max-h-[200px] [&>textarea]:resize-none [&>textarea]:bg-transparent [&>textarea]:text-foreground [&>textarea]:px-[18px] [&>textarea]:pt-3.5 [&>textarea]:pb-1 [&>textarea]:text-[14px] [&>textarea]:leading-relaxed [&>textarea]:placeholder:text-muted-foreground/45" unstyled value={composer} onChange={e => { setComposer(e.target.value); setSlashDismissed(false); setSlashIndex(0); }} onKeyDown={onComposerKeyDown} placeholder={isDirectChat ? "Message Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"} disabled={!session} />
-                    <div className="h-11 flex items-center gap-2 px-2.5">
-                      {isDirectChat
-                        ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy} onChange={(harness, model) => void changeChatModel(harness, model)} />
-                        : <span className="inline-flex items-center gap-1.5 h-[28px] px-2.5 text-muted-foreground text-[11.5px] rounded-full border border-foreground/8">{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}</span>}
-                      <span className="ml-auto text-muted-foreground/50 text-[10.5px] hidden sm:inline">{slashOpen ? "↑↓ · ↵" : "/ commands"}</span>
-                      {session?.activeTurnId
-                        ? <Button type="button" size="icon-sm" className="rounded-full" onClick={() => void bridgeApi.interruptTurn(session.id)} title="Stop turn" aria-label="Stop turn"><Square size={11} fill="currentColor" aria-hidden="true" /></Button>
-                        : <Button type="button" size="icon-sm" className="rounded-full" onClick={() => void sendPrompt()} disabled={!composer.trim() || !session} aria-label="Send message"><ArrowUp size={15} aria-hidden="true" /></Button>}
-                    </div>
-                  </div>
+                  <ComposerPill
+                    layout="dock"
+                    value={composer}
+                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); }}
+                    onSubmit={() => void sendPrompt()}
+                    onKeyDown={onComposerKeyDown}
+                    placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
+                    disabled={!session}
+                    working={!!session?.activeTurnId}
+                    onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
+                    onPlusClick={() => { setComposer(""); setSlashDismissed(false); }}
+                    trailing={isDirectChat
+                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy} onChange={(harness, model) => void changeChatModel(harness, model)} compact />
+                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}</span>}
+                  />
                 </div>
               </div>
             </>}
@@ -422,7 +415,7 @@ export function App() {
             {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><TerminalPane workspaceId={workspace.id}/></div>}
           </div>
         </section>
-      </> : <Welcome onStartChat={() => openNewChat()} onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}/>}
+      </> : <Welcome adapters={adapters} busy={busy} onStartChat={text => void openNewChat(text)} onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}/>}
     </main>
     {error && (
       <Alert variant="error" className="fixed right-[18px] bottom-[18px] z-40 max-w-[520px] bg-card/70 backdrop-blur-2xl backdrop-saturate-150 border-foreground/10 shadow-[0_24px_70px_-20px_rgba(0,0,0,0.65)]">
@@ -433,50 +426,34 @@ export function App() {
       </Alert>
     )}
 
-    <Dialog open={modal === "workspace"} onOpenChange={open => !open && setModal(null)}>
-      <DialogPopup className="bg-popover/75 backdrop-blur-2xl backdrop-saturate-150 border-foreground/10 shadow-[0_32px_90px_-24px_rgba(0,0,0,0.7)]">
-        <DialogHeader>
-          <DialogTitle>New workspace</DialogTitle>
-          <DialogDescription>Group related chats. Connect a folder or git repo later—optional.</DialogDescription>
-        </DialogHeader>
-        <DialogPanel>
-          <Label className="block text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.09em] m-[0_0_7px]">WORKSPACE NAME</Label>
-          <InputGroup>
-            <InputGroupInput autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Payments service" onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); if (!busy && title.trim()) void submitNewWorkspace(); } }} />
-          </InputGroup>
-        </DialogPanel>
-        <DialogFooter>
-          <DialogClose render={<Button type="button" variant="ghost" />}>Cancel</DialogClose>
-          <Button type="button" loading={busy} disabled={!title.trim()} onClick={() => void submitNewWorkspace()}>{busy ? "Creating…" : "Create workspace"}</Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
+    <WorkspaceCreateDialog
+      open={modal === "workspace"}
+      title={title}
+      busy={busy}
+      onTitleChange={setTitle}
+      onClose={() => setModal(null)}
+      onSubmit={() => void submitNewWorkspace()}
+    />
   </div>;
 }
 
-function ChatRow({ chat, active, onClick }: { chat: Session; active: boolean; onClick: () => void }) {
-  return <button type="button" onClick={onClick} className={`w-full min-h-[34px] rounded-lg flex items-center gap-2 px-[9px] py-1 text-left my-[1px] transition-colors hover:bg-foreground/[0.055] ${active ? "bg-foreground/[0.09] shadow-[0_1px_2px_rgba(0,0,0,0.18)]" : ""}`}>
-    <StatusDot status={chat.status}/>
-    <span className="min-w-0 flex-1 flex flex-col gap-[1px]">
-      <b className="text-[12px] text-foreground font-medium whitespace-nowrap overflow-hidden text-ellipsis">{chat.title || chat.label}</b>
-      <small className="text-[9px] text-muted-foreground/70 whitespace-nowrap overflow-hidden text-ellipsis">{harnessLabel(chat.harness)}{chat.model ? ` · ${chat.model}` : ""}</small>
-    </span>
-  </button>;
-}
 
-function ChatModelControl({ adapters, harness, model, disabled, onChange }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; onChange: (harness: Harness, model: string | null) => void }) {
+function ChatModelControl({ adapters, harness, model, disabled, onChange, compact }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; onChange: (harness: Harness, model: string | null) => void; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const chatAdapters = adapters.filter(adapter => adapter.id === "codex" || adapter.id === "claude");
   const current = chatAdapters.find(adapter => adapter.id === harness);
-  const modelLabel = current?.models.find(option => option.id === model)?.label ?? model ?? "Default";
+  const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
+  const modelLabel = currentModel?.label ?? model ?? "Default";
+  const tierLabel = currentModel?.tier === "strong" ? "High" : currentModel?.tier === "standard" ? "Balanced" : "Fast";
+  const compactLabel = compact ? tierLabel : `${harnessLabel(harness)} · ${modelLabel}`;
   return <div className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className="flex items-center gap-1.5 h-[28px] max-w-[220px] px-2 rounded-lg text-[11.5px] text-foreground/90 hover:bg-foreground/[0.06] transition-colors disabled:opacity-45 disabled:hover:bg-transparent" title={disabled ? "End the chat to switch models" : "Choose model"}>
-      <span className="whitespace-nowrap overflow-hidden text-ellipsis">{harnessLabel(harness)} · {modelLabel}</span>
-      <ChevronDown size={12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-neutral-400 hover:bg-white/[0.08]" : "h-[28px] max-w-[220px] px-2 text-[11.5px] text-neutral-300 hover:bg-white/[0.06]"}`} title={disabled ? "End the chat to switch models" : "Choose model"}>
+      <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
+      <ChevronDown size={compact ? 14 : 12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div className="absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-xl border border-foreground/10 bg-popover/92 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_24px_70px_-20px_rgba(0,0,0,0.65)] max-h-[340px] overflow-y-auto scrollbar-thin scrollbar-thumb-foreground/10">
+      <div className="absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl border border-white/[0.1] bg-[#0c0c10]/95 backdrop-blur-xl shadow-2xl shadow-black/40 max-h-[340px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
         {chatAdapters.map((adapter, index) => <div key={adapter.id} className={index > 0 ? "mt-1 pt-1 border-t border-border/60" : ""}>
           <div className="px-3 py-1.5 text-[9px] font-semibold tracking-[0.12em] uppercase text-muted-foreground/50 flex items-center gap-2">
             <span>{adapter.label}</span>
@@ -537,12 +514,12 @@ function UsageWidget({ usage }: { usage: Partial<Record<UsageProvider, UsageSnap
     .map(id => ({ id, snapshot: usage[id] }))
     .filter((entry): entry is { id: UsageProvider; snapshot: UsageSnapshot } => !!entry.snapshot && entry.snapshot.windows.length > 0);
   if (!entries.length) {
-    return <div className="flex items-center gap-1.5 h-[28px] px-3 rounded-full border border-border/60 bg-foreground/[0.02] text-muted-foreground/50 text-[10px] font-mono select-none" title="Subscription usage appears here once the agent reports it.">
+    return <div className="flex items-center gap-1.5 h-[28px] px-3 rounded-full border border-white/[0.08] bg-white/[0.04] text-neutral-600 text-[10px] font-mono select-none" title="Subscription usage appears here once the agent reports it.">
       <Gauge size={11} aria-hidden="true" /><span className="tracking-[0.03em]">Usage</span>
     </div>;
   }
   return <div className="group relative flex items-center h-full">
-    <div className="flex items-center gap-2.5 h-[28px] px-3 rounded-full border border-foreground/[0.09] bg-foreground/[0.04] backdrop-blur-md cursor-default select-none transition-colors group-hover:border-foreground/15 group-hover:bg-foreground/[0.07]">
+    <div className="flex items-center gap-2.5 h-[28px] px-3 rounded-full border border-white/[0.08] bg-white/[0.04] backdrop-blur-md cursor-default select-none transition-colors hover:border-white/[0.12] hover:bg-white/[0.07]">
       {entries.map((entry, index) => <ProviderChip key={entry.id} label={PROVIDER_LABEL[entry.id]} snapshot={entry.snapshot} divided={index > 0} />)}
     </div>
     <div className="absolute right-0 top-full pt-2 z-50 invisible opacity-0 translate-y-1 scale-[0.98] transition-all duration-150 ease-out group-hover:visible group-hover:opacity-100 group-hover:translate-y-0 group-hover:scale-100">
@@ -596,19 +573,36 @@ function ProviderDetail({ label, snapshot, divided }: { label: string; snapshot:
 
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="p-[38px_44px] max-w-[780px]"><div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGE STORY</div><h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="mt-6 h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]"><b className="text-success font-medium">+{workspace.additions}</b><b className="text-destructive font-medium">−{workspace.deletions}</b><span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/><small className="text-muted-foreground">{workspace.branch}</small></div><div className="mt-5 flex flex-col gap-2.5">{[78,92,64,85,51,70].map((n,i)=><i key={i} className="block h-[7px] bg-muted rounded-[3px]" style={{width:`${n}%`}}/>)}</div></div>; }
 function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="max-w-[720px] px-8 py-[22px]">{events.length ? events.map(e => <article key={e.id} className="flex gap-3 py-[13px] border-b border-border text-muted-foreground"><CircleDot size={14} aria-hidden="true" /><div><b className="text-foreground text-[11px] font-medium tracking-[0.02em] capitalize">{e.kind.replaceAll(".", " ")}</b><p className="text-[12.5px] my-1 text-foreground">{e.body}</p><small className="font-mono text-[10.5px] text-muted-foreground/65">{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="text-muted-foreground text-[12.5px] p-7">No events for this workspace yet.</div>}</div>; }
-function Welcome({ onStartChat, onNewWorkspace }: { onStartChat: () => void; onNewWorkspace: () => void }) {
+function WelcomeModelBadge({ adapters }: { adapters: import("./types").AdapterDescriptor[] }) {
+  const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
+  const model = preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
+  const tierLabel = model?.tier === "strong" ? "High" : model?.tier === "standard" ? "Balanced" : "Fast";
+  return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400">{tierLabel}<ChevronDown size={14} className="text-neutral-600" aria-hidden="true" /></span>;
+}
+
+function Welcome({ adapters, busy, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; busy: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
-  return <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
-    <div className="animate-home-rise flex flex-col items-center">
-      <div className="w-11 h-11 grid place-items-center mb-5 rounded-2xl border border-foreground/10 bg-foreground/[0.04] backdrop-blur-md text-muted-foreground/80 shadow-[inset_0_1px_0_0_color-mix(in_srgb,var(--color-foreground)_10%,transparent)]"><Bot size={20} aria-hidden="true" /></div>
-      <h1 className="font-heading text-[26px] leading-tight tracking-[-0.02em] text-foreground font-semibold">{greeting.headline}</h1>
-      <p className="mt-2.5 max-w-[440px] text-[13px] leading-relaxed text-muted-foreground">Start a chat with any model. Group chats in a workspace and connect a folder or git repo whenever you like—never required.</p>
-      <div className="mt-[18px] flex items-center gap-2.5">
-        <Button type="button" size="lg" onClick={onStartChat}><MessageSquarePlus size={16} aria-hidden="true" /> Start a chat</Button>
-        <Button type="button" size="lg" variant="outline" onClick={onNewWorkspace}><Plus size={16} aria-hidden="true" /> New workspace</Button>
-      </div>
-      <small className="mt-[14px] text-muted-foreground/65 text-[11px]">Your code stays on this Mac.</small>
-    </div>
+  const [draft, setDraft] = useState("");
+  const submit = () => {
+    const text = draft.trim();
+    if (text) onStartChat(text);
+    else onStartChat();
+    setDraft("");
+  };
+  return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
+    <h1 className="mb-8 max-w-xl font-display text-[1.65rem] font-medium tracking-[-0.02em] text-white sm:mb-10 sm:text-[2.1rem]">{greeting.headline}</h1>
+    <ComposerPill
+      layout="hero"
+      value={draft}
+      onChange={setDraft}
+      onSubmit={submit}
+      onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
+      placeholder="Ask Bridge…"
+      disabled={busy}
+      onPlusClick={onNewWorkspace}
+      trailing={<WelcomeModelBadge adapters={adapters} />}
+    />
+    <p className="mt-5 max-w-md text-[13px] leading-relaxed text-neutral-500">{greeting.hint}</p>
   </div>;
 }
 function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-[10px] font-semibold tracking-[0.09em]">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-[12.5px] font-medium">{w.title}</b><small className="text-[10.5px] text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-[10px]">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-[10.5px]"><span>↑↓ navigate</span><span>esc close</span></div></>; }

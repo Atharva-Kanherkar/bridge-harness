@@ -103,8 +103,8 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
-  return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto px-8 pt-[26px] pb-[30px] scrollbar-thin scrollbar-thumb-foreground/10">
-    <div className="max-w-[760px] mx-auto">
+  return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10 scrollbar-thin scrollbar-thumb-white/10">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 sm:gap-8">
       {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
       {continuationFidelity === "projected_at_boundary" && <div role="status" className="mb-4 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-xs text-muted-foreground">Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
       {continuationFidelity === "projected_mid_turn" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
@@ -113,8 +113,8 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
         : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve}/>)}
-      {optimistic.map((text, index) => <div key={`pending-${index}`} className="flex justify-end my-[18px]"><div className="max-w-[78%] px-[18px] py-3 rounded-2xl bg-foreground/6 text-foreground text-[13.5px] leading-relaxed whitespace-pre-wrap border-0">{text}</div></div>)}
-      {working && !streaming && <ThinkingIndicator/>}
+      {optimistic.map((text, index) => <div key={`pending-${index}`} className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-2xl rounded-tr-sm bg-white/[0.04] px-5 py-3 text-[15px] leading-[1.7] text-neutral-100 ring-1 ring-white/[0.06] whitespace-pre-wrap">{text}</div></div>)}
+      {working && !streaming && <div className="chat-message-enter flex justify-start pl-4"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
     </div>
   </ScrollFollow>;
 }
@@ -150,18 +150,18 @@ function GreetingEmpty({ seed }: { seed?: string }) {
 }
 
 function Empty({ title, copy }: { title: string; copy: string }) {
-  return <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
-    <div className="animate-home-rise flex flex-col items-center max-w-[440px]">
-      <h2 className="font-heading text-[24px] leading-tight tracking-[-0.025em] text-foreground font-semibold">{title}</h2>
-      <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground/80">{copy}</p>
+  return <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center animate-page-enter">
+    <div className="flex max-w-[440px] flex-col items-center">
+      <h2 className="font-display text-lg font-medium tracking-tight text-white">{title}</h2>
+      <p className="mt-2 text-sm leading-relaxed text-neutral-500">{copy}</p>
     </div>
   </div>;
 }
 
 function ItemView({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
   if (item.type === "message") {
-    if (item.role === "user") return <div className="flex justify-end my-[18px]"><div className="max-w-[78%] px-[18px] py-3 rounded-2xl bg-foreground/6 text-foreground text-[13.5px] leading-relaxed whitespace-pre-wrap border-0">{item.text}</div></div>;
-    return <div className="my-[18px] text-muted-foreground text-[14px] leading-[1.7] tracking-[-0.004em]">{item.status === "streaming" && !item.text.trim() ? <span className="inline-flex items-center gap-[9px]"><PulseDot size={7}/><span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Thinking…</span></span> : <Markdown text={item.text}/>}</div>;
+    if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-2xl rounded-tr-sm bg-white/[0.04] px-5 py-3 text-[15px] leading-[1.7] text-neutral-100 ring-1 ring-white/[0.06] whitespace-pre-wrap">{item.text}</div></div>;
+    return <div className="chat-message-enter flex w-full justify-start"><div className="relative max-w-[min(100%,44rem)] py-1 pl-1 text-neutral-300">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div></div>;
   }
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
