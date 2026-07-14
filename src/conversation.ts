@@ -90,6 +90,8 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
       return { ...base, type: "compaction", status: "failed", title: "Compaction failed", text: stringValue(payload.reason) ?? "" };
     case "branch.summary":
       return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
+    case "error":
+      return { ...base, type: "error", status: stringValue(payload.status) ?? "failed", title: stringValue(payload.title) ?? "Agent error", text: errorTextFromPayload(payload) };
     default:
       return {
         ...base,
@@ -99,6 +101,15 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",
       };
   }
+}
+
+/** Pull a human-readable error string from an error entry, tolerant of provider shapes. */
+function errorTextFromPayload(payload: Record<string, unknown>): string {
+  const direct = stringValue(payload.text);
+  if (direct) return direct;
+  const data = objectValue(payload.data);
+  const error = objectValue(data.error);
+  return stringValue(error.message) ?? stringValue(data.message) ?? stringValue(data.reason) ?? "";
 }
 
 function isRawProviderEntry(entry: SessionEntry): boolean {

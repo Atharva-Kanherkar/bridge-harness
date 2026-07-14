@@ -103,4 +103,15 @@ describe("session forest conversation projection",()=>{
     expect(projectSessionConversation(forest,"missing")).toEqual([]);
     expect(projectSessionConversation(forest,null)).toEqual([]);
   });
+
+  it("projects provider error entries as a top-level error item, not a folded activity",()=>{
+    const err=entry("e2","e1","error",{status:"failed",text:"You've hit your usage limit. Try again later.",data:{error:{codexErrorInfo:"usageLimitExceeded"}}},2);
+    const items=projectSessionConversation([root,err],"e2");
+    expect(items[1]).toMatchObject({type:"error",status:"failed",text:"You've hit your usage limit. Try again later."});
+  });
+
+  it("falls back to a nested error message when the entry has no top-level text",()=>{
+    const err=entry("e2","e1","error",{status:"failed",data:{error:{message:"rate limit exceeded"}}},2);
+    expect(projectSessionConversation([root,err],"e2")[1]).toMatchObject({type:"error",text:"rate limit exceeded"});
+  });
 });
