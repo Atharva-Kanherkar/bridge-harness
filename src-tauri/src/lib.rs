@@ -129,6 +129,11 @@ fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
 }
 
 #[tauri::command]
+fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
+    marketplace::app_auth_states()
+}
+
+#[tauri::command]
 fn marketplace_action(
     provider: marketplace::MarketplaceProvider,
     plugin_id: String,
@@ -4038,6 +4043,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             health,
             marketplace_catalog,
+            marketplace_app_auth_states,
             marketplace_action,
             get_state,
             get_session_forest,

@@ -1,10 +1,20 @@
 use crate::{binary, BridgeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::{Duration, Instant},
+};
 
 const CODEX_APP_CONNECTOR: &str = "app";
 const MCP_CONNECTOR: &str = "mcp";
+const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +47,7 @@ pub struct PluginVariant {
     pub capabilities: Vec<String>,
     pub mcp_endpoint: Option<String>,
     pub connector_type: Option<String>,
+    pub app_connector_ids: Vec<String>,
     pub installed: bool,
     pub enabled: bool,
     pub authentication_state: String,
@@ -82,6 +93,13 @@ pub struct MarketplaceActionResult {
     pub success: bool,
     pub message: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceAppAuthState {
+    pub connector_id: String,
+    pub authentication_state: String,
 }
 
 pub fn catalog() -> MarketplaceCatalog {
@@ -161,6 +179,7 @@ fn merge_variant(existing: &mut PluginVariant, incoming: &PluginVariant) {
     }
     if incoming.connector_type.as_deref() == Some(CODEX_APP_CONNECTOR) {
         existing.connector_type = incoming.connector_type.clone();
+        existing.app_connector_ids = incoming.app_connector_ids.clone();
         existing.portable_mcp = false;
         existing.compatibility_notes = incoming.compatibility_notes.clone();
     }
@@ -251,7 +270,12 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         ],
     );
     let source = source_value(object);
-    if provider == MarketplaceProvider::Codex && plugin_declares_app(source.as_deref()) {
+    let app_connector_ids = if provider == MarketplaceProvider::Codex {
+        plugin_app_connector_ids(source.as_deref())
+    } else {
+        Vec::new()
+    };
+    if !app_connector_ids.is_empty() {
         connector_type = Some(CODEX_APP_CONNECTOR.into());
     } else if connector_type.is_none() && mcp_endpoint.is_some() {
         connector_type = Some(MCP_CONNECTOR.into());
@@ -284,6 +308,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         capabilities,
         mcp_endpoint: mcp_endpoint.clone(),
         connector_type,
+        app_connector_ids,
         installed: bool_field(object, &["installed", "isInstalled", "is_installed"]),
         enabled: bool_field(object, &["enabled", "isEnabled", "is_enabled"]),
         authentication_state,
@@ -299,17 +324,25 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
     })
 }
 
-fn plugin_declares_app(source: Option<&str>) -> bool {
+fn plugin_app_connector_ids(source: Option<&str>) -> Vec<String> {
     let Some(source) = source.filter(|value| !value.contains("://")) else {
-        return false;
+        return Vec::new();
     };
     let Ok(contents) = fs::read(Path::new(source).join(".app.json")) else {
-        return false;
+        return Vec::new();
     };
     serde_json::from_slice::<Value>(&contents)
         .ok()
         .and_then(|value| value.get("apps").and_then(Value::as_object).cloned())
-        .is_some_and(|apps| !apps.is_empty())
+        .map(|apps| {
+            apps.values()
+                .filter_map(|app| app.get("id").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn string_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -391,18 +424,15 @@ fn action_args(
     };
     match provider {
         MarketplaceProvider::Codex => match action {
-            MarketplaceAction::Install | MarketplaceAction::Update => Ok(vec![
+            MarketplaceAction::Update => Ok(vec![
                 "plugin".into(),
                 "add".into(),
                 selector,
                 "--json".into(),
             ]),
-            MarketplaceAction::Uninstall => Ok(vec![
-                "plugin".into(),
-                "remove".into(),
-                selector,
-                "--json".into(),
-            ]),
+            MarketplaceAction::Install | MarketplaceAction::Uninstall => {
+                Err("Codex plugin installation state is managed through app-server".into())
+            }
             MarketplaceAction::Enable | MarketplaceAction::Disable => {
                 Err("This Codex CLI does not expose per-plugin enable or disable commands".into())
             }
@@ -450,11 +480,16 @@ pub fn execute_action(
                 .and_then(|variant| variant.connector_type)
         })
         .flatten();
-    if provider == MarketplaceProvider::Codex
-        && action == MarketplaceAction::Authenticate
-        && connector_type.as_deref() == Some(CODEX_APP_CONNECTOR)
-    {
-        return open_codex_app_auth(plugin_id);
+    if provider == MarketplaceProvider::Codex {
+        if action == MarketplaceAction::Install
+            || (action == MarketplaceAction::Authenticate
+                && connector_type.as_deref() == Some(CODEX_APP_CONNECTOR))
+        {
+            return codex_plugin_install(&binary_path, plugin_id, marketplace, action);
+        }
+        if action == MarketplaceAction::Uninstall {
+            return codex_plugin_uninstall(&binary_path, plugin_id);
+        }
     }
     let args = action_args(
         provider,
@@ -490,32 +525,270 @@ pub fn execute_action(
     })
 }
 
-fn open_codex_app_auth(plugin_id: &str) -> Result<MarketplaceActionResult, BridgeError> {
-    #[cfg(target_os = "macos")]
-    {
-        let status = Command::new("open").args(["-a", "ChatGPT"]).status()?;
-        if !status.success() {
+fn codex_plugin_install(
+    binary_path: &Path,
+    plugin_id: &str,
+    marketplace: Option<&str>,
+    action: MarketplaceAction,
+) -> Result<MarketplaceActionResult, BridgeError> {
+    let plugin_name = plugin_id.split('@').next().unwrap_or(plugin_id);
+    let marketplace_name = marketplace
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| plugin_id.split_once('@').map(|(_, value)| value));
+    let marketplace_path = marketplace_name
+        .and_then(|name| codex_marketplace_path(binary_path, name))
+        .map(|path| path.to_string_lossy().into_owned());
+    let params = match marketplace_path {
+        Some(path) => serde_json::json!({
+            "pluginName": plugin_name,
+            "marketplacePath": path,
+            "remoteMarketplaceName": null,
+        }),
+        None => serde_json::json!({
+            "pluginName": plugin_name,
+            "marketplacePath": null,
+            "remoteMarketplaceName": marketplace_name,
+        }),
+    };
+    let result = codex_app_server_request(binary_path, "plugin/install", params)?;
+    let authorization_urls = result
+        .get("appsNeedingAuth")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|app| app.get("installUrl").and_then(Value::as_str))
+        .filter(|url| url.starts_with("https://"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if !authorization_urls.is_empty() {
+        open_authorization_urls(&authorization_urls)?;
+    }
+    Ok(MarketplaceActionResult {
+        provider: MarketplaceProvider::Codex,
+        plugin_id: plugin_id.into(),
+        action,
+        success: true,
+        message: if authorization_urls.is_empty() {
+            "Installed in Codex; no additional authorization is required".into()
+        } else {
+            "Installed in Codex; finish authorization in the browser window that opened".into()
+        },
+        error: None,
+    })
+}
+
+fn codex_plugin_uninstall(
+    binary_path: &Path,
+    plugin_id: &str,
+) -> Result<MarketplaceActionResult, BridgeError> {
+    codex_app_server_request(
+        binary_path,
+        "plugin/uninstall",
+        serde_json::json!({"pluginId": plugin_id}),
+    )?;
+    Ok(MarketplaceActionResult {
+        provider: MarketplaceProvider::Codex,
+        plugin_id: plugin_id.into(),
+        action: MarketplaceAction::Uninstall,
+        success: true,
+        message: "Uninstalled from Codex".into(),
+        error: None,
+    })
+}
+
+fn codex_marketplace_path(binary_path: &Path, marketplace: &str) -> Option<PathBuf> {
+    let output = Command::new(binary_path)
+        .args(["plugin", "marketplace", "list", "--json"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let value = serde_json::from_slice::<Value>(&output.stdout).ok()?;
+    let root = value
+        .get("marketplaces")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some(marketplace))?
+        .get("root")?
+        .as_str()?;
+    let path = Path::new(root).join(".agents/plugins/marketplace.json");
+    path.is_file().then_some(path)
+}
+
+pub fn app_auth_states() -> Result<Vec<MarketplaceAppAuthState>, BridgeError> {
+    let binary_path = binary::resolve("codex")
+        .ok_or_else(|| BridgeError::Adapter("Codex CLI is not installed".into()))?;
+    let result = codex_app_server_request(
+        &binary_path,
+        "app/list",
+        serde_json::json!({"forceRefetch": true}),
+    )?;
+    Ok(parse_app_auth_states(&result))
+}
+
+fn parse_app_auth_states(result: &Value) -> Vec<MarketplaceAppAuthState> {
+    result
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|app| {
+            let connector_id = app.get("id")?.as_str()?.trim();
+            let state = match app.get("isAccessible").and_then(Value::as_bool) {
+                Some(true) => "connected",
+                Some(false) if app.get("installUrl").and_then(Value::as_str).is_some() => {
+                    "required"
+                }
+                _ => return None,
+            };
+            Some(MarketplaceAppAuthState {
+                connector_id: connector_id.into(),
+                authentication_state: state.into(),
+            })
+        })
+        .collect()
+}
+
+fn codex_app_server_request(
+    binary_path: &Path,
+    method: &str,
+    params: Value,
+) -> Result<Value, BridgeError> {
+    let mut command = Command::new(binary_path);
+    command
+        .args(["app-server", "--listen", "stdio://"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.spawn()?;
+    let result = (|| {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| BridgeError::Adapter("Codex app-server stdin unavailable".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| BridgeError::Adapter("Codex app-server stdout unavailable".into()))?;
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let frame = serde_json::from_str::<Value>(line.trim())
+                            .map_err(|_| "Codex app-server returned an invalid frame".to_owned());
+                        if sender.send(frame).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = sender.send(Err("Codex app-server output closed".into()));
+                        break;
+                    }
+                }
+            }
+        });
+        let deadline = Instant::now() + CODEX_APP_SERVER_TIMEOUT;
+        write_app_server_frame(
+            &mut stdin,
+            &serde_json::json!({
+                "method": "initialize",
+                "id": 1,
+                "params": {
+                    "clientInfo": {"name": "bridge", "title": "Bridge", "version": env!("CARGO_PKG_VERSION")},
+                    "capabilities": {"experimentalApi": true, "requestAttestation": false}
+                }
+            }),
+        )?;
+        checked_app_server_result(receive_app_server_response(&receiver, 1, deadline)?)?;
+        write_app_server_frame(&mut stdin, &serde_json::json!({"method": "initialized"}))?;
+        write_app_server_frame(
+            &mut stdin,
+            &serde_json::json!({"method": method, "id": 2, "params": params}),
+        )?;
+        let response = receive_app_server_response(&receiver, 2, deadline)?;
+        checked_app_server_result(response)
+    })();
+    stop_app_server(&mut child);
+    result
+}
+
+fn write_app_server_frame(stdin: &mut ChildStdin, value: &Value) -> Result<(), BridgeError> {
+    serde_json::to_writer(&mut *stdin, value)
+        .map_err(|_| BridgeError::Adapter("Could not encode Codex app-server request".into()))?;
+    stdin.write_all(b"\n")?;
+    stdin.flush()?;
+    Ok(())
+}
+
+fn receive_app_server_response(
+    receiver: &Receiver<Result<Value, String>>,
+    id: i64,
+    deadline: Instant,
+) -> Result<Value, BridgeError> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Err(BridgeError::Adapter(
-                "Could not open ChatGPT. Open it manually, then open Plugins and authorize this app"
-                    .into(),
+                "Codex app-server timed out while syncing the plugin".into(),
             ));
         }
-        let name = plugin_id.split('@').next().unwrap_or(plugin_id);
-        return Ok(MarketplaceActionResult {
-            provider: MarketplaceProvider::Codex,
-            plugin_id: plugin_id.into(),
-            action: MarketplaceAction::Authenticate,
-            success: true,
-            message: format!(
-                "ChatGPT opened. Open Plugins, select {name}, and complete authorization there"
-            ),
-            error: None,
-        });
+        match receiver.recv_timeout(remaining) {
+            Ok(Ok(frame)) if frame.get("id").and_then(Value::as_i64) == Some(id) => {
+                return Ok(frame)
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(message)) => return Err(BridgeError::Adapter(message)),
+            Err(_) => {
+                return Err(BridgeError::Adapter(
+                    "Codex app-server timed out while syncing the plugin".into(),
+                ))
+            }
+        }
+    }
+}
+
+fn checked_app_server_result(response: Value) -> Result<Value, BridgeError> {
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(sanitize_error)
+            .unwrap_or_else(|| "Codex app-server request failed".into());
+        return Err(BridgeError::Adapter(message));
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| BridgeError::Adapter("Codex app-server returned no result".into()))
+}
+
+fn stop_app_server(child: &mut Child) {
+    let _ = crate::adapters::terminate_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn open_authorization_urls(urls: &[String]) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        for url in urls {
+            if !Command::new("open").arg(url).status()?.success() {
+                return Err(BridgeError::Adapter(
+                    "Codex installed the plugin, but Bridge could not open its authorization page"
+                        .into(),
+                ));
+            }
+        }
+        return Ok(());
     }
 
     #[cfg(not(target_os = "macos"))]
     Err(BridgeError::Adapter(
-        "Open the Codex or ChatGPT app, then open Plugins and authorize this app".into(),
+        "Codex installed the plugin, but automatic authorization-page opening is not supported on this platform".into(),
     ))
 }
 
@@ -525,6 +798,9 @@ pub fn sanitize_error(value: &str) -> String {
         .split_whitespace()
         .map(|part| {
             let lower = part.to_lowercase();
+            if lower.starts_with("https://") || lower.starts_with("http://") {
+                return "[REDACTED_URL]";
+            }
             if redact_following > 0 {
                 redact_following -= 1;
                 return "[REDACTED]";
@@ -608,17 +884,14 @@ mod tests {
 
     #[test]
     fn action_arguments_never_contain_credentials() {
-        assert_eq!(
-            action_args(
-                MarketplaceProvider::Codex,
-                MarketplaceAction::Install,
-                "vercel",
-                Some("official"),
-                None,
-            )
-            .unwrap(),
-            vec!["plugin", "add", "vercel@official", "--json"]
-        );
+        assert!(action_args(
+            MarketplaceProvider::Codex,
+            MarketplaceAction::Install,
+            "vercel",
+            Some("official"),
+            None,
+        )
+        .is_err());
         assert_eq!(
             action_args(
                 MarketplaceProvider::Claude,
@@ -705,8 +978,41 @@ mod tests {
         let variant = parse_variants(MarketplaceProvider::Codex, &source).remove(0);
 
         assert_eq!(variant.connector_type.as_deref(), Some(CODEX_APP_CONNECTOR));
+        assert_eq!(variant.app_connector_ids, vec!["connector_example"]);
         assert!(!variant.portable_mcp);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn parses_only_explicit_app_accessibility_states() {
+        let states = parse_app_auth_states(&json!({"data": [
+            {"id": "connected", "isAccessible": true},
+            {"id": "required", "isAccessible": false, "installUrl": "https://example.test/login?secret=state"},
+            {"id": "unknown", "isAccessible": false},
+            {"id": "missing"}
+        ]}));
+
+        assert_eq!(
+            states,
+            vec![
+                MarketplaceAppAuthState {
+                    connector_id: "connected".into(),
+                    authentication_state: "connected".into()
+                },
+                MarketplaceAppAuthState {
+                    connector_id: "required".into(),
+                    authentication_state: "required".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sanitization_never_surfaces_authorization_urls() {
+        assert_eq!(
+            sanitize_error("open https://chatgpt.com/apps/demo?state=sensitive now"),
+            "open [REDACTED_URL] now"
+        );
     }
 
     #[test]
