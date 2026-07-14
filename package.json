@@ -3,11 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "sidecar/claude-agent"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false && cargo check --manifest-path src-tauri/Cargo.toml",
-    "test": "vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "npm test --prefix sidecar/claude-agent && vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri"
   },
   "dependencies": {

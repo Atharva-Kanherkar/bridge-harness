@@ -7,10 +7,11 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     io::{BufReader, Write},
+    path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, OnceLock,
+        Arc, Mutex, MutexGuard,
     },
 };
 use uuid::Uuid;
@@ -58,12 +59,17 @@ fn launch(
         instructions,
         write_mode,
     } = request;
-    let binary = binary::resolve("claude").ok_or_else(|| {
+    // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
+    // long-lived streaming query serves every turn on a single session (fixing
+    // the `claude -p` "exit after one turn" behaviour), and the sidecar isolates
+    // the child from the user's global settings/hooks and MCP servers.
+    let node = binary::resolve("node").ok_or_else(|| {
         BridgeError::Invalid(
-            "Claude Code binary is not installed (expected `claude` on PATH or in ~/.local/bin)"
+            "Node.js is required to run Claude (expected `node` on PATH). Install Node 18+ to use Claude models."
                 .into(),
         )
     })?;
+    let sidecar = sidecar_entry()?;
     let session_id = resume_session_id
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -71,34 +77,33 @@ fn launch(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("sonnet");
-    let mut command = Command::new(binary);
-    command.args(claude_args(
-        &session_id,
-        chosen_model,
-        write_mode,
-        resume_session_id.is_some(),
-    ));
-    // Bridge injects the delegation protocol + worker brief as an appended
-    // system prompt so the child agent knows its single typed task.
-    if let Some(instructions) = instructions
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command.args(["--append-system-prompt", instructions]);
-    }
+    let config = json!({
+        "sessionId": session_id,
+        "model": chosen_model,
+        "cwd": cwd,
+        "resume": resume_session_id.is_some(),
+        // Bridge injects the delegation protocol + worker brief as an appended
+        // system prompt so the child agent knows its single typed task.
+        "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
+        "writeMode": write_mode.map(write_mode_label),
+    });
+    let mut command = Command::new(node);
     command
+        .arg(&sidecar)
+        .arg(config.to_string())
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env("CLAUDE_CODE_ENTRYPOINT", "bridge-deck");
+        .stderr(Stdio::null());
     // Claude Code has no per-run effort flag; the closest real knob is the
     // extended-thinking budget, which we scale by the routed effort tier.
     if let Some(budget) = thinking_budget(effort) {
         command.env("MAX_THINKING_TOKENS", budget.to_string());
     }
     crate::adapters::configure_process_group(&mut command);
-    let mut child = command.spawn()?;
+    let mut child = command.spawn().map_err(|e| {
+        BridgeError::Invalid(format!("Failed to launch the Claude Agent SDK sidecar via node: {e}"))
+    })?;
     let stdin = child
         .stdin
         .take()
@@ -131,29 +136,46 @@ fn launch(
     })
 }
 
-fn claude_args<'a>(
-    session_id: &'a str,
-    model: &'a str,
-    write_mode: Option<WriteMode>,
-    resume: bool,
-) -> Vec<&'a str> {
-    let mut args = vec![
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-    ];
-    args.extend(permission_args(write_mode));
-    args.extend(["--model", model]);
-    if resume {
-        args.extend(["--resume", session_id]);
-    } else {
-        args.extend(["--session-id", session_id]);
+/// The write-mode label passed to the sidecar, which maps it to SDK permission
+/// options (see `permissionOptions` in sidecar/claude-agent/index.mjs).
+fn write_mode_label(mode: WriteMode) -> &'static str {
+    match mode {
+        WriteMode::Full => "Full",
+        WriteMode::ReadOnly => "ReadOnly",
+        WriteMode::Shared => "Shared",
+        WriteMode::Isolated => "Isolated",
     }
-    args
+}
+
+/// Locate the Claude Agent SDK sidecar entrypoint. Honours an explicit
+/// `BRIDGE_CLAUDE_SIDECAR` override, then a bundled copy next to the executable
+/// (production), then the in-repo path (development).
+fn sidecar_entry() -> Result<PathBuf, BridgeError> {
+    if let Ok(path) = std::env::var("BRIDGE_CLAUDE_SIDECAR") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("sidecar/claude-agent/index.mjs"));
+            candidates.push(dir.join("../Resources/sidecar/claude-agent/index.mjs"));
+        }
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sidecar/claude-agent/index.mjs"),
+    );
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "Claude Agent SDK sidecar not found (set BRIDGE_CLAUDE_SIDECAR or ship sidecar/claude-agent/index.mjs next to the app)"
+                    .into(),
+            )
+        })
 }
 
 /// Query Claude Code's subscription usage via the headless `/usage` command.
@@ -280,39 +302,7 @@ fn classify_usage_label(head: &str) -> String {
 }
 
 pub fn supports_native_resume() -> bool {
-    static SUPPORTS: OnceLock<bool> = OnceLock::new();
-    *SUPPORTS.get_or_init(|| {
-        binary::resolve("claude")
-            .and_then(|binary| Command::new(binary).arg("--help").output().ok())
-            .is_some_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("--resume")
-            })
-    })
-}
-
-fn permission_args(write_mode: Option<WriteMode>) -> Vec<&'static str> {
-    match write_mode {
-        None | Some(WriteMode::Full) => {
-            vec!["--permission-mode", "bypassPermissions"]
-        }
-        Some(WriteMode::ReadOnly) => vec![
-            "--permission-mode",
-            "dontAsk",
-            "--allowedTools",
-            "Read",
-            "Grep",
-            "Glob",
-            "Bash",
-            "--disallowedTools",
-            "Edit",
-            "Write",
-            "NotebookEdit",
-        ],
-        Some(WriteMode::Shared | WriteMode::Isolated) => {
-            vec!["--permission-mode", "acceptEdits"]
-        }
-    }
+    binary::resolve("node").is_some() && sidecar_entry().is_ok()
 }
 
 impl ClaudeRuntime {
@@ -397,7 +387,15 @@ impl Drop for ClaudeRuntime {
 }
 
 pub fn binary_version() -> Option<String> {
-    binary::version("claude")
+    sidecar_entry().ok()?;
+    binary::version("node").map(|version| format!("Agent SDK (Node {version})"))
+}
+
+pub fn unavailable_reason() -> Option<String> {
+    if binary::resolve("node").is_none() {
+        return Some("Node.js 18+ is required to run Claude models".into());
+    }
+    sidecar_entry().err().map(|error| error.to_string())
 }
 
 /// Map a routed effort tier to an extended-thinking token budget. `None` leaves
@@ -452,51 +450,24 @@ mod tests {
     }
 
     #[test]
-    fn worker_permissions_follow_write_mode() {
-        for mode in [WriteMode::Shared, WriteMode::Isolated] {
-            let args = permission_args(Some(mode));
-            assert!(args
-                .windows(2)
-                .any(|pair| pair == ["--permission-mode", "acceptEdits"]));
-            assert!(!args.contains(&"bypassPermissions"));
-        }
-        assert!(permission_args(Some(WriteMode::Full)).contains(&"bypassPermissions"));
-        assert!(permission_args(None).contains(&"bypassPermissions"));
+    fn write_mode_labels_map_to_sidecar_permission_modes() {
+        assert_eq!(write_mode_label(WriteMode::Full), "Full");
+        assert_eq!(write_mode_label(WriteMode::ReadOnly), "ReadOnly");
+        assert_eq!(write_mode_label(WriteMode::Shared), "Shared");
+        assert_eq!(write_mode_label(WriteMode::Isolated), "Isolated");
     }
 
     #[test]
-    fn read_only_denies_direct_write_tools_without_full_bypass() {
-        let args = permission_args(Some(WriteMode::ReadOnly));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["--permission-mode", "dontAsk"]));
-        assert!(!args.contains(&"bypassPermissions"));
-        let deny_index = args
-            .iter()
-            .position(|arg| *arg == "--disallowedTools")
-            .unwrap();
-        for tool in ["Edit", "Write", "NotebookEdit"] {
-            assert!(args[deny_index + 1..].contains(&tool));
-        }
-        assert!(
-            args.contains(&"Bash"),
-            "test workers need build artifact access"
-        );
-    }
-
-    #[test]
-    fn fresh_and_resume_arguments_are_mutually_exclusive() {
-        let fresh = claude_args("new-id", "sonnet", None, false);
-        assert!(fresh
-            .windows(2)
-            .any(|pair| pair == ["--session-id", "new-id"]));
-        assert!(!fresh.contains(&"--resume"));
-
-        let resumed = claude_args("stored-id", "sonnet", None, true);
-        assert!(resumed
-            .windows(2)
-            .any(|pair| pair == ["--resume", "stored-id"]));
-        assert!(!resumed.contains(&"--session-id"));
+    fn sidecar_entry_honours_explicit_override() {
+        let dir = std::env::temp_dir().join(format!("bridge-sidecar-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("index.mjs");
+        std::fs::write(&entry, "// test").unwrap();
+        std::env::set_var("BRIDGE_CLAUDE_SIDECAR", &entry);
+        let resolved = sidecar_entry().unwrap();
+        std::env::remove_var("BRIDGE_CLAUDE_SIDECAR");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(resolved, entry);
     }
 
     #[test]
@@ -520,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an installed, authenticated Claude Code binary"]
+    #[ignore = "requires an authenticated Claude Agent SDK runtime"]
     fn live_stream_json_emits_a_structured_turn() {
         use std::{io::BufRead, sync::mpsc, thread, time::Duration};
         let cwd = std::env::temp_dir();
@@ -571,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an installed, authenticated Claude Code binary and persists a provider session"]
+    #[ignore = "requires an authenticated Claude Agent SDK runtime and persists a provider session"]
     fn live_claude_session_survives_process_restart() {
         use std::io::BufRead;
 

@@ -27,6 +27,12 @@ bun run check        # tsc -b + cargo check
 bun run test         # vitest run + cargo test
 ```
 
+**Claude models require Node.** Claude runs through the Claude Agent SDK via a
+Node sidecar (`sidecar/claude-agent/`), not `claude -p`. The root `bun install`
+installs its workspace dependencies; keep `node` (18+) on PATH.
+The Rust adapter finds the sidecar via `BRIDGE_CLAUDE_SIDECAR`, then a copy next
+to the executable, then the in-repo path.
+
 Always run `bun run build` and `bun run test` before opening or merging a PR; both must be green.
 
 ## Conventions
