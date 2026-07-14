@@ -23,10 +23,10 @@ test("resumed queries use resume without requesting a new session id", () => {
   assert.equal(options.sessionId, undefined);
 });
 
-test("query options preserve isolation, prompt, and read-only permissions", () => {
+test("query options inherit Claude plugins and connectors without inline credentials", () => {
   const options = buildOptions({ ...base, resume: false });
-  assert.deepEqual(options.settingSources, ["project", "local"]);
-  assert.equal(options.strictMcpConfig, true);
+  assert.deepEqual(options.settingSources, ["user", "project", "local"]);
+  assert.equal(options.strictMcpConfig, false);
   assert.deepEqual(options.mcpServers, {});
   assert.deepEqual(options.systemPrompt, {
     type: "preset",

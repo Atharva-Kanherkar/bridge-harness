@@ -23,10 +23,11 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(model ? { model } : {}),
     ...(cwd ? { cwd } : {}),
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
-    // Never inherit global user settings or auto-loaded MCP servers. Project
-    // and local instructions remain available to sessions launched in a repo.
-    settingSources: ["project", "local"],
-    strictMcpConfig: true,
+    // Bridge is a local, single-user desktop client. Load the same trusted user
+    // plugins and connectors as Claude Code while leaving credentials entirely
+    // in Claude's provider-owned settings and credential stores.
+    settingSources: ["user", "project", "local"],
+    strictMcpConfig: false,
     mcpServers: {},
     includePartialMessages: true,
     ...(instructions
