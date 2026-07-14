@@ -167,6 +167,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "portable-pty",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

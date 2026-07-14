@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
+import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
 import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -229,6 +229,9 @@ export const bridgeApi = {
     const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.status = "stopped"; session.endedAt = new Date().toISOString(); session.activeTurnId = null; }
     emitState(); return snapshot();
   },
+  prepareTurn: (text: string): Promise<SanitizedTurn> => isTauri()
+    ? invoke("prepare_turn", { text })
+    : Promise.resolve({ text, interceptions: [] }),
   sendTurn: async (sessionId: string, text: string): Promise<void> => {
     if (isTauri()) return invoke("send_turn", { sessionId, text });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");

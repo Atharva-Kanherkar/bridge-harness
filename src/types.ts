@@ -80,6 +80,8 @@ export interface BridgeState { projects: Project[]; workspaces: Workspace[]; ses
 export interface Health { ok: boolean; version: string; harnesses: Record<Harness, boolean>; database: string; adapters: AdapterDescriptor[] }
 export interface TerminalChunk { sessionId: string; data: string }
 export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }
+export interface SecretInterception { reference: string; detector: string }
+export interface SanitizedTurn { text: string; interceptions: SecretInterception[] }
 export type MarketplaceProvider = "codex" | "claude";
 export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
 export interface MarketplaceVariant {

@@ -15,6 +15,7 @@ mod policy;
 pub mod policy_replay;
 mod policy_coordinator;
 mod restoration;
+mod secret_interception;
 mod session_forest;
 mod session_supervisor;
 mod slash;
@@ -3181,6 +3182,48 @@ fn write_terminal(
 }
 
 #[tauri::command]
+fn prepare_turn(text: String) -> Result<secret_interception::SanitizedTurn, BridgeError> {
+    if text.trim().is_empty() {
+        return Err(BridgeError::Invalid("Message cannot be empty".into()));
+    }
+    Ok(secret_interception::sanitize(&text))
+}
+
+fn deliver_sanitized_turn(
+    runtime: &dyn adapters::AdapterRuntime,
+    text: &str,
+) -> Result<(), BridgeError> {
+    runtime.send_turn(text)
+}
+
+fn persist_submitted_user_turn(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    display_text: &str,
+) -> Result<Option<AgentEvent>, BridgeError> {
+    if adapter_id != "claude" {
+        return Ok(None);
+    }
+    let user_event = agent::NormalizedEvent {
+        kind: "message.completed".into(),
+        item_id: Some(format!("user-{}", Uuid::new_v4())),
+        role: Some("user".into()),
+        status: Some("completed".into()),
+        title: None,
+        text: Some(display_text.into()),
+        data: serde_json::json!({}),
+    };
+    store::session_event(
+        db,
+        session_id,
+        &user_event,
+        &serde_json::json!({"adapter": adapter_id}),
+    )
+    .map(Some)
+}
+
+#[tauri::command]
 fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppState>) -> Result<(), BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
@@ -3191,6 +3234,9 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         ));
     }
 
+    // Sanitize the user-authored text before slash expansion, adapter transport,
+    // optimistic UI projection, or durable conversation history can observe it.
+    let sanitized_input = secret_interception::sanitize(&text);
     let available: std::collections::HashSet<String> = state
         .adapter_registry
         .descriptors()
@@ -3204,7 +3250,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         |row| row.get(0),
     )?;
 
-    let outbound = match slash::dispatch(&text, &session_harness, &available) {
+    let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
         slash::SlashDispatch::Usage => {
             refresh_account_usage(app.clone(), state.clone())?;
             emit_local_assistant(
@@ -3258,7 +3304,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    if let Err(error) = runtime.send_turn(&outbound) {
+    if let Err(error) = deliver_sanitized_turn(runtime.as_ref(), &outbound) {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
         return Err(error);
@@ -3272,23 +3318,14 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     )?;
     // Claude stream-json does not reliably echo the submitted user turn; persist it locally.
     // Prefer the original slash text for the transcript when we expanded a skill/prompt.
-    let display_text = if outbound != text { text.clone() } else { outbound.clone() };
-    if adapter_id == "claude" {
-        let user_event = agent::NormalizedEvent {
-            kind: "message.completed".into(),
-            item_id: Some(format!("user-{}", Uuid::new_v4())),
-            role: Some("user".into()),
-            status: Some("completed".into()),
-            title: None,
-            text: Some(display_text),
-            data: serde_json::json!({}),
-        };
-        let event = store::session_event(
-            &db,
-            &session_id,
-            &user_event,
-            &serde_json::json!({"adapter": adapter_id}),
-        )?;
+    let display_text = if outbound != sanitized_input.text {
+        sanitized_input.text
+    } else {
+        outbound.clone()
+    };
+    if let Some(event) =
+        persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
+    {
         let _ = app.emit("agent-event", event);
     }
     let _ = db.execute(
@@ -4061,6 +4098,7 @@ pub fn run() {
             open_terminal,
             write_terminal,
             resize_terminal,
+            prepare_turn,
             send_turn,
             compact_session,
             interrupt_turn,
@@ -4077,6 +4115,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingRuntime {
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl adapters::AdapterRuntime for RecordingRuntime {
+        fn process_id(&self) -> u32 { 0 }
+        fn provider_session_id(&self) -> &str { "recording" }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+            self.sent.lock().unwrap().push(text.into());
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _reason: adapters::ShutdownReason) {}
+    }
 
     struct RejectingRuntime;
 
@@ -4121,6 +4176,46 @@ mod tests {
         )]));
         assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
         assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+    }
+
+    #[test]
+    fn chat_secret_is_sanitized_before_harness_delivery() {
+        let canary = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ";
+        let prepared = secret_interception::sanitize(&format!("review issue 42 with {canary}"));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let runtime = RecordingRuntime { sent: sent.clone() };
+
+        deliver_sanitized_turn(&runtime, &prepared.text).unwrap();
+
+        let delivered = sent.lock().unwrap().first().cloned().unwrap();
+        assert!(!delivered.contains(canary));
+        assert!(delivered.contains("[secret:sec_"));
+    }
+
+    #[test]
+    fn claude_history_persists_only_the_sanitized_user_turn() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('secret-chat',NULL,'claude','Secret chat','working','reported','direct')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('secret-chat','fresh','now')",
+            [],
+        )
+        .unwrap();
+        let canary = "xoxb-123456789012-abcdefghijklmnop";
+        let prepared = secret_interception::sanitize(&format!("post using {canary}"));
+
+        persist_submitted_user_turn(&db, "secret-chat", "claude", &prepared.text)
+            .unwrap()
+            .unwrap();
+
+        let serialized = serde_json::to_string(&store::session_entries(&db, "secret-chat").unwrap())
+            .unwrap();
+        assert!(!serialized.contains(canary));
+        assert!(serialized.contains("[secret:sec_"));
     }
 
     #[test]
