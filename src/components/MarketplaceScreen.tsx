@@ -83,6 +83,8 @@ function ServiceCard({
         const working = busyKey === key;
         const nextToggle: MarketplaceAction = variant.enabled ? "disable" : "enable";
         const canToggle = variant.supportedActions.includes(nextToggle);
+        const isCodexApp = variant.provider === "codex" && variant.connectorType === "app";
+        const canAuthenticate = variant.supportedActions.includes("authenticate") && (isCodexApp || variant.authenticationState.toLowerCase() === "required");
         return <div key={`${variant.provider}:${variant.pluginId}`} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center gap-2 text-xs font-medium text-neutral-200">
@@ -97,7 +99,7 @@ function ServiceCard({
               {variant.supportedActions.includes("update") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>}
               {variant.supportedActions.includes("uninstall") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>}
             </>}
-            {variant.installed && variant.supportedActions.includes("authenticate") && variant.authenticationState.toLowerCase() === "required" && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={12} aria-hidden="true" /> Connect {providerLabel(variant.provider)}</Button>}
+            {variant.installed && canAuthenticate && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={12} aria-hidden="true" /> {isCodexApp ? "Open in Codex" : `Connect ${providerLabel(variant.provider)}`}</Button>}
           </div>
         </div>;
       })}

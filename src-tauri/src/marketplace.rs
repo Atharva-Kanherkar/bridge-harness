@@ -1,7 +1,10 @@
 use crate::{binary, BridgeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, process::Command};
+use std::{collections::BTreeMap, fs, path::Path, process::Command};
+
+const CODEX_APP_CONNECTOR: &str = "app";
+const MCP_CONNECTOR: &str = "mcp";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -156,6 +159,11 @@ fn merge_variant(existing: &mut PluginVariant, incoming: &PluginVariant) {
             existing.capabilities.push(capability.clone());
         }
     }
+    if incoming.connector_type.as_deref() == Some(CODEX_APP_CONNECTOR) {
+        existing.connector_type = incoming.connector_type.clone();
+        existing.portable_mcp = false;
+        existing.compatibility_notes = incoming.compatibility_notes.clone();
+    }
 }
 
 fn parse_variants(provider: MarketplaceProvider, root: &Value) -> Vec<PluginVariant> {
@@ -197,7 +205,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
     let plugin_id = string_field(object, &["id", "pluginId", "plugin_id", "name"])?;
     let name = string_field(object, &["displayName", "display_name", "title", "name"])
         .unwrap_or_else(|| plugin_id.clone());
-    let connector_type = string_field(
+    let mut connector_type = string_field(
         object,
         &["connectorType", "connector_type", "transport", "type"],
     );
@@ -242,13 +250,18 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
             "credential_source",
         ],
     );
+    let source = source_value(object);
+    if provider == MarketplaceProvider::Codex && plugin_declares_app(source.as_deref()) {
+        connector_type = Some(CODEX_APP_CONNECTOR.into());
+    } else if connector_type.is_none() && mcp_endpoint.is_some() {
+        connector_type = Some(MCP_CONNECTOR.into());
+    }
     let provider_specific = connector_type.as_deref().is_some_and(|kind| {
         matches!(
             kind.to_lowercase().as_str(),
-            "connector" | "hosted_connector" | "hosted-connector"
+            "app" | "connector" | "hosted_connector" | "hosted-connector"
         )
     });
-    let source = source_value(object);
     let repository = string_field(
         object,
         &["repository", "repositoryUrl", "repository_url", "repo"],
@@ -284,6 +297,19 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         supported_actions: supported_actions(provider),
         provider_metadata: redact_sensitive_json(value),
     })
+}
+
+fn plugin_declares_app(source: Option<&str>) -> bool {
+    let Some(source) = source.filter(|value| !value.contains("://")) else {
+        return false;
+    };
+    let Ok(contents) = fs::read(Path::new(source).join(".app.json")) else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(&contents)
+        .ok()
+        .and_then(|value| value.get("apps").and_then(Value::as_object).cloned())
+        .is_some_and(|apps| !apps.is_empty())
 }
 
 fn string_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -338,13 +364,22 @@ fn action_args(
     action: MarketplaceAction,
     plugin_id: &str,
     marketplace: Option<&str>,
+    connector_type: Option<&str>,
 ) -> Result<Vec<String>, String> {
     if action == MarketplaceAction::Authenticate {
         let auth_target = plugin_id.split('@').next().unwrap_or(plugin_id);
-        return Ok(match provider {
-            MarketplaceProvider::Codex => vec!["mcp".into(), "login".into(), auth_target.into()],
-            MarketplaceProvider::Claude => vec!["/mcp".into(), auth_target.into()],
-        });
+        return match provider {
+            MarketplaceProvider::Codex if connector_type == Some(MCP_CONNECTOR) => {
+                Ok(vec!["mcp".into(), "login".into(), auth_target.into()])
+            }
+            MarketplaceProvider::Codex if connector_type == Some(CODEX_APP_CONNECTOR) => Err(
+                "Codex app connectors must be authorized in the native Codex plugin surface".into(),
+            ),
+            MarketplaceProvider::Codex => {
+                Err("No supported Codex authentication route was found for this plugin".into())
+            }
+            MarketplaceProvider::Claude => Ok(vec!["/mcp".into(), auth_target.into()]),
+        };
     }
     let has_marketplace = plugin_id.contains('@');
     let selector = if has_marketplace {
@@ -406,8 +441,29 @@ pub fn execute_action(
     let binary_path = binary::resolve(provider.binary()).ok_or_else(|| {
         BridgeError::Adapter(format!("{} CLI is not installed", provider.binary()))
     })?;
-    let args =
-        action_args(provider, action, plugin_id, marketplace).map_err(BridgeError::Adapter)?;
+    let connector_type = (action == MarketplaceAction::Authenticate)
+        .then(|| {
+            provider_catalog(provider)
+                .variants
+                .into_iter()
+                .find(|variant| variant.plugin_id == plugin_id)
+                .and_then(|variant| variant.connector_type)
+        })
+        .flatten();
+    if provider == MarketplaceProvider::Codex
+        && action == MarketplaceAction::Authenticate
+        && connector_type.as_deref() == Some(CODEX_APP_CONNECTOR)
+    {
+        return open_codex_app_auth(plugin_id);
+    }
+    let args = action_args(
+        provider,
+        action,
+        plugin_id,
+        marketplace,
+        connector_type.as_deref(),
+    )
+    .map_err(BridgeError::Adapter)?;
     let output = Command::new(binary_path).args(&args).output()?;
     let stdout = sanitize_error(String::from_utf8_lossy(&output.stdout).trim());
     let stderr = sanitize_error(String::from_utf8_lossy(&output.stderr).trim());
@@ -432,6 +488,35 @@ pub fn execute_action(
             stderr
         }),
     })
+}
+
+fn open_codex_app_auth(plugin_id: &str) -> Result<MarketplaceActionResult, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open").args(["-a", "ChatGPT"]).status()?;
+        if !status.success() {
+            return Err(BridgeError::Adapter(
+                "Could not open ChatGPT. Open it manually, then open Plugins and authorize this app"
+                    .into(),
+            ));
+        }
+        let name = plugin_id.split('@').next().unwrap_or(plugin_id);
+        return Ok(MarketplaceActionResult {
+            provider: MarketplaceProvider::Codex,
+            plugin_id: plugin_id.into(),
+            action: MarketplaceAction::Authenticate,
+            success: true,
+            message: format!(
+                "ChatGPT opened. Open Plugins, select {name}, and complete authorization there"
+            ),
+            error: None,
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    Err(BridgeError::Adapter(
+        "Open the Codex or ChatGPT app, then open Plugins and authorize this app".into(),
+    ))
 }
 
 pub fn sanitize_error(value: &str) -> String {
@@ -528,7 +613,8 @@ mod tests {
                 MarketplaceProvider::Codex,
                 MarketplaceAction::Install,
                 "vercel",
-                Some("official")
+                Some("official"),
+                None,
             )
             .unwrap(),
             vec!["plugin", "add", "vercel@official", "--json"]
@@ -538,7 +624,8 @@ mod tests {
                 MarketplaceProvider::Claude,
                 MarketplaceAction::Authenticate,
                 "vercel@official",
-                None
+                None,
+                None,
             )
             .unwrap(),
             vec!["/mcp", "vercel"]
@@ -548,7 +635,8 @@ mod tests {
                 MarketplaceProvider::Claude,
                 MarketplaceAction::Install,
                 "vercel@official",
-                Some("official")
+                Some("official"),
+                None,
             )
             .unwrap(),
             vec!["plugin", "install", "vercel@official"]
@@ -557,9 +645,68 @@ mod tests {
             MarketplaceProvider::Codex,
             MarketplaceAction::Disable,
             "vercel@official",
-            None
+            None,
+            None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn codex_authentication_routes_only_named_mcp_servers_to_mcp_login() {
+        assert_eq!(
+            action_args(
+                MarketplaceProvider::Codex,
+                MarketplaceAction::Authenticate,
+                "notion@official",
+                None,
+                Some(MCP_CONNECTOR),
+            )
+            .unwrap(),
+            vec!["mcp", "login", "notion"]
+        );
+        assert!(action_args(
+            MarketplaceProvider::Codex,
+            MarketplaceAction::Authenticate,
+            "vercel@openai-curated",
+            None,
+            Some(CODEX_APP_CONNECTOR),
+        )
+        .is_err());
+        assert!(action_args(
+            MarketplaceProvider::Codex,
+            MarketplaceAction::Authenticate,
+            "unknown@official",
+            None,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn detects_codex_app_manifest_without_reading_credentials() {
+        let directory = std::env::temp_dir().join(format!(
+            "bridge-marketplace-app-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(".app.json"),
+            r#"{"apps":{"vercel":{"id":"connector_example"}}}"#,
+        )
+        .unwrap();
+        let source = json!([{
+            "pluginId": "vercel@openai-curated",
+            "name": "vercel",
+            "source": {"source": "local", "path": directory.to_string_lossy()},
+            "installed": true
+        }]);
+
+        let variant = parse_variants(MarketplaceProvider::Codex, &source).remove(0);
+
+        assert_eq!(variant.connector_type.as_deref(), Some(CODEX_APP_CONNECTOR));
+        assert!(!variant.portable_mcp);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
