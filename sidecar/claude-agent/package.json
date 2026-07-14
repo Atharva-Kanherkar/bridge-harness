@@ -1,0 +1,11 @@
+{
+  "name": "bridge-claude-agent-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node sidecar that drives Claude via the Claude Agent SDK for Bridge's Rust backend.",
+  "main": "index.mjs",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.209"
+  }
+}
