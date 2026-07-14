@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import { compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, type MarketplaceService } from "../marketplace";
+import { authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, type MarketplaceService } from "../marketplace";
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,16 +14,14 @@ function providerLabel(provider: MarketplaceProvider): string {
 }
 
 function Status({ variant }: { variant: MarketplaceVariant }) {
-  const auth = variant.authenticationState.toLowerCase();
+  const auth = authenticationLabel(variant.authenticationState);
   return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-neutral-500">
     <span className="inline-flex items-center gap-1.5">
       <span className={`h-1.5 w-1.5 rounded-full ${variant.installed ? "bg-emerald-400" : "bg-neutral-600"}`} />
       {variant.installed ? "Installed" : "Available"}
     </span>
     <span>{variant.enabled ? "Enabled" : "Disabled"}</span>
-    <span className={auth === "connected" ? "text-emerald-400" : auth === "required" ? "text-amber-400" : ""}>
-      {auth === "connected" ? "Connected" : auth === "required" ? "Needs login" : "Auth unknown"}
-    </span>
+    {auth && <span className={auth === "Connected" ? "text-emerald-400" : "text-amber-400"}>{auth}</span>}
   </div>;
 }
 

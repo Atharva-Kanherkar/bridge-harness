@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES } from "./marketplace";
+import { authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES } from "./marketplace";
 import type { MarketplaceVariant } from "./types";
 
 function variant(provider: "codex" | "claude", pluginId: string, overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant {
@@ -59,6 +59,15 @@ describe("marketplace compatibility", () => {
       variant("claude", "two", { mcpEndpoint: "https://mcp.example.test", sharedAuthMechanism: "gh_cli" }),
     ])[0];
     expect(compatibilityLabels(service)).toContain("Shared auth compatible");
+  });
+});
+
+describe("authentication presentation", () => {
+  it("shows only explicit provider-reported authentication states", () => {
+    expect(authenticationLabel("connected")).toBe("Connected");
+    expect(authenticationLabel("required")).toBe("Needs login");
+    expect(authenticationLabel("unknown")).toBeNull();
+    expect(authenticationLabel("unrecognized-provider-state")).toBeNull();
   });
 });
 

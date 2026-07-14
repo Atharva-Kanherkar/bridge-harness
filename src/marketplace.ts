@@ -27,6 +27,13 @@ export const MARKETPLACE_ALIASES: MarketplaceAliases = {
   "claude:stripe@claude-plugins-official": "stripe",
 };
 
+export function authenticationLabel(state: string): "Connected" | "Needs login" | null {
+  const normalized = state.trim().toLowerCase();
+  if (normalized === "connected") return "Connected";
+  if (normalized === "required") return "Needs login";
+  return null;
+}
+
 function clean(value?: string | null): string | null {
   const normalized = value?.trim().toLowerCase().replace(/\/$/, "") ?? "";
   return normalized || null;
