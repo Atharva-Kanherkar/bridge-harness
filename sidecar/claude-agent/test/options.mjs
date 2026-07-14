@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildOptions, permissionOptions } from "./options.mjs";
+import { buildOptions, permissionOptions } from "../options.mjs";
 
 const base = {
   sessionId: "11111111-1111-4111-8111-111111111111",
@@ -13,21 +13,18 @@ const base = {
 
 test("fresh queries use the adapter-allocated session id", () => {
   const options = buildOptions({ ...base, resume: false });
-
   assert.equal(options.sessionId, base.sessionId);
   assert.equal(options.resume, undefined);
 });
 
 test("resumed queries use resume without requesting a new session id", () => {
   const options = buildOptions({ ...base, resume: true });
-
   assert.equal(options.resume, base.sessionId);
   assert.equal(options.sessionId, undefined);
 });
 
 test("query options preserve isolation, prompt, and read-only permissions", () => {
   const options = buildOptions({ ...base, resume: false });
-
   assert.deepEqual(options.settingSources, ["project", "local"]);
   assert.equal(options.strictMcpConfig, true);
   assert.deepEqual(options.mcpServers, {});
@@ -43,7 +40,6 @@ test("query options preserve isolation, prompt, and read-only permissions", () =
 
 test("read-only mode denies direct write tools without dangerous bypass", () => {
   const options = permissionOptions("ReadOnly");
-
   assert.equal(options.permissionMode, "dontAsk");
   assert.equal(options.allowDangerouslySkipPermissions, undefined);
   assert.deepEqual(options.allowedTools, ["Read", "Grep", "Glob", "Bash"]);
