@@ -113,7 +113,7 @@ const mockHealth: Health = {
 
 const mockMarketplace: MarketplaceCatalog = { providers: [
   { provider: "codex", available: true, error: null, variants: [{ provider: "codex", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: null, connectorType: "app", appConnectorIds: ["connector_vercel"], installed: true, enabled: true, authenticationState: "required", sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
-  { provider: "claude", available: true, error: null, variants: [{ provider: "claude", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: "https://mcp.vercel.com", connectorType: "mcp", appConnectorIds: [], installed: false, enabled: false, authenticationState: "required", sharedAuthMechanism: null, portableMcp: true, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
+  { provider: "claude", available: true, error: null, variants: [{ provider: "claude", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: "https://mcp.vercel.com", connectorType: "connector", appConnectorIds: ["plugin:vercel:vercel"], installed: false, enabled: false, authenticationState: "required", sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
 ] };
 
 export const bridgeApi = {
@@ -122,7 +122,11 @@ export const bridgeApi = {
     if (isTauri()) return invoke("marketplace_app_auth_states");
     const variant = mockMarketplace.providers.find(item => item.provider === "codex")?.variants.find(item => item.appConnectorIds.includes("connector_vercel"));
     const authenticationState = variant?.authenticationState === "connected" ? "connected" : "required";
-    return Promise.resolve([{ connectorId: "connector_vercel", authenticationState }]);
+    return Promise.resolve([
+      { provider: "codex", connectorId: "connector_vercel", displayName: null, nativeConnector: false, authenticationState },
+      { provider: "claude", connectorId: "plugin:vercel:vercel", displayName: null, nativeConnector: false, authenticationState: "required" },
+      { provider: "claude", connectorId: "claude.ai Notion", displayName: "Notion", nativeConnector: true, authenticationState: "connected" },
+    ]);
   },
   marketplaceAction: async (provider: MarketplaceProvider, pluginId: string, marketplace: string | null, action: MarketplaceAction): Promise<MarketplaceActionResult> => {
     if (isTauri()) return invoke("marketplace_action", { provider, pluginId, marketplace, action });

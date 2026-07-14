@@ -94,7 +94,10 @@ export interface MarketplaceProviderCatalog {
   provider: MarketplaceProvider; available: boolean; variants: MarketplaceVariant[]; error: string | null;
 }
 export interface MarketplaceCatalog { providers: MarketplaceProviderCatalog[] }
-export interface MarketplaceAppAuthState { connectorId: string; authenticationState: "connected" | "required" }
+export interface MarketplaceAppAuthState {
+  provider: MarketplaceProvider; connectorId: string; displayName: string | null; nativeConnector: boolean;
+  authenticationState: "connected" | "required";
+}
 export interface MarketplaceActionResult {
   provider: MarketplaceProvider; pluginId: string; action: MarketplaceAction;
   success: boolean; message: string; error: string | null;

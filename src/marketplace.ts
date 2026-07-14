@@ -38,15 +38,32 @@ export function applyAppAuthStates(
   catalog: MarketplaceCatalog,
   states: MarketplaceAppAuthState[],
 ): MarketplaceCatalog {
-  const byConnector = new Map(states.map(state => [state.connectorId, state.authenticationState]));
+  const byConnector = new Map(states.map(state => [`${state.provider}:${state.connectorId}`, state.authenticationState]));
   return {
     providers: catalog.providers.map(provider => ({
       ...provider,
-      variants: provider.variants.map(variant => {
-        const explicit = variant.appConnectorIds.map(id => byConnector.get(id)).filter((state): state is "connected" | "required" => !!state);
-        const authenticationState = explicit.includes("connected") ? "connected" : explicit.includes("required") ? "required" : variant.authenticationState;
-        return authenticationState === variant.authenticationState ? variant : { ...variant, authenticationState };
-      }),
+      variants: (() => {
+        const variants = provider.variants.map(variant => {
+          const explicit = variant.appConnectorIds.map(id => byConnector.get(`${variant.provider}:${id}`)).filter((state): state is "connected" | "required" => !!state);
+          const authenticationState = explicit.includes("required") ? "required" : explicit.includes("connected") ? "connected" : variant.authenticationState;
+          return authenticationState === variant.authenticationState ? variant : { ...variant, authenticationState };
+        });
+        const represented = new Set(variants.flatMap(variant => variant.appConnectorIds));
+        if (provider.provider === "claude") {
+          for (const state of states.filter(item => item.provider === "claude" && item.nativeConnector && !represented.has(item.connectorId))) {
+            variants.push({
+              provider: "claude", pluginId: state.connectorId, name: state.displayName ?? state.connectorId,
+              description: "Claude connector", marketplace: null, version: null, source: "claude.ai", repository: null,
+              publisher: "Anthropic", capabilities: [], mcpEndpoint: null, connectorType: "connector",
+              appConnectorIds: [state.connectorId], installed: true, enabled: true,
+              authenticationState: state.authenticationState, sharedAuthMechanism: null, portableMcp: false,
+              compatibilityNotes: ["Claude-native connector"], supportedActions: ["authenticate"], providerMetadata: {},
+            });
+            represented.add(state.connectorId);
+          }
+        }
+        return variants;
+      })(),
     })),
   };
 }

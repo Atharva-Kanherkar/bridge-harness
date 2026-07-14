@@ -78,10 +78,29 @@ describe("authentication presentation", () => {
       ],
     }] };
 
-    const merged = applyAppAuthStates(catalog, [{ connectorId: "connector_vercel", authenticationState: "connected" }]);
+    const merged = applyAppAuthStates(catalog, [{ provider: "codex", connectorId: "connector_vercel", displayName: null, nativeConnector: false, authenticationState: "connected" }]);
 
     expect(merged.providers[0].variants[0].authenticationState).toBe("connected");
     expect(merged.providers[0].variants[1].authenticationState).toBe("unknown");
+  });
+
+  it("adds native Claude connectors and keeps required precedence for plugin bundles", () => {
+    const catalog: MarketplaceCatalog = { providers: [{
+      provider: "claude", available: true, error: null, variants: [
+        variant("claude", "vercel", { appConnectorIds: ["plugin:vercel:docs", "plugin:vercel:vercel"], authenticationState: "unknown" }),
+      ],
+    }] };
+
+    const merged = applyAppAuthStates(catalog, [
+      { provider: "claude", connectorId: "plugin:vercel:docs", displayName: null, nativeConnector: false, authenticationState: "connected" },
+      { provider: "claude", connectorId: "plugin:vercel:vercel", displayName: null, nativeConnector: false, authenticationState: "required" },
+      { provider: "claude", connectorId: "claude.ai Notion", displayName: "Notion", nativeConnector: true, authenticationState: "connected" },
+    ]);
+
+    expect(merged.providers[0].variants[0].authenticationState).toBe("required");
+    expect(merged.providers[0].variants[1]).toMatchObject({
+      pluginId: "claude.ai Notion", name: "Notion", connectorType: "connector", authenticationState: "connected",
+    });
   });
 });
 

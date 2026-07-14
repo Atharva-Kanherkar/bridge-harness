@@ -161,7 +161,7 @@ export function MarketplaceScreen() {
     void refreshAuth();
     const timer = window.setInterval(() => {
       const needsRefresh = catalogRef.current?.providers.some(item => item.variants.some(variant =>
-        variant.provider === "codex" && variant.installed && variant.connectorType === "app" && variant.authenticationState.toLowerCase() !== "connected",
+        variant.installed && variant.appConnectorIds.length > 0 && variant.authenticationState.toLowerCase() !== "connected",
       ));
       if (needsRefresh) void refreshAuth();
     }, 15_000);
