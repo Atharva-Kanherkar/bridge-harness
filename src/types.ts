@@ -80,3 +80,20 @@ export interface BridgeState { projects: Project[]; workspaces: Workspace[]; ses
 export interface Health { ok: boolean; version: string; harnesses: Record<Harness, boolean>; database: string; adapters: AdapterDescriptor[] }
 export interface TerminalChunk { sessionId: string; data: string }
 export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }
+export type MarketplaceProvider = "codex" | "claude";
+export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
+export interface MarketplaceVariant {
+  provider: MarketplaceProvider; pluginId: string; name: string; description: string | null;
+  marketplace: string | null; version: string | null; source: string | null; repository: string | null;
+  publisher: string | null; capabilities: string[]; mcpEndpoint: string | null; connectorType: string | null;
+  installed: boolean; enabled: boolean; authenticationState: string; sharedAuthMechanism: string | null;
+  portableMcp: boolean; compatibilityNotes: string[]; providerMetadata: Record<string, unknown>;
+}
+export interface MarketplaceProviderCatalog {
+  provider: MarketplaceProvider; available: boolean; variants: MarketplaceVariant[]; error: string | null;
+}
+export interface MarketplaceCatalog { providers: MarketplaceProviderCatalog[] }
+export interface MarketplaceActionResult {
+  provider: MarketplaceProvider; pluginId: string; action: MarketplaceAction;
+  success: boolean; message: string; error: string | null;
+}
