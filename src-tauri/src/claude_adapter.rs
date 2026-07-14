@@ -11,7 +11,7 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, OnceLock,
+        Arc, Mutex, MutexGuard,
     },
 };
 use uuid::Uuid;
@@ -302,15 +302,7 @@ fn classify_usage_label(head: &str) -> String {
 }
 
 pub fn supports_native_resume() -> bool {
-    static SUPPORTS: OnceLock<bool> = OnceLock::new();
-    *SUPPORTS.get_or_init(|| {
-        binary::resolve("claude")
-            .and_then(|binary| Command::new(binary).arg("--help").output().ok())
-            .is_some_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("--resume")
-            })
-    })
+    binary::resolve("node").is_some() && sidecar_entry().is_ok()
 }
 
 impl ClaudeRuntime {
@@ -395,7 +387,15 @@ impl Drop for ClaudeRuntime {
 }
 
 pub fn binary_version() -> Option<String> {
-    binary::version("claude")
+    sidecar_entry().ok()?;
+    binary::version("node").map(|version| format!("Agent SDK (Node {version})"))
+}
+
+pub fn unavailable_reason() -> Option<String> {
+    if binary::resolve("node").is_none() {
+        return Some("Node.js 18+ is required to run Claude models".into());
+    }
+    sidecar_entry().err().map(|error| error.to_string())
 }
 
 /// Map a routed effort tier to an extended-thinking token budget. `None` leaves
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an installed, authenticated Claude Code binary"]
+    #[ignore = "requires an authenticated Claude Agent SDK runtime"]
     fn live_stream_json_emits_a_structured_turn() {
         use std::{io::BufRead, sync::mpsc, thread, time::Duration};
         let cwd = std::env::temp_dir();
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an installed, authenticated Claude Code binary and persists a provider session"]
+    #[ignore = "requires an authenticated Claude Agent SDK runtime and persists a provider session"]
     fn live_claude_session_survives_process_restart() {
         use std::io::BufRead;
 

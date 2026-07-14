@@ -405,9 +405,7 @@ impl HarnessAdapter for ClaudeAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            unavailable_reason: binary::resolve("claude")
-                .is_none()
-                .then(|| "Claude Code binary is not installed".into()),
+            unavailable_reason: claude_adapter::unavailable_reason(),
             models: model_options(&[
                 ("haiku", "Claude Haiku", CapabilityTier::Fast, true),
                 ("sonnet", "Claude Sonnet", CapabilityTier::Standard, true),

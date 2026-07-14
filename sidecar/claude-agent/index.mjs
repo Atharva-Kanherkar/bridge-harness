@@ -18,6 +18,7 @@
 
 import { createInterface } from "node:readline";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { buildOptions } from "./options.mjs";
 
 function fail(message) {
   process.stdout.write(JSON.stringify({ type: "result", subtype: "error_sidecar", is_error: true, result: message }) + "\n");
@@ -31,21 +32,7 @@ try {
   fail(`Invalid sidecar config: ${error?.message ?? error}`);
 }
 
-const { sessionId, model, cwd, resume, instructions, writeMode } = config;
-
-// Mirror the old permission_args() mapping onto SDK options.
-function permissionOptions(mode) {
-  switch (mode) {
-    case "ReadOnly":
-      return { permissionMode: "dontAsk", allowedTools: ["Read", "Grep", "Glob", "Bash"], disallowedTools: ["Edit", "Write", "NotebookEdit"] };
-    case "Shared":
-    case "Isolated":
-      return { permissionMode: "acceptEdits" };
-    case "Full":
-    default:
-      return { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true };
-  }
-}
+const { sessionId } = config;
 
 // Push-driven async iterable of SDKUserMessage: turns arrive on stdin over the
 // life of the process and are fed into the one streaming query.
@@ -83,20 +70,7 @@ function userMessage(text) {
   };
 }
 
-const options = {
-  ...(model ? { model } : {}),
-  ...(cwd ? { cwd } : {}),
-  ...(resume && sessionId ? { resume: sessionId } : {}),
-  // Isolation: never inherit the user's *global* (`user`) settings — that is
-  // where broken/global hooks live — and never auto-load the user's MCP
-  // servers, whose startup can stall a turn. Project/local config still applies.
-  settingSources: ["project", "local"],
-  strictMcpConfig: true,
-  mcpServers: {},
-  includePartialMessages: true,
-  ...(instructions ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } } : {}),
-  ...permissionOptions(writeMode),
-};
+const options = buildOptions(config);
 
 const run = query({ prompt: input, options });
 
