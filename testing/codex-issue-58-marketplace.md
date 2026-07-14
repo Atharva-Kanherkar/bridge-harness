@@ -23,6 +23,7 @@
 - Existing supervision, session persistence, permission-mode mapping, and Codex runtime behavior remain unchanged; Claude SDK initialization additionally inherits the trusted desktop user's enabled plugins and connectors.
 - The marketplace uses a compact Codex-style information hierarchy: a concise title and search field, an installed-plugin icon strip, Public/Personal catalog tabs, and a dense two-column plugin list. Provider-specific install, lifecycle, and authentication controls remain available without turning every catalog entry into a large card.
 - Plugin rows and the installed strip use the provider-owned logo declared by a local Codex or Claude plugin manifest when available. Logo paths must stay within the plugin directory, supported files are size-capped, and initials remain the fallback when no validated local asset exists.
+- When a local logo is unavailable, Bridge derives a network fallback only from provider-declared official website or repository metadata: an official-site favicon is preferred, followed by a GitHub organization avatar. Only credential-free HTTPS origins on standard ports are allowed; localhost, raw IP addresses, malformed URLs, and failed images fall back to initials.
 
 ## Unit Tests
 
@@ -41,6 +42,7 @@
 - TypeScript compatibility classification defaults remote OAuth to separate login and recognizes only explicit shared mechanisms.
 - TypeScript authentication presentation returns labels only for explicit connected/required states and hides unknown or unrecognized states.
 - TypeScript dual-install orchestration preserves per-provider success/failure and retries only failures.
+- TypeScript brand-logo derivation prioritizes provider-declared website metadata, supports GitHub organization avatars, and rejects unsafe network origins.
 
 ## Integration / Functional Tests
 
