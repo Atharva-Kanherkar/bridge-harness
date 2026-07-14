@@ -8,6 +8,8 @@
 - A dual-provider install reports each provider result, preserves partial success, and allows retrying only the failed provider.
 - Installation, enablement, and authentication remain distinct states. Remote OAuth defaults to separate provider logins; shared authentication is shown only when provider metadata explicitly declares a supported external credential mechanism.
 - The UI does not render an `Auth unknown` state. Authentication status is omitted when a provider reports neither `connected` nor `required`; provider-native auth controls appear only when login is explicitly required.
+- Codex plugins that declare an app in `.app.json` are treated as app connectors, not named MCP servers. Bridge never runs `codex mcp login <plugin-name>` for them; it routes authentication to the native Codex/ChatGPT plugin surface with an actionable message.
+- Named remote MCP variants continue to use `codex mcp login <server-name>`. Authentication actions must fail safely when Bridge cannot identify a supported native authentication route.
 - Native variants are preferred over convertible MCP variants. Provider-specific connectors, hooks, skills, agents, or apps are never marked portable without an explicit mapping.
 - Command failures are actionable but redact likely secrets from all surfaced output. Marketplace sources remain visible before installation.
 - Existing supervised Codex and Claude sessions continue to use their existing provider configuration unchanged.
@@ -16,6 +18,7 @@
 
 - Rust catalog parsing accepts common JSON envelopes and retains provider metadata.
 - Rust command construction uses provider-native CLI operations and never supplies credentials in arguments.
+- Rust authentication routing distinguishes Codex app connectors from named MCP servers and never constructs an MCP login command for an app connector.
 - Rust error sanitization redacts token-, secret-, authorization-, and key-shaped values.
 - TypeScript catalog grouping follows the confidence order and refuses name-only matches.
 - TypeScript compatibility classification defaults remote OAuth to separate login and recognizes only explicit shared mechanisms.
@@ -44,5 +47,7 @@ N/A — provider marketplace and native authentication flows require locally ins
 - Run `bun run tauri dev`, open Marketplace, and verify Codex and Claude availability/errors render independently.
 - Search and provider filters update the service cards without losing provider state.
 - Choose each install target and confirm the UI displays distinct install, enablement, and authentication results.
-- Trigger **Connect Codex** and **Connect Claude Code** and confirm Bridge starts only the selected provider's native flow and never displays credential material.
+- Trigger **Connect Codex** for a named MCP server and confirm Bridge starts `codex mcp login` without displaying credential material.
+- Trigger **Connect in Codex** for an app-backed plugin such as Vercel and confirm Bridge opens the native Codex/ChatGPT surface with actionable authorization guidance and does not run `codex mcp login vercel`.
+- Trigger **Connect Claude Code** and confirm Bridge starts only Claude Code's native flow and never displays credential material.
 - Force one side of a dual install to fail and confirm the successful side remains installed while the failed side alone offers retry.
