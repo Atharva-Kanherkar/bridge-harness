@@ -5,6 +5,7 @@ mod claude_adapter;
 mod compaction_controller;
 mod context;
 mod codex_adapter;
+mod credential_broker;
 mod delegation;
 mod git;
 mod handoff;
@@ -15,6 +16,7 @@ mod policy;
 pub mod policy_replay;
 mod policy_coordinator;
 mod restoration;
+mod secret_interception;
 mod session_forest;
 mod session_supervisor;
 mod slash;
@@ -81,6 +83,7 @@ struct AppState {
     database_path: PathBuf,
     telemetry_database_path: PathBuf,
     snapshot_dir: PathBuf,
+    credential_broker: Arc<credential_broker::CredentialBroker>,
 }
 
 /// Bookkeeping for the multi-agent delegation tree.
@@ -570,9 +573,10 @@ fn start_session(
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
     let orchestrator_instructions = format!(
-        "{}\n\n{}",
+        "{}\n\n{}\n\n{}",
         orchestrator::briefing(),
-        delegation::protocol(0)
+        delegation::protocol(0),
+        state.credential_broker.instructions(&session_id),
     );
     let plan = restoration::select_plan(
         false,
@@ -878,12 +882,13 @@ fn start_chat(
             _ => state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model),
         }
     };
+    let proxy_instructions = state.credential_broker.instructions(&session_id);
     let orchestrator_instructions = if is_orchestrator {
-        Some(format!("{}\n\n{}", orchestrator::briefing(), delegation::protocol(0)))
+        format!("{}\n\n{}\n\n{}", orchestrator::briefing(), delegation::protocol(0), proxy_instructions)
     } else {
-        None
+        proxy_instructions
     };
-    let instructions_ref = orchestrator_instructions.as_deref();
+    let instructions_ref = Some(orchestrator_instructions.as_str());
     let effort_ref = effort.as_deref().filter(|value| !value.is_empty());
     let resumable = provider_id
         .as_deref()
@@ -1996,11 +2001,10 @@ fn launch_worker_outcome(
             return WorkerLaunchOutcome::Failed;
         }
     };
-    let instructions = delegation::worker_briefing(
-        directive,
-        reservation.depth,
-        &reservation.branch,
-        &evidence,
+    let instructions = format!(
+        "{}\n\n{}",
+        delegation::worker_briefing(directive, reservation.depth, &reservation.branch, &evidence),
+        state.credential_broker.instructions(&reservation.session_id)
     );
 
     if reservation.reuse_existing
@@ -3181,6 +3185,58 @@ fn write_terminal(
 }
 
 #[tauri::command]
+fn prepare_turn(session_id: String, text: String, state: State<AppState>) -> Result<secret_interception::SanitizedTurn, BridgeError> {
+    if text.trim().is_empty() {
+        return Err(BridgeError::Invalid("Message cannot be empty".into()));
+    }
+    let exists: bool = state.db.lock().unwrap().query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(BridgeError::Invalid("Chat session does not exist".into()));
+    }
+    let intercepted = secret_interception::intercept(&text);
+    state.credential_broker.register(&session_id, intercepted.captured);
+    Ok(intercepted.sanitized)
+}
+
+fn deliver_sanitized_turn(
+    runtime: &dyn adapters::AdapterRuntime,
+    text: &str,
+) -> Result<(), BridgeError> {
+    runtime.send_turn(text)
+}
+
+fn persist_submitted_user_turn(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    display_text: &str,
+) -> Result<Option<AgentEvent>, BridgeError> {
+    if adapter_id != "claude" {
+        return Ok(None);
+    }
+    let user_event = agent::NormalizedEvent {
+        kind: "message.completed".into(),
+        item_id: Some(format!("user-{}", Uuid::new_v4())),
+        role: Some("user".into()),
+        status: Some("completed".into()),
+        title: None,
+        text: Some(display_text.into()),
+        data: serde_json::json!({}),
+    };
+    store::session_event(
+        db,
+        session_id,
+        &user_event,
+        &serde_json::json!({"adapter": adapter_id}),
+    )
+    .map(Some)
+}
+
+#[tauri::command]
 fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppState>) -> Result<(), BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
@@ -3191,6 +3247,11 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         ));
     }
 
+    // Sanitize the user-authored text before slash expansion, adapter transport,
+    // optimistic UI projection, or durable conversation history can observe it.
+    let intercepted = secret_interception::intercept(&text);
+    state.credential_broker.register(&session_id, intercepted.captured);
+    let sanitized_input = intercepted.sanitized;
     let available: std::collections::HashSet<String> = state
         .adapter_registry
         .descriptors()
@@ -3204,7 +3265,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
         |row| row.get(0),
     )?;
 
-    let outbound = match slash::dispatch(&text, &session_harness, &available) {
+    let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
         slash::SlashDispatch::Usage => {
             refresh_account_usage(app.clone(), state.clone())?;
             emit_local_assistant(
@@ -3221,6 +3282,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
             return Ok(());
         }
         slash::SlashDispatch::Clear => {
+            state.credential_broker.clear_session(&session_id);
             if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
                 runtime.stop(adapters::ShutdownReason::UserStopped);
             }
@@ -3258,7 +3320,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    if let Err(error) = runtime.send_turn(&outbound) {
+    if let Err(error) = deliver_sanitized_turn(runtime.as_ref(), &outbound) {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
         return Err(error);
@@ -3272,23 +3334,14 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     )?;
     // Claude stream-json does not reliably echo the submitted user turn; persist it locally.
     // Prefer the original slash text for the transcript when we expanded a skill/prompt.
-    let display_text = if outbound != text { text.clone() } else { outbound.clone() };
-    if adapter_id == "claude" {
-        let user_event = agent::NormalizedEvent {
-            kind: "message.completed".into(),
-            item_id: Some(format!("user-{}", Uuid::new_v4())),
-            role: Some("user".into()),
-            status: Some("completed".into()),
-            title: None,
-            text: Some(display_text),
-            data: serde_json::json!({}),
-        };
-        let event = store::session_event(
-            &db,
-            &session_id,
-            &user_event,
-            &serde_json::json!({"adapter": adapter_id}),
-        )?;
+    let display_text = if outbound != sanitized_input.text {
+        sanitized_input.text
+    } else {
+        outbound.clone()
+    };
+    if let Some(event) =
+        persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
+    {
         let _ = app.emit("agent-event", event);
     }
     let _ = db.execute(
@@ -3965,15 +4018,14 @@ fn archive_workspace_records(
     Ok(())
 }
 
-fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>) {
+fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, credential_broker: Arc<credential_broker::CredentialBroker>) {
     thread::spawn(move || {
         let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
             return;
         };
         for request in server.incoming_requests() {
-            let (status, body) = if request.url() == "/health" {
-                (
-                    200,
+            if request.url() == "/health" {
+                let body =
                     serde_json::json!({
                         "ok": true,
                         "version": env!("CARGO_PKG_VERSION"),
@@ -3984,16 +4036,67 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>) {
                             "codex": binary::resolve("codex").is_some(),
                             "shell": true
                         }
-                    })
-                    .to_string(),
-                )
-            } else {
-                (
-                    404,
-                    serde_json::json!({"ok": false, "error": "not found"}).to_string(),
-                )
-            };
-            let mut response = tiny_http::Response::from_string(body).with_status_code(status);
+                    }).to_string();
+                let mut response = tiny_http::Response::from_string(body).with_status_code(200);
+                if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
+                    response.add_header(header);
+                }
+                let _ = request.respond(response);
+                continue;
+            }
+            if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
+                // Handle each proxy call on its own thread so a slow (or
+                // deliberately slow-drip) upstream request cannot block /health
+                // liveness or serialize other agents behind the single accept loop.
+                let route = route.to_owned();
+                let method = request.method().as_str().to_owned();
+                let token = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
+                    .map(|header| header.value.as_str().to_owned())
+                    .unwrap_or_default();
+                let headers: Vec<(String, String)> = request.headers().iter().map(|header| (header.field.to_string(), header.value.as_str().to_owned())).collect();
+                let broker = credential_broker.clone();
+                thread::spawn(move || {
+                    let mut request = request;
+                    let mut parts = route.splitn(3, '/');
+                    let session_id = parts.next().unwrap_or_default().to_owned();
+                    let reference = parts.next().unwrap_or_default().to_owned();
+                    let path_and_query = format!("/{}", parts.next().unwrap_or_default());
+                    let mut body = Vec::new();
+                    let result = request.as_reader()
+                        .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
+                        .read_to_end(&mut body)
+                        .map_err(BridgeError::Io)
+                        .and_then(|_| broker.proxy(credential_broker::ProxyRequest {
+                            session_id,
+                            reference,
+                            method,
+                            path_and_query,
+                            headers,
+                            token,
+                            body,
+                        }));
+                    let response = match result {
+                        Ok(proxied) => {
+                            let mut response = tiny_http::Response::from_data(proxied.body).with_status_code(proxied.status);
+                            if let Some(header) = proxied.content_type.and_then(|value| tiny_http::Header::from_bytes("Content-Type", value).ok()) {
+                                response.add_header(header);
+                            }
+                            response
+                        }
+                        Err(error) => {
+                            let body = serde_json::json!({"ok": false, "error": error.to_string()}).to_string();
+                            tiny_http::Response::from_string(body).with_status_code(400)
+                        }
+                    };
+                    let _ = request.respond(response);
+                });
+                continue;
+            }
+            let body = serde_json::json!({"ok": false, "error": "not found"}).to_string();
+            let mut response = tiny_http::Response::from_string(body).with_status_code(404);
             if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
                 response.add_header(header);
             }
@@ -4023,7 +4126,9 @@ pub fn run() {
             let _ = store::export_history_snapshot(&connection, &snapshot_dir);
             let adapter_registry = adapters::AdapterRegistry::built_in()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            start_health_server(db_path.clone(), adapter_registry.descriptors());
+            let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
+                .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
+            start_health_server(db_path.clone(), adapter_registry.descriptors(), credential_broker.clone());
             app.manage(AppState {
                 db: Mutex::new(connection),
                 telemetry_db: Mutex::new(telemetry_connection),
@@ -4035,6 +4140,7 @@ pub fn run() {
                 database_path: db_path,
                 telemetry_database_path: telemetry_db_path,
                 snapshot_dir,
+                credential_broker,
             });
             start_worker_maintenance(app.handle().clone());
             start_history_snapshot_maintenance(app.handle().clone());
@@ -4061,6 +4167,7 @@ pub fn run() {
             open_terminal,
             write_terminal,
             resize_terminal,
+            prepare_turn,
             send_turn,
             compact_session,
             interrupt_turn,
@@ -4077,6 +4184,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingRuntime {
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl adapters::AdapterRuntime for RecordingRuntime {
+        fn process_id(&self) -> u32 { 0 }
+        fn provider_session_id(&self) -> &str { "recording" }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+            self.sent.lock().unwrap().push(text.into());
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _reason: adapters::ShutdownReason) {}
+    }
 
     struct RejectingRuntime;
 
@@ -4121,6 +4245,46 @@ mod tests {
         )]));
         assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
         assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+    }
+
+    #[test]
+    fn chat_secret_is_sanitized_before_harness_delivery() {
+        let canary = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ";
+        let prepared = secret_interception::sanitize(&format!("review issue 42 with {canary}"));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let runtime = RecordingRuntime { sent: sent.clone() };
+
+        deliver_sanitized_turn(&runtime, &prepared.text).unwrap();
+
+        let delivered = sent.lock().unwrap().first().cloned().unwrap();
+        assert!(!delivered.contains(canary));
+        assert!(delivered.contains("[secret:sec_"));
+    }
+
+    #[test]
+    fn claude_history_persists_only_the_sanitized_user_turn() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('secret-chat',NULL,'claude','Secret chat','working','reported','direct')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('secret-chat','fresh','now')",
+            [],
+        )
+        .unwrap();
+        let canary = "xoxb-123456789012-abcdefghijklmnop";
+        let prepared = secret_interception::sanitize(&format!("post using {canary}"));
+
+        persist_submitted_user_turn(&db, "secret-chat", "claude", &prepared.text)
+            .unwrap()
+            .unwrap();
+
+        let serialized = serde_json::to_string(&store::session_entries(&db, "secret-chat").unwrap())
+            .unwrap();
+        assert!(!serialized.contains(canary));
+        assert!(serialized.contains("[secret:sec_"));
     }
 
     #[test]

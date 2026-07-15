@@ -262,14 +262,18 @@ export function App() {
   // chat app — there is no explicit "start" step. Slash commands belonging to
   // another provider auto-switch the direct-chat harness first.
   async function sendPrompt(forcedText?: string) {
-    const text = (forcedText ?? composer).trim();
-    if (!session || !text) return;
+    const submittedText = (forcedText ?? composer).trim();
+    if (!session || !submittedText) return;
     const key = crypto.randomUUID();
     let target = session;
+    let retryText = submittedText;
     setComposer("");
     setSlashIndex(0);
-    setPending(current => [...current, { key, sessionId: target.id, text }]);
     try {
+      const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      const text = prepared.text;
+      retryText = text;
+      setPending(current => [...current, { key, sessionId: target.id, text }]);
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
@@ -288,7 +292,7 @@ export function App() {
         await reload();
       }
     }
-    catch (e) { setComposer(text); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
+    catch (e) { setComposer(retryText); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
   async function resolveApproval(eventId: number, decision: string) { if (!session) return; try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); } catch (e) { setError(errorMessage(e)); } }
   async function applySlash(command: import("./types").SlashCommand) {
