@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, Gauge, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
+import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, BridgeState, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
@@ -15,6 +16,7 @@ import { projectSessionConversation, reduceConversation } from "./conversation";
 import { pickGreeting } from "./greetings";
 import { extractUsageSnapshot, formatReset, type UsageProvider, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
+import { forestSnapshotKey } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +54,10 @@ function harnessLabel(harness?: string | null): string {
   return harness ? harness[0].toUpperCase() + harness.slice(1) : "Agent";
 }
 
+function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}
+
 export function App() {
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
@@ -74,22 +80,37 @@ export function App() {
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const startedRef = useRef<Set<string>>(new Set());
   const pendingWelcomeMessageRef = useRef<string | null>(null);
+  const forestKeyRef = useRef("");
+  const agentEventQueueRef = useRef<AgentEvent[]>([]);
+  const agentEventTimerRef = useRef<number | undefined>(undefined);
 
   const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
-  const errorMessage = (value: unknown) => value instanceof Error ? value.message : String(value);
-
   useEffect(() => {
     void Promise.all([reload(), bridgeApi.health().then(setHealth)]);
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
     void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
-    void bridgeApi.onAgentEvent(event => setAgentEvents(current => current.some(item => item.id === event.id) ? current : [...current, event])).then(fn => offAgent = fn);
+    const queueAgentEvent = (event: AgentEvent) => {
+      agentEventQueueRef.current.push(event);
+      if (agentEventTimerRef.current !== undefined) return;
+      agentEventTimerRef.current = window.setTimeout(() => {
+        const batch = agentEventQueueRef.current.splice(0);
+        agentEventTimerRef.current = undefined;
+        setAgentEvents(current => appendAgentEventBatch(current, batch));
+      }, 50);
+    };
+    void bridgeApi.onAgentEvent(queueAgentEvent).then(fn => offAgent = fn);
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
       if (snapshot && snapshot.windows.length) setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
     }).then(fn => offUsage = fn);
-    return () => { offState?.(); offAgent?.(); offUsage?.(); };
+    return () => {
+      offState?.(); offAgent?.(); offUsage?.();
+      if (agentEventTimerRef.current !== undefined) window.clearTimeout(agentEventTimerRef.current);
+      agentEventTimerRef.current = undefined;
+      agentEventQueueRef.current = [];
+    };
   }, [reload]);
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
@@ -107,7 +128,7 @@ export function App() {
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
-  const sessionEvents = agentEvents.filter(event => event.sessionId === session?.id);
+  const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
   const slashMatches = useMemo(() => {
@@ -144,9 +165,17 @@ export function App() {
   }, [slashOpen, slashIndex]);
 
   useEffect(() => {
-    if (!session?.id) { setForest(undefined); return; }
+    forestKeyRef.current = "";
+    setForest(undefined);
+    if (!session?.id) return;
     let active = true;
-    const refresh = () => void bridgeApi.sessionForest(session.id).then(value => { if (active) setForest(value); }).catch(() => undefined);
+    const refresh = () => void bridgeApi.sessionForest(session.id).then(value => {
+      if (!active) return;
+      const key = forestSnapshotKey(value);
+      if (key === forestKeyRef.current) return;
+      forestKeyRef.current = key;
+      setForest(value);
+    }).catch(() => undefined);
     refresh();
     const timer = window.setInterval(refresh, 3000);
     return () => { active = false; window.clearInterval(timer); };
@@ -294,7 +323,11 @@ export function App() {
     }
     catch (e) { setComposer(retryText); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
-  async function resolveApproval(eventId: number, decision: string) { if (!session) return; try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); } catch (e) { setError(errorMessage(e)); } }
+  const resolveApproval = useCallback(async (eventId: number, decision: string) => {
+    if (!session?.id) return;
+    try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
+    catch (e) { setError(errorMessage(e)); }
+  }, [reload, session?.id]);
   async function applySlash(command: import("./types").SlashCommand) {
     if (session?.kind === "direct" && command.harness !== session.harness) {
       const adapter = adapters.find(item => item.id === command.harness);
@@ -317,8 +350,9 @@ export function App() {
 
   const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
+  const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   return <div className="space-dark relative flex h-[100dvh] overflow-hidden text-neutral-200">
-    <SpaceBackground />
+    <SpaceBackground paused={turnActive} />
 
     <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
       <UsageWidget usage={usageByProvider} />
@@ -375,9 +409,9 @@ export function App() {
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   continuationFidelity={session?.continuationFidelity}
                   preview={false}
-                  working={!!session?.activeTurnId || pendingForSession.length > 0}
+                  working={turnActive}
                   pendingMessages={pendingForSession}
-                  onResolve={(eventId, decision) => void resolveApproval(eventId, decision)}
+                  onResolve={resolveApproval}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#0a0a0c] to-transparent sm:h-20" />

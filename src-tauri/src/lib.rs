@@ -1085,6 +1085,13 @@ fn persist_agent_value(
         .collect()
 }
 
+fn agent_event_changes_bridge_state(event: &agent::NormalizedEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "turn.started" | "turn.completed" | "approval.requested" | "usage.updated"
+    ) || (event.kind == "error" && event.status.as_deref() == Some("failed"))
+}
+
 fn handle_agent_value(
     app: &AppHandle,
     session_id: &str,
@@ -1109,6 +1116,7 @@ fn handle_agent_value(
     let mut finish_checkpointing = false;
     let mut finish_requested_shutdown = false;
     let mut recover_compaction = false;
+    let bridge_state_changed;
 
     {
         let db = state.db.lock().unwrap();
@@ -1141,6 +1149,7 @@ fn handle_agent_value(
                     .cloned()
             });
         let normalized = state.adapter_registry.normalize(&adapter_id, value);
+        bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
             match event.kind.as_str() {
                 "turn.started" => {
@@ -1465,7 +1474,9 @@ fn handle_agent_value(
     for event in pending_ui_events {
         let _ = app.emit("agent-event", event);
     }
-    let _ = app.emit("state-changed", ());
+    if bridge_state_changed {
+        let _ = app.emit("state-changed", ());
+    }
 }
 
 fn begin_pressure_compaction(
@@ -4268,6 +4279,31 @@ mod tests {
         let delivered = sent.lock().unwrap().first().cloned().unwrap();
         assert!(!delivered.contains(canary));
         assert!(delivered.contains("[secret:sec_"));
+    }
+
+    #[test]
+    fn only_global_state_mutations_request_a_full_state_reload() {
+        let event = |kind: &str, status: Option<&str>| agent::NormalizedEvent {
+            kind: kind.into(),
+            item_id: None,
+            role: None,
+            status: status.map(str::to_owned),
+            title: None,
+            text: None,
+            data: serde_json::json!({}),
+        };
+        for kind in [
+            "turn.started",
+            "turn.completed",
+            "approval.requested",
+            "usage.updated",
+        ] {
+            assert!(agent_event_changes_bridge_state(&event(kind, None)));
+        }
+        assert!(agent_event_changes_bridge_state(&event("error", Some("failed"))));
+        assert!(!agent_event_changes_bridge_state(&event("message.delta", Some("streaming"))));
+        assert!(!agent_event_changes_bridge_state(&event("tool.completed", Some("completed"))));
+        assert!(!agent_event_changes_bridge_state(&event("provider.unknown", None)));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, Gauge, GitFork, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
@@ -90,20 +90,18 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, continuationFidelity, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
-  const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
-  const liveItems = reduceConversation(events);
-  
-  // Merge live streaming items that aren't yet in the durable forest, and drop
-  // raw provider events — they are internal telemetry, not conversation.
-  const items = [...durableItems];
-  const durableIds = new Set(durableItems.map(item => item.eventId));
-  for (const live of liveItems) {
-    if (!durableIds.has(live.eventId)) {
-      items.push(live);
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, continuationFidelity, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+  const visibleItems = useMemo(() => {
+    const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
+    const nextLiveItems = reduceConversation(events);
+    const items = [...durableItems];
+    const durableIds = new Set(durableItems.map(item => item.eventId));
+    for (const live of nextLiveItems) {
+      if (!durableIds.has(live.eventId)) items.push(live);
     }
-  }
-  const visibleItems = items.filter(item => item.type !== "raw");
+    return items.filter(item => item.type !== "raw");
+  }, [activeLeafId, events, forestEntries]);
+  const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
 
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
   if (!visibleItems.length && !working && !pendingMessages.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
@@ -119,7 +117,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
       {continuationFidelity === "projected_at_boundary" && <div role="status" className="mb-4 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-xs text-muted-foreground">Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
       {continuationFidelity === "projected_mid_turn" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
       {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
-      {groupItems(visibleItems).map(entry => entry.kind === "group"
+      {renderedItems.map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
         : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} errorContext={errorContext}/>)}
@@ -127,7 +125,7 @@ export function AgentConversation({ session, events = [], forestEntries, activeL
       {working && !streaming && <div className="chat-message-enter flex justify-start pl-4"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
     </div>
   </ScrollFollow>;
-}
+});
 
 function ScrollFollow({ signature, className, children }: { signature: string; className?: string; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
