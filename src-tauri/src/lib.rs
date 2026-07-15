@@ -3205,8 +3205,12 @@ fn prepare_turn(session_id: String, text: String, state: State<AppState>) -> Res
 fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
+    application_context: Option<&str>,
 ) -> Result<(), BridgeError> {
-    runtime.send_turn(text)
+    match application_context {
+        Some(context) => runtime.send_turn_with_context(text, context),
+        None => runtime.send_turn(text),
+    }
 }
 
 fn persist_submitted_user_turn(
@@ -3320,7 +3324,12 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    if let Err(error) = deliver_sanitized_turn(runtime.as_ref(), &outbound) {
+    let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
+    if let Err(error) = deliver_sanitized_turn(
+        runtime.as_ref(),
+        &outbound,
+        credential_context.as_deref(),
+    ) {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
         return Err(error);
@@ -4254,7 +4263,7 @@ mod tests {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let runtime = RecordingRuntime { sent: sent.clone() };
 
-        deliver_sanitized_turn(&runtime, &prepared.text).unwrap();
+        deliver_sanitized_turn(&runtime, &prepared.text, None).unwrap();
 
         let delivered = sent.lock().unwrap().first().cloned().unwrap();
         assert!(!delivered.contains(canary));
