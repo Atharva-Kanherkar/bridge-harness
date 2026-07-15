@@ -103,9 +103,42 @@ impl CredentialBroker {
 
     pub fn instructions(&self, session_id: &str) -> String {
         format!(
-            "Bridge credential references are opaque and never contain the credential. When a user supplies [secret:sec_...], make a non-streaming OpenAI API call with your existing shell tool against http://127.0.0.1:4317{PROXY_PREFIX}{session_id}/<reference>/v1/<path>. Authorize the call with the request header `{PROXY_AUTH_HEADER}: {token}`; this token is session-private, so never echo it into chat, files, or command output. Use only GET, POST, or DELETE; do not send Authorization or an upstream URL. Bridge resolves the session-bound reference and adds authorization internally.",
+            "Bridge credential references are opaque application capabilities, not credential values. A marker such as [secret:sec_...] means Bridge already protected the credential; do not claim that the user exposed a key or recommend rotation solely because the marker appears. When the user asks to call, test, verify, or use an OpenAI reference, make a non-streaming OpenAI API call with your existing shell tool against http://127.0.0.1:4317{PROXY_PREFIX}{session_id}/<reference>/v1/<path>. If the user asks only to call, test, or verify the reference without naming an operation, verify it with GET /v1/models. Authorize the call with the request header `{PROXY_AUTH_HEADER}: {token}`; this token is session-private, so never echo it into chat, files, or command output. Use only GET, POST, or DELETE; do not send Authorization or an upstream URL. Bridge resolves the session-bound reference and adds authorization internally.",
             token = self.proxy_token,
         )
+    }
+
+    /// Return trusted per-turn instructions only when the visible message
+    /// contains an OpenAI reference registered to this session. This refreshes
+    /// the capability contract for resumed Codex threads without changing the
+    /// user-authored text or persisting the credential value.
+    pub fn turn_context(&self, session_id: &str, text: &str) -> Option<String> {
+        let candidates: Vec<&str> = text
+            .split("[secret:")
+            .skip(1)
+            .filter_map(|tail| tail.split_once(']').map(|(reference, _)| reference))
+            .filter(|reference| reference.starts_with("sec_"))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let records = self.records.lock().unwrap();
+        let references: Vec<&str> = candidates
+            .into_iter()
+            .filter(|reference| {
+                records
+                    .get(*reference)
+                    .is_some_and(|record| record.session_id == session_id)
+            })
+            .collect();
+        if references.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{}\n\nThe following markers in this turn are registered OpenAI capabilities owned by this Bridge session: {}. Do not refuse merely because a marker is present.",
+            self.instructions(session_id),
+            references.join(", ")
+        ))
     }
 
     pub fn proxy(&self, request: ProxyRequest) -> Result<ProxyResponse, BridgeError> {
@@ -368,5 +401,23 @@ mod tests {
         let (broker, reference, _) = broker_with_secret("http://127.0.0.1:9", "owner");
         broker.clear_session("owner");
         assert!(!broker.records.lock().unwrap().contains_key(&reference));
+    }
+
+    #[test]
+    fn registered_reference_gets_safe_per_turn_capability_context() {
+        let (broker, reference, key) = broker_with_secret("http://127.0.0.1:9", "owner");
+        let context = broker
+            .turn_context("owner", &format!("verify [secret:{reference}]"))
+            .unwrap();
+        assert!(context.contains(&reference));
+        assert!(context.contains("not credential values"));
+        assert!(context.contains("GET /v1/models"));
+        assert!(context.contains(PROXY_PREFIX));
+        assert!(context.contains(PROXY_AUTH_HEADER));
+        assert!(!context.contains(&key));
+        assert!(broker
+            .turn_context("other", &format!("verify [secret:{reference}]"))
+            .is_none());
+        assert!(broker.turn_context("owner", "ordinary prompt").is_none());
     }
 }

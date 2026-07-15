@@ -19,6 +19,16 @@ pub trait AdapterRuntime: Send {
     fn provider_session_id(&self) -> &str;
     fn current_turn(&self) -> Arc<Mutex<Option<String>>>;
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
+    /// Send a user turn with trusted, application-owned context that must not
+    /// be folded into the visible user message. Providers that cannot attach
+    /// per-turn context retain their startup instructions and send normally.
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        _application_context: &str,
+    ) -> Result<(), BridgeError> {
+        self.send_turn(text)
+    }
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
     /// Ask the provider to report current subscription rate-limit usage.

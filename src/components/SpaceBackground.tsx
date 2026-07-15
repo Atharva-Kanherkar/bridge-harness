@@ -1,29 +1,32 @@
-export function SpaceBackground() {
+export function SpaceBackground({ paused = false }: { paused?: boolean }) {
+  const animationPlayState = paused ? "paused" : "running";
   return (
-    <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
+    <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden [contain:strict]">
       <div className="absolute inset-0 bg-[#020204]" />
       <div
-        className="absolute -top-[20%] -left-[10%] h-[60rem] w-[60rem] rounded-full opacity-[0.12]"
+        className="absolute -top-[20%] -left-[10%] h-[60rem] w-[60rem] rounded-full opacity-[0.12] will-change-transform"
         style={{
           background: "radial-gradient(circle, rgba(99,102,241,0.4) 0%, rgba(45,212,191,0.15) 40%, transparent 70%)",
           filter: "blur(100px)",
           animation: "space-drift-a 40s ease-in-out infinite alternate",
+          animationPlayState,
         }}
       />
       <div
-        className="absolute -bottom-[20%] -right-[10%] h-[50rem] w-[50rem] rounded-full opacity-[0.10]"
+        className="absolute -bottom-[20%] -right-[10%] h-[50rem] w-[50rem] rounded-full opacity-[0.10] will-change-transform"
         style={{
           background: "radial-gradient(circle, rgba(167,139,250,0.35) 0%, rgba(45,212,191,0.1) 50%, transparent 70%)",
           filter: "blur(120px)",
           animation: "space-drift-b 50s ease-in-out infinite alternate",
+          animationPlayState,
         }}
       />
-      <StarField />
+      <StarField paused={paused} />
     </div>
   );
 }
 
-function StarField() {
+function StarField({ paused }: { paused: boolean }) {
   const stars = [
     { x: 12, y: 8, s: 1.2, o: 0.5, d: 3.2 },
     { x: 28, y: 15, s: 0.8, o: 0.3, d: 4.1 },
@@ -64,6 +67,7 @@ function StarField() {
             height: `${star.s}px`,
             opacity: star.o,
             animation: `star-twinkle ${star.d}s ease-in-out infinite alternate`,
+            animationPlayState: paused ? "paused" : "running",
             boxShadow: star.s > 1 ? `0 0 ${star.s * 2}px rgba(255,255,255,0.3)` : "none",
           }}
         />

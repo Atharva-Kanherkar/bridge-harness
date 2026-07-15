@@ -228,8 +228,11 @@ impl CodexRuntime {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.request("turn/start", json!({"threadId":self.thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]}))
+    pub fn start_turn(&self, text: &str, application_context: Option<&str>) -> Result<(), BridgeError> {
+        self.request(
+            "turn/start",
+            turn_start_params(&self.thread_id, text, application_context),
+        )
     }
     pub fn interrupt(&self) -> Result<(), BridgeError> {
         let turn_id = self
@@ -258,6 +261,19 @@ impl CodexRuntime {
     }
 }
 
+fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&str>) -> Value {
+    let mut params = json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
+    if let Some(context) = application_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params["additionalContext"] = json!({
+            "bridge.credentials": {"kind": "application", "value": context}
+        });
+    }
+    params
+}
+
 impl AdapterRuntime for CodexRuntime {
     fn process_id(&self) -> u32 { self.child.id() }
     fn provider_session_id(&self) -> &str {
@@ -267,7 +283,14 @@ impl AdapterRuntime for CodexRuntime {
         self.current_turn.clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn(text)
+        self.start_turn(text, None)
+    }
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        application_context: &str,
+    ) -> Result<(), BridgeError> {
+        self.start_turn(text, Some(application_context))
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
@@ -406,6 +429,27 @@ mod tests {
     }
 
     #[test]
+    fn turn_request_attaches_bridge_context_without_changing_user_text() {
+        let params = turn_start_params(
+            "thread-existing",
+            "verify [secret:sec_reference]",
+            Some("trusted broker capability"),
+        );
+        assert_eq!(
+            params["input"][0]["text"],
+            "verify [secret:sec_reference]"
+        );
+        assert_eq!(
+            params["additionalContext"]["bridge.credentials"]["kind"],
+            "application"
+        );
+        assert_eq!(
+            params["additionalContext"]["bridge.credentials"]["value"],
+            "trusted broker capability"
+        );
+    }
+
+    #[test]
     #[ignore = "requires an installed, authenticated Codex binary"]
     fn live_app_server_emits_a_structured_turn() {
         use std::{sync::mpsc, thread, time::Duration};
@@ -421,7 +465,7 @@ mod tests {
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
-            .start_turn("Reply exactly BRIDGE_SMOKE_OK. Do not use tools.")
+            .start_turn("Reply exactly BRIDGE_SMOKE_OK. Do not use tools.", None)
             .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || loop {
@@ -462,7 +506,7 @@ mod tests {
     #[ignore = "requires an installed, authenticated Codex binary and persists a provider thread"]
     fn live_codex_thread_survives_process_restart() {
         fn run_turn(started: &mut StartedCodex, prompt: &str) -> String {
-            started.runtime.start_turn(prompt).unwrap();
+            started.runtime.start_turn(prompt, None).unwrap();
             let mut transcript = String::new();
             loop {
                 let mut line = String::new();
