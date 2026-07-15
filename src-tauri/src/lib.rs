@@ -4023,7 +4023,7 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, cred
         let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
             return;
         };
-        for mut request in server.incoming_requests() {
+        for request in server.incoming_requests() {
             if request.url() == "/health" {
                 let body =
                     serde_json::json!({
@@ -4045,38 +4045,54 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, cred
                 continue;
             }
             if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
-                let mut parts = route.splitn(3, '/');
-                let session_id = parts.next().unwrap_or_default().to_owned();
-                let reference = parts.next().unwrap_or_default().to_owned();
-                let path_and_query = format!("/{}", parts.next().unwrap_or_default());
-                let headers = request.headers().iter().map(|header| (header.field.to_string(), header.value.as_str().to_owned())).collect();
-                let mut body = Vec::new();
-                let result = request.as_reader()
-                    .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
-                    .read_to_end(&mut body)
-                    .map_err(BridgeError::Io)
-                    .and_then(|_| credential_broker.proxy(credential_broker::ProxyRequest {
-                        session_id,
-                        reference,
-                        method: request.method().as_str().to_owned(),
-                        path_and_query,
-                        headers,
-                        body,
-                    }));
-                let response = match result {
-                    Ok(proxied) => {
-                        let mut response = tiny_http::Response::from_data(proxied.body).with_status_code(proxied.status);
-                        if let Some(header) = proxied.content_type.and_then(|value| tiny_http::Header::from_bytes("Content-Type", value).ok()) {
-                            response.add_header(header);
+                // Handle each proxy call on its own thread so a slow (or
+                // deliberately slow-drip) upstream request cannot block /health
+                // liveness or serialize other agents behind the single accept loop.
+                let route = route.to_owned();
+                let method = request.method().as_str().to_owned();
+                let token = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
+                    .map(|header| header.value.as_str().to_owned())
+                    .unwrap_or_default();
+                let headers: Vec<(String, String)> = request.headers().iter().map(|header| (header.field.to_string(), header.value.as_str().to_owned())).collect();
+                let broker = credential_broker.clone();
+                thread::spawn(move || {
+                    let mut request = request;
+                    let mut parts = route.splitn(3, '/');
+                    let session_id = parts.next().unwrap_or_default().to_owned();
+                    let reference = parts.next().unwrap_or_default().to_owned();
+                    let path_and_query = format!("/{}", parts.next().unwrap_or_default());
+                    let mut body = Vec::new();
+                    let result = request.as_reader()
+                        .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
+                        .read_to_end(&mut body)
+                        .map_err(BridgeError::Io)
+                        .and_then(|_| broker.proxy(credential_broker::ProxyRequest {
+                            session_id,
+                            reference,
+                            method,
+                            path_and_query,
+                            headers,
+                            token,
+                            body,
+                        }));
+                    let response = match result {
+                        Ok(proxied) => {
+                            let mut response = tiny_http::Response::from_data(proxied.body).with_status_code(proxied.status);
+                            if let Some(header) = proxied.content_type.and_then(|value| tiny_http::Header::from_bytes("Content-Type", value).ok()) {
+                                response.add_header(header);
+                            }
+                            response
                         }
-                        response
-                    }
-                    Err(error) => {
-                        let body = serde_json::json!({"ok": false, "error": error.to_string()}).to_string();
-                        tiny_http::Response::from_string(body).with_status_code(400)
-                    }
-                };
-                let _ = request.respond(response);
+                        Err(error) => {
+                            let body = serde_json::json!({"ok": false, "error": error.to_string()}).to_string();
+                            tiny_http::Response::from_string(body).with_status_code(400)
+                        }
+                    };
+                    let _ = request.respond(response);
+                });
                 continue;
             }
             let body = serde_json::json!({"ok": false, "error": "not found"}).to_string();

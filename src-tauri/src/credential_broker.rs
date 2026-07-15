@@ -3,10 +3,30 @@
 use crate::{secret_interception::CapturedSecret, BridgeError};
 use reqwest::{blocking::Client, Method};
 use std::{collections::HashMap, io::Read, sync::Mutex, time::Duration};
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub(crate) const PROXY_PREFIX: &str = "/credential-proxy/";
 pub(crate) const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+/// Header the wrapped harness must present to authorize a proxy call. The token
+/// is delivered only through in-memory harness instructions, never through the
+/// chat turn, so knowledge of the persisted `[secret:sec_...]` reference alone
+/// is not enough to replay a call.
+pub(crate) const PROXY_AUTH_HEADER: &str = "x-bridge-proxy-auth";
+
+/// Compare two tokens without leaking length-independent timing.
+fn tokens_match(expected: &str, provided: &str) -> bool {
+    let expected = expected.as_bytes();
+    let provided = provided.as_bytes();
+    if expected.len() != provided.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (left, right) in expected.iter().zip(provided.iter()) {
+        diff |= left ^ right;
+    }
+    diff == 0
+}
 
 struct SecretRecord {
     session_id: String,
@@ -19,6 +39,7 @@ pub(crate) struct ProxyRequest {
     pub method: String,
     pub path_and_query: String,
     pub headers: Vec<(String, String)>,
+    pub token: String,
     pub body: Vec<u8>,
 }
 
@@ -32,6 +53,7 @@ pub(crate) struct CredentialBroker {
     records: Mutex<HashMap<String, SecretRecord>>,
     client: Client,
     upstream: String,
+    proxy_token: String,
 }
 
 impl CredentialBroker {
@@ -51,6 +73,8 @@ impl CredentialBroker {
             records: Mutex::new(HashMap::new()),
             client,
             upstream: upstream.trim_end_matches('/').to_owned(),
+            // 256 bits of per-launch entropy, never persisted or displayed.
+            proxy_token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
         })
     }
 
@@ -79,11 +103,20 @@ impl CredentialBroker {
 
     pub fn instructions(&self, session_id: &str) -> String {
         format!(
-            "Bridge credential references are opaque and never contain the credential. When a user supplies [secret:sec_...], make a non-streaming OpenAI API call with your existing shell tool against http://127.0.0.1:4317{PROXY_PREFIX}{session_id}/<reference>/v1/<path>. Use only GET, POST, or DELETE; do not send Authorization or an upstream URL. Bridge resolves the session-bound reference and adds authorization internally."
+            "Bridge credential references are opaque and never contain the credential. When a user supplies [secret:sec_...], make a non-streaming OpenAI API call with your existing shell tool against http://127.0.0.1:4317{PROXY_PREFIX}{session_id}/<reference>/v1/<path>. Authorize the call with the request header `{PROXY_AUTH_HEADER}: {token}`; this token is session-private, so never echo it into chat, files, or command output. Use only GET, POST, or DELETE; do not send Authorization or an upstream URL. Bridge resolves the session-bound reference and adds authorization internally.",
+            token = self.proxy_token,
         )
     }
 
     pub fn proxy(&self, request: ProxyRequest) -> Result<ProxyResponse, BridgeError> {
+        // Reject before touching any credential state. The token is not stored in
+        // durable history or the UI, so a caller that only scraped a persisted
+        // reference cannot replay a proxy call.
+        if !tokens_match(&self.proxy_token, &request.token) {
+            return Err(BridgeError::Invalid(
+                "Credential proxy authorization is required".into(),
+            ));
+        }
         let method = match request.method.as_str() {
             "GET" => Method::GET,
             "POST" => Method::POST,
@@ -234,6 +267,7 @@ mod tests {
         let (broker, reference, key) = broker_with_secret(&address, "session-a");
         let harness_view = format!("{PROXY_PREFIX}session-a/{reference}/v1/responses");
         assert!(!harness_view.contains(&key));
+        let token = broker.proxy_token.clone();
         let response = broker
             .proxy(ProxyRequest {
                 session_id: "session-a".into(),
@@ -241,6 +275,7 @@ mod tests {
                 method: "POST".into(),
                 path_and_query: "/v1/responses".into(),
                 headers: vec![("Content-Type".into(), "application/json".into())],
+                token,
                 body: b"{\"model\":\"test\"}".to_vec(),
             })
             .unwrap();
@@ -257,6 +292,7 @@ mod tests {
     #[test]
     fn proxy_rejects_invalid_capabilities_and_request_shapes() {
         let (broker, reference, _) = broker_with_secret("http://127.0.0.1:9", "owner");
+        let token = broker.proxy_token.clone();
         let request = |session: &str,
                        reference: &str,
                        method: &str,
@@ -267,6 +303,7 @@ mod tests {
             method: method.into(),
             path_and_query: path.into(),
             headers,
+            token: token.clone(),
             body: Vec::new(),
         };
         assert!(broker
@@ -299,6 +336,31 @@ mod tests {
                 vec![]
             ))
             .is_err());
+    }
+
+    #[test]
+    fn proxy_rejects_missing_or_wrong_authorization_token() {
+        let (broker, reference, _) = broker_with_secret("http://127.0.0.1:9", "owner");
+        let base = |token: &str| ProxyRequest {
+            session_id: "owner".into(),
+            reference: reference.clone(),
+            method: "GET".into(),
+            path_and_query: "/v1/models".into(),
+            headers: vec![],
+            token: token.into(),
+            body: Vec::new(),
+        };
+        // A caller that scraped only the persisted reference has no token.
+        assert!(broker.proxy(base("")).is_err());
+        assert!(broker.proxy(base("sec_not-the-token")).is_err());
+        // The correct token still reaches the (unreachable) upstream, i.e. it
+        // passes the authorization gate rather than being rejected here.
+        match broker.proxy(base(&broker.proxy_token.clone())) {
+            Err(BridgeError::Invalid(message)) => {
+                assert!(!message.contains("authorization is required"));
+            }
+            _ => panic!("expected an invalid-request error from an unreachable upstream"),
+        }
     }
 
     #[test]
