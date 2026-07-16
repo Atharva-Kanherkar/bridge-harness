@@ -3,7 +3,9 @@ import { classifyErrorKind, describeError, providerFromText, usageResetHint } fr
 import type { UsageSnapshot } from "./usage";
 
 const snapshot = (usedPercent: number, resetsInSeconds?: number, label = "Weekly"): UsageSnapshot => ({
-  windows: [{ id: label.toLowerCase(), label, usedPercent, resetsInSeconds }],
+  windows: [{ id: label.toLowerCase(), label, usedPercent, resetsInSeconds, source: "reported" }],
+  source: "reported",
+  capturedAt: "2026-07-16T10:00:00Z",
 });
 
 describe("classifyErrorKind", () => {
@@ -47,16 +49,18 @@ describe("usageResetHint", () => {
   it("reports the most-constrained window with a known reset", () => {
     const snap: UsageSnapshot = {
       windows: [
-        { id: "5h", label: "5h", usedPercent: 40, resetsInSeconds: 600 },
-        { id: "weekly", label: "Weekly", usedPercent: 100, resetsInSeconds: 90000 },
+        { id: "5h", label: "5h", usedPercent: 40, resetsInSeconds: 600, source: "reported" },
+        { id: "weekly", label: "Weekly", usedPercent: 100, resetsInSeconds: 90000, source: "reported" },
       ],
+      source: "reported",
+      capturedAt: "2026-07-16T10:00:00Z",
     };
     expect(usageResetHint(snap)).toBe("The Weekly window resets in 1d 1h.");
   });
 
   it("returns undefined without windows or resets", () => {
     expect(usageResetHint(null)).toBeUndefined();
-    expect(usageResetHint({ windows: [] })).toBeUndefined();
+    expect(usageResetHint({ windows: [], source: "reported", capturedAt: "2026-07-16T10:00:00Z" })).toBeUndefined();
     expect(usageResetHint(snapshot(100))).toBeUndefined();
   });
 });
