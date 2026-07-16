@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, CompletionCheckRun, CompletionSummary, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -129,7 +129,35 @@ const mockMarketplace: MarketplaceCatalog = { providers: [
   { provider: "claude", available: true, error: null, variants: [{ provider: "claude", pluginId: "vercel@official", name: "Vercel", description: "Deploy and inspect Vercel projects", marketplace: "official", version: "1.0.0", source: "https://github.com/vercel/mcp", repository: "https://github.com/vercel/mcp", iconDataUrl: null, publisher: "Vercel", capabilities: ["deployments"], mcpEndpoint: "https://mcp.vercel.com", connectorType: "connector", appConnectorIds: ["plugin:vercel:vercel"], installed: false, enabled: false, authenticationState: "required", sharedAuthMechanism: null, portableMcp: false, compatibilityNotes: [], supportedActions: ["install", "enable", "disable", "update", "uninstall", "authenticate"], providerMetadata: {} }] },
 ] };
 
+const mockSkills: SkillCatalog = {
+  installer: "skills@1.5.19",
+  community: [{
+    id: "vercel-labs/agent-skills:react-best-practices", slug: "react-best-practices", name: "React Best Practices",
+    description: "Review React code for performance and maintainability.", source: "vercel-labs/agent-skills", sourceUrl: "https://github.com/vercel-labs/agent-skills",
+    pinnedRef: "8b8c76004956f0e01e4f6c88ff6fb342258461f5", installs: 124000, official: true, compatibility: ["codex", "claude"], fileCount: 3,
+    permissions: ["Read project files"], risk: "low", riskSummary: "Read-only project guidance.", categories: ["code-review", "react"],
+    providerStates: [{ provider: "codex", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false }, { provider: "claude", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false }],
+  }],
+  personal: [{ id: "personal:my-workflow", name: "my-workflow", description: "A skill you maintain locally.", providers: ["codex"], source: "Personal skill" }],
+};
+const mockSkillConsents = new Map<string, { skillId: string; action: SkillAction; targets: SkillProvider[] }>();
+
 export const bridgeApi = {
+  skillCatalog: (): Promise<SkillCatalog> => isTauri() ? invoke("skill_catalog") : Promise.resolve(structuredClone(mockSkills)),
+  skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? invoke("skill_suggestions", { query, provider }) : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
+  previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {
+    if (isTauri()) return invoke("preview_skill_change", { skillId, action, targets });
+    const skill = mockSkills.community.find(item => item.id === skillId); if (!skill) throw new Error("Skill not found");
+    const confirmationId = crypto.randomUUID(); mockSkillConsents.set(confirmationId, { skillId, action, targets });
+    return { confirmationId, expiresAt: new Date(Date.now() + 300_000).toISOString(), action, skill: structuredClone(skill), targets, changes: targets.map(provider => `${action} ${skill.name} for ${provider}`), installer: mockSkills.installer };
+  },
+  executeSkillChange: async (confirmationId: string): Promise<SkillActionResult[]> => {
+    if (isTauri()) return invoke("execute_skill_change", { confirmationId });
+    const consent = mockSkillConsents.get(confirmationId); if (!consent) throw new Error("Confirmation is invalid or already used"); mockSkillConsents.delete(confirmationId);
+    const skill = mockSkills.community.find(item => item.id === consent.skillId)!;
+    for (const target of consent.targets) { const state = skill.providerStates.find(item => item.provider === target)!; state.installed = consent.action === "install"; state.managed = consent.action === "install"; state.installedRef = consent.action === "install" ? skill.pinnedRef : null; }
+    return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
+  },
   marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? invoke("marketplace_catalog") : Promise.resolve(structuredClone(mockMarketplace)),
   marketplaceAppAuthStates: (): Promise<MarketplaceAppAuthState[]> => {
     if (isTauri()) return invoke("marketplace_app_auth_states");

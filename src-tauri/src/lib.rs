@@ -160,8 +160,8 @@ async fn skill_catalog(state: State<'_, AppState>) -> Result<skill_marketplace::
 }
 
 #[tauri::command]
-async fn skill_suggestions(query: String, state: State<'_, AppState>) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
-    skill_marketplace::suggestions(&query, &user_home(), &state.skill_store)
+async fn skill_suggestions(query: String, provider: skill_marketplace::SkillProvider, state: State<'_, AppState>) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
+    skill_marketplace::suggestions(&query, provider, &user_home(), &state.skill_store)
 }
 
 #[tauri::command]

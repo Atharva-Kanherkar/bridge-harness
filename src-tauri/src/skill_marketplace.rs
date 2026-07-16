@@ -375,6 +375,7 @@ fn query_tokens(value: &str) -> HashSet<String> {
 
 pub fn suggestions(
     query: &str,
+    provider: SkillProvider,
     home: &Path,
     store: &Path,
 ) -> Result<Vec<CapabilitySuggestion>, BridgeError> {
@@ -384,11 +385,12 @@ pub fn suggestions(
     }
     let catalog = catalog(home, store)?;
     let mut scored = Vec::new();
-    for skill in catalog
-        .community
-        .into_iter()
-        .filter(|skill| skill.provider_states.iter().any(|state| state.installed))
-    {
+    for skill in catalog.community.into_iter().filter(|skill| {
+        skill
+            .provider_states
+            .iter()
+            .any(|state| state.provider == provider && state.installed)
+    }) {
         let haystack = query_tokens(&format!(
             "{} {} {}",
             skill.name,
@@ -399,12 +401,7 @@ pub fn suggestions(
         if matches.is_empty() {
             continue;
         }
-        let providers = skill
-            .provider_states
-            .iter()
-            .filter(|state| state.installed)
-            .map(|state| state.provider)
-            .collect();
+        let providers = vec![provider];
         scored.push((
             matches.len(),
             CapabilitySuggestion {
@@ -423,7 +420,11 @@ pub fn suggestions(
             },
         ));
     }
-    for skill in catalog.personal {
+    for skill in catalog
+        .personal
+        .into_iter()
+        .filter(|skill| skill.providers.contains(&provider))
+    {
         let haystack = query_tokens(&format!("{} {}", skill.name, skill.description));
         let matches = tokens.intersection(&haystack).cloned().collect::<Vec<_>>();
         if matches.is_empty() {
@@ -819,6 +820,30 @@ mod tests {
         assert_eq!(catalog.personal.len(), 1);
         assert_eq!(catalog.personal[0].providers, vec![SkillProvider::Codex]);
         assert!(!catalog.community.iter().any(|entry| entry.name == "mine"));
+    }
+
+    #[test]
+    fn task_suggestions_respect_the_active_provider() {
+        let home = tempdir().unwrap();
+        let store = tempdir().unwrap();
+        let skill = home.path().join(".codex/skills/mine");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: mine\ndescription: Specialized testing workflow\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            suggestions("testing", SkillProvider::Codex, home.path(), store.path())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            suggestions("testing", SkillProvider::Claude, home.path(), store.path())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
