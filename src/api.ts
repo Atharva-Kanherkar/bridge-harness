@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
+import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
 import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
+const mockRouterPreferences = new Map<string, RouterPreferences>();
 let nextEventId = 20;
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
@@ -141,6 +142,14 @@ export const bridgeApi = {
   },
   health: (): Promise<Health> => isTauri() ? invoke("health") : Promise.resolve(structuredClone(mockHealth)),
   state: (): Promise<BridgeState> => isTauri() ? invoke("get_state") : Promise.resolve(snapshot()),
+  routerPreferences: (workspaceId: string): Promise<RouterPreferences> => isTauri()
+    ? invoke("get_router_preferences", { workspaceId })
+    : Promise.resolve(structuredClone(mockRouterPreferences.get(workspaceId) ?? { mode: "shadow", minimumPassBps: 6500, pinnedHarness: null, pinnedModel: null, excludedHarnesses: [], excludedModels: [] })),
+  updateRouterPreferences: (workspaceId: string, preferences: RouterPreferences): Promise<RouterPreferences> => {
+    if (isTauri()) return invoke("update_router_preferences", { workspaceId, preferences });
+    mockRouterPreferences.set(workspaceId, structuredClone(preferences));
+    return Promise.resolve(structuredClone(preferences));
+  },
   sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? invoke("get_session_forest", { sessionId }) : Promise.resolve(mockForest(sessionId)),
   activateSessionEntry: async (sessionId: string, entryId: string): Promise<SessionForestSnapshot> => {
     if (isTauri()) return invoke("activate_session_entry", { sessionId, entryId });

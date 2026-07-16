@@ -78,6 +78,11 @@ export interface AdapterDescriptor {
 }
 export interface BridgeState { projects: Project[]; workspaces: Workspace[]; sessions: Session[]; events: BridgeEvent[] }
 export interface Health { ok: boolean; version: string; harnesses: Record<Harness, boolean>; database: string; adapters: AdapterDescriptor[] }
+export type RouterMode = "disabled" | "shadow" | "autonomous";
+export interface RouterPreferences {
+  mode: RouterMode; minimumPassBps: number; pinnedHarness: string | null; pinnedModel: string | null;
+  excludedHarnesses: string[]; excludedModels: string[];
+}
 export interface TerminalChunk { sessionId: string; data: string }
 export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }
 export interface SecretInterception { reference: string; detector: string }
