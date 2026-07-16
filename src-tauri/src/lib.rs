@@ -734,13 +734,19 @@ fn resolve_orchestrator_selection(
             effort: Some(profile.effort),
         });
     }
-    let resolution = registry.resolve_model(orchestrator::HARNESS, orchestrator::TIER, None)?;
-    Ok(OrchestratorSelection {
-        adapter_id: orchestrator::HARNESS.into(),
-        model: resolution.actual_model,
-        tier: orchestrator::TIER,
-        effort: None,
-    })
+    for descriptor in descriptors.iter().filter(|descriptor| descriptor.available) {
+        if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
+            return Ok(OrchestratorSelection {
+                adapter_id: descriptor.id.clone(),
+                model: resolution.actual_model,
+                tier: orchestrator::TIER,
+                effort: None,
+            });
+        }
+    }
+    Err(BridgeError::Invalid(
+        "no available adapter can resolve the Standard orchestrator profile".into(),
+    ))
 }
 
 #[tauri::command]
