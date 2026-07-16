@@ -6,6 +6,7 @@ import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, Ma
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SkillMarketplace } from "./SkillMarketplace";
 
 type InstallTarget = MarketplaceProvider | "both";
 type CatalogScope = "public" | "personal";
@@ -142,7 +143,7 @@ function ServiceRow({ service, busyKey, target, results, expanded, onToggle, onT
   </article>;
 }
 
-export function MarketplaceScreen() {
+function PluginMarketplace() {
   const [catalog, setCatalog] = useState<MarketplaceCatalog>();
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -228,5 +229,15 @@ export function MarketplaceScreen() {
         </section>
       </>}
     </main>
+  </div>;
+}
+
+export function MarketplaceScreen() {
+  const [resource, setResource] = useState<"plugins" | "skills">("plugins");
+  return <div className="flex h-full min-h-0 flex-col">
+    <nav className="flex h-11 shrink-0 items-center justify-center gap-1 border-b border-white/[0.06] bg-black/10" aria-label="Marketplace sections">
+      {(["plugins", "skills"] as const).map(value => <button key={value} type="button" onClick={() => setResource(value)} className={`rounded-lg px-3 py-1.5 text-[11px] capitalize transition-colors ${resource === value ? "bg-white/[0.08] text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}`}>{value}</button>)}
+    </nav>
+    <div className="min-h-0 flex-1">{resource === "plugins" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>
   </div>;
 }

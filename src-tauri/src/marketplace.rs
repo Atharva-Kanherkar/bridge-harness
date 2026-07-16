@@ -935,7 +935,7 @@ fn parse_claude_native_connector_configs(output: &str) -> BTreeMap<String, Value
         .collect()
 }
 
-fn bounded_output(
+pub(crate) fn bounded_output(
     binary_path: &Path,
     args: &[&str],
     timeout: Duration,

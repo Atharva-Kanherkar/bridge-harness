@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, BridgeState, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
+import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
@@ -76,6 +76,7 @@ export function App() {
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
+  const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [clock, setClock] = useState(Date.now());
@@ -166,6 +167,15 @@ export function App() {
   }, [slashQuery, slashCommands, session?.harness]);
   const slashOpen = slashQuery != null && slashMatches.length > 0 && !slashDismissed;
   const slashListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const query = composer.trim();
+    if (!session || (session.harness !== "codex" && session.harness !== "claude") || query.length < 8 || query.startsWith("/")) { setSkillSuggestions([]); return; }
+    const provider = session.harness;
+    let active = true;
+    const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [composer, session]);
 
   useEffect(() => {
     if (!slashOpen) return;
@@ -448,6 +458,7 @@ export function App() {
                   </div>
                 </div>}
                 <div className="relative mx-auto max-w-2xl">
+                  {!slashOpen && skillSuggestions.length > 0 && <div className="absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c0c10]/95 shadow-2xl shadow-black/40 backdrop-blur-xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {slashOpen && <div className="absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl border border-white/[0.08] bg-[#0c0c10]/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
                       <span>Commands & skills</span>

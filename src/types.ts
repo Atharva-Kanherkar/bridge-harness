@@ -129,3 +129,27 @@ export interface MarketplaceActionResult {
   provider: MarketplaceProvider; pluginId: string; action: MarketplaceAction;
   success: boolean; message: string; error: string | null;
 }
+export type SkillProvider = "codex" | "claude";
+export type SkillAction = "install" | "rollback" | "uninstall";
+export interface SkillProviderState {
+  provider: SkillProvider; installed: boolean; managed: boolean; installedRef: string | null;
+  updateAvailable: boolean; rollbackAvailable: boolean; receiptError: string | null;
+}
+export interface CommunitySkill {
+  id: string; slug: string; name: string; description: string; source: string; sourceUrl: string;
+  pinnedRef: string; installs: number; official: boolean; compatibility: SkillProvider[]; fileCount: number;
+  permissions: string[]; risk: string; riskSummary: string; categories: string[]; providerStates: SkillProviderState[];
+}
+export interface PersonalSkill { id: string; name: string; description: string; providers: SkillProvider[]; source: string }
+export interface SkillCatalog { community: CommunitySkill[]; personal: PersonalSkill[]; installer: string }
+export interface CapabilitySuggestion {
+  id: string; name: string; command: string; relevance: string; source: string; providers: SkillProvider[];
+  permissions: string[]; risk: string; installed: boolean;
+}
+export interface SkillPreview {
+  confirmationId: string; expiresAt: string; action: SkillAction; skill: CommunitySkill;
+  targets: SkillProvider[]; changes: string[]; installer: string;
+}
+export interface SkillActionResult {
+  provider: SkillProvider; action: SkillAction; success: boolean; message: string; error: string | null;
+}
