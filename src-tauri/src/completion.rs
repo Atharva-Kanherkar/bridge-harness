@@ -1,4 +1,4 @@
-use crate::{delegation::{DelegationRequest, WorkerResult, WorkerResultStatus}, store, BridgeError};
+use crate::{delegation::{DelegationRequest, TestStatus, WorkerResult, WorkerResultStatus}, store, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -272,7 +272,6 @@ pub struct PlanInput {
     pub acceptance_criteria: Vec<String>,
     pub changed_paths: Vec<String>,
     pub repository_commands: Vec<String>,
-    pub available_capabilities: HashSet<String>,
 }
 
 pub fn plan(input: PlanInput) -> EvalPlan {
@@ -287,18 +286,10 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             .iter()
             .any(|path| needles.iter().any(|needle| path.contains(needle)))
     };
-    let high_risk = touches(&[
-        "auth",
-        "secret",
-        "credential",
-        "migration",
-        "store.rs",
-        "policy",
-        "worker_lifecycle",
-        "session_supervisor",
-        "adapter",
-        "learning_router",
-    ]);
+    let risk_tokens = lower_paths.iter().flat_map(|path| path.split(|character: char| !character.is_ascii_alphanumeric())).collect::<HashSet<_>>();
+    let high_risk = ["auth", "secret", "credential", "migration", "migrations", "policy", "adapter", "adapters"]
+        .iter().any(|token| risk_tokens.contains(token))
+        || lower_paths.iter().any(|path| ["store.rs", "worker_lifecycle.rs", "session_supervisor.rs", "learning_router.rs"].iter().any(|name| path.ends_with(name)));
     let user_facing = touches(&[".tsx", ".jsx", "src/components", "src/app"])
         || ["browser", "screen", "dialog", "button", "user journey"]
             .iter()
@@ -370,6 +361,38 @@ pub fn plan(input: PlanInput) -> EvalPlan {
         risk,
         checks,
     }
+}
+
+pub fn plan_with_registered_manifests(
+    db: &Connection,
+    input: PlanInput,
+    change_labels: &[String],
+    available_capabilities: &HashSet<String>,
+) -> Result<EvalPlan, BridgeError> {
+    let mut result = plan(input);
+    for candidate in verifier_candidates(db, change_labels, available_capabilities)?
+        .into_iter()
+        .filter(|candidate| candidate.eligible)
+    {
+        for (index, label) in candidate.manifest.checks.iter().enumerate() {
+            let id = format!("manifest-{}-{index}", candidate.manifest.id);
+            if result.checks.iter().any(|check| check.id == id) {
+                continue;
+            }
+            result.checks.push(EvalCheck {
+                id,
+                label: label.clone(),
+                kind: candidate.manifest.kind,
+                required: true,
+                executor: "bridge.worker".into(),
+                command: None,
+                required_capabilities: candidate.manifest.required_capabilities.clone(),
+                different_model_family: candidate.manifest.different_model_family,
+                reason: format!("registered verifier manifest {} matched this change", candidate.manifest.id),
+            });
+        }
+    }
+    Ok(result)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,7 +590,7 @@ pub fn latest_summary(
          FROM eval_attempts a
          JOIN eval_plans p ON p.id=a.plan_id
          JOIN completion_contracts c ON c.id=p.contract_id
-         WHERE a.session_id=?1 ORDER BY a.started_at DESC LIMIT 1",
+         WHERE a.session_id=?1 ORDER BY a.started_at DESC,a.rowid DESC LIMIT 1",
         params![session_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
     ).optional()?;
@@ -599,63 +622,212 @@ pub fn completion_allows_ready(db: &Connection, session_id: &str) -> Result<bool
         .unwrap_or(true))
 }
 
-pub fn create_from_worker_result(
+pub fn reconcile_parent_readiness(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    let remaining: i64 = db.query_row(
+        "SELECT COUNT(*) FROM worker_runtime WHERE parent_session_id=?1 AND result_status!='reported'",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let ready = remaining == 0 && completion_allows_ready(db, session_id)?;
+    if ready {
+        db.execute(
+            "UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'",
+            params![session_id],
+        )?;
+    } else {
+        db.execute(
+            "UPDATE sessions SET status='waiting' WHERE id=?1 AND status='ready'",
+            params![session_id],
+        )?;
+    }
+    Ok(ready)
+}
+
+struct WorkerCompletionContext {
+    parent_session_id: String,
+    workspace_id: String,
+    role: String,
+    harness: String,
+    serialized_request: Option<String>,
+    worktree_path: Option<String>,
+    parent_path: Option<String>,
+}
+
+fn worker_completion_context(
     db: &Connection,
     child_session_id: &str,
-    result: &WorkerResult,
-) -> Result<Option<CompletionSummary>, BridgeError> {
-    if result.status != WorkerResultStatus::Completed {
-        return Ok(None);
-    }
-    let context: Option<(String, String, String, String, String, Option<String>, Option<String>)> = db.query_row(
+) -> Result<Option<WorkerCompletionContext>, BridgeError> {
+    db.query_row(
         "SELECT r.parent_session_id,l.workspace_id,l.role,s.harness,i.request,r.worktree_path,COALESCE(parent.cwd,w.path)
          FROM worker_runtime r
          JOIN worker_leases l ON l.session_id=r.session_id
          JOIN sessions s ON s.id=r.session_id
          JOIN sessions parent ON parent.id=r.parent_session_id
-         JOIN workspaces w ON w.id=parent.workspace_id
-         JOIN worker_completion_inputs i ON i.child_session_id=r.session_id
+         LEFT JOIN workspaces w ON w.id=parent.workspace_id
+         LEFT JOIN worker_completion_inputs i ON i.child_session_id=r.session_id
          WHERE r.session_id=?1",
         params![child_session_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
-    ).optional()?;
-    let Some((parent_session_id, workspace_id, role, implementer_family, serialized_request, worktree_path, parent_path)) = context else {
+        |row| Ok(WorkerCompletionContext {
+            parent_session_id: row.get(0)?, workspace_id: row.get(1)?, role: row.get(2)?,
+            harness: row.get(3)?, serialized_request: row.get(4)?, worktree_path: row.get(5)?, parent_path: row.get(6)?,
+        }),
+    ).optional().map_err(BridgeError::from)
+}
+
+fn repository_stamp(path: &str) -> Result<RepositoryStamp, BridgeError> {
+    let state = store::repository_state_for_path(Path::new(path));
+    let head = state.get("head").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid("completion requires a Git HEAD before verification".into()))?;
+    let dirty_digest = state.get("dirtyHash").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid("completion requires a dirty-tree digest before verification".into()))?;
+    Ok(RepositoryStamp { head: head.into(), dirty_digest: dirty_digest.into() })
+}
+
+pub fn labels_for_paths(paths: &[String]) -> Vec<String> {
+    let mut labels = BTreeSet::new();
+    for path in paths {
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".rs") { labels.insert("rust".into()); }
+        if lower.ends_with(".ts") || lower.ends_with(".tsx") || lower.ends_with(".js") || lower.ends_with(".jsx") { labels.insert("frontend".into()); }
+        if lower.contains("migration") { labels.insert("migration".into()); }
+        if lower.contains("adapter") { labels.insert("adapter".into()); }
+    }
+    labels.into_iter().collect()
+}
+
+pub fn create_from_worker_result(
+    db: &Connection,
+    child_session_id: &str,
+    result: &WorkerResult,
+    available_capabilities: &HashSet<String>,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    let Some(context) = worker_completion_context(db, child_session_id)? else {
         return Ok(None);
     };
-    if role != "implementation" {
+    if context.role == "verification" {
+        let request = context.serialized_request.as_deref().ok_or_else(|| BridgeError::Invalid("verification worker is missing its durable completion input".into()))?;
+        let request: DelegationRequest = serde_json::from_str(request)
+            .map_err(|error| BridgeError::Invalid(format!("stored verification request is malformed: {error}")))?;
+        return settle_verification_result(db, &context, &request, result);
+    }
+    if context.role != "implementation" || result.status != WorkerResultStatus::Completed {
         return Ok(None);
     }
-    if let Some(existing) = latest_summary(db, &parent_session_id)? {
-        if matches!(existing.verdict, CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested) {
+    let serialized_request = context.serialized_request.as_deref()
+        .ok_or_else(|| BridgeError::Invalid("completed implementation is missing its durable completion input".into()))?;
+    let request: DelegationRequest = serde_json::from_str(serialized_request)
+        .map_err(|error| BridgeError::Invalid(format!("stored delegation request is malformed: {error}")))?;
+    request.validate().map_err(BridgeError::Invalid)?;
+    let repository_path = context.worktree_path.clone().or(context.parent_path.clone()).ok_or_else(|| BridgeError::Invalid("implementation completion requires a repository path before verification".into()))?;
+    let repository = repository_stamp(&repository_path)?;
+    if let Some(existing) = latest_summary(db, &context.parent_session_id)? {
+        if matches!(existing.verdict, CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested)
+            && existing.repository == repository
+        {
             return Ok(Some(existing));
         }
     }
-    let request: DelegationRequest = serde_json::from_str(&serialized_request)
-        .map_err(|error| BridgeError::Invalid(format!("stored delegation request is malformed: {error}")))?;
-    request.validate().map_err(BridgeError::Invalid)?;
-    let repository_path = worktree_path.or(parent_path).ok_or_else(|| BridgeError::Invalid("implementation completion requires a repository path before verification".into()))?;
-    let state = store::repository_state_for_path(Path::new(&repository_path));
-    let head = state.get("head").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("implementation completion requires a Git HEAD before verification".into()))?;
-    let dirty_digest = state.get("dirtyHash").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("implementation completion requires a dirty-tree digest before verification".into()))?;
     let contract = CompletionContract {
         id: Uuid::new_v4().to_string(),
-        workspace_id,
-        session_id: parent_session_id.clone(),
+        workspace_id: context.workspace_id,
+        session_id: context.parent_session_id.clone(),
         schema_version: COMPLETION_SCHEMA_VERSION,
         acceptance_criteria: request.acceptance_criteria.clone(),
         markdown_projection: None,
         markdown_committed: false,
     };
-    let plan = plan(PlanInput {
+    let plan = plan_with_registered_manifests(db, PlanInput {
         contract_id: contract.id.clone(),
         acceptance_criteria: request.acceptance_criteria,
         changed_paths: result.files_changed.clone(),
         repository_commands: request.verification,
-        available_capabilities: HashSet::new(),
+    }, &labels_for_paths(&result.files_changed), available_capabilities)?;
+    create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
+    latest_summary(db, &context.parent_session_id)
+}
+
+fn settle_verification_result(
+    db: &Connection,
+    context: &WorkerCompletionContext,
+    request: &DelegationRequest,
+    result: &WorkerResult,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    let Some(summary) = latest_summary(db, &context.parent_session_id)? else {
+        return Err(BridgeError::Invalid("verification worker completed without an active completion gate".into()));
+    };
+    if matches!(summary.verdict, CompletionVerdict::Verified | CompletionVerdict::Waived) {
+        return Ok(Some(summary));
+    }
+    let repository_path: String = db.query_row(
+        "SELECT repository_path FROM eval_attempts WHERE id=?1",
+        params![summary.attempt_id],
+        |row| row.get(0),
+    )?;
+    let current_repository = repository_stamp(&repository_path)?;
+    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(result).map_err(|error| BridgeError::Invalid(error.to_string()))?));
+    let mut updated = 0usize;
+    for check in summary.checks.iter().filter(|check| check.kind == EvalKind::Deterministic && check.status != CheckStatus::Passed) {
+        if let Some(test) = result.tests.iter().find(|test| Some(test.command.as_str()) == check.command.as_deref()) {
+            let status = match test.status { TestStatus::Passed => CheckStatus::Passed, TestStatus::Failed => CheckStatus::Failed, TestStatus::Skipped => CheckStatus::Skipped };
+            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: "bridge.worker_result".into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: test.detail.clone(), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
+            updated += 1;
+        }
+    }
+    let request_text = format!("{} {} {}", request.objective, request.acceptance_criteria.join(" "), request.verification.join(" ")).to_ascii_lowercase();
+    let unresolved_semantic = summary.checks.iter().filter(|check| check.kind != EvalKind::Deterministic && check.status != CheckStatus::Passed).collect::<Vec<_>>();
+    let semantic = unresolved_semantic.iter().find(|check| request_text.contains(&check.check_id.to_ascii_lowercase()))
+        .copied()
+        .or_else(|| unresolved_semantic.iter().find(|check| check.kind == EvalKind::UserTesting && ["user journey", "browser", "playwright", "screen", "console", "network"].iter().any(|term| request_text.contains(term))).copied())
+        .or_else(|| unresolved_semantic.iter().find(|check| check.kind == EvalKind::Scrutiny && ["scrutiny", "review", "test quality", "code review"].iter().any(|term| request_text.contains(term))).copied())
+        .or_else(|| unresolved_semantic.first().copied());
+    if let Some(check) = semantic {
+        let status = match result.status {
+            WorkerResultStatus::Completed if result.risks.is_empty() && result.remaining_work.is_empty() => CheckStatus::Passed,
+            WorkerResultStatus::Completed => CheckStatus::Failed,
+            WorkerResultStatus::Failed => CheckStatus::Failed,
+            WorkerResultStatus::Cancelled | WorkerResultStatus::Blocked | WorkerResultStatus::NeedsDelegation => CheckStatus::Blocked,
+        };
+        let mut detail = result.summary.clone();
+        if !result.risks.is_empty() { detail.push_str(&format!("\nRisks: {}", result.risks.join(" | "))); }
+        if !result.remaining_work.is_empty() { detail.push_str(&format!("\nRemaining: {}", result.remaining_work.join(" | "))); }
+        record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: "bridge.worker_result".into(), command: None, verifier_family: Some(context.harness.clone()), detail: Some(detail), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
+        updated += 1;
+    }
+    if updated == 0 {
+        if let Some(check) = summary.checks.iter().find(|check| check.required && check.status != CheckStatus::Passed) {
+            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: true, status: CheckStatus::Blocked, executor: "bridge.worker_result".into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: Some("Verification worker returned no matching typed evidence".into()), output_digest: Some(digest), artifact_refs: vec![] })?;
+        }
+    }
+    for (index, finding) in result.risks.iter().chain(&result.remaining_work).enumerate() {
+        db.execute(
+            "INSERT INTO eval_findings(id,attempt_id,check_id,severity,summary,affected_paths,created_at) VALUES(?1,?2,'verification-worker',?3,?4,?5,?6)",
+            params![Uuid::new_v4().to_string(), summary.attempt_id, if index < result.risks.len() { "warning" } else { "info" }, finding, serde_json::to_string(&result.files_changed).unwrap_or_else(|_| "[]".into()), Utc::now().to_rfc3339()],
+        )?;
+    }
+    finalize(db, &summary.attempt_id, &current_repository)?;
+    latest_summary(db, &context.parent_session_id)
+}
+
+pub fn record_gate_error(
+    db: &Connection,
+    child_session_id: &str,
+    message: &str,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    let Some(context) = worker_completion_context(db, child_session_id)? else { return Ok(None); };
+    let repository_path = context.worktree_path.or(context.parent_path).unwrap_or_else(|| ".".into());
+    let repository = repository_stamp(&repository_path).unwrap_or_else(|_| RepositoryStamp {
+        head: "unavailable".into(), dirty_digest: format!("{:x}", Sha256::digest(message.as_bytes())),
     });
-    let repository = RepositoryStamp { head: head.into(), dirty_digest: dirty_digest.into() };
-    create_flow(db, &contract, &plan, &parent_session_id, &repository_path, &repository, Some(&implementer_family))?;
-    latest_summary(db, &parent_session_id)
+    let contract = CompletionContract { id: Uuid::new_v4().to_string(), workspace_id: context.workspace_id, session_id: context.parent_session_id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, acceptance_criteria: vec!["Resolve completion gate creation failure".into()], markdown_projection: None, markdown_committed: false };
+    let plan = EvalPlan { id: Uuid::new_v4().to_string(), contract_id: contract.id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, risk: RiskTier::High, checks: vec![EvalCheck { id: "gate-error".into(), label: "Completion gate creation failed".into(), kind: EvalKind::Deterministic, required: true, executor: "bridge.system".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "Bridge could not construct the required completion gate".into() }] };
+    let attempt_id = create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
+    db.execute(
+        "UPDATE eval_attempts SET status='superseded',completed_at=?3 WHERE session_id=?1 AND id<>?2 AND status IN ('verifying','changes_requested','failed')",
+        params![context.parent_session_id, attempt_id, Utc::now().to_rfc3339()],
+    )?;
+    record_check(db, &attempt_id, &CheckRun { check_id: "gate-error".into(), kind: EvalKind::Deterministic, required: true, status: CheckStatus::Blocked, executor: "bridge.system".into(), command: None, verifier_family: None, detail: Some(message.into()), output_digest: Some(format!("{:x}", Sha256::digest(message.as_bytes()))), artifact_refs: vec![] })?;
+    db.execute("UPDATE eval_attempts SET status='failed' WHERE id=?1", params![attempt_id])?;
+    latest_summary(db, &context.parent_session_id)
 }
 
 fn parse_verdict(value: &str) -> CompletionVerdict {
@@ -737,7 +909,7 @@ pub fn create_flow(
             params![Uuid::new_v4().to_string(), attempt_id, check.id, check.kind.as_str(), check.required, check.executor, check.command],
         )?;
     }
-    transaction.execute("UPDATE sessions SET status='waiting' WHERE id=?1", params![session_id])?;
+    transaction.execute("UPDATE sessions SET status='waiting' WHERE id=?1 AND status IN ('idle','ready')", params![session_id])?;
     transaction.commit()?;
     Ok(attempt_id)
 }
@@ -856,15 +1028,22 @@ pub fn finalize(
     let checks = statement
         .query_map(params![attempt_id], map_check_run)?
         .collect::<Result<Vec<_>, _>>()?;
-    let waiver_reason: Option<String> = db.query_row(
-        "SELECT reason FROM eval_waivers WHERE attempt_id=?1 AND repository_head=?2 AND dirty_digest=?3 ORDER BY created_at DESC LIMIT 1",
-        params![attempt_id, head, dirty],
-        |row| row.get(0),
-    ).optional()?;
+    let mut waiver_statement = db.prepare(
+        "SELECT check_ids,reason FROM eval_waivers WHERE attempt_id=?1 AND repository_head=?2 AND dirty_digest=?3 ORDER BY created_at,rowid",
+    )?;
+    let waivers = waiver_statement.query_map(params![attempt_id, head, dirty], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut waived_check_ids = HashSet::new();
+    let mut waiver_reasons = Vec::new();
+    for (serialized_ids, reason) in waivers {
+        waived_check_ids.extend(serde_json::from_str::<Vec<String>>(&serialized_ids).unwrap_or_default());
+        waiver_reasons.push(reason);
+    }
+    let waiver_reason = (!waiver_reasons.is_empty()).then(|| waiver_reasons.join(" | "));
     let blockers = checks.iter().filter(|run| run.required && run.status != CheckStatus::Passed).collect::<Vec<_>>();
     let verdict = if blockers.is_empty() {
         CompletionVerdict::Verified
-    } else if waiver_reason.is_some() {
+    } else if blockers.iter().all(|run| waived_check_ids.contains(&run.check_id)) {
         CompletionVerdict::Waived
     } else if blockers.iter().any(|run| run.status == CheckStatus::Failed) {
         CompletionVerdict::ChangesRequested
@@ -964,7 +1143,7 @@ mod tests {
 
     #[test]
     fn planner_selects_independent_scrutiny_and_browser_journey() {
-        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["User opens the dialog".into()], changed_paths: vec!["src/components/Dialog.tsx".into(), "src-tauri/src/policy.rs".into()], repository_commands: vec![], available_capabilities: HashSet::new() });
+        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["User opens the dialog".into()], changed_paths: vec!["src/components/Dialog.tsx".into(), "src-tauri/src/policy.rs".into()], repository_commands: vec![] });
         assert_eq!(result.risk, RiskTier::High);
         assert!(result.checks.iter().any(|check| check.kind == EvalKind::Scrutiny && check.different_model_family));
         assert!(result.checks.iter().any(|check| check.kind == EvalKind::UserTesting && check.required_capabilities.contains(&"browser".into())));
@@ -1005,12 +1184,50 @@ mod tests {
         let request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["Proof card is visible"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
         db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')", params![request.to_string()]).unwrap();
         let result = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "implemented".into(), files_changed: vec!["src/App.tsx".into()], tests: Vec::<WorkerTestResult>::new(), decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
-        let summary = create_from_worker_result(&db, "child", &result).unwrap().unwrap();
+        let summary = create_from_worker_result(&db, "child", &result, &HashSet::new()).unwrap().unwrap();
         assert_eq!(summary.verdict, CompletionVerdict::Verifying);
         assert!(!summary.markdown_committed);
         assert!(summary.checks.iter().any(|check| check.kind == EvalKind::Scrutiny));
         assert_eq!(db.query_row("SELECT repository_path FROM eval_attempts WHERE id=?1", params![summary.attempt_id], |row| row.get::<_, String>(0)).unwrap(), cwd);
         assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "waiting");
+        let duplicate = create_from_worker_result(&db, "child", &result, &HashSet::new()).unwrap().unwrap();
+        assert_eq!(duplicate.attempt_id, summary.attempt_id);
+        db.execute("UPDATE eval_attempts SET dirty_digest='prior-revision' WHERE id=?1", params![summary.attempt_id]).unwrap();
+        let rebound = create_from_worker_result(&db, "child", &result, &HashSet::new()).unwrap().unwrap();
+        assert_ne!(rebound.attempt_id, summary.attempt_id);
+        assert_eq!(db.query_row("SELECT status FROM eval_attempts WHERE id=?1", params![summary.attempt_id], |row| row.get::<_, String>(0)).unwrap(), "superseded");
+    }
+
+    #[test]
+    fn completed_verifiers_close_typed_checks_sequentially() {
+        use crate::delegation::{SuggestedNextAction, WorkerTestResult};
+        let db = fixture();
+        let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        db.execute("UPDATE sessions SET cwd=?2 WHERE id=?1", params!["s", cwd]).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES('impl','w','claude','impl','completed','estimated','s','worker','native')", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('impl','w','implementation','standard','implementation','[]','isolated','released','now','now')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES('impl','s','completed','implementation','key','reported',0,?1,'now')", params![cwd]).unwrap();
+        let implementation_request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["User opens the dialog"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
+        db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('impl',?1,'now')", params![implementation_request.to_string()]).unwrap();
+        let implementation = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "implemented".into(), files_changed: vec!["src/App.tsx".into()], tests: vec![], decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
+        let first = create_from_worker_result(&db, "impl", &implementation, &HashSet::new()).unwrap().unwrap();
+
+        for (id, objective, tests) in [
+            ("verify-code", "Run scrutiny-review", vec![WorkerTestResult { command: "bun run test".into(), status: TestStatus::Passed, detail: Some("green".into()) }, WorkerTestResult { command: "bun run build".into(), status: TestStatus::Passed, detail: Some("built".into()) }]),
+            ("verify-ui", "Run user-journey in browser", vec![]),
+        ] {
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES(?1,'w','codex','verify','completed','estimated','s','worker','native')", params![id]).unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES(?1,'w','verification','standard','verification','[]','read_only','released','now','now')", params![id]).unwrap();
+            db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES(?1,'s','completed','verification','key','reported',0,?2,'now')", params![id, cwd]).unwrap();
+            let request = serde_json::json!({"schemaVersion":1,"role":"verification","objective":objective,"acceptanceCriteria":["Report typed evidence"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":[],"writeMode":"readOnly","capabilityTier":"standard","effort":"medium","verification":[],"outputContract":"verification-result","harness":"codex"});
+            db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,'now')", params![id, request.to_string()]).unwrap();
+            let verification = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "verified".into(), files_changed: vec![], tests, decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
+            create_from_worker_result(&db, id, &verification, &HashSet::new()).unwrap();
+        }
+        let final_summary = latest_summary(&db, "s").unwrap().unwrap();
+        assert_eq!(final_summary.attempt_id, first.attempt_id);
+        assert_eq!(final_summary.verdict, CompletionVerdict::Verified);
+        assert!(final_summary.checks.iter().filter(|check| check.required).all(|check| check.status == CheckStatus::Passed));
     }
 
     #[test]
@@ -1056,6 +1273,73 @@ mod tests {
     }
 
     #[test]
+    fn partial_waiver_cannot_bypass_an_unwaived_failed_check() {
+        let db = fixture();
+        let contract = contract();
+        save_contract(&db, &contract).unwrap();
+        let checks = [
+            ("tests", EvalKind::Deterministic, CheckStatus::Failed),
+            ("journey", EvalKind::UserTesting, CheckStatus::Skipped),
+        ];
+        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::High, checks: checks.iter().map(|(id, kind, _)| EvalCheck { id: (*id).into(), label: (*id).into(), kind: *kind, required: true, executor: "worker".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "required".into() }).collect() };
+        save_plan(&db, &plan).unwrap();
+        let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
+        let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
+        for (id, kind, status) in checks {
+            record_check(&db, &attempt, &CheckRun { check_id: id.into(), kind, required: true, status, executor: "worker".into(), command: None, verifier_family: None, detail: None, output_digest: Some("digest".into()), artifact_refs: vec![] }).unwrap();
+        }
+        waive(&db, &attempt, &["journey".into()], "browser unavailable", "user", &stamp).unwrap();
+        assert_eq!(finalize(&db, &attempt, &stamp).unwrap().verdict, CompletionVerdict::ChangesRequested);
+    }
+
+    #[test]
+    fn gate_creation_error_fails_closed_and_remains_explicitly_waivable() {
+        let db = fixture();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('broken','w','claude','broken','failed','estimated','s')", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('broken','w','implementation','standard','implementation','[]','isolated','released','now','now')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at) VALUES('broken','s','failed','implementation','key','reported',0,'now')", []).unwrap();
+        let summary = record_gate_error(&db, "broken", "worktree disappeared").unwrap().unwrap();
+        assert_eq!(summary.verdict, CompletionVerdict::Failed);
+        assert_eq!(summary.checks[0].status, CheckStatus::Blocked);
+        assert!(!completion_allows_ready(&db, "s").unwrap());
+        waive(&db, &summary.attempt_id, &["gate-error".into()], "continue without automated proof", "user", &summary.repository).unwrap();
+        assert_eq!(finalize(&db, &summary.attempt_id, &summary.repository).unwrap().verdict, CompletionVerdict::Waived);
+    }
+
+    #[test]
+    fn readiness_requires_zero_unsettled_children_and_a_terminal_gate() {
+        let db = fixture();
+        db.execute("UPDATE sessions SET status='waiting' WHERE id='s'", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('active','w','claude','active','working','estimated','s')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at) VALUES('active','s','working','implementation','key','pending',0,'now')", []).unwrap();
+        assert!(!reconcile_parent_readiness(&db, "s").unwrap());
+        db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='active'", []).unwrap();
+        assert!(reconcile_parent_readiness(&db, "s").unwrap());
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "ready");
+        let contract = contract();
+        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "pending".into(), label: "pending".into(), kind: EvalKind::Deterministic, required: true, executor: "worker".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "required".into() }] };
+        create_flow(&db, &contract, &plan, "s", ".", &RepositoryStamp { head: "head".into(), dirty_digest: "dirty".into() }, Some("codex")).unwrap();
+        assert!(!reconcile_parent_readiness(&db, "s").unwrap());
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "waiting");
+    }
+
+    #[test]
+    fn explicit_plan_creation_does_not_interrupt_a_working_parent() {
+        let db = fixture();
+        db.execute("UPDATE sessions SET status='working' WHERE id='s'", []).unwrap();
+        let contract = contract();
+        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "pending".into(), label: "pending".into(), kind: EvalKind::Deterministic, required: true, executor: "worker".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "required".into() }] };
+        create_flow(&db, &contract, &plan, "s", ".", &RepositoryStamp { head: "head".into(), dirty_digest: "dirty".into() }, Some("codex")).unwrap();
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "working");
+    }
+
+    #[test]
+    fn author_filename_does_not_trigger_auth_risk() {
+        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["Render author".into()], changed_paths: vec!["src/author.rs".into()], repository_commands: vec![] });
+        assert_eq!(result.risk, RiskTier::Low);
+    }
+
+    #[test]
     fn compact_packet_selects_relevant_contract_and_bounded_findings() {
         let packet = compact_packet("a", RepositoryStamp { head: "h".into(), dirty_digest: "d".into() }, &["Router saves settings".into(), "Unrelated billing works".into()], &["src/router/settings.rs".into()], &[], &(0..30).map(|index| format!("finding {index}")).collect::<Vec<_>>());
         assert_eq!(packet.relevant_criteria, vec!["Router saves settings"]);
@@ -1063,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn held_out_completion_fixture_improves_verified_quality_and_rework_metrics() {
+    fn completion_benchmark_fixture_enforces_the_measurement_contract() {
         let cases: Vec<CompletionBenchmarkCase> = serde_json::from_str(include_str!("../../testing/fixtures/completion-benchmark-v1.json")).unwrap();
         let report = benchmark(&cases);
         assert_eq!(report.cases, 10);

@@ -493,14 +493,19 @@ pub fn route(
         .map(|candidate| candidate.candidate.key());
     let manual_override = request.harness.is_some() || request.model.is_some();
     let independent_verification = implementer_family.is_some();
-    let executed = if independent_verification {
+    let eligible_manual_baseline = baseline.as_deref().filter(|key| candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible));
+    let executed = if independent_verification && manual_override && eligible_manual_baseline.is_some() {
+        baseline.clone()
+    } else if independent_verification {
         recommendation.clone()
     } else if manual_override || preferences.mode != RouterMode::Autonomous {
         baseline.clone()
     } else {
         recommendation.clone()
     };
-    let explanation = if independent_verification {
+    let explanation = if independent_verification && manual_override && eligible_manual_baseline.is_some() {
+        format!("Manual different-family verifier {} retained", baseline.as_deref().unwrap_or("unknown"))
+    } else if independent_verification {
         recommendation.as_ref().map(|candidate| format!("Independent verification requires a different harness family; selected {candidate}"))
             .unwrap_or_else(|| "No different-family verifier satisfies the deterministic route constraints".into())
     } else if manual_override {
@@ -1105,6 +1110,11 @@ mod tests {
         assert_eq!(routed.decision.executed_candidate.as_deref(), Some("claude:claude-standard"));
         let codex = routed.decision.candidates.iter().find(|candidate| candidate.candidate.harness == "codex").unwrap();
         assert!(codex.exclusions.contains(&CandidateExclusion::SameAsImplementer));
+        let mut pinned = verification;
+        pinned.harness = Some("claude".into());
+        pinned.model = Some("claude-standard".into());
+        let routed = route(&db, "parent", "turn-2", &pinned, &descriptors()).unwrap();
+        assert_eq!(routed.decision.executed_candidate.as_deref(), Some("claude:claude-standard"));
     }
 
     #[test]

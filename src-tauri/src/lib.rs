@@ -224,14 +224,14 @@ fn completion_attempt_repository(
     db: &Connection,
     attempt_id: &str,
 ) -> Result<(String, completion::RepositoryStamp), BridgeError> {
-    let (session_id, repository_path): (String, String) = db.query_row(
-        "SELECT session_id,repository_path FROM eval_attempts WHERE id=?1",
+    let (session_id, repository_path, stored_head, stored_dirty): (String, String, String, String) = db.query_row(
+        "SELECT session_id,repository_path,repository_head,dirty_digest FROM eval_attempts WHERE id=?1",
         params![attempt_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     let state = store::repository_state_for_path(std::path::Path::new(&repository_path));
-    let head = state.get("head").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof repository is no longer available".into()))?;
-    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof repository state is no longer available".into()))?;
+    let head = state.get("head").and_then(serde_json::Value::as_str).unwrap_or(&stored_head);
+    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).unwrap_or(&stored_dirty);
     Ok((session_id, completion::RepositoryStamp { head: head.into(), dirty_digest: dirty.into() }))
 }
 
@@ -262,13 +262,14 @@ fn create_completion_plan(
         markdown_projection,
         markdown_committed,
     };
-    let plan = completion::plan(completion::PlanInput {
+    let available_capabilities = state.adapter_registry.descriptors().into_iter().flat_map(|descriptor| descriptor.capabilities).collect::<std::collections::HashSet<_>>();
+    let change_labels = completion::labels_for_paths(&changed_paths);
+    let plan = completion::plan_with_registered_manifests(&db, completion::PlanInput {
         contract_id: contract.id.clone(),
         acceptance_criteria,
         changed_paths,
         repository_commands,
-        available_capabilities: std::collections::HashSet::new(),
-    });
+    }, &change_labels, &available_capabilities)?;
     let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
     let repository = completion_repository_stamp(&db, &session_id)?;
     completion::create_flow(&db, &contract, &plan, &session_id, &repository_path, &repository, implementer_family.as_deref())?;
@@ -287,10 +288,8 @@ fn record_completion_check(
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
     completion::record_check(&db, &attempt_id, &run)?;
-    let bundle = completion::finalize(&db, &attempt_id, &repository)?;
-    if matches!(bundle.verdict, completion::CompletionVerdict::Verified | completion::CompletionVerdict::Waived) {
-        db.execute("UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'", params![session_id])?;
-    }
+    completion::finalize(&db, &attempt_id, &repository)?;
+    completion::reconcile_parent_readiness(&db, &session_id)?;
     let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
     let _ = app.emit("state-changed", ());
     Ok(summary)
@@ -307,10 +306,8 @@ fn waive_completion(
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
     completion::waive(&db, &attempt_id, &check_ids, &reason, "local_user", &repository)?;
-    let bundle = completion::finalize(&db, &attempt_id, &repository)?;
-    if bundle.verdict == completion::CompletionVerdict::Waived {
-        db.execute("UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'", params![session_id])?;
-    }
+    completion::finalize(&db, &attempt_id, &repository)?;
+    completion::reconcile_parent_readiness(&db, &session_id)?;
     let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
     let _ = app.emit("state-changed", ());
     Ok(summary)
@@ -2173,11 +2170,35 @@ fn launch_worker_outcome(
         &routed.decision.id,
         "reserved",
     );
-    if let Ok(serialized) = serde_json::to_string(directive) {
-        let _ = state.db.lock().unwrap().execute(
+    let completion_input = serde_json::to_string(directive)
+        .map_err(|error| BridgeError::Invalid(format!("Could not serialize worker completion input: {error}")))
+        .and_then(|serialized| state.db.lock().unwrap().execute(
             "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,?3) ON CONFLICT(child_session_id) DO UPDATE SET request=excluded.request,updated_at=excluded.updated_at",
             params![reservation.session_id, serialized, Utc::now().to_rfc3339()],
-        );
+        ).map(|_| ()).map_err(BridgeError::from));
+    if let Err(error) = completion_input {
+        fail_reserved_worker(app, &reservation.session_id, &directive.label(), &error.to_string());
+        return WorkerLaunchOutcome::Failed;
+    }
+    if directive.role == delegation::WorkerRole::Verification {
+        let verification_path: Result<String, BridgeError> = state.db.lock().unwrap().query_row(
+            "SELECT repository_path FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested','failed') ORDER BY started_at DESC,rowid DESC LIMIT 1",
+            params![parent_session_id],
+            |row| row.get(0),
+        ).map_err(BridgeError::from);
+        match verification_path {
+            Ok(path) => {
+                reservation.path = path.clone();
+                let _ = state.db.lock().unwrap().execute(
+                    "UPDATE worker_runtime SET worktree_path=?2,updated_at=?3 WHERE session_id=?1",
+                    params![reservation.session_id, path, Utc::now().to_rfc3339()],
+                );
+            }
+            Err(error) => {
+                fail_reserved_worker(app, &reservation.session_id, &directive.label(), &format!("Could not bind verifier to the implementation revision: {error}"));
+                return WorkerLaunchOutcome::Failed;
+            }
+        }
     }
     let requires_child_worktree = matches!(
         &reservation.outcome.decision,
@@ -3088,23 +3109,29 @@ fn report_to_parent(
     let Some(report) = report else {
         return;
     };
-    let completion = match completion::create_from_worker_result(
-        &state.db.lock().unwrap(),
-        child_session_id,
-        result,
-    ) {
+    let available_capabilities = state.adapter_registry.descriptors().into_iter().flat_map(|descriptor| descriptor.capabilities).collect::<std::collections::HashSet<_>>();
+    let completion_result = {
+        let db = state.db.lock().unwrap();
+        completion::create_from_worker_result(&db, child_session_id, result, &available_capabilities)
+    };
+    let completion = match completion_result {
         Ok(summary) => summary,
         Err(error) => {
+            let db = state.db.lock().unwrap();
             let _ = store::event(
-                &state.db.lock().unwrap(),
+                &db,
                 "completion",
                 "completion.plan_failed",
                 child_session_id,
                 &error.to_string(),
             );
-            None
+            completion::record_gate_error(&db, child_session_id, &error.to_string()).ok().flatten()
         }
     };
+    {
+        let db = state.db.lock().unwrap();
+        let _ = completion::reconcile_parent_readiness(&db, &report.parent_session_id);
+    }
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-evidence",
         "evidenceId": report.evidence_id,

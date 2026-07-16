@@ -204,17 +204,7 @@ impl SessionSupervisor {
                 ELSE 'released' END,updated_at=?2 WHERE session_id=?1",
             params![session_id, now],
         )?;
-        let remaining: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM worker_runtime WHERE parent_session_id=?1 AND result_status!='reported'",
-            params![parent_session_id],
-            |row| row.get(0),
-        )?;
-        if remaining == 0 && completion::completion_allows_ready(&transaction, &parent_session_id)? {
-            transaction.execute(
-                "UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'",
-                params![parent_session_id],
-            )?;
-        }
+        completion::reconcile_parent_readiness(&transaction, &parent_session_id)?;
         transaction.execute(
             "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','worker.result.reported',?1,?2,?3)",
             params![session_id, result.status.as_str(), now],
