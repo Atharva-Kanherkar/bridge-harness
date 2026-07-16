@@ -3,13 +3,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
+import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
+import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
@@ -66,6 +67,7 @@ export function App() {
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [health, setHealth] = useState<Health>();
+  const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "marketplace">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -92,7 +94,9 @@ export function App() {
 
   const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
   useEffect(() => {
-    void Promise.all([reload(), bridgeApi.health().then(setHealth)]);
+    void Promise.all([reload(), bridgeApi.health(), bridgeApi.modelSetup()])
+      .then(([, healthValue, setup]) => { setHealth(healthValue); setModelSetup(setup); })
+      .catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
@@ -382,6 +386,8 @@ export function App() {
   const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
+  if (!health || !modelSetup) return <div className="space-dark relative grid h-[100dvh] place-items-center overflow-hidden text-neutral-500"><SpaceBackground paused /><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  if (!modelSetup.complete) return <div className="space-dark relative h-[100dvh] overflow-hidden"><SpaceBackground paused /><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   return <div className="space-dark relative flex h-[100dvh] overflow-hidden text-neutral-200">
     <SpaceBackground paused={turnActive} />
 

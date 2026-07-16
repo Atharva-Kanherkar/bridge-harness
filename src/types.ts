@@ -1,6 +1,7 @@
 export type Harness = "claude" | "codex" | "shell";
 export type SessionStatus = "idle" | "starting" | "working" | "waiting" | "warm" | "checkpointing" | "ready" | "stopped" | "resuming" | "restored" | "failed" | "completed" | "cancelled";
 export type CapabilityTier = "fast" | "standard" | "strong";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
 export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
 export type ResumeEligibility = "none" | "native" | "checkpoint_restored";
@@ -59,7 +60,7 @@ export interface UsageLedgerRow {
   id: number; workspaceId: string; sessionId: string | null; turnId: string | null;
   inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null;
   cacheWriteTokens: number | null; contextPercent: number | null; capabilityUnits: number;
-  runtimeMs: number | null; source: string; createdAt: string;
+  runtimeMs: number | null; costMicrousd: number | null; costSource: string | null; source: string; createdAt: string;
 }
 export interface PolicyLimits {
   maxWorkersPerTurn: number; maxStrongWorkersPerTurn: number; maxCapabilityUnitsPerTurn: number;
@@ -103,6 +104,35 @@ export interface RouterPreferences {
   mode: RouterMode; minimumPassBps: number; pinnedHarness: string | null; pinnedModel: string | null;
   excludedHarnesses: string[]; excludedModels: string[];
 }
+export type ProfilePurpose = "standard_orchestrator" | "premium_orchestrator" | "planner" | "implementer" | "verifier" | "reviewer" | "research" | "documentation" | "evaluator";
+export type CanonicalWorkerRole = "research" | "implementation" | "verification" | "planning" | "documentation";
+export interface ModelProfileDraft {
+  purpose: ProfilePurpose; provider: string; model: string; effort: ReasoningEffort;
+  fallbackPurpose: ProfilePurpose | null; pinned: boolean; learningEnabled: boolean;
+  budgetPreference: string | null; latencyPreference: string | null;
+}
+export interface ModelProfile extends ModelProfileDraft {
+  schemaVersion: number; version: number; canonicalRole: CanonicalWorkerRole; createdAt: string;
+}
+export interface ModelSetupState { complete: boolean; activeVersion: number | null; profiles: ModelProfile[] }
+export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude";
+export type LearningRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "noop";
+export interface LearningReport {
+  reason: string; evidenceBoundary: number; evidenceCount: number; basePolicyVersion: number;
+  candidatePolicyVersion: number | null; qualityBps: number | null; averageCostMicrousd: number | null;
+  averageLatencyMs: number | null; policyDiff: Record<string, unknown>; recommendationOnly: boolean;
+}
+export interface LearningRun {
+  id: string; jobId: string; triggerKind: LearningTriggerKind; idempotencyKey: string;
+  evidenceBoundary: number; basePolicyVersion: number; status: LearningRunStatus;
+  report: LearningReport | null; candidatePolicyVersion: number | null; cancellationRequested: boolean;
+  duplicate: boolean; createdAt: string; completedAt: string | null;
+}
+export interface LearningSchedule {
+  jobId: string; enabled: boolean; cadenceMinutes: number; nextRunAt: string | null;
+  runBudgetMicrousd: number; mode: "manual" | "ask" | "automatic";
+}
+export interface LearningState { schedule: LearningSchedule; latestRun: LearningRun | null }
 export interface TerminalChunk { sessionId: string; data: string }
 export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }
 export interface SecretInterception { reference: string; detector: string }

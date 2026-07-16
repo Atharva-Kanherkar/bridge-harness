@@ -142,7 +142,7 @@ describe("projectUsageExhaustion", () => {
 describe("buildUsageHistory", () => {
   it("ties newest-first records to work units, harnesses, models, outcomes, and sources", () => {
     const session: Session = { id: "s1", workspaceId: "w", harness: "codex", label: "Worker", status: "completed", startedAt: null, endedAt: null, contextPercent: 72, usagePercent: null, metricSource: "reported", model: "gpt-5", restorationMode: "fresh" };
-    const row = (id: number, source: string, createdAt: string): UsageLedgerRow => ({ id, workspaceId: "w", sessionId: "s1", turnId: `turn-${id}`, inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 72, capabilityUnits: 0, runtimeMs: 1, source, createdAt });
+    const row = (id: number, source: string, createdAt: string): UsageLedgerRow => ({ id, workspaceId: "w", sessionId: "s1", turnId: `turn-${id}`, inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 72, capabilityUnits: 0, runtimeMs: 1, costMicrousd: null, costSource: null, source, createdAt });
     const history = buildUsageHistory([
       row(1, "provider.codex", "2026-07-16T10:00:00Z"),
       row(2, "policy.spawn.strong", "2026-07-16T11:00:00Z"),

@@ -450,6 +450,94 @@ async fn update_router_preferences(
 }
 
 #[tauri::command]
+async fn get_model_setup(
+    state: State<'_, AppState>,
+) -> Result<model_profiles::ModelSetupState, BridgeError> {
+    model_profiles::setup_state(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+async fn recommended_model_profiles(
+    state: State<'_, AppState>,
+) -> Result<Vec<model_profiles::ModelProfileDraft>, BridgeError> {
+    model_profiles::recommended_profiles(&state.adapter_registry.descriptors())
+}
+
+#[tauri::command]
+async fn save_model_profiles(
+    profiles: Vec<model_profiles::ModelProfileDraft>,
+    state: State<'_, AppState>,
+) -> Result<model_profiles::ModelSetupState, BridgeError> {
+    model_profiles::save_profiles(
+        &state.db.lock().unwrap(),
+        &state.adapter_registry.descriptors(),
+        &profiles,
+    )
+}
+
+#[tauri::command]
+async fn reset_model_profiles(
+    state: State<'_, AppState>,
+) -> Result<model_profiles::ModelSetupState, BridgeError> {
+    model_profiles::reset_profiles(
+        &state.db.lock().unwrap(),
+        &state.adapter_registry.descriptors(),
+    )
+}
+
+#[tauri::command]
+async fn get_learning_state(
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningState, BridgeError> {
+    learning_job::learning_state(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+async fn run_learning(
+    trigger_kind: learning_job::LearningTriggerKind,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningRun, BridgeError> {
+    let run = learning_job::run_learning(&state.db.lock().unwrap(), trigger_kind)?;
+    let _ = app.emit("learning-job-changed", &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn cancel_learning_run(
+    run_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningRun, BridgeError> {
+    let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
+    let _ = app.emit("learning-job-changed", &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn update_learning_schedule(
+    schedule: learning_job::LearningSchedule,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningSchedule, BridgeError> {
+    learning_job::update_schedule(&state.db.lock().unwrap(), &schedule)
+}
+
+#[tauri::command]
+async fn register_learning_trigger(
+    kind: learning_job::LearningTriggerKind,
+    registration_id: String,
+    credential_ref: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), BridgeError> {
+    learning_job::register_trigger(
+        &state.db.lock().unwrap(),
+        kind,
+        &registration_id,
+        credential_ref.as_deref(),
+    )
+}
+
+#[tauri::command]
 async fn activate_session_entry(
     session_id: String,
     entry_id: String,
@@ -3474,6 +3562,22 @@ fn start_worker_maintenance(app: AppHandle) {
     });
 }
 
+fn start_learning_maintenance(app: AppHandle) {
+    thread::spawn(move || loop {
+        let ran = {
+            let state = app.state::<AppState>();
+            let result = learning_job::run_due(&state.db.lock().unwrap(), Utc::now())
+                .ok()
+                .flatten();
+            result
+        };
+        if let Some(run) = ran {
+            let _ = app.emit("learning-job-changed", run);
+        }
+        thread::sleep(Duration::from_secs(60));
+    });
+}
+
 const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 fn start_history_snapshot_maintenance(app: AppHandle) {
@@ -4531,6 +4635,7 @@ pub fn run() {
             let snapshot_dir = data.join("history-snapshots");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            let _ = learning_job::run_due(&connection, Utc::now());
             let telemetry_connection = store::open_telemetry(&telemetry_db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)
@@ -4561,6 +4666,7 @@ pub fn run() {
                 credential_broker,
             });
             start_worker_maintenance(app.handle().clone());
+            start_learning_maintenance(app.handle().clone());
             start_history_snapshot_maintenance(app.handle().clone());
             Ok(())
         })
@@ -4582,6 +4688,15 @@ pub fn run() {
             verifier_candidates,
             get_router_preferences,
             update_router_preferences,
+            get_model_setup,
+            recommended_model_profiles,
+            save_model_profiles,
+            reset_model_profiles,
+            get_learning_state,
+            run_learning,
+            cancel_learning_run,
+            update_learning_schedule,
+            register_learning_trigger,
             activate_session_entry,
             add_project,
             create_workspace,
