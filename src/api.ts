@@ -11,8 +11,10 @@ const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
 let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
 let mockLearningState: LearningState = {
-  schedule: { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, mode: "manual" },
+  schedule: { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "manual" },
   latestRun: null,
+  activePolicyVersion: 1,
+  canaryPolicyVersion: null,
 };
 let nextEventId = 20;
 
@@ -219,14 +221,14 @@ export const bridgeApi = {
       return Promise.resolve(duplicate);
     }
     const createdAt = new Date().toISOString();
-    const run: LearningRun = { id: crypto.randomUUID(), jobId: "default", triggerKind, idempotencyKey: "default:0:1", evidenceBoundary: 0, basePolicyVersion: 1, status: "noop", report: { reason: "insufficient evidence: 0/5 outcomes", evidenceBoundary: 0, evidenceCount: 0, basePolicyVersion: 1, candidatePolicyVersion: null, qualityBps: null, averageCostMicrousd: null, averageLatencyMs: null, policyDiff: {}, recommendationOnly: true }, candidatePolicyVersion: null, cancellationRequested: false, duplicate: false, createdAt, completedAt: createdAt };
+    const run: LearningRun = { id: crypto.randomUUID(), jobId: "default", triggerKind, idempotencyKey: "default:0:1", evidenceBoundary: 0, basePolicyVersion: 1, status: "noop", report: { reason: "insufficient evidence: 0/5 outcomes", evidenceBoundary: 0, evidenceCount: 0, basePolicyVersion: 1, candidatePolicyVersion: null, qualityBps: null, averageCostMicrousd: null, averageLatencyMs: null, retryRateBps: null, interventionRateBps: null, averageConfidenceBps: null, costComplete: false, evaluatedSpendMicrousd: 0, evaluatedTokens: 0, replayPassed: null, promotionStatus: "not_requested", policyDiff: {}, recommendationOnly: true }, candidatePolicyVersion: null, cancellationRequested: false, leaseExpiresAt: null, replayPassed: null, promotionStatus: "not_requested", duplicate: false, createdAt, completedAt: createdAt };
     mockLearningState.latestRun = run;
     return Promise.resolve(structuredClone(run));
   },
   cancelLearningRun: (runId: string): Promise<LearningRun> => {
     if (isTauri()) return invoke("cancel_learning_run", { runId });
     if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId) return Promise.reject(new Error("Learning run not found"));
-    mockLearningState.latestRun = { ...mockLearningState.latestRun, status: "cancelled", cancellationRequested: true, completedAt: new Date().toISOString() };
+    mockLearningState.latestRun = { ...mockLearningState.latestRun, status: "cancelled", cancellationRequested: true, promotionStatus: "cancelled", completedAt: new Date().toISOString() };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
   updateLearningSchedule: (schedule: LearningSchedule): Promise<LearningSchedule> => {
@@ -234,8 +236,29 @@ export const bridgeApi = {
     mockLearningState.schedule = structuredClone(schedule);
     return Promise.resolve(structuredClone(schedule));
   },
-  registerLearningTrigger: (kind: "codex" | "claude", registrationId: string, credentialRef: string | null): Promise<void> => isTauri()
-    ? invoke("register_learning_trigger", { kind, registrationId, credentialRef })
+  approveLearningRun: (runId: string): Promise<LearningRun> => {
+    if (isTauri()) return invoke("approve_learning_run", { runId });
+    if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId || mockLearningState.latestRun.promotionStatus !== "awaiting_approval") return Promise.reject(new Error("Learning run is not awaiting approval"));
+    mockLearningState.activePolicyVersion = mockLearningState.latestRun.candidatePolicyVersion ?? mockLearningState.activePolicyVersion;
+    mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
+    return Promise.resolve(structuredClone(mockLearningState.latestRun));
+  },
+  rollbackRoutingPolicy: (targetVersion: number, explanation: string): Promise<LearningState> => {
+    if (isTauri()) return invoke("rollback_routing_policy", { targetVersion, explanation });
+    void targetVersion;
+    void explanation;
+    mockLearningState.activePolicyVersion += 1;
+    mockLearningState.canaryPolicyVersion = null;
+    return Promise.resolve(structuredClone(mockLearningState));
+  },
+  registerLearningTrigger: (kind: "codex" | "claude", registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
+    ? invoke("register_learning_trigger", { kind, registrationId, credentialRef, expiresAt })
+    : Promise.resolve(),
+  learningTriggerInstructions: (kind: "codex" | "claude", databasePath: string, registrationId: string): Promise<string> => isTauri()
+    ? invoke("get_learning_trigger_instructions", { kind, databasePath, registrationId })
+    : Promise.resolve(`Run \`bridge learning run --database "${databasePath}" --trigger ${kind}:${registrationId}\` locally as a wake-up trigger only. Bridge owns replay, approval, promotion, and rollback.`),
+  enableLearningTrigger: (kind: "codex" | "claude", registrationId: string): Promise<void> => isTauri()
+    ? invoke("enable_learning_trigger", { kind, registrationId })
     : Promise.resolve(),
   routerPreferences: (workspaceId: string): Promise<RouterPreferences> => isTauri()
     ? invoke("get_router_preferences", { workspaceId })

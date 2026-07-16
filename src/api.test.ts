@@ -45,7 +45,7 @@ describe("SQLite-shaped mock observability", () => {
     const first = await bridgeApi.runLearning("manual");
     expect(first).toMatchObject({ status: "noop", duplicate: false });
     expect(first.report?.recommendationOnly).toBe(true);
-    const duplicate = await bridgeApi.runLearning("codex");
+    const duplicate = await bridgeApi.runLearning("in_app");
     expect(duplicate.id).toBe(first.id);
     expect(duplicate.duplicate).toBe(true);
   });

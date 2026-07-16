@@ -526,7 +526,7 @@ export function App() {
       onClose={() => setModal(null)}
       onSubmit={() => void submitNewWorkspace()}
     />
-    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} onClose={() => setModal(null)} onError={setError} />
+    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onClose={() => setModal(null)} onError={setError} />
   </div>;
 }
 

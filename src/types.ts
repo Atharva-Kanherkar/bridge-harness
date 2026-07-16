@@ -120,19 +120,26 @@ export type LearningRunStatus = "queued" | "running" | "completed" | "failed" | 
 export interface LearningReport {
   reason: string; evidenceBoundary: number; evidenceCount: number; basePolicyVersion: number;
   candidatePolicyVersion: number | null; qualityBps: number | null; averageCostMicrousd: number | null;
-  averageLatencyMs: number | null; policyDiff: Record<string, unknown>; recommendationOnly: boolean;
+  averageLatencyMs: number | null; retryRateBps: number | null; interventionRateBps: number | null;
+  averageConfidenceBps: number | null; costComplete: boolean; evaluatedSpendMicrousd: number;
+  evaluatedTokens: number; replayPassed: boolean | null; promotionStatus: string;
+  policyDiff: Record<string, unknown>; recommendationOnly: boolean;
 }
 export interface LearningRun {
   id: string; jobId: string; triggerKind: LearningTriggerKind; idempotencyKey: string;
   evidenceBoundary: number; basePolicyVersion: number; status: LearningRunStatus;
   report: LearningReport | null; candidatePolicyVersion: number | null; cancellationRequested: boolean;
+  leaseExpiresAt: string | null; replayPassed: boolean | null; promotionStatus: string;
   duplicate: boolean; createdAt: string; completedAt: string | null;
 }
 export interface LearningSchedule {
   jobId: string; enabled: boolean; cadenceMinutes: number; nextRunAt: string | null;
-  runBudgetMicrousd: number; mode: "manual" | "ask" | "automatic";
+  runBudgetMicrousd: number; runBudgetTokens: number; mode: "manual" | "ask" | "automatic";
 }
-export interface LearningState { schedule: LearningSchedule; latestRun: LearningRun | null }
+export interface LearningState {
+  schedule: LearningSchedule; latestRun: LearningRun | null;
+  activePolicyVersion: number; canaryPolicyVersion: number | null;
+}
 export interface TerminalChunk { sessionId: string; data: string }
 export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }
 export interface SecretInterception { reference: string; detector: string }
