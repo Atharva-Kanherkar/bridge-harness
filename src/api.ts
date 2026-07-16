@@ -136,7 +136,7 @@ const mockSkills: SkillCatalog = {
     description: "Review React code for performance and maintainability.", source: "vercel-labs/agent-skills", sourceUrl: "https://github.com/vercel-labs/agent-skills",
     pinnedRef: "8b8c76004956f0e01e4f6c88ff6fb342258461f5", installs: 124000, official: true, compatibility: ["codex", "claude"], fileCount: 3,
     permissions: ["Read project files"], risk: "low", riskSummary: "Read-only project guidance.", categories: ["code-review", "react"],
-    providerStates: [{ provider: "codex", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false }, { provider: "claude", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false }],
+    providerStates: [{ provider: "codex", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }, { provider: "claude", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }],
   }],
   personal: [{ id: "personal:my-workflow", name: "my-workflow", description: "A skill you maintain locally.", providers: ["codex"], source: "Personal skill" }],
 };

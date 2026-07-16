@@ -133,7 +133,7 @@ export type SkillProvider = "codex" | "claude";
 export type SkillAction = "install" | "rollback" | "uninstall";
 export interface SkillProviderState {
   provider: SkillProvider; installed: boolean; managed: boolean; installedRef: string | null;
-  updateAvailable: boolean; rollbackAvailable: boolean;
+  updateAvailable: boolean; rollbackAvailable: boolean; receiptError: string | null;
 }
 export interface CommunitySkill {
   id: string; slug: string; name: string; description: string; source: string; sourceUrl: string;

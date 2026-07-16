@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use uuid::Uuid;
@@ -83,6 +83,7 @@ pub struct SkillProviderState {
     installed_ref: Option<String>,
     update_available: bool,
     rollback_available: bool,
+    receipt_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -179,10 +180,16 @@ struct SkillReceipt {
     installed_at: String,
 }
 
-fn catalog_entries() -> Result<Vec<CatalogSkill>, BridgeError> {
-    serde_json::from_str(include_str!("community_skills.json")).map_err(|error| {
-        BridgeError::Invalid(format!("Community skill catalog is invalid: {error}"))
-    })
+static CATALOG: OnceLock<Result<Vec<CatalogSkill>, String>> = OnceLock::new();
+
+fn catalog_entries() -> Result<&'static [CatalogSkill], BridgeError> {
+    CATALOG
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("community_skills.json"))
+                .map_err(|error| format!("Community skill catalog is invalid: {error}"))
+        })
+        .as_deref()
+        .map_err(|error| BridgeError::Invalid(error.clone()))
 }
 
 fn receipt_path(store: &Path, provider: SkillProvider, slug: &str) -> PathBuf {
@@ -192,8 +199,45 @@ fn receipt_path(store: &Path, provider: SkillProvider, slug: &str) -> PathBuf {
         .join(format!("{slug}.json"))
 }
 
-fn read_receipt(store: &Path, provider: SkillProvider, slug: &str) -> Option<SkillReceipt> {
-    serde_json::from_slice(&fs::read(receipt_path(store, provider, slug)).ok()?).ok()
+enum ReceiptRead {
+    Missing,
+    Valid(SkillReceipt),
+    Corrupt(String),
+}
+
+fn read_receipt(store: &Path, provider: SkillProvider, slug: &str) -> ReceiptRead {
+    let path = receipt_path(store, provider, slug);
+    match fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(receipt) => ReceiptRead::Valid(receipt),
+            Err(error) => ReceiptRead::Corrupt(format!(
+                "Bridge receipt for {slug} is unreadable ({error}). Remove {} and retry; the skill itself was not changed.",
+                path.display()
+            )),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ReceiptRead::Missing,
+        Err(error) => ReceiptRead::Corrupt(format!(
+            "Bridge receipt for {slug} cannot be read ({error}). Check {} and retry; the skill itself was not changed.",
+            path.display()
+        )),
+    }
+}
+
+fn matching_receipt(
+    store: &Path,
+    provider: SkillProvider,
+    entry: &CatalogSkill,
+) -> Result<Option<SkillReceipt>, BridgeError> {
+    match read_receipt(store, provider, &entry.slug) {
+        ReceiptRead::Missing => Ok(None),
+        ReceiptRead::Valid(receipt) if receipt.skill_id == entry.id => Ok(Some(receipt)),
+        ReceiptRead::Valid(_) => Err(BridgeError::Invalid(format!(
+            "Bridge receipt for {} belongs to a different catalog skill. Remove {} and retry; the skill itself was not changed.",
+            entry.slug,
+            receipt_path(store, provider, &entry.slug).display()
+        ))),
+        ReceiptRead::Corrupt(error) => Err(BridgeError::Invalid(error)),
+    }
 }
 
 fn write_receipt(
@@ -210,7 +254,12 @@ fn write_receipt(
     let bytes = serde_json::to_vec_pretty(receipt).map_err(|error| {
         BridgeError::Invalid(format!("Skill receipt could not be encoded: {error}"))
     })?;
-    fs::write(path, bytes)?;
+    let temporary = path.with_extension(format!("json.tmp-{}", Uuid::new_v4()));
+    fs::write(&temporary, bytes)?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -220,13 +269,22 @@ fn community_view(entry: &CatalogSkill, home: &Path, store: &Path) -> CommunityS
         .iter()
         .copied()
         .map(|provider| {
-            let installed = provider
+            let skill_path = provider
                 .skill_root(home)
                 .join(&entry.slug)
-                .join("SKILL.md")
-                .is_file();
-            let receipt = read_receipt(store, provider, &entry.slug)
-                .filter(|receipt| receipt.skill_id == entry.id);
+                .join("SKILL.md");
+            let on_disk = fs::symlink_metadata(&skill_path)
+                .is_ok_and(|metadata| metadata.file_type().is_file());
+            let (receipt, mut receipt_error) = match read_receipt(store, provider, &entry.slug) {
+                ReceiptRead::Valid(receipt) if receipt.skill_id == entry.id => (Some(receipt), None),
+                ReceiptRead::Valid(_) => (None, Some("Bridge receipt belongs to a different catalog skill; repair or remove the stale receipt before changing this skill.".into())),
+                ReceiptRead::Corrupt(error) => (None, Some(error)),
+                ReceiptRead::Missing => (None, None),
+            };
+            if on_disk && receipt.is_none() && receipt_error.is_none() {
+                receipt_error = Some("A Personal Skill uses this catalog slug. Bridge will not attribute, replace, or remove it.".into());
+            }
+            let installed = on_disk && receipt.is_some();
             SkillProviderState {
                 provider,
                 installed,
@@ -237,6 +295,7 @@ fn community_view(entry: &CatalogSkill, home: &Path, store: &Path) -> CommunityS
                         .as_ref()
                         .is_some_and(|value| value.current_ref != entry.pinned_ref),
                 rollback_available: installed && receipt.is_some(),
+                receipt_error,
             }
         })
         .collect();
@@ -287,17 +346,29 @@ fn read_description(path: &Path) -> String {
 }
 
 fn collect_skill_files(root: &Path) -> Vec<(String, PathBuf)> {
-    fn walk(base: &Path, directory: &Path, output: &mut Vec<(String, PathBuf)>) {
+    const MAX_DISCOVERY_DEPTH: usize = 8;
+    fn walk(base: &Path, directory: &Path, depth: usize, output: &mut Vec<(String, PathBuf)>) {
+        if depth >= MAX_DISCOVERY_DEPTH {
+            return;
+        }
         let Ok(entries) = fs::read_dir(directory) else {
             return;
         };
         for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             let path = entry.path();
-            if entry.file_name().to_string_lossy().starts_with('.') || !path.is_dir() {
+            if entry.file_name().to_string_lossy().starts_with('.')
+                || file_type.is_symlink()
+                || !file_type.is_dir()
+            {
                 continue;
             }
             let skill = path.join("SKILL.md");
-            if skill.is_file() {
+            let regular_skill =
+                fs::symlink_metadata(&skill).is_ok_and(|metadata| metadata.file_type().is_file());
+            if regular_skill {
                 if let Ok(relative) = path.strip_prefix(base) {
                     let name = relative
                         .components()
@@ -307,12 +378,12 @@ fn collect_skill_files(root: &Path) -> Vec<(String, PathBuf)> {
                     output.push((name, skill));
                 }
             } else {
-                walk(base, &path, output);
+                walk(base, &path, depth + 1, output);
             }
         }
     }
     let mut output = Vec::new();
-    walk(root, root, &mut output);
+    walk(root, root, 0, &mut output);
     output
 }
 
@@ -325,7 +396,7 @@ fn personal_skills(home: &Path, store: &Path) -> Vec<PersonalSkill> {
             .flat_map(|root| collect_skill_files(&root))
         {
             let slug = name.split(':').next_back().unwrap_or(&name);
-            if read_receipt(store, provider, slug).is_some() {
+            if !matches!(read_receipt(store, provider, slug), ReceiptRead::Missing) {
                 continue;
             }
             let entry = grouped
@@ -514,7 +585,7 @@ pub fn preview(
 ) -> Result<SkillPreview, BridgeError> {
     let targets = validate_targets(targets)?;
     let entry = catalog_entries()?
-        .into_iter()
+        .iter()
         .find(|entry| entry.id == skill_id)
         .ok_or_else(|| {
             BridgeError::Invalid("Community skill is not in the pinned catalog".into())
@@ -528,7 +599,7 @@ pub fn preview(
             )));
         }
         let destination = target.skill_root(home).join(&entry.slug).join("SKILL.md");
-        let receipt = read_receipt(store, *target, &entry.slug);
+        let receipt = matching_receipt(store, *target, entry)?;
         match action {
             SkillAction::Install if destination.is_file() && receipt.is_none() => {
                 return Err(BridgeError::Invalid(format!(
@@ -657,14 +728,14 @@ pub fn execute(
         ));
     }
     let entry = catalog_entries()?
-        .into_iter()
+        .iter()
         .find(|entry| entry.id == consent.skill_id && entry.pinned_ref == consent.pinned_ref)
         .ok_or_else(|| BridgeError::Invalid("Pinned skill catalog changed after preview".into()))?;
     let mut results = Vec::new();
     for provider in consent.targets {
         let operation = (|| -> Result<String, BridgeError> {
             let destination = provider.skill_root(home).join(&entry.slug).join("SKILL.md");
-            let receipt = read_receipt(store, provider, &entry.slug);
+            let receipt = matching_receipt(store, provider, entry)?;
             match consent.action {
                 SkillAction::Install => {
                     if destination.is_file() && receipt.is_none() {
@@ -698,7 +769,7 @@ pub fn execute(
                         "Installed {} for {} at {}",
                         entry.name,
                         provider.agent_name(),
-                        &entry.pinned_ref[..8]
+                        entry.pinned_ref.get(..8).unwrap_or(&entry.pinned_ref)
                     ))
                 }
                 SkillAction::Rollback => {
@@ -826,6 +897,105 @@ mod tests {
     }
 
     #[test]
+    fn unmanaged_catalog_slug_keeps_personal_attribution() {
+        let home = tempdir().unwrap();
+        let store = tempdir().unwrap();
+        let entry = catalog_entries().unwrap().first().unwrap().clone();
+        let skill = SkillProvider::Codex
+            .skill_root(home.path())
+            .join(&entry.slug);
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            format!(
+                "---\nname: {}\ndescription: Personal trust-domain marker\n---\n",
+                entry.slug
+            ),
+        )
+        .unwrap();
+
+        let view = catalog(home.path(), store.path()).unwrap();
+        let community = view
+            .community
+            .iter()
+            .find(|skill| skill.id == entry.id)
+            .unwrap();
+        assert!(!community
+            .provider_states
+            .iter()
+            .any(|state| state.installed));
+        assert!(community.provider_states.iter().any(|state| state
+            .receipt_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Personal Skill"))));
+        assert!(view.personal.iter().any(|skill| skill.name == entry.slug));
+        let suggestions = suggestions(
+            "trust domain",
+            SkillProvider::Codex,
+            home.path(),
+            store.path(),
+        )
+        .unwrap();
+        assert_eq!(suggestions[0].source, "Personal skill");
+        let capabilities = available_capabilities(home.path(), store.path()).unwrap();
+        assert!(entry
+            .categories
+            .iter()
+            .all(|category| !capabilities.contains(&format!("skill_category:{category}"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn personal_discovery_skips_symlink_cycles() {
+        use std::os::unix::fs::symlink;
+        let root = tempdir().unwrap();
+        let valid = root.path().join("valid");
+        fs::create_dir_all(&valid).unwrap();
+        fs::write(valid.join("SKILL.md"), "---\nname: valid\n---\n").unwrap();
+        symlink(root.path(), valid.join("cycle")).unwrap();
+        let linked = root.path().join("linked");
+        fs::create_dir_all(&linked).unwrap();
+        symlink(valid.join("SKILL.md"), linked.join("SKILL.md")).unwrap();
+        assert_eq!(collect_skill_files(root.path()).len(), 1);
+    }
+
+    #[test]
+    fn corrupt_receipt_is_visible_and_actionable() {
+        let home = tempdir().unwrap();
+        let store = tempdir().unwrap();
+        let entry = catalog_entries().unwrap().first().unwrap().clone();
+        let path = receipt_path(store.path(), SkillProvider::Codex, &entry.slug);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{truncated").unwrap();
+        let view = catalog(home.path(), store.path()).unwrap();
+        let state = view
+            .community
+            .iter()
+            .find(|skill| skill.id == entry.id)
+            .unwrap()
+            .provider_states
+            .iter()
+            .find(|state| state.provider == SkillProvider::Codex)
+            .unwrap();
+        assert!(state
+            .receipt_error
+            .as_deref()
+            .unwrap()
+            .contains("unreadable"));
+        let error = preview(
+            &entry.id,
+            SkillAction::Install,
+            &[SkillProvider::Codex],
+            home.path(),
+            store.path(),
+            &Mutex::new(HashMap::new()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unreadable") && error.contains(&path.display().to_string()));
+    }
+
+    #[test]
     fn task_suggestions_respect_the_active_provider() {
         let home = tempdir().unwrap();
         let store = tempdir().unwrap();
@@ -854,7 +1024,7 @@ mod tests {
         let home = tempdir().unwrap();
         let store = tempdir().unwrap();
         let consents = Mutex::new(HashMap::new());
-        let entry = catalog_entries().unwrap().remove(0);
+        let entry = catalog_entries().unwrap().first().unwrap().clone();
         let consent_preview = preview(
             &entry.id,
             SkillAction::Install,
@@ -895,7 +1065,7 @@ mod tests {
 
     #[test]
     fn command_arguments_pin_source_and_never_contain_credentials() {
-        let entry = catalog_entries().unwrap().remove(0);
+        let entry = catalog_entries().unwrap().first().unwrap().clone();
         let args = installer_args(&entry, SkillProvider::Claude, &entry.pinned_ref);
         assert!(args.iter().any(|value| value.contains(&entry.pinned_ref)));
         assert!(args.iter().any(|value| value == "claude-code"));
@@ -906,7 +1076,7 @@ mod tests {
     fn missing_managed_skill_is_immediately_ineligible() {
         let home = tempdir().unwrap();
         let store = tempdir().unwrap();
-        let entry = catalog_entries().unwrap().remove(0);
+        let entry = catalog_entries().unwrap().first().unwrap().clone();
         write_receipt(
             store.path(),
             SkillProvider::Codex,

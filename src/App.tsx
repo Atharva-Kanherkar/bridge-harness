@@ -170,9 +170,10 @@ export function App() {
 
   useEffect(() => {
     const query = composer.trim();
-    if (!session || query.length < 8 || query.startsWith("/")) { setSkillSuggestions([]); return; }
+    if (!session || (session.harness !== "codex" && session.harness !== "claude") || query.length < 8 || query.startsWith("/")) { setSkillSuggestions([]); return; }
+    const provider = session.harness;
     let active = true;
-    const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, session.harness === "claude" ? "claude" : "codex").then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
+    const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
     return () => { active = false; window.clearTimeout(timer); };
   }, [composer, session]);
 

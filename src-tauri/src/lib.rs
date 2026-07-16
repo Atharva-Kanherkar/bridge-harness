@@ -143,12 +143,17 @@ async fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceApp
 }
 
 fn user_home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn live_available_capabilities(state: &AppState) -> std::collections::HashSet<String> {
+async fn live_available_capabilities(state: &AppState) -> std::collections::HashSet<String> {
     let mut capabilities = state.adapter_registry.descriptors().into_iter().filter(|descriptor| descriptor.available).flat_map(|descriptor| descriptor.capabilities).collect::<std::collections::HashSet<_>>();
-    if let Ok(skills) = skill_marketplace::available_capabilities(&user_home(), &state.skill_store) {
+    let home = user_home();
+    let store = state.skill_store.clone();
+    if let Ok(Ok(skills)) = tauri::async_runtime::spawn_blocking(move || skill_marketplace::available_capabilities(&home, &store)).await {
         capabilities.extend(skills);
     }
     capabilities
@@ -156,12 +161,18 @@ fn live_available_capabilities(state: &AppState) -> std::collections::HashSet<St
 
 #[tauri::command]
 async fn skill_catalog(state: State<'_, AppState>) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
-    skill_marketplace::catalog(&user_home(), &state.skill_store)
+    let home = user_home();
+    let store = state.skill_store.clone();
+    tauri::async_runtime::spawn_blocking(move || skill_marketplace::catalog(&home, &store)).await
+        .map_err(|error| BridgeError::Invalid(format!("Skill discovery task failed: {error}")))?
 }
 
 #[tauri::command]
 async fn skill_suggestions(query: String, provider: skill_marketplace::SkillProvider, state: State<'_, AppState>) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
-    skill_marketplace::suggestions(&query, provider, &user_home(), &state.skill_store)
+    let home = user_home();
+    let store = state.skill_store.clone();
+    tauri::async_runtime::spawn_blocking(move || skill_marketplace::suggestions(&query, provider, &home, &store)).await
+        .map_err(|error| BridgeError::Invalid(format!("Skill suggestion task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -171,7 +182,11 @@ async fn preview_skill_change(
     targets: Vec<skill_marketplace::SkillProvider>,
     state: State<'_, AppState>,
 ) -> Result<skill_marketplace::SkillPreview, BridgeError> {
-    skill_marketplace::preview(&skill_id, action, &targets, &user_home(), &state.skill_store, &state.skill_consents)
+    let home = user_home();
+    let store = state.skill_store.clone();
+    let consents = Arc::clone(&state.skill_consents);
+    tauri::async_runtime::spawn_blocking(move || skill_marketplace::preview(&skill_id, action, &targets, &home, &store, consents.as_ref())).await
+        .map_err(|error| BridgeError::Invalid(format!("Skill preview task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -320,13 +335,16 @@ async fn create_completion_plan(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let workspace_id: String = db.query_row("SELECT workspace_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
-    let implementer_family: Option<String> = db.query_row(
-        "SELECT s.harness FROM worker_runtime r JOIN worker_leases l ON l.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.parent_session_id=?1 AND l.role='implementation' ORDER BY r.updated_at DESC LIMIT 1",
-        params![session_id],
-        |row| row.get(0),
-    ).optional()?;
+    let (workspace_id, implementer_family): (String, Option<String>) = {
+        let db = state.db.lock().unwrap();
+        let workspace_id = db.query_row("SELECT workspace_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
+        let implementer_family = db.query_row(
+            "SELECT s.harness FROM worker_runtime r JOIN worker_leases l ON l.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.parent_session_id=?1 AND l.role='implementation' ORDER BY r.updated_at DESC LIMIT 1",
+            params![session_id],
+            |row| row.get(0),
+        ).optional()?;
+        (workspace_id, implementer_family)
+    };
     let contract = completion::CompletionContract {
         id: Uuid::new_v4().to_string(),
         workspace_id,
@@ -336,8 +354,9 @@ async fn create_completion_plan(
         markdown_projection,
         markdown_committed,
     };
-    let available_capabilities = live_available_capabilities(&state);
+    let available_capabilities = live_available_capabilities(&state).await;
     let change_labels = completion::labels_for_paths(&changed_paths);
+    let db = state.db.lock().unwrap();
     let plan = completion::plan_with_registered_manifests(&db, completion::PlanInput {
         contract_id: contract.id.clone(),
         acceptance_criteria,
@@ -3183,10 +3202,15 @@ fn report_to_parent(
     let Some(report) = report else {
         return;
     };
-    let available_capabilities = live_available_capabilities(&state);
+    let app = app.clone();
+    let child_session_id = child_session_id.to_owned();
+    let result = result.clone();
+    tauri::async_runtime::spawn(async move {
+    let state = app.state::<AppState>();
+    let available_capabilities = live_available_capabilities(&state).await;
     let completion_result = {
         let db = state.db.lock().unwrap();
-        completion::create_from_worker_result(&db, child_session_id, result, &available_capabilities)
+        completion::create_from_worker_result(&db, &child_session_id, &result, &available_capabilities)
     };
     let completion = match completion_result {
         Ok(summary) => summary,
@@ -3196,10 +3220,10 @@ fn report_to_parent(
                 &db,
                 "completion",
                 "completion.plan_failed",
-                child_session_id,
+                &child_session_id,
                 &error.to_string(),
             );
-            completion::record_gate_error(&db, child_session_id, &error.to_string()).ok().flatten()
+            completion::record_gate_error(&db, &child_session_id, &error.to_string()).ok().flatten()
         }
     };
     {
@@ -3259,8 +3283,9 @@ fn report_to_parent(
         .ok();
     let _ = app.emit("state-changed", ());
     if let Some(workspace_id) = workspace_id {
-        dispatch_next_queued_worker(app, &workspace_id);
+        dispatch_next_queued_worker(&app, &workspace_id);
     }
+    });
 }
 
 fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
