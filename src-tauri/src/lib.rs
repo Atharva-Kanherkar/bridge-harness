@@ -157,6 +157,15 @@ fn session_forest_snapshot(
     db: &Connection,
     session_id: &str,
 ) -> Result<SessionForestSnapshot, BridgeError> {
+    let current_state = store::repository_state_for_session(db, session_id)?;
+    session_forest_snapshot_with_repository_state(db, session_id, current_state)
+}
+
+fn session_forest_snapshot_with_repository_state(
+    db: &Connection,
+    session_id: &str,
+    current_state: serde_json::Value,
+) -> Result<SessionForestSnapshot, BridgeError> {
     let workspace_id: String = db.query_row(
         "SELECT workspace_id FROM sessions WHERE id=?1",
         params![session_id],
@@ -169,7 +178,6 @@ fn session_forest_snapshot(
         .and_then(|id| entries.iter().find(|entry| entry.id == id))
         .and_then(|entry| entry.payload.get("_bridgeRepoState"))
         .cloned();
-    let current_state = store::repository_state_for_session(db, session_id)?;
     let comparable = |value: &serde_json::Value| value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable");
     let divergence_status = match selected_state.as_ref() {
         Some(selected) if comparable(selected) && comparable(&current_state) && selected == &current_state => "aligned",
@@ -203,11 +211,26 @@ fn session_forest_snapshot(
 }
 
 #[tauri::command]
-fn get_session_forest(
+async fn get_session_forest(
     session_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    session_forest_snapshot(&state.db.lock().unwrap(), &session_id)
+    // Git may be slow on large repositories or during index contention. Never
+    // run it on the macOS event loop or while holding the global SQLite lock.
+    let repository_path = {
+        let db = state.db.lock().unwrap();
+        store::repository_path_for_session(&db, &session_id)?
+    };
+    let repository_state = match repository_path {
+        Some(path) => tauri::async_runtime::spawn_blocking(move || {
+            store::repository_state_for_path(&path)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Repository refresh task failed: {error}")))?,
+        None => serde_json::json!({"status":"unavailable"}),
+    };
+    let db = state.db.lock().unwrap();
+    session_forest_snapshot_with_repository_state(&db, &session_id, repository_state)
 }
 
 fn completion_repository_stamp(
@@ -4225,17 +4248,26 @@ fn record_shutdown_reason(
     )
 }
 #[tauri::command]
-fn refresh_workspace(
+async fn refresh_workspace(
     workspace_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    // Resolve the path under the lock, but leave Git entirely outside it so a
+    // slow status scan cannot delay message submission or streaming writes.
+    let path: String = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT path FROM workspaces WHERE id=?1",
+            params![workspace_id],
+            |r| r.get(0),
+        )?
+    };
+    let (dirty, adds, dels) = tauri::async_runtime::spawn_blocking(move || {
+        git::stats(Path::new(&path))
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Workspace refresh task failed: {error}")))??;
     let db = state.db.lock().unwrap();
-    let path: String = db.query_row(
-        "SELECT path FROM workspaces WHERE id=?1",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    let (dirty, adds, dels) = git::stats(Path::new(&path))?;
     db.execute(
         "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
         params![workspace_id, dirty, adds, dels],

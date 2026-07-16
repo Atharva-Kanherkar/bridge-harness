@@ -1093,15 +1093,22 @@ pub fn repository_state_for_session(
     db: &Connection,
     session_id: &str,
 ) -> Result<serde_json::Value, BridgeError> {
+    let Some(path) = repository_path_for_session(db, session_id)? else {
+        return Ok(serde_json::json!({"status":"unavailable"}));
+    };
+    Ok(repository_state_for_path(&path))
+}
+
+pub fn repository_path_for_session(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<PathBuf>, BridgeError> {
     let path: Option<String> = db.query_row(
         "SELECT COALESCE(s.cwd,w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
         params![session_id],
         |row| row.get(0),
     ).optional()?.flatten();
-    let Some(path) = path else {
-        return Ok(serde_json::json!({"status":"unavailable"}));
-    };
-    Ok(repository_state_for_path(Path::new(&path)))
+    Ok(path.map(PathBuf::from))
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {

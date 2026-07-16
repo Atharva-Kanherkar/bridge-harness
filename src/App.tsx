@@ -20,6 +20,7 @@ import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvid
 import { describeError } from "./errors";
 import { forestSnapshotKey } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
+import { startSerialPoll } from "./polling";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -183,33 +184,34 @@ export function App() {
     setForest(undefined);
     if (!session?.id) return;
     let active = true;
-    const refresh = () => void bridgeApi.sessionForest(session.id).then(value => {
-      if (!active) return;
+    const refresh = async () => {
+      const value = await bridgeApi.sessionForest(session.id).catch(() => undefined);
+      if (!active || !value) return;
       const key = forestSnapshotKey(value);
       if (key === forestKeyRef.current) return;
       forestKeyRef.current = key;
       setForest(value);
-    }).catch(() => undefined);
-    refresh();
-    const timer = window.setInterval(refresh, 3000);
-    return () => { active = false; window.clearInterval(timer); };
+    };
+    const stop = startSerialPoll(refresh, 3000);
+    return () => { active = false; stop(); };
   }, [session?.id]);
 
   // Keep git stats fresh for the selected chat's connected workspace.
   useEffect(() => {
     const workspaceId = workspace?.id;
     if (!workspaceId || !hasRepo || !("__TAURI_INTERNALS__" in window)) return;
-    const refresh = () => void bridgeApi.refreshWorkspace(workspaceId).then(setState).catch(() => undefined);
-    refresh(); const timer = window.setInterval(refresh, 5000); return () => window.clearInterval(timer);
+    let active = true;
+    const stop = startSerialPoll(async () => {
+      const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
+      if (active && next) setState(next);
+    }, 5000);
+    return () => { active = false; stop(); };
   }, [workspace?.id, hasRepo]);
 
   // Poll real subscription usage for every provider, independent of the chat on screen.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
-    const poll = () => void bridgeApi.refreshAccountUsage().catch(() => undefined);
-    poll();
-    const timer = window.setInterval(poll, 30_000);
-    return () => window.clearInterval(timer);
+    return startSerialPoll(() => bridgeApi.refreshAccountUsage().catch(() => undefined), 30_000);
   }, [adaptersReady]);
 
   // Drop an optimistic message once its real user turn arrives from the backend.
