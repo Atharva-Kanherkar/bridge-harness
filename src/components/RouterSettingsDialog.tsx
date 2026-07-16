@@ -38,6 +38,7 @@ export function RouterSettingsDialog({
   workspaceId,
   adapters,
   databasePath,
+  onModelSetupChange,
   onClose,
   onError,
 }: {
@@ -45,6 +46,7 @@ export function RouterSettingsDialog({
   workspaceId?: string;
   adapters: AdapterDescriptor[];
   databasePath?: string;
+  onModelSetupChange?: (setup: ModelSetupState) => void;
   onClose: () => void;
   onError: (message: string) => void;
 }) {
@@ -85,7 +87,11 @@ export function RouterSettingsDialog({
         excludedModels: parseList(excludedModels),
       });
       setPreferences(saved);
-      if (profiles.length) setModelSetup(await bridgeApi.saveModelProfiles(profiles));
+      if (profiles.length) {
+        const setup = await bridgeApi.saveModelProfiles(profiles);
+        setModelSetup(setup);
+        onModelSetupChange?.(setup);
+      }
       if (learning) setLearning({ ...learning, schedule: await bridgeApi.updateLearningSchedule(learning.schedule) });
       onClose();
     } catch (error) {
@@ -112,6 +118,7 @@ export function RouterSettingsDialog({
     try {
       const setup = await bridgeApi.resetModelProfiles();
       setModelSetup(setup);
+      onModelSetupChange?.(setup);
       setProfiles(setup.profiles.map(({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference }) => ({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference })));
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }

@@ -135,6 +135,7 @@ pub struct ModelProfileDraft {
 pub struct ModelProfile {
     pub schema_version: u32,
     pub version: i64,
+    pub profile_id: String,
     pub purpose: ProfilePurpose,
     pub canonical_role: WorkerRole,
     pub provider: String,
@@ -167,6 +168,8 @@ pub struct ResolvedProfile {
     pub effort: Effort,
     pub pinned: bool,
     pub learning_enabled: bool,
+    pub budget_preference: Option<String>,
+    pub latency_preference: Option<String>,
     pub used_fallback: bool,
 }
 
@@ -275,18 +278,23 @@ fn validate_profiles(
                 profile.purpose.as_str()
             )));
         }
-        for value in [
-            profile.budget_preference.as_deref(),
-            profile.latency_preference.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
+        if profile
+            .budget_preference
+            .as_deref()
+            .is_some_and(|value| !matches!(value, "economy" | "quality"))
         {
-            if value.trim().is_empty() {
-                return Err(BridgeError::Invalid(
-                    "profile budget/latency preferences cannot be empty".into(),
-                ));
-            }
+            return Err(BridgeError::Invalid(
+                "profile budget preference must be economy or quality".into(),
+            ));
+        }
+        if profile
+            .latency_preference
+            .as_deref()
+            .is_some_and(|value| !matches!(value, "fast" | "patient"))
+        {
+            return Err(BridgeError::Invalid(
+                "profile latency preference must be fast or patient".into(),
+            ));
         }
     }
     for purpose in ProfilePurpose::ALL {
@@ -371,6 +379,7 @@ fn profiles_at_version(db: &Connection, version: i64) -> Result<Vec<ModelProfile
         Ok(ModelProfile {
             schema_version: PROFILE_SCHEMA_VERSION,
             version: row.get(0)?,
+            profile_id: purpose.as_str().into(),
             purpose,
             canonical_role,
             provider: row.get(3)?,
@@ -404,8 +413,8 @@ pub fn save_profiles(
     let now = Utc::now().to_rfc3339();
     for profile in profiles {
         transaction.execute(
-            "INSERT INTO model_profiles(version,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,learning_enabled,budget_preference,latency_preference,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            "INSERT INTO model_profiles(version,profile_id,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,learning_enabled,budget_preference,latency_preference,created_at)
+             VALUES(?1,?2,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             params![
                 version,
                 profile.purpose.as_str(),
@@ -491,6 +500,8 @@ pub fn resolve_profile(
                 effort: profile.effort,
                 pinned: profile.pinned,
                 learning_enabled: profile.learning_enabled,
+                budget_preference: profile.budget_preference.clone(),
+                latency_preference: profile.latency_preference.clone(),
                 used_fallback: current != purpose,
             }));
         }
@@ -506,6 +517,8 @@ pub fn resolve_profile(
             effort: purpose.effort(),
             pinned: false,
             learning_enabled: true,
+            budget_preference: None,
+            latency_preference: None,
             used_fallback: true,
         }),
     )

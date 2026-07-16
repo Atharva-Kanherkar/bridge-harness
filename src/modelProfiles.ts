@@ -1,4 +1,4 @@
-import type { AdapterDescriptor, CapabilityTier, ModelProfileDraft, ProfilePurpose, ReasoningEffort } from "./types";
+import type { AdapterDescriptor, CapabilityTier, ModelProfileDraft, ModelSetupState, ProfilePurpose, ReasoningEffort } from "./types";
 
 export const profilePurposes: ProfilePurpose[] = [
   "standard_orchestrator", "premium_orchestrator", "planner", "implementer", "verifier",
@@ -78,4 +78,26 @@ export function recommendedProfileDrafts(adapters: AdapterDescriptor[]): ModelPr
       latencyPreference: null,
     };
   });
+}
+
+export function resolveProfileOption(
+  purpose: ProfilePurpose,
+  setup: ModelSetupState,
+  adapters: AdapterDescriptor[],
+) {
+  const options = availableModelOptions(adapters);
+  const profiles = new Map(setup.profiles.map(profile => [profile.purpose, profile]));
+  const seen = new Set<ProfilePurpose>();
+  let current: ProfilePurpose | null = purpose;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const profile = profiles.get(current);
+    if (!profile) break;
+    const selected = options.find(option => option.adapter.id === profile.provider && option.model.id === profile.model);
+    if (selected) return selected;
+    current = profile.fallbackPurpose;
+  }
+  const tier = purposeTier[purpose];
+  return options.find(option => option.model.tier === tier && option.model.defaultForTier)
+    ?? options.find(option => option.model.tier === tier);
 }

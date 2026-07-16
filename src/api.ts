@@ -159,6 +159,7 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
       ...structuredClone(profile),
       schemaVersion: 1,
       version,
+      profileId: profile.purpose,
       canonicalRole: profile.purpose === "implementer" ? "implementation"
         : ["verifier", "reviewer", "evaluator"].includes(profile.purpose) ? "verification"
           : profile.purpose === "research" ? "research"

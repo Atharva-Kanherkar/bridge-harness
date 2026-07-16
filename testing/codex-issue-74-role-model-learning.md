@@ -5,21 +5,24 @@
 - A fresh database reports model setup as incomplete and offers one **Use recommended defaults** action before the normal Bridge home experience.
 - Recommended profiles are derived only from available adapter catalog entries and `defaultForTier`; no frontend profile contains a hardcoded provider model ID.
 - Setup persists version 1 profiles for standard orchestrator, premium orchestrator, planner, implementer, verifier, reviewer, research, documentation, and evaluator purposes.
+- Each stored profile has a stable profile ID, and the persisted Standard orchestrator provider/model/tier/effort—not adapter enumeration order—drives new orchestrator and direct-chat defaults.
 - Reviewer and evaluator purposes retain the canonical `verification` runtime role; the runtime role vocabulary does not grow validator/judge/QA aliases.
 - Advanced setup can select only catalog-supported provider/model pairs, reasoning effort, fallback profile, pin/learning behavior, and optional budget/latency preference.
 - Saving or resetting setup creates a new immutable profile version and leaves prior versions queryable.
 - If a configured model is unavailable, profile resolution uses the live adapter catalog and follows the configured fallback (or a catalog default) without rewriting profile history.
 - The usage ledger durably stores normalized monetary cost when a provider reports it and preserves unknown cost as `NULL`.
-- Every routed run binds its decision and outcome to workspace/session/turn, task fingerprint, repository revision, profile version, policy version, catalog snapshot, eligible and excluded candidates, selected and actual provider/model/effort, selection reason, override state, latency, provider-reported cost, retry/edit/intervention signals, acceptance, and source confidence. Missing metrics remain `NULL`/unknown.
+- Every routed run binds its decision and outcome to trace/workspace/session/turn, task fingerprint, repository revision, profile version, policy version, catalog snapshot, eligible and excluded candidates, selected and actual provider/model/effort, selection reason, override state, latency, provider-reported cost, retry/edit/intervention signals, acceptance, and source confidence. Missing metrics remain `NULL`/unknown.
 - User profile pins, router pins/exclusions, permission/sandbox/tool constraints, provider availability, and request budgets are deterministic eligibility gates. Learning may rank only the candidates that pass those gates.
 - **Run learning now** invokes the same durable learning runner used by every trigger and returns queued/running/completed/failed/cancelled or no-op state plus a cost/quality/policy-diff report.
 - The runner acquires an expiring durable lease, freezes an evidence high-water mark, uses an idempotency key derived from job ID + evidence boundary + base policy version, and allows at most one active run for that snapshot. Duplicate, expired, and unauthorized triggers are visible, auditable no-ops.
+- One durable job-wide lease also prevents different snapshots from running concurrently. Expired lease recovery uses compare-and-swap, and small evidence batches accumulate behind a cursor that advances only after evaluation consumes them.
 - Insufficient evidence and exhausted learning budget are successful, auditable no-ops; they never fabricate an improved policy.
 - The learning pipeline runs deterministic evaluations first, records bounded model-evaluator identity where needed, aggregates evidence by task fingerprint/profile/provider/model/effort, and creates an immutable candidate only after minimum sample/confidence thresholds pass.
 - Historical replay compares realized quality, cost per successful task, latency, retry rate, and intervention rate across policy versions. Cost comparison is unknown unless every included run reports cost.
 - Manual mode creates an immutable recommendation only. Ask mode requires a separate approval command before promotion. Automatic mode promotes only after held-out replay and guardrails pass.
 - Promotion is an atomic transaction that archives the predecessor, activates one version, records the explanation, and preserves a reversible predecessor chain. Rollback atomically creates/activates a new version derived from a prior policy rather than rewriting history.
 - Automatic promotion enters a canary state; subsequent evidence is checked for regression and automatically rolls back before full activation when quality, cost, latency, retry, or intervention guardrails regress.
+- Automatic mode cannot stack a second canary while the first is gathering evidence, and deterministic hash bucketing keeps canary traffic near the configured 20% share.
 - Cancellation requested before promotion marks the run cancelled. No trigger adapter or model evaluator can directly promote policy.
 - Each learning run enforces configurable monetary and token ceilings against the frozen snapshot and records the actual evaluated spend/tokens.
 - In-app scheduling persists `nextRunAt`, performs at most one startup/due catch-up, advances the next due time from the current run, and never emits one run per missed interval.
@@ -34,24 +37,28 @@
 - `model_profiles::review_purposes_map_to_verification` — reviewer/evaluator purposes use the canonical verification role.
 - `model_profiles::save_profiles_versions_immutably` — editing/resetting increments versions and preserves earlier rows.
 - `model_profiles::resolve_profile_falls_back_when_model_disappears` — live catalog resolution never returns an unavailable model.
+- `orchestrator_start_uses_the_persisted_standard_profile` — new orchestrators resolve the stored Standard profile rather than using adapter order or a hardcoded tier.
 - `model_profiles::rejects_unsupported_or_recursive_profiles` — invalid catalog selections and fallback cycles fail validation.
 - `learning_job::duplicate_triggers_share_one_snapshot_run` — simultaneous/manual/external trigger attempts create at most one run.
 - `learning_job::insufficient_evidence_is_auditable_noop` — cold start completes without a candidate policy.
 - `learning_job::recommendation_mode_never_promotes` — candidate generation cannot alter the active policy.
 - `learning_job::budget_and_secret_guards_are_deterministic` — spend/token ceilings skip work and raw trigger secrets are rejected.
 - `learning_job::lease_expiry_and_trigger_auth_are_auditable` — active leases deduplicate, expired leases recover safely, and expired/disabled/unauthorized registrations record no-op events.
-- `learning_job::ask_requires_approval_and_automatic_requires_guardrails` — Ask never promotes inline and Automatic cannot bypass replay thresholds.
-- `learning_job::promotion_and_rollback_are_atomic_and_versioned` — exactly one policy is active and predecessor history remains immutable.
+- `learning_job::one_job_lease_blocks_a_competing_newer_snapshot` — the partial unique lease prevents concurrent runs even when their frozen boundaries differ.
+- `learning_job::subsequent_runs_require_an_incremental_evidence_batch` — sub-threshold arrivals accumulate and the cursor advances only after a complete batch is evaluated.
+- `learning_job::ask_requires_approval_and_promotion_rollback_are_versioned` — Ask never promotes inline; approval and rollback preserve immutable predecessor history.
+- `learning_job::automatic_mode_never_stacks_canary_promotions` — Automatic cannot create a second candidate/canary while one is active.
 - `learning_job::automatic_canary_rolls_back_on_regression` — a guardrail regression reverses the canary atomically.
 - `learning_job::cost_per_success_requires_complete_provider_costs` — missing cost stays unknown and complete cost divides total spend by successful outcomes.
 - `learning_job::due_schedule_catches_up_once` — missed intervals advance from now and create one catch-up run.
-- `learning_job::replay_fixtures_cover_guardrails` — quality improvement, cost regression, insufficient evidence, unavailable models, and rollback are deterministic fixtures.
+- `learning_job::replay_fixtures_cover_cost_regression_and_unavailable_models` plus the recommendation/no-op/canary tests — quality improvement, cost regression, insufficient evidence, unavailable models, and rollback are deterministic fixtures.
+- `learning_router::profile_quality_preference_changes_ranking_without_widening_eligibility` — advanced cost/latency preferences affect ranking but cannot revive excluded candidates.
 - `UsageReport` parsing tests — reported cost is retained; absent provider cost remains unknown.
 - Frontend profile helpers — catalog choices exclude unavailable/unsupported models and produce stable profile labels.
 
 ## Integration / Functional Tests
 
-- Migration 15 upgrades an existing version-14 database, preserves existing router data, adds every minimum issue record/field (profiles, immutable policies, complete decisions/outcomes/evaluations, job/trigger/run leases, promotion audit, usage cost), and is idempotent/transactional.
+- Migration 15 upgrades an existing version-14 database, preserves existing router data, adds every minimum issue record/field (stable profile IDs, trace-bound decisions, immutable policies, complete outcomes/evaluations, job/trigger/run leases, incremental evidence cursor, built-in/external trigger metadata, promotion audit, usage cost), and is idempotent/transactional.
 - Tauri model-setup commands round-trip recommended and customized profiles with immutable versioning.
 - Tauri learning commands use the single runner for manual, in-app, Codex, and Claude trigger kinds; expose approval, rollback, cancellation, and persisted reports without giving external adapters promotion authority.
 - The existing learning router resolves a role profile through the live adapter registry before delegating, while deterministic policy remains authoritative.
@@ -59,6 +66,7 @@
 - The learning runner extends policy replay with realized outcomes and held-out guardrails before any promotion.
 - Frontend API mock and native command shapes agree for setup status, profile save/reset, learning status/run/cancel, and schedule update.
 - Setup and learning UI tests cover recommended defaults, advanced disclosure, manual run state, failed/duplicate jobs, Ask approval, Automatic/canary/rollback state, cost confidence, and scheduler limitation copy.
+- Interactive jsdom journeys click the recommended setup action, disclose advanced catalog-only profiles, and run manual learning through the settings dialog to an explicit no-op report.
 
 ## Smoke Tests
 

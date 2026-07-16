@@ -380,6 +380,7 @@ mod tests {
             workspace_id: "w".into(),
             parent_session_id: "p".into(),
             turn_id: "t".into(),
+            trace_id: Some("trace-replay".into()),
             task_family: "implementation".into(),
             task_fingerprint: "fixture".into(),
             repository_revision: Some("head:clean".into()),

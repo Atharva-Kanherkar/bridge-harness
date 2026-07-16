@@ -14,6 +14,7 @@ import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
+import { resolveProfileOption } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
@@ -249,9 +250,10 @@ export function App() {
   // default model and select it. The model can be changed inside the chat.
   async function openNewChat(initialMessage?: string) {
     setView("workspace");
-    const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
+    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
+    const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
-    const model = preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+    const model = profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
     const draft = initialMessage?.trim() ?? "";
     if (draft) pendingWelcomeMessageRef.current = draft;
     setBusy(true); setError(undefined);
@@ -500,7 +502,13 @@ export function App() {
             {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
           </div>
         </section>
-      </> : <Welcome adapters={adapters} busy={busy} onStartChat={text => void openNewChat(text)} onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}/>}
+      </> : <Welcome
+        adapters={adapters}
+        modelSetup={modelSetup}
+        busy={busy}
+        onStartChat={text => void openNewChat(text)}
+        onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
+      />}
     </main>
     {error && (() => {
       const described = describeError(error, {
@@ -526,7 +534,7 @@ export function App() {
       onClose={() => setModal(null)}
       onSubmit={() => void submitNewWorkspace()}
     />
-    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onClose={() => setModal(null)} onError={setError} />
+    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
   </div>;
 }
 
@@ -581,14 +589,15 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="p-[38px_44px] max-w-[780px]"><div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGE STORY</div><h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="mt-6 h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]"><b className="text-success font-medium">+{workspace.additions}</b><b className="text-destructive font-medium">−{workspace.deletions}</b><span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/><small className="text-muted-foreground">{workspace.branch}</small></div><div className="mt-5 flex flex-col gap-2.5">{[78,92,64,85,51,70].map((n,i)=><i key={i} className="block h-[7px] bg-muted rounded-[3px]" style={{width:`${n}%`}}/>)}</div></div>; }
 function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="max-w-[720px] px-8 py-[22px]">{events.length ? events.map(e => <article key={e.id} className="flex gap-3 py-[13px] border-b border-border text-muted-foreground"><CircleDot size={14} aria-hidden="true" /><div><b className="text-foreground text-[11px] font-medium tracking-[0.02em] capitalize">{e.kind.replaceAll(".", " ")}</b><p className="text-[12.5px] my-1 text-foreground">{e.body}</p><small className="font-mono text-[10.5px] text-muted-foreground/65">{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="text-muted-foreground text-[12.5px] p-7">No events for this workspace yet.</div>}</div>; }
-function WelcomeModelBadge({ adapters }: { adapters: import("./types").AdapterDescriptor[] }) {
-  const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
-  const model = preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
+function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState }) {
+  const profile = resolveProfileOption("standard_orchestrator", modelSetup, adapters);
+  const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+  const model = profile?.model ?? preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
   const tierLabel = model?.tier === "strong" ? "High" : model?.tier === "standard" ? "Balanced" : "Fast";
   return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400">{tierLabel}<ChevronDown size={14} className="text-neutral-600" aria-hidden="true" /></span>;
 }
 
-function Welcome({ adapters, busy, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; busy: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
+function Welcome({ adapters, modelSetup, busy, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
   const submit = () => {
@@ -608,7 +617,7 @@ function Welcome({ adapters, busy, onStartChat, onNewWorkspace }: { adapters: im
       placeholder="Ask Bridge…"
       disabled={busy}
       onPlusClick={onNewWorkspace}
-      trailing={<WelcomeModelBadge adapters={adapters} />}
+      trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />
     <p className="mt-5 max-w-md text-[13px] leading-relaxed text-neutral-500">{greeting.hint}</p>
   </div>;

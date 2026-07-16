@@ -184,6 +184,8 @@ pub struct RouterDecision {
     pub workspace_id: String,
     pub parent_session_id: String,
     pub turn_id: String,
+    #[serde(default)]
+    pub trace_id: Option<String>,
     pub task_family: String,
     #[serde(default)]
     pub task_fingerprint: String,
@@ -277,7 +279,8 @@ fn active_policy(
 }
 
 fn canary_bucket(fingerprint: &str) -> u8 {
-    Sha256::digest(fingerprint.as_bytes())[0] % 100
+    let digest = Sha256::digest(fingerprint.as_bytes());
+    (u16::from_be_bytes([digest[0], digest[1]]) % 100) as u8
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +296,8 @@ pub struct EvaluationInput {
     pub histories: BTreeMap<String, HistoricalOutcome>,
     pub required_capabilities: Vec<String>,
     pub remaining_capability_units: i64,
+    pub budget_preference: Option<String>,
+    pub latency_preference: Option<String>,
 }
 
 fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
@@ -415,8 +420,25 @@ pub fn evaluate(input: EvaluationInput) -> Vec<CandidateEvaluation> {
                 exclusions.insert(CandidateExclusion::BelowQualityFloor);
             }
             let pass = i64::from(prediction.pass_probability_bps.max(1));
-            let expected_cost_score = prediction.normalized_quota_cost * 10_000 / pass
-                + prediction.latency_ms / 1_000
+            let cost_score = prediction.normalized_quota_cost * 10_000 / pass;
+            let cost_score = match input.budget_preference.as_deref() {
+                Some("economy") => cost_score.saturating_mul(2),
+                Some("quality") => cost_score / 2,
+                _ => cost_score,
+            };
+            let latency_score = match input.latency_preference.as_deref() {
+                Some("fast") => prediction.latency_ms / 100,
+                Some("patient") => prediction.latency_ms / 5_000,
+                _ => prediction.latency_ms / 1_000,
+            };
+            let quality_score = if input.budget_preference.as_deref() == Some("quality") {
+                (10_000 - pass).saturating_mul(10)
+            } else {
+                0
+            };
+            let expected_cost_score = cost_score
+                + latency_score
+                + quality_score
                 + i64::from(prediction.retry_risk_bps);
             CandidateEvaluation {
                 candidate,
@@ -534,10 +556,10 @@ pub fn route(
     request: &DelegationRequest,
     descriptors: &[AdapterDescriptor],
 ) -> Result<RoutedDelegation, BridgeError> {
-    let workspace_id: String = db.query_row(
-        "SELECT workspace_id FROM sessions WHERE id=?1",
+    let (workspace_id, trace_id): (String, Option<String>) = db.query_row(
+        "SELECT workspace_id,trace_id FROM sessions WHERE id=?1",
         params![parent_session_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let fingerprint = task_fingerprint(request);
     let preferences = load_preferences(db, &workspace_id)?;
@@ -564,6 +586,12 @@ pub fn route(
         histories,
         required_capabilities,
         remaining_capability_units: remaining,
+        budget_preference: resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.budget_preference.clone()),
+        latency_preference: resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.latency_preference.clone()),
     });
     let implementer_family: Option<String> = if request.role == WorkerRole::Verification {
         db.query_row(
@@ -657,6 +685,7 @@ pub fn route(
         workspace_id: workspace_id.clone(),
         parent_session_id: parent_session_id.into(),
         turn_id: turn_id.into(),
+        trace_id,
         task_family: policy::role_name(request.role).into(),
         task_fingerprint: fingerprint,
         repository_revision: repository_revision(db, parent_session_id)?,
@@ -817,13 +846,14 @@ fn normalized_list(values: &[String]) -> Vec<String> {
 
 fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         params![
             decision.id,
             decision.workspace_id,
             decision.parent_session_id,
             decision.turn_id,
+            decision.trace_id,
             decision.task_family,
             decision.task_fingerprint,
             decision.repository_revision,
@@ -1207,6 +1237,8 @@ mod tests {
             histories: BTreeMap::new(),
             required_capabilities: vec!["tools".into()],
             remaining_capability_units: 24,
+            budget_preference: None,
+            latency_preference: None,
         })
     }
 
@@ -1271,6 +1303,24 @@ mod tests {
     }
 
     #[test]
+    fn profile_quality_preference_changes_ranking_without_widening_eligibility() {
+        let result = evaluate(EvaluationInput {
+            candidates: vec![
+                candidate("codex", "fast", CapabilityTier::Fast, 2),
+                candidate("claude", "standard", CapabilityTier::Standard, 4),
+            ],
+            preferences: RouterPreferences::default(),
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into()],
+            remaining_capability_units: 24,
+            budget_preference: Some("quality".into()),
+            latency_preference: Some("patient".into()),
+        });
+        assert!(result.iter().all(CandidateEvaluation::eligible));
+        assert_eq!(result[0].candidate.key(), "claude:standard");
+    }
+
+    #[test]
     fn every_constraint_has_a_stable_reason_code() {
         let mut blocked = candidate("codex", "fast", CapabilityTier::Fast, 30);
         blocked.available = false;
@@ -1292,6 +1342,8 @@ mod tests {
             histories: BTreeMap::new(),
             required_capabilities: vec!["tools".into()],
             remaining_capability_units: 1,
+            budget_preference: None,
+            latency_preference: None,
         });
         assert_eq!(result[0].exclusions.len(), 12);
         assert!(!result[0].eligible());
@@ -1372,7 +1424,7 @@ mod tests {
         let assigned = (0..10_000)
             .filter(|index| canary_bucket(&format!("task-{index}")) < 20)
             .count();
-        assert!((1_500..=2_500).contains(&assigned), "unexpected canary sample {assigned}");
+        assert!((1_800..=2_200).contains(&assigned), "unexpected canary sample {assigned}");
     }
 
     #[test]

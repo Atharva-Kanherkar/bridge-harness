@@ -795,6 +795,7 @@ fn migration_15_role_profiles_and_learning_jobs(
     add_column_if_missing(transaction, "usage_ledger", "cost_microusd", "INTEGER")?;
     add_column_if_missing(transaction, "usage_ledger", "cost_source", "TEXT")?;
     add_column_if_missing(transaction, "router_decisions", "task_fingerprint", "TEXT NOT NULL DEFAULT 'legacy'")?;
+    add_column_if_missing(transaction, "router_decisions", "trace_id", "TEXT")?;
     add_column_if_missing(transaction, "router_decisions", "repository_revision", "TEXT")?;
     add_column_if_missing(transaction, "router_decisions", "profile_version", "INTEGER")?;
     add_column_if_missing(transaction, "router_decisions", "profile_purpose", "TEXT")?;
@@ -816,6 +817,7 @@ fn migration_15_role_profiles_and_learning_jobs(
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS model_profiles (
             version INTEGER NOT NULL,
+            profile_id TEXT NOT NULL DEFAULT 'legacy',
             purpose TEXT NOT NULL,
             canonical_role TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -869,6 +871,7 @@ fn migration_15_role_profiles_and_learning_jobs(
             enabled INTEGER NOT NULL DEFAULT 0,
             cadence_minutes INTEGER NOT NULL DEFAULT 1440,
             next_run_at TEXT,
+            last_evidence_boundary INTEGER NOT NULL DEFAULT 0,
             run_budget_microusd INTEGER NOT NULL DEFAULT 100000,
             run_budget_tokens INTEGER NOT NULL DEFAULT 50000,
             mode TEXT NOT NULL DEFAULT 'manual',
@@ -911,6 +914,8 @@ fn migration_15_role_profiles_and_learning_jobs(
         );
         CREATE INDEX IF NOT EXISTS idx_learning_job_runs_status
             ON learning_job_runs(job_id,status,created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_job_active_lease
+            ON learning_job_runs(job_id) WHERE status IN ('queued','running');
         CREATE TABLE IF NOT EXISTS learning_trigger_events (
             id TEXT PRIMARY KEY,
             run_id TEXT REFERENCES learning_job_runs(id) ON DELETE SET NULL,
@@ -934,7 +939,17 @@ fn migration_15_role_profiles_and_learning_jobs(
         INSERT OR IGNORE INTO routing_policies(version,status,weights,thresholds,created_reason,created_at)
             VALUES(1,'active','{}','{}','initial deterministic routing policy',CURRENT_TIMESTAMP);
         INSERT OR IGNORE INTO learning_jobs(id,enabled,cadence_minutes,run_budget_microusd,run_budget_tokens,mode,updated_at)
-            VALUES('default',0,1440,100000,50000,'manual',CURRENT_TIMESTAMP);",
+            VALUES('default',0,1440,100000,50000,'manual',CURRENT_TIMESTAMP);
+        INSERT OR IGNORE INTO learning_triggers(id,job_id,kind,registration_id,enabled,experimental,created_at,updated_at)
+            VALUES('builtin-manual','default','manual','built-in',1,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+        INSERT OR IGNORE INTO learning_triggers(id,job_id,kind,registration_id,enabled,experimental,created_at,updated_at)
+            VALUES('builtin-in-app','default','in_app','built-in',1,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);",
+    )?;
+    add_column_if_missing(transaction, "model_profiles", "profile_id", "TEXT NOT NULL DEFAULT 'legacy'")?;
+    add_column_if_missing(transaction, "learning_jobs", "last_evidence_boundary", "INTEGER NOT NULL DEFAULT 0")?;
+    transaction.execute(
+        "CREATE INDEX IF NOT EXISTS idx_model_profiles_id ON model_profiles(profile_id,version)",
+        [],
     )?;
     Ok(())
 }
@@ -2008,11 +2023,14 @@ mod tests {
         }
         for (table, column) in [
             ("usage_ledger", "cost_microusd"),
+            ("model_profiles", "profile_id"),
             ("router_decisions", "policy_version"),
+            ("router_decisions", "trace_id"),
             ("router_decisions", "catalog_snapshot"),
             ("router_outcomes", "success_state"),
             ("router_outcomes", "confidence_bps"),
             ("learning_job_runs", "lease_expires_at"),
+            ("learning_jobs", "last_evidence_boundary"),
             ("learning_jobs", "run_budget_tokens"),
         ] {
             let exists = db
@@ -2032,6 +2050,7 @@ mod tests {
             transaction.commit().unwrap();
         }
         assert_eq!(db.query_row("SELECT COUNT(*) FROM routing_policies WHERE status='active'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM learning_triggers WHERE kind IN ('manual','in_app') AND registration_id='built-in'", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);

@@ -704,6 +704,45 @@ async fn create_chat(
 
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
+#[derive(Debug, Clone)]
+struct OrchestratorSelection {
+    adapter_id: String,
+    model: String,
+    tier: CapabilityTier,
+    effort: Option<delegation::Effort>,
+}
+
+fn resolve_orchestrator_selection(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+) -> Result<OrchestratorSelection, BridgeError> {
+    let descriptors = registry.descriptors();
+    if let Some(profile) = model_profiles::resolve_profile(
+        db,
+        &descriptors,
+        model_profiles::ProfilePurpose::StandardOrchestrator,
+    )? {
+        let resolution = registry.resolve_model(
+            &profile.provider,
+            profile.tier,
+            Some(&profile.model),
+        )?;
+        return Ok(OrchestratorSelection {
+            adapter_id: profile.provider,
+            model: resolution.actual_model,
+            tier: profile.tier,
+            effort: Some(profile.effort),
+        });
+    }
+    let resolution = registry.resolve_model(orchestrator::HARNESS, orchestrator::TIER, None)?;
+    Ok(OrchestratorSelection {
+        adapter_id: orchestrator::HARNESS.into(),
+        model: resolution.actual_model,
+        tier: orchestrator::TIER,
+        effort: None,
+    })
+}
+
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
@@ -711,6 +750,7 @@ async fn create_workspace_session(
 ) -> Result<BridgeState, BridgeError> {
     let id = Uuid::new_v4().to_string();
     let db = state.db.lock().unwrap();
+    let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
     let ws_path: Option<String> = db
         .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
             r.get::<_, Option<String>>(0)
@@ -719,8 +759,8 @@ async fn create_workspace_session(
         .flatten();
     let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
     db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,requested_tier,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'orchestrator',?6,0)",
-        params![id, workspace_id, orchestrator::HARNESS, orchestrator::SESSION_LABEL, orchestrator::TIER.as_str(), cwd],
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
+        params![id, workspace_id, selection.adapter_id, orchestrator::SESSION_LABEL, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
     )?;
     store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
     store::state(&db)
@@ -881,14 +921,17 @@ async fn start_session(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    // The user chooses neither harness nor model. Bridge starts its fast-tier
-    // orchestrator and resolves the provider model through adapter inventory.
-    let adapter_id = orchestrator::HARNESS;
+    // The persisted Standard orchestrator profile owns the default provider,
+    // model, tier, and effort. Resolution still happens against live inventory.
+    let selection = {
+        let db = state.db.lock().unwrap();
+        resolve_orchestrator_selection(&db, &state.adapter_registry)?
+    };
+    let adapter_id = selection.adapter_id.as_str();
     let session_label = orchestrator::SESSION_LABEL;
-    let resolution = state
-        .adapter_registry
-        .resolve_model(adapter_id, orchestrator::TIER, None)?;
-    let chosen_model = Some(resolution.actual_model);
+    let chosen_model = Some(selection.model.clone());
+    let chosen_effort = selection.effort;
+    let chosen_effort_name = chosen_effort.map(|effort| effort.as_str());
     let db = state.db.lock().unwrap();
     let path: Option<String> = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
@@ -974,7 +1017,7 @@ async fn start_session(
             adapters::StartRequest {
                 cwd: &path,
                 model: chosen_model.as_deref(),
-                effort: None,
+                effort: chosen_effort_name,
                 instructions: Some(instructions),
                 write_mode: None,
             },
@@ -994,7 +1037,7 @@ async fn start_session(
                     provider_session_id: provider_id,
                     cwd: &path,
                     model: chosen_model.as_deref(),
-                    effort: None,
+                    effort: chosen_effort_name,
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: None,
                 },
@@ -1094,19 +1137,21 @@ async fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,requested_tier=?5,label=?6,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
+            "UPDATE sessions SET harness=?2,status='working',started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
+                adapter_id,
                 started_at,
                 thread_id,
                 chosen_model,
-                orchestrator::TIER.as_str(),
+                selection.tier.as_str(),
+                chosen_effort_name,
                 session_label
             ],
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,0,?9)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,0,?10)",
             params![
                 session_id,
                 workspace_id,
@@ -1115,7 +1160,8 @@ async fn start_session(
                 started_at,
                 thread_id,
                 chosen_model,
-                orchestrator::TIER.as_str(),
+                selection.tier.as_str(),
+                chosen_effort_name,
                 Uuid::new_v4().simple().to_string()
             ],
         )?;
@@ -4806,6 +4852,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orchestrator_start_uses_the_persisted_standard_profile() {
+        let registry = adapters::AdapterRegistry::built_in().unwrap();
+        let descriptors = registry.descriptors();
+        let Ok(mut profiles) = model_profiles::recommended_profiles(&descriptors) else {
+            // Provider-binary availability is environment-owned. Catalog/profile
+            // resolution itself is covered with a deterministic fake catalog.
+            return;
+        };
+        let expected = profiles
+            .iter_mut()
+            .find(|profile| profile.purpose == model_profiles::ProfilePurpose::StandardOrchestrator)
+            .unwrap();
+        expected.effort = delegation::Effort::High;
+        let expected_provider = expected.provider.clone();
+        let expected_model = expected.model.clone();
+        let db = store::open(Path::new(":memory:")).unwrap();
+        model_profiles::save_profiles(&db, &descriptors, &profiles).unwrap();
+        let selected = resolve_orchestrator_selection(&db, &registry).unwrap();
+        assert_eq!(selected.adapter_id, expected_provider);
+        assert_eq!(selected.model, expected_model);
+        assert_eq!(selected.effort, Some(delegation::Effort::High));
+        assert_eq!(selected.tier, CapabilityTier::Standard);
+    }
 
     #[test]
     fn tauri_commands_never_block_the_ui_thread() {

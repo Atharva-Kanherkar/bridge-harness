@@ -239,6 +239,7 @@ fn active_policy_weights(db: &Connection, version: i64) -> Result<serde_json::Va
 fn record_deferred_model_evaluations(
     db: &Connection,
     learning_run_id: &str,
+    previous_boundary: i64,
     boundary: i64,
 ) -> Result<(), BridgeError> {
     let active_profile_version: Option<i64> = db
@@ -263,10 +264,10 @@ fn record_deferred_model_evaluations(
         "SELECT d.id,d.parent_session_id,d.actual_provider,o.runtime_ms,o.cost_microusd,o.retry_count,o.edit_count,o.override_signal,
                 COALESCE((SELECT evidence_entry_ids FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='deterministic' ORDER BY e.created_at DESC LIMIT 1),'[]')
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE o.rowid<=?1 AND o.success_state='unknown'",
+         WHERE o.rowid>?1 AND o.rowid<=?2 AND o.success_state='unknown'",
     )?;
     let rows = statement
-        .query_map(params![boundary], |row| {
+        .query_map(params![previous_boundary, boundary], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -399,6 +400,55 @@ pub fn run_learning(
     let key = format!("{DEFAULT_JOB_ID}:{boundary}:{base_version}");
     let now = Utc::now();
     let lease_owner = Uuid::new_v4().to_string();
+    if let Some(mut active) = load_active_run(db)? {
+        if active.idempotency_key != key {
+            let lease_expired = active
+                .lease_expires_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|expires| expires <= now);
+            if lease_expired {
+                let previous_expiry = active.lease_expires_at.clone().ok_or_else(|| {
+                    BridgeError::Invalid("expired learning lease lost its expiry boundary".into())
+                })?;
+                let acquired = db.execute(
+                    "UPDATE learning_job_runs SET lease_owner=?2,lease_expires_at=?3
+                     WHERE id=?1 AND status='running' AND lease_expires_at=?4",
+                    params![active.id, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(), previous_expiry],
+                )?;
+                if acquired == 1 {
+                    record_trigger_event(
+                        db,
+                        Some(&active.id),
+                        trigger_kind,
+                        None,
+                        "lease_recovered",
+                        Some("the prior durable lease expired; the frozen snapshot was resumed before newer evidence"),
+                    )?;
+                    return process_run(
+                        db,
+                        &active.id,
+                        active.evidence_boundary,
+                        active.base_policy_version,
+                    )
+                    .or_else(|error| fail_run(db, &active.id, &error));
+                }
+                active = load_active_run(db)?.ok_or_else(|| {
+                    BridgeError::Invalid("recovered learning lease disappeared".into())
+                })?;
+            }
+            record_trigger_event(
+                db,
+                Some(&active.id),
+                trigger_kind,
+                None,
+                "duplicate_noop",
+                Some("another snapshot is already protected by the durable job lease"),
+            )?;
+            active.duplicate = true;
+            return Ok(active);
+        }
+    }
     if let Some(mut existing) = load_run_by_key(db, &key)? {
         let lease_expired = existing.status == LearningRunStatus::Running
             && existing
@@ -407,10 +457,29 @@ pub fn run_learning(
                 .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
                 .is_some_and(|expires| expires <= now);
         if lease_expired {
-            db.execute(
-                "UPDATE learning_job_runs SET lease_owner=?2,lease_expires_at=?3 WHERE id=?1 AND status='running'",
-                params![existing.id, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339()],
+            let previous_expiry = existing.lease_expires_at.clone().ok_or_else(|| {
+                BridgeError::Invalid("expired learning lease lost its expiry boundary".into())
+            })?;
+            let acquired = db.execute(
+                "UPDATE learning_job_runs SET lease_owner=?2,lease_expires_at=?3
+                 WHERE id=?1 AND status='running' AND lease_expires_at=?4",
+                params![existing.id, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(), previous_expiry],
             )?;
+            if acquired == 0 {
+                let mut winner = load_run_by_key(db, &key)?.ok_or_else(|| {
+                    BridgeError::Invalid("recovered learning lease disappeared".into())
+                })?;
+                record_trigger_event(
+                    db,
+                    Some(&winner.id),
+                    trigger_kind,
+                    None,
+                    "duplicate_noop",
+                    Some("another trigger recovered the expired durable lease"),
+                )?;
+                winner.duplicate = true;
+                return Ok(winner);
+            }
             record_trigger_event(
                 db,
                 Some(&existing.id),
@@ -442,9 +511,12 @@ pub fn run_learning(
         params![id, DEFAULT_JOB_ID, trigger_kind.as_str(), key, boundary, base_version, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(), created_at],
     )?;
     if inserted == 0 {
-        let mut existing = load_run_by_key(db, &key)?.ok_or_else(|| {
-            BridgeError::Invalid("learning run idempotency claim was lost".into())
-        })?;
+        let mut existing = match load_run_by_key(db, &key)? {
+            Some(existing) => existing,
+            None => load_active_run(db)?.ok_or_else(|| {
+                BridgeError::Invalid("learning run lease claim was lost".into())
+            })?,
+        };
         record_trigger_event(db, Some(&existing.id), trigger_kind, None, "duplicate_noop", Some("a concurrent trigger acquired the durable lease"))?;
         existing.duplicate = true;
         return Ok(existing);
@@ -461,16 +533,44 @@ fn process_run(
 ) -> Result<LearningRun, BridgeError> {
     let schedule = load_schedule(db)?;
     let summary = EvidenceSummary::load(db, boundary)?;
+    let previous_boundary: i64 = db.query_row(
+        "SELECT last_evidence_boundary FROM learning_jobs WHERE id=?1",
+        params![DEFAULT_JOB_ID],
+        |row| row.get(0),
+    )?;
+    let new_evidence_count: i64 = db.query_row(
+        "SELECT COUNT(*) FROM router_outcomes WHERE rowid>?1 AND rowid<=?2",
+        params![previous_boundary, boundary],
+        |row| row.get(0),
+    )?;
     let mut candidate_policy_version = None;
     let mut replay_passed = None;
     let mut promotion_status = "not_requested".to_owned();
     let mut policy_diff = json!({});
+    let mut consumed_evidence = false;
+    let canary_pending = schedule.mode == "automatic"
+        && db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM routing_policies WHERE status='canary')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
     let (status, reason) = if schedule.run_budget_microusd <= 0 || schedule.run_budget_tokens <= 0 {
         (LearningRunStatus::Noop, "learning spend/token budget exhausted".to_owned())
+    } else if canary_pending {
+        (
+            LearningRunStatus::Noop,
+            "guarded canary is still collecting outcomes; no second automatic promotion was created".to_owned(),
+        )
     } else if summary.count < MIN_EVIDENCE_SAMPLES {
         (LearningRunStatus::Noop, format!("insufficient evidence: {}/{MIN_EVIDENCE_SAMPLES} outcomes", summary.count))
+    } else if new_evidence_count < MIN_EVIDENCE_SAMPLES {
+        (
+            LearningRunStatus::Noop,
+            format!("insufficient new evidence: {new_evidence_count}/{MIN_EVIDENCE_SAMPLES} outcomes since boundary {previous_boundary}"),
+        )
     } else {
-        record_deferred_model_evaluations(db, id, boundary)?;
+        record_deferred_model_evaluations(db, id, previous_boundary, boundary)?;
+        consumed_evidence = true;
         let base_weights = active_policy_weights(db, base_version)?;
         match routing_policy::build_candidate(db, boundary, &base_weights)? {
             None => (LearningRunStatus::Noop, "insufficient value: no supported policy change met the sample and confidence thresholds".into()),
@@ -547,6 +647,12 @@ fn process_run(
         "UPDATE learning_job_runs SET status=?2,report=?3,candidate_policy_version=?4,evaluated_spend_microusd=0,evaluated_tokens=0,replay_passed=?5,promotion_status=?6,lease_owner=NULL,lease_expires_at=NULL,completed_at=?7 WHERE id=?1",
         params![id, status.as_str(), serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, candidate_policy_version, replay_passed, promotion_status, completed_at],
     )?;
+    if consumed_evidence {
+        db.execute(
+            "UPDATE learning_jobs SET last_evidence_boundary=MAX(last_evidence_boundary,?2),updated_at=?3 WHERE id=?1",
+            params![DEFAULT_JOB_ID, boundary, completed_at],
+        )?;
+    }
     load_run(db, &id)?.ok_or_else(|| BridgeError::Invalid("learning run disappeared".into()))
 }
 
@@ -615,6 +721,15 @@ fn load_run_by_key(db: &Connection, key: &str) -> Result<Option<LearningRun>, Br
     ).optional()?)
 }
 
+fn load_active_run(db: &Connection) -> Result<Option<LearningRun>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at
+         FROM learning_job_runs WHERE job_id=?1 AND status IN ('queued','running') ORDER BY created_at LIMIT 1",
+        params![DEFAULT_JOB_ID],
+        map_run,
+    ).optional()?)
+}
+
 pub fn cancel_run(db: &Connection, id: &str) -> Result<LearningRun, BridgeError> {
     let transaction = db.unchecked_transaction()?;
     let candidate: Option<i64> = transaction
@@ -651,11 +766,16 @@ fn promote_candidate(
     canary: bool,
 ) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
-    let current: i64 = transaction.query_row(
-        "SELECT version FROM routing_policies WHERE status IN ('active','canary') LIMIT 1",
+    let (current, current_status): (i64, String) = transaction.query_row(
+        "SELECT version,status FROM routing_policies WHERE status IN ('active','canary') LIMIT 1",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    if current_status == "canary" {
+        return Err(BridgeError::Invalid(
+            "an existing canary must settle or roll back before another policy can promote".into(),
+        ));
+    }
     let (predecessor, replay): (Option<i64>, Option<String>) = transaction.query_row(
         "SELECT predecessor,replay_report FROM routing_policies WHERE version=?1 AND status='candidate'",
         params![candidate_version],
@@ -1262,6 +1382,7 @@ mod tests {
             workspace_id: "w".into(),
             parent_session_id: "parent".into(),
             turn_id: format!("turn-{index}"),
+            trace_id: Some("trace-learning".into()),
             task_family: "implementation".into(),
             task_fingerprint: "repeated-implementation".into(),
             repository_revision: Some("head:clean".into()),
@@ -1282,7 +1403,7 @@ mod tests {
             created_at: "now".into(),
         };
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES(?1,'w','codex','Child','completed','reported','parent')", params![child]).unwrap();
-        db.execute("INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,task_family,task_fingerprint,profile_version,profile_purpose,policy_version,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at) VALUES(?1,'w','parent',?2,'implementation','repeated-implementation',1,'implementer',?3,'codex',?4,'medium',?5,0,?6,?6,?6,?7,'now')", params![decision, format!("turn-{index}"), policy_version, model, if policy_version > 1 { "autonomous" } else { "shadow" }, candidate_key, serde_json::to_string(&body).unwrap()]).unwrap();
+        db.execute("INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,policy_version,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at) VALUES(?1,'w','parent',?2,'trace-learning','implementation','repeated-implementation',1,'implementer',?3,'codex',?4,'medium',?5,0,?6,?6,?6,?7,'now')", params![decision, format!("turn-{index}"), policy_version, model, if policy_version > 1 { "autonomous" } else { "shadow" }, candidate_key, serde_json::to_string(&body).unwrap()]).unwrap();
         db.execute("INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,cost_microusd,cost_source,confidence_bps,recorded_at) VALUES(?1,?2,?3,?4,?5,?6,1000,0,0,?7,?8,?9,?10,9000,'now')", params![decision, child, candidate_key, success, if success { "completed" } else { "failed" }, if model == "b" { 100 } else { 200 }, if success { "success" } else { "failure" }, if success { "accepted" } else { "rejected" }, cost, cost.map(|_| "provider_reported")]).unwrap();
     }
 
@@ -1328,6 +1449,25 @@ mod tests {
             })
             .unwrap(),
             2
+        );
+    }
+
+    #[test]
+    fn one_job_lease_blocks_a_competing_newer_snapshot() {
+        let db = database();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
+             VALUES('active','default','manual','default:0:1',0,1,'running','owner',?1,'now','now')",
+            params![(Utc::now() + Duration::minutes(5)).to_rfc3339()],
+        )
+        .unwrap();
+        add_outcome(&db, 1, "a", false, Some(100), 1);
+        let duplicate = run_learning(&db, LearningTriggerKind::Codex).unwrap();
+        assert_eq!(duplicate.id, "active");
+        assert!(duplicate.duplicate);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM learning_job_runs", [], |row| row.get::<_, i64>(0)).unwrap(),
+            1
         );
     }
 
@@ -1418,6 +1558,38 @@ mod tests {
         )
         .unwrap();
         assert!(next > now);
+    }
+
+    #[test]
+    fn subsequent_runs_require_an_incremental_evidence_batch() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        assert_eq!(
+            run_learning(&db, LearningTriggerKind::Manual).unwrap().status,
+            LearningRunStatus::Completed
+        );
+        add_outcome(&db, 100, "b", true, Some(100), 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        assert_eq!(run.status, LearningRunStatus::Noop);
+        assert!(run
+            .report
+            .unwrap()
+            .reason
+            .contains("insufficient new evidence: 1/5"));
+        for index in 101..105 {
+            add_outcome(&db, index, "b", true, Some(100), 1);
+        }
+        let accumulated = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        assert_eq!(accumulated.status, LearningRunStatus::Completed);
+        assert_eq!(
+            db.query_row(
+                "SELECT last_evidence_boundary FROM learning_jobs WHERE id='default'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            accumulated.evidence_boundary
+        );
     }
 
     #[test]
@@ -1514,8 +1686,10 @@ mod tests {
             params![(now - Duration::minutes(1)).to_rfc3339(), (now - Duration::minutes(20)).to_rfc3339()],
         )
         .unwrap();
+        add_outcome(&db, 99, "a", false, Some(100), 1);
         let recovered = run_learning(&db, LearningTriggerKind::Manual).unwrap();
         assert_eq!(recovered.id, "stale");
+        assert_eq!(recovered.evidence_boundary, 0);
         assert_eq!(recovered.status, LearningRunStatus::Noop);
         assert_eq!(
             db.query_row(
@@ -1683,6 +1857,27 @@ mod tests {
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM routing_policy_promotions WHERE action='canary_completed'", [], |row| row.get::<_, i64>(0)).unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn automatic_mode_never_stacks_canary_promotions() {
+        let db = database();
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        assert_eq!(first.promotion_status, "canary");
+        add_outcome(&db, 100, "b", true, Some(100), 2);
+        let second = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        assert_eq!(second.status, LearningRunStatus::Noop);
+        assert!(second.report.unwrap().reason.contains("still collecting outcomes"));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM routing_policies WHERE status='canary'", [], |row| row.get::<_, i64>(0)).unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM routing_policies WHERE status='candidate'", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0
         );
     }
 

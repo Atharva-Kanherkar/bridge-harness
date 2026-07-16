@@ -112,7 +112,7 @@ export interface ModelProfileDraft {
   budgetPreference: string | null; latencyPreference: string | null;
 }
 export interface ModelProfile extends ModelProfileDraft {
-  schemaVersion: number; version: number; canonicalRole: CanonicalWorkerRole; createdAt: string;
+  schemaVersion: number; version: number; profileId: string; canonicalRole: CanonicalWorkerRole; createdAt: string;
 }
 export interface ModelSetupState { complete: boolean; activeVersion: number | null; profiles: ModelProfile[] }
 export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude";
