@@ -715,6 +715,7 @@ fn migration_14_completion_proof(transaction: &Transaction<'_>) -> Result<(), Br
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             repository_head TEXT NOT NULL,
             dirty_digest TEXT NOT NULL,
+            repository_path TEXT NOT NULL,
             status TEXT NOT NULL,
             implementer_family TEXT,
             started_at TEXT NOT NULL,
@@ -776,6 +777,11 @@ fn migration_14_completion_proof(transaction: &Transaction<'_>) -> Result<(), Br
             schema_version INTEGER NOT NULL,
             manifest TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS worker_completion_inputs (
+            child_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            request TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );",
     )?;
@@ -1095,10 +1101,10 @@ pub fn repository_state_for_session(
     let Some(path) = path else {
         return Ok(serde_json::json!({"status":"unavailable"}));
     };
-    Ok(repository_state(Path::new(&path)))
+    Ok(repository_state_for_path(Path::new(&path)))
 }
 
-fn repository_state(path: &Path) -> serde_json::Value {
+pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
     let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(path).output();
     let status = Command::new("git")
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])

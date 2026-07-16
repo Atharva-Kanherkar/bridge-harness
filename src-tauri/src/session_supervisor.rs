@@ -1,7 +1,7 @@
 use crate::{
     adapters,
     delegation::{SuggestedNextAction, WorkerEvidence, WorkerResult, WorkerResultStatus, MAX_EVIDENCE_REFERENCES},
-    learning_router,
+    completion, learning_router,
     model::SessionEntry,
     session_forest::{self, EntryKind},
     worker_lifecycle::{validate_transition, WorkerLifecycleState},
@@ -209,7 +209,7 @@ impl SessionSupervisor {
             params![parent_session_id],
             |row| row.get(0),
         )?;
-        if remaining == 0 {
+        if remaining == 0 && completion::completion_allows_ready(&transaction, &parent_session_id)? {
             transaction.execute(
                 "UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'",
                 params![parent_session_id],

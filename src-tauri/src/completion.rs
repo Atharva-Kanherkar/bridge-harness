@@ -1,9 +1,10 @@
-use crate::BridgeError;
+use crate::{delegation::{DelegationRequest, WorkerResult, WorkerResultStatus}, store, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
+use std::path::Path;
 use uuid::Uuid;
 
 pub const COMPLETION_SCHEMA_VERSION: u32 = 1;
@@ -393,6 +394,7 @@ pub struct ProofBundle {
     pub attempt_id: String,
     pub contract_id: String,
     pub repository: RepositoryStamp,
+    pub repository_path: String,
     pub verdict: CompletionVerdict,
     pub implementer_family: Option<String>,
     pub checks: Vec<CheckRun>,
@@ -543,6 +545,65 @@ pub fn completion_allows_ready(db: &Connection, session_id: &str) -> Result<bool
         .unwrap_or(true))
 }
 
+pub fn create_from_worker_result(
+    db: &Connection,
+    child_session_id: &str,
+    result: &WorkerResult,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    if result.status != WorkerResultStatus::Completed {
+        return Ok(None);
+    }
+    let context: Option<(String, String, String, String, String, Option<String>, Option<String>)> = db.query_row(
+        "SELECT r.parent_session_id,l.workspace_id,l.role,s.harness,i.request,r.worktree_path,COALESCE(parent.cwd,w.path)
+         FROM worker_runtime r
+         JOIN worker_leases l ON l.session_id=r.session_id
+         JOIN sessions s ON s.id=r.session_id
+         JOIN sessions parent ON parent.id=r.parent_session_id
+         JOIN workspaces w ON w.id=parent.workspace_id
+         JOIN worker_completion_inputs i ON i.child_session_id=r.session_id
+         WHERE r.session_id=?1",
+        params![child_session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+    ).optional()?;
+    let Some((parent_session_id, workspace_id, role, implementer_family, serialized_request, worktree_path, parent_path)) = context else {
+        return Ok(None);
+    };
+    if role != "implementation" {
+        return Ok(None);
+    }
+    if let Some(existing) = latest_summary(db, &parent_session_id)? {
+        if matches!(existing.verdict, CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested) {
+            return Ok(Some(existing));
+        }
+    }
+    let request: DelegationRequest = serde_json::from_str(&serialized_request)
+        .map_err(|error| BridgeError::Invalid(format!("stored delegation request is malformed: {error}")))?;
+    request.validate().map_err(BridgeError::Invalid)?;
+    let repository_path = worktree_path.or(parent_path).ok_or_else(|| BridgeError::Invalid("implementation completion requires a repository path before verification".into()))?;
+    let state = store::repository_state_for_path(Path::new(&repository_path));
+    let head = state.get("head").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("implementation completion requires a Git HEAD before verification".into()))?;
+    let dirty_digest = state.get("dirtyHash").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("implementation completion requires a dirty-tree digest before verification".into()))?;
+    let contract = CompletionContract {
+        id: Uuid::new_v4().to_string(),
+        workspace_id,
+        session_id: parent_session_id.clone(),
+        schema_version: COMPLETION_SCHEMA_VERSION,
+        acceptance_criteria: request.acceptance_criteria.clone(),
+        markdown_projection: None,
+        markdown_committed: false,
+    };
+    let plan = plan(PlanInput {
+        contract_id: contract.id.clone(),
+        acceptance_criteria: request.acceptance_criteria,
+        changed_paths: result.files_changed.clone(),
+        repository_commands: request.verification,
+        available_capabilities: HashSet::new(),
+    });
+    let repository = RepositoryStamp { head: head.into(), dirty_digest: dirty_digest.into() };
+    create_flow(db, &contract, &plan, &parent_session_id, &repository_path, &repository, Some(&implementer_family))?;
+    latest_summary(db, &parent_session_id)
+}
+
 fn parse_verdict(value: &str) -> CompletionVerdict {
     match value {
         "changes_requested" => CompletionVerdict::ChangesRequested,
@@ -584,6 +645,7 @@ pub fn create_flow(
     contract: &CompletionContract,
     plan: &EvalPlan,
     session_id: &str,
+    repository_path: &str,
     repository: &RepositoryStamp,
     implementer_family: Option<&str>,
 ) -> Result<String, BridgeError> {
@@ -593,6 +655,9 @@ pub fn create_flow(
         ));
     }
     repository.validate()?;
+    if repository_path.trim().is_empty() {
+        return Err(BridgeError::Invalid("completion flow requires the exact repository path being evaluated".into()));
+    }
     let now = Utc::now().to_rfc3339();
     let attempt_id = Uuid::new_v4().to_string();
     let transaction = db.unchecked_transaction()?;
@@ -609,8 +674,8 @@ pub fn create_flow(
         params![session_id, now, repository.head, repository.dirty_digest],
     )?;
     transaction.execute(
-        "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,'verifying',?6,?7)",
-        params![attempt_id, plan.id, session_id, repository.head, repository.dirty_digest, implementer_family, now],
+        "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,?6,'verifying',?7,?8)",
+        params![attempt_id, plan.id, session_id, repository.head, repository.dirty_digest, repository_path, implementer_family, now],
     )?;
     for check in &plan.checks {
         transaction.execute(
@@ -627,10 +692,14 @@ pub fn begin_attempt(
     db: &Connection,
     plan: &EvalPlan,
     session_id: &str,
+    repository_path: &str,
     repository: &RepositoryStamp,
     implementer_family: Option<&str>,
 ) -> Result<String, BridgeError> {
     repository.validate()?;
+    if repository_path.trim().is_empty() {
+        return Err(BridgeError::Invalid("verification attempt requires a repository path".into()));
+    }
     let id = Uuid::new_v4().to_string();
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
@@ -638,8 +707,8 @@ pub fn begin_attempt(
         params![session_id, Utc::now().to_rfc3339(), repository.head, repository.dirty_digest],
     )?;
     transaction.execute(
-        "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,'verifying',?6,?7)",
-        params![id, plan.id, session_id, repository.head, repository.dirty_digest, implementer_family, Utc::now().to_rfc3339()],
+        "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,?6,'verifying',?7,?8)",
+        params![id, plan.id, session_id, repository.head, repository.dirty_digest, repository_path, implementer_family, Utc::now().to_rfc3339()],
     )?;
     for check in &plan.checks {
         transaction.execute(
@@ -716,10 +785,10 @@ pub fn finalize(
     current_repository: &RepositoryStamp,
 ) -> Result<ProofBundle, BridgeError> {
     current_repository.validate()?;
-    let (contract_id, head, dirty, implementer_family): (String, String, String, Option<String>) = db.query_row(
-        "SELECT p.contract_id,a.repository_head,a.dirty_digest,a.implementer_family FROM eval_attempts a JOIN eval_plans p ON p.id=a.plan_id WHERE a.id=?1",
+    let (contract_id, head, dirty, repository_path, implementer_family): (String, String, String, String, Option<String>) = db.query_row(
+        "SELECT p.contract_id,a.repository_head,a.dirty_digest,a.repository_path,a.implementer_family FROM eval_attempts a JOIN eval_plans p ON p.id=a.plan_id WHERE a.id=?1",
         params![attempt_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
     if head != current_repository.head || dirty != current_repository.dirty_digest {
         db.execute("UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE id=?1", params![attempt_id, Utc::now().to_rfc3339()])?;
@@ -754,6 +823,7 @@ pub fn finalize(
         attempt_id: attempt_id.into(),
         contract_id,
         repository: current_repository.clone(),
+        repository_path,
         verdict,
         implementer_family,
         checks,
@@ -869,6 +939,27 @@ mod tests {
     }
 
     #[test]
+    fn completed_implementation_opens_a_private_verification_gate() {
+        use crate::delegation::{SuggestedNextAction, WorkerTestResult};
+        let db = fixture();
+        let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        db.execute("UPDATE sessions SET cwd='/bridge/missing-parent-worktree' WHERE id='s'", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES('child','w','claude','impl','completed','estimated','s','worker','native')", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','standard','implementation','[]','isolated','released','now','now')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at) VALUES('child','s','completed','implementation','key','reported',0,'now')", []).unwrap();
+        db.execute("UPDATE worker_runtime SET worktree_path=?2 WHERE session_id=?1", params!["child", cwd]).unwrap();
+        let request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["Proof card is visible"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
+        db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')", params![request.to_string()]).unwrap();
+        let result = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "implemented".into(), files_changed: vec!["src/App.tsx".into()], tests: Vec::<WorkerTestResult>::new(), decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
+        let summary = create_from_worker_result(&db, "child", &result).unwrap().unwrap();
+        assert_eq!(summary.verdict, CompletionVerdict::Verifying);
+        assert!(!summary.markdown_committed);
+        assert!(summary.checks.iter().any(|check| check.kind == EvalKind::Scrutiny));
+        assert_eq!(db.query_row("SELECT repository_path FROM eval_attempts WHERE id=?1", params![summary.attempt_id], |row| row.get::<_, String>(0)).unwrap(), cwd);
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "waiting");
+    }
+
+    #[test]
     fn completion_is_revision_bound_and_preserves_failed_checks() {
         let db = fixture();
         let contract = contract();
@@ -876,7 +967,7 @@ mod tests {
         let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::High, checks: vec![EvalCheck { id: "tests".into(), label: "tests".into(), kind: EvalKind::Deterministic, required: true, executor: "shell".into(), command: Some("bun test".into()), required_capabilities: vec!["shell".into()], different_model_family: false, reason: "policy".into() }] };
         save_plan(&db, &plan).unwrap();
         let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
-        let attempt = begin_attempt(&db, &plan, "s", &stamp, Some("codex")).unwrap();
+        let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
         record_check(&db, &attempt, &CheckRun { check_id: "tests".into(), kind: EvalKind::Deterministic, required: true, status: CheckStatus::Failed, executor: "shell".into(), command: Some("bun test".into()), verifier_family: None, detail: Some("failure".into()), output_digest: Some("digest".into()), artifact_refs: vec![] }).unwrap();
         let bundle = finalize(&db, &attempt, &stamp).unwrap();
         assert_eq!(bundle.verdict, CompletionVerdict::ChangesRequested);
@@ -892,7 +983,7 @@ mod tests {
         let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::High, checks: vec![EvalCheck { id: "scrutiny".into(), label: "scrutiny".into(), kind: EvalKind::Scrutiny, required: true, executor: "worker".into(), command: None, required_capabilities: vec!["code_review".into()], different_model_family: true, reason: "risk".into() }] };
         save_plan(&db, &plan).unwrap();
         let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
-        let attempt = begin_attempt(&db, &plan, "s", &stamp, Some("codex")).unwrap();
+        let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
         let error = record_check(&db, &attempt, &CheckRun { check_id: "scrutiny".into(), kind: EvalKind::Scrutiny, required: true, status: CheckStatus::Passed, executor: "worker".into(), command: None, verifier_family: Some("codex".into()), detail: None, output_digest: None, artifact_refs: vec![] }).unwrap_err();
         assert!(error.to_string().contains("different model family"));
     }
@@ -905,7 +996,7 @@ mod tests {
         let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "manual".into(), label: "manual".into(), kind: EvalKind::UserTesting, required: true, executor: "worker".into(), command: None, required_capabilities: vec!["computer".into()], different_model_family: true, reason: "journey".into() }] };
         save_plan(&db, &plan).unwrap();
         let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
-        let attempt = begin_attempt(&db, &plan, "s", &stamp, Some("codex")).unwrap();
+        let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
         waive(&db, &attempt, &["manual".into()], "tool unavailable", "user", &stamp).unwrap();
         assert_eq!(finalize(&db, &attempt, &stamp).unwrap().verdict, CompletionVerdict::Waived);
     }
