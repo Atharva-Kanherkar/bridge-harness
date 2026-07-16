@@ -378,6 +378,7 @@ pub struct SessionForestSnapshot {
     pub reasons: Vec<BridgeEvent>,
     pub policy_limits: PolicyLimits,
     pub repository_divergence: RepositoryDivergence,
+    pub completion: Option<crate::completion::CompletionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

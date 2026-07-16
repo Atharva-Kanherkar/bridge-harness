@@ -2,6 +2,23 @@ import { describe, expect, it } from "vitest";
 import { bridgeApi } from "./api";
 
 describe("SQLite-shaped mock observability", () => {
+  it("keeps completion contracts private by default and preserves waiver evidence", async () => {
+    const planned = await bridgeApi.createCompletionPlan("session-1", ["User flow works"], ["src/App.tsx"], []);
+    expect(planned.markdownCommitted).toBe(false);
+    expect(planned.totalRequired).toBeGreaterThan(0);
+    await expect(bridgeApi.waiveCompletion(planned.attemptId, ["user-journey"], "Browser unavailable")).rejects.toThrow("every unresolved required check");
+    const waived = await bridgeApi.waiveCompletion(planned.attemptId, ["scrutiny", "user-journey"], "Browser unavailable");
+    expect(waived.verdict).toBe("waived");
+    expect(waived.waiverReason).toBe("Browser unavailable");
+  });
+
+  it("lets skills contribute verifier instructions without hiding missing tools", async () => {
+    await bridgeApi.registerVerifierManifest("skill:review-checkpoint", { id:"browser-journey",kind:"user_testing",triggers:["frontend"],requiredCapabilities:["browser","network_inspection"],differentModelFamily:true,checks:["exercise user journey"],evidenceRequired:["trace"] });
+    const [blocked] = await bridgeApi.verifierCandidates(["frontend"], ["browser"]);
+    expect(blocked.eligible).toBe(false);
+    expect(blocked.exclusionReasons[0]).toContain("network_inspection");
+  });
+
   it("round-trips workspace learning-router preferences", async () => {
     const defaults = await bridgeApi.routerPreferences("demo-1");
     expect(defaults).toMatchObject({ mode: "shadow", minimumPassBps: 6500 });

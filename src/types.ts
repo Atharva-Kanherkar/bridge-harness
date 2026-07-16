@@ -70,7 +70,27 @@ export interface SessionForestSnapshot {
   workerQueue: QueuedWorkerRequest[]; usage: UsageLedgerRow[]; reasons: BridgeEvent[];
   policyLimits: PolicyLimits;
   repositoryDivergence: { status: "aligned" | "diverged" | "unknown"; selectedState: Record<string, unknown> | null; currentState: Record<string, unknown> };
+  completion: CompletionSummary | null;
 }
+export type CompletionVerdict = "verifying" | "changes_requested" | "verified" | "waived" | "failed" | "superseded";
+export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
+export type CheckStatus = "pending" | "running" | "passed" | "failed" | "skipped" | "blocked" | "stale";
+export interface CompletionCheckRun {
+  checkId: string; kind: EvalKind; required: boolean; status: CheckStatus; executor: string;
+  command: string | null; verifierFamily: string | null; detail: string | null;
+  outputDigest: string | null; artifactRefs: string[];
+}
+export interface CompletionSummary {
+  attemptId: string; contractId: string; verdict: CompletionVerdict;
+  repository: { head: string; dirtyDigest: string };
+  passedRequired: number; totalRequired: number; checks: CompletionCheckRun[];
+  markdownCommitted: boolean; waiverReason: string | null;
+}
+export interface VerifierManifest {
+  id: string; kind: EvalKind; triggers: string[]; requiredCapabilities: string[];
+  differentModelFamily: boolean; checks: string[]; evidenceRequired: string[];
+}
+export interface VerifierCandidate { manifest: VerifierManifest; eligible: boolean; exclusionReasons: string[] }
 export interface ModelOption { id: string; label: string; tier: CapabilityTier; defaultForTier: boolean }
 export interface AdapterDescriptor {
   id: string; label: string; available: boolean; version: string | null; capabilities: string[];

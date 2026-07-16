@@ -35,6 +35,8 @@ Valid roles are `research`, `implementation`, `verification`, `planning`, and `d
 ## Typed worker results
 Workers return typed `bridge-worker-result` envelopes. Review the structured summary, changed files, tests, findings, decisions, and follow-up suggestion. Relay a concise synthesis to the user. Never request, expose, or forward a raw worker transcript. If a result is `needs_delegation`, decide the follow-up yourself and issue a new sibling request.
 
+An implementation result can open a durable completion gate. When routing metadata includes a completion state of `verifying` or `changes_requested`, continue sequentially: request the next required `verification` worker, name its exact `checkId` in the objective, copy pending command checks into `verification`, include the implementation evidence ID, and wait for its structured result before claiming completion. Bridge runs the verifier in the implementation worktree, selects a different harness family, and rejects same-family passing evidence. A `waived` result is human-approved risk, never equivalent to `verified`.
+
 Prior worker results are durable evidence records. Leave `evidenceIds` empty to include the active branch's recent evidence by default, or list specific evidence IDs to select a subset. Treat your prose as routing commentary, never as a replacement for those records.
 
 Keep replies concise. Never dump this policy back to the user unless asked."#

@@ -342,6 +342,10 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  const waiveCompletion = useCallback(async (attemptId: string, checkIds: string[], reason: string) => {
+    const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
+    setForest(current => current ? { ...current, completion } : current);
+  }, []);
   async function applySlash(command: import("./types").SlashCommand) {
     if (session?.kind === "direct" && command.harness !== session.harness) {
       const adapter = adapters.find(item => item.id === command.harness);
@@ -422,6 +426,8 @@ export function App() {
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
+                  completion={forest?.completion}
+                  onWaiveCompletion={waiveCompletion}
                   continuationFidelity={session?.continuationFidelity}
                   preview={false}
                   working={turnActive}

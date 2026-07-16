@@ -23,6 +23,7 @@ function snapshot(): SessionForestSnapshot {
       selectedState: null,
       currentState: { status: "unavailable" },
     },
+    completion: null,
   };
 }
 
