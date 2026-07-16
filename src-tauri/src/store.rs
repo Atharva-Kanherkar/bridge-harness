@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 14;
+const LATEST_SCHEMA_VERSION: i64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -235,6 +235,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             12 => migration_12_adapter_process_claims(&transaction)?,
             13 => migration_13_learning_router(&transaction)?,
             14 => migration_14_completion_proof(&transaction)?,
+            15 => migration_15_role_profiles_and_learning_jobs(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -784,6 +785,105 @@ fn migration_14_completion_proof(transaction: &Transaction<'_>) -> Result<(), Br
             request TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );",
+    )?;
+    Ok(())
+}
+
+fn migration_15_role_profiles_and_learning_jobs(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "usage_ledger", "cost_microusd", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "cost_source", "TEXT")?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS model_profiles (
+            version INTEGER NOT NULL,
+            purpose TEXT NOT NULL,
+            canonical_role TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            effort TEXT NOT NULL,
+            fallback_purpose TEXT,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            learning_enabled INTEGER NOT NULL DEFAULT 1,
+            budget_preference TEXT,
+            latency_preference TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(version,purpose)
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_profiles_purpose
+            ON model_profiles(purpose,version);
+        CREATE TABLE IF NOT EXISTS model_setup_state (
+            id TEXT PRIMARY KEY,
+            active_version INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS routing_policies (
+            version INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            predecessor INTEGER REFERENCES routing_policies(version),
+            weights TEXT NOT NULL,
+            thresholds TEXT NOT NULL,
+            created_reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_policy_active
+            ON routing_policies(status) WHERE status='active';
+        CREATE TABLE IF NOT EXISTS routing_evaluations (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            evaluator_kind TEXT NOT NULL,
+            evaluator_version TEXT NOT NULL,
+            score_bps INTEGER,
+            confidence_bps INTEGER,
+            evidence_entry_ids TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS learning_jobs (
+            id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            cadence_minutes INTEGER NOT NULL DEFAULT 1440,
+            next_run_at TEXT,
+            run_budget_microusd INTEGER NOT NULL DEFAULT 100000,
+            mode TEXT NOT NULL DEFAULT 'manual',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS learning_triggers (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES learning_jobs(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            registration_id TEXT NOT NULL,
+            credential_ref TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            UNIQUE(kind,registration_id)
+        );
+        CREATE TABLE IF NOT EXISTS learning_job_runs (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES learning_jobs(id) ON DELETE CASCADE,
+            trigger_kind TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            evidence_boundary INTEGER NOT NULL,
+            base_policy_version INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            report TEXT,
+            candidate_policy_version INTEGER REFERENCES routing_policies(version),
+            cancellation_requested INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_learning_job_runs_status
+            ON learning_job_runs(job_id,status,created_at);
+        CREATE TABLE IF NOT EXISTS learning_trigger_events (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES learning_job_runs(id) ON DELETE CASCADE,
+            trigger_kind TEXT NOT NULL,
+            result TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO routing_policies(version,status,weights,thresholds,created_reason,created_at)
+            VALUES(1,'active','{}','{}','initial deterministic routing policy',CURRENT_TIMESTAMP);
+        INSERT OR IGNORE INTO learning_jobs(id,enabled,cadence_minutes,run_budget_microusd,mode,updated_at)
+            VALUES('default',0,1440,100000,'manual',CURRENT_TIMESTAMP);",
     )?;
     Ok(())
 }
@@ -1454,8 +1554,8 @@ pub fn update_worker_queue(
 
 pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_percent,capability_units,runtime_ms,source,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,source,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         params![
             usage.workspace_id,
             usage.session_id,
@@ -1467,6 +1567,8 @@ pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i6
             usage.context_percent,
             usage.capability_units,
             usage.runtime_ms,
+            usage.cost_microusd,
+            usage.cost_source,
             usage.source,
             usage.created_at,
         ],
@@ -1479,7 +1581,7 @@ pub fn usage_ledger(
     workspace_id: &str,
     session_id: Option<&str>,
 ) -> Result<Vec<UsageLedgerRow>, BridgeError> {
-    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_percent,capability_units,runtime_ms,source,created_at
+    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,source,created_at
                FROM usage_ledger WHERE workspace_id=?1 AND (?2 IS NULL OR session_id=?2) ORDER BY id";
     query_with_params(db, sql, params![workspace_id, session_id], |row| {
         Ok(UsageLedgerRow {
@@ -1494,8 +1596,10 @@ pub fn usage_ledger(
             context_percent: row.get(8)?,
             capability_units: row.get(9)?,
             runtime_ms: row.get(10)?,
-            source: row.get(11)?,
-            created_at: row.get(12)?,
+            cost_microusd: row.get(11)?,
+            cost_source: row.get(12)?,
+            source: row.get(13)?,
+            created_at: row.get(14)?,
         })
     })
 }
@@ -1834,7 +1938,7 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -1850,7 +1954,7 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
 
@@ -2151,6 +2255,8 @@ mod tests {
             context_percent: Some(25),
             capability_units: 3,
             runtime_ms: Some(100),
+            cost_microusd: Some(12_345),
+            cost_source: Some("provider_reported".into()),
             source: "codex".into(),
             created_at: "now".into(),
         };
@@ -2160,6 +2266,7 @@ mod tests {
         assert_eq!(rows[0].id, id);
         assert_eq!(rows[0].turn_id.as_deref(), Some("turn-1"));
         assert_eq!(rows[0].capability_units, 3);
+        assert_eq!(rows[0].cost_microusd, Some(12_345));
     }
 
     #[test]

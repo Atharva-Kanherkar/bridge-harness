@@ -457,8 +457,17 @@ pub fn route(
     let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
     let remaining =
         PolicyConfig::default().max_capability_units_per_turn - budget.capability_units_used;
+    let resolved_profile = if request.harness.is_none() && request.model.is_none() {
+        crate::model_profiles::resolve_for_role(db, descriptors, request.role)?
+    } else {
+        None
+    };
+    let mut profiled_request = request.clone();
+    if let Some(profile) = &resolved_profile {
+        profiled_request.effort = profile.effort;
+    }
     let availability = harness_capacity(db, &workspace_id)?;
-    let candidates = build_candidates(descriptors, request, &availability);
+    let candidates = build_candidates(descriptors, &profiled_request, &availability);
     let histories = load_histories(db, policy::role_name(request.role))?;
     let required_capabilities = vec!["tools".into(), "commands".into()];
     let mut evaluations = evaluate(EvaluationInput {
@@ -486,7 +495,10 @@ pub fn route(
             }
         }
     }
-    let baseline = baseline_key(descriptors, request);
+    let profile_baseline = resolved_profile
+        .map(|profile| format!("{}:{}", profile.provider, profile.model))
+        .filter(|key| candidate_for_key(&evaluations, key).is_some());
+    let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
     let recommendation = evaluations
         .iter()
         .find(|candidate| candidate.eligible())
@@ -1154,6 +1166,8 @@ mod tests {
                 context_percent: None,
                 capability_units: 3,
                 runtime_ms: None,
+                cost_microusd: None,
+                cost_source: None,
                 source: "policy.spawn.standard".into(),
                 created_at: "now".into(),
             },

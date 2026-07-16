@@ -11,6 +11,8 @@ pub mod completion;
 mod git;
 mod handoff;
 pub mod learning_router;
+pub mod learning_job;
+pub mod model_profiles;
 mod model;
 mod marketplace;
 mod orchestrator;
