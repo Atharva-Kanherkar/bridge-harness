@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "./types";
-import { extractUsageSnapshot, formatReset, latestUsageSnapshot, windowLabel } from "./usage";
+import type { Session, UsageLedgerRow } from "./types";
+import { buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, projectUsageExhaustion, windowLabel } from "./usage";
 
 function event(kind: string, data: Record<string, unknown>, sequence = 1): AgentEvent {
   return { id: sequence, sessionId: "s1", sequence, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data, providerMeta: {}, createdAt: new Date().toISOString() };
@@ -18,6 +19,8 @@ describe("extractUsageSnapshot", () => {
     expect(snapshot!.windows).toHaveLength(2);
     // Shortest window first.
     expect(snapshot!.windows[0]).toMatchObject({ label: "5h", usedPercent: 12.4, resetsInSeconds: 3600 });
+    expect(snapshot!.windows[0].source).toBe("reported");
+    expect(snapshot!.source).toBe("reported");
     expect(snapshot!.windows[1]).toMatchObject({ label: "Weekly", usedPercent: 3.1 });
   });
 
@@ -69,10 +72,83 @@ describe("extractUsageSnapshot", () => {
     expect(extractUsageSnapshot({ context_percent: 63 })!.contextPercent).toBe(63);
   });
 
+  it("preserves model metadata and explicit measured provenance", () => {
+    const snapshot = extractUsageSnapshot({ contextPercent: 42, model: "gpt-5", metricSource: "measured" });
+    expect(snapshot).toMatchObject({ model: "gpt-5", source: "measured" });
+  });
+
   it("returns null when there is no real signal", () => {
     expect(extractUsageSnapshot({})).toBeNull();
     expect(extractUsageSnapshot({ foo: "bar" })).toBeNull();
     expect(extractUsageSnapshot(null)).toBeNull();
+  });
+});
+
+describe("contextPressure", () => {
+  it("returns explainable states at the locked thresholds", () => {
+    expect(contextPressure().level).toBe("unknown");
+    expect(contextPressure(59).level).toBe("healthy");
+    expect(contextPressure(60)).toMatchObject({ level: "elevated", percent: 60 });
+    expect(contextPressure(75).explanation).toContain("75%");
+    expect(contextPressure(90).level).toBe("critical");
+    expect(contextPressure().explanation).toContain("recorded");
+  });
+});
+
+describe("clampPercent", () => {
+  it("clamps provider percentages to the display domain", () => {
+    expect(clampPercent(-5)).toBe(0);
+    expect(clampPercent(42)).toBe(42);
+    expect(clampPercent(105)).toBe(100);
+  });
+});
+
+describe("projectUsageExhaustion", () => {
+  it("requires enough history over a meaningful time span", () => {
+    expect(projectUsageExhaustion([
+      { usedPercent: 70, capturedAt: "2026-07-16T10:00:00Z" },
+      { usedPercent: 80, capturedAt: "2026-07-16T10:10:00Z" },
+    ])).toBeNull();
+  });
+
+  it("returns an estimated, explainable alert inside the horizon", () => {
+    const projection = projectUsageExhaustion([
+      { usedPercent: 70, capturedAt: "2026-07-16T10:00:00Z" },
+      { usedPercent: 75, capturedAt: "2026-07-16T10:05:00Z" },
+      { usedPercent: 80, capturedAt: "2026-07-16T10:10:00Z" },
+    ]);
+    expect(projection).toMatchObject({ source: "estimated", hoursRemaining: 0.3 });
+    expect(projection!.explanation).toContain("3 samples");
+  });
+
+  it("clamps out-of-range samples before calculating the trend", () => {
+    const projection = projectUsageExhaustion([
+      { usedPercent: -100, capturedAt: "2026-07-16T10:00:00Z" },
+      { usedPercent: 25, capturedAt: "2026-07-16T10:05:00Z" },
+      { usedPercent: 50, capturedAt: "2026-07-16T10:10:00Z" },
+    ]);
+    expect(projection?.hoursRemaining).toBe(0.2);
+  });
+
+  it("does not invent exhaustion for flat or distant trends", () => {
+    expect(projectUsageExhaustion([
+      { usedPercent: 10, capturedAt: "2026-07-16T10:00:00Z" },
+      { usedPercent: 10, capturedAt: "2026-07-16T10:05:00Z" },
+      { usedPercent: 10, capturedAt: "2026-07-16T10:10:00Z" },
+    ])).toBeNull();
+  });
+});
+
+describe("buildUsageHistory", () => {
+  it("ties newest-first records to work units, harnesses, models, outcomes, and sources", () => {
+    const session: Session = { id: "s1", workspaceId: "w", harness: "codex", label: "Worker", status: "completed", startedAt: null, endedAt: null, contextPercent: 72, usagePercent: null, metricSource: "reported", model: "gpt-5", restorationMode: "fresh" };
+    const row = (id: number, source: string, createdAt: string): UsageLedgerRow => ({ id, workspaceId: "w", sessionId: "s1", turnId: `turn-${id}`, inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 72, capabilityUnits: 0, runtimeMs: 1, source, createdAt });
+    const history = buildUsageHistory([
+      row(1, "provider.codex", "2026-07-16T10:00:00Z"),
+      row(2, "policy.spawn.strong", "2026-07-16T11:00:00Z"),
+    ], [session]);
+    expect(history[0]).toMatchObject({ workUnit: "turn-2", harness: "codex", model: "gpt-5", outcome: "completed", source: "measured", totalTokens: 15 });
+    expect(history[1].source).toBe("reported");
   });
 });
 
