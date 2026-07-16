@@ -8,7 +8,7 @@
     "sourceUrl": "https://github.com/vercel-labs/skills/tree/777599e1159e401b11ce4c8a57c20f09a8f1596e/skills/find-skills",
     "skillPath": "skills/find-skills",
     "pinnedRef": "777599e1159e401b11ce4c8a57c20f09a8f1596e",
-    "installs": 2532731,
+    "installs": 2534189,
     "official": true,
     "compatibility": [
       "codex",
@@ -38,7 +38,7 @@
     "sourceUrl": "https://github.com/anthropics/skills/tree/9d2f1ae187231d8199c64b5b762e1bdf2244733d/skills/frontend-design",
     "skillPath": "skills/frontend-design",
     "pinnedRef": "9d2f1ae187231d8199c64b5b762e1bdf2244733d",
-    "installs": 671490,
+    "installs": 671833,
     "official": true,
     "compatibility": [
       "codex",
@@ -69,7 +69,7 @@
     "sourceUrl": "https://github.com/mattpocock/skills/tree/9603c1cc8118d08bc1b3bf34cf714f62178dea3b/skills/productivity/grill-me",
     "skillPath": "skills/productivity/grill-me",
     "pinnedRef": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
-    "installs": 572965,
+    "installs": 573783,
     "official": false,
     "compatibility": [
       "codex",
@@ -95,7 +95,7 @@
     "sourceUrl": "https://github.com/vercel-labs/agent-skills/tree/f8a72b9603728bb92a217a879b7e62e43ad76c81/skills/react-best-practices",
     "skillPath": "skills/react-best-practices",
     "pinnedRef": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
-    "installs": 556624,
+    "installs": 556856,
     "official": true,
     "compatibility": [
       "codex",
@@ -126,7 +126,7 @@
     "sourceUrl": "https://github.com/vercel-labs/agent-browser/tree/2b202640ee89dc7aadb5e8c9d600e089e9056985/skills/agent-browser",
     "skillPath": "skills/agent-browser",
     "pinnedRef": "2b202640ee89dc7aadb5e8c9d600e089e9056985",
-    "installs": 551470,
+    "installs": 551780,
     "official": true,
     "compatibility": [
       "codex",
@@ -159,7 +159,7 @@
     "sourceUrl": "https://github.com/mattpocock/skills/tree/9603c1cc8118d08bc1b3bf34cf714f62178dea3b/skills/engineering/grill-with-docs",
     "skillPath": "skills/engineering/grill-with-docs",
     "pinnedRef": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
-    "installs": 483748,
+    "installs": 484493,
     "official": false,
     "compatibility": [
       "codex",
@@ -185,7 +185,7 @@
     "sourceUrl": "https://github.com/mattpocock/skills/tree/9603c1cc8118d08bc1b3bf34cf714f62178dea3b/skills/engineering/improve-codebase-architecture",
     "skillPath": "skills/engineering/improve-codebase-architecture",
     "pinnedRef": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
-    "installs": 472723,
+    "installs": 473416,
     "official": false,
     "compatibility": [
       "codex",
@@ -213,7 +213,7 @@
     "sourceUrl": "https://github.com/vercel-labs/agent-skills/tree/f8a72b9603728bb92a217a879b7e62e43ad76c81/skills/web-design-guidelines",
     "skillPath": "skills/web-design-guidelines",
     "pinnedRef": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
-    "installs": 468239,
+    "installs": 468430,
     "official": true,
     "compatibility": [
       "codex",
@@ -242,7 +242,7 @@
     "sourceUrl": "https://github.com/microsoft/azure-skills/tree/1940385d872b16afb1965f4d62608ab088ee7da3/.github/plugins/azure-skills/skills/microsoft-foundry",
     "skillPath": ".github/plugins/azure-skills/skills/microsoft-foundry",
     "pinnedRef": "1940385d872b16afb1965f4d62608ab088ee7da3",
-    "installs": 459870,
+    "installs": 460106,
     "official": true,
     "compatibility": [
       "codex",
@@ -275,7 +275,7 @@
     "sourceUrl": "https://github.com/microsoft/azure-skills/tree/1940385d872b16afb1965f4d62608ab088ee7da3/.github/plugins/azure-skills/skills/azure-ai",
     "skillPath": ".github/plugins/azure-skills/skills/azure-ai",
     "pinnedRef": "1940385d872b16afb1965f4d62608ab088ee7da3",
-    "installs": 456454,
+    "installs": 456687,
     "official": true,
     "compatibility": [
       "codex",
@@ -305,7 +305,7 @@
     "sourceUrl": "https://github.com/microsoft/azure-skills/tree/1940385d872b16afb1965f4d62608ab088ee7da3/.github/plugins/azure-skills/skills/azure-deploy",
     "skillPath": ".github/plugins/azure-skills/skills/azure-deploy",
     "pinnedRef": "1940385d872b16afb1965f4d62608ab088ee7da3",
-    "installs": 456150,
+    "installs": 456383,
     "official": true,
     "compatibility": [
       "codex",
@@ -336,7 +336,7 @@
     "sourceUrl": "https://github.com/remotion-dev/skills/tree/ab22f5fa89962ec943eaa18797cbf38c9d727743/skills/remotion-best-practices",
     "skillPath": "skills/remotion-best-practices",
     "pinnedRef": "ab22f5fa89962ec943eaa18797cbf38c9d727743",
-    "installs": 429130,
+    "installs": 429303,
     "official": true,
     "compatibility": [
       "codex",
@@ -366,7 +366,7 @@
     "sourceUrl": "https://github.com/larksuite/cli/tree/708196040aee2ce527df63619f2090ee320d3a32/skills/lark-doc",
     "skillPath": "skills/lark-doc",
     "pinnedRef": "708196040aee2ce527df63619f2090ee320d3a32",
-    "installs": 366096,
+    "installs": 366176,
     "official": false,
     "compatibility": [
       "codex",
@@ -399,7 +399,7 @@
     "sourceUrl": "https://github.com/larksuite/cli/tree/708196040aee2ce527df63619f2090ee320d3a32/skills/lark-base",
     "skillPath": "skills/lark-base",
     "pinnedRef": "708196040aee2ce527df63619f2090ee320d3a32",
-    "installs": 364707,
+    "installs": 364791,
     "official": false,
     "compatibility": [
       "codex",
@@ -429,7 +429,7 @@
     "sourceUrl": "https://github.com/larksuite/cli/tree/708196040aee2ce527df63619f2090ee320d3a32/skills/lark-im",
     "skillPath": "skills/lark-im",
     "pinnedRef": "708196040aee2ce527df63619f2090ee320d3a32",
-    "installs": 364242,
+    "installs": 364321,
     "official": false,
     "compatibility": [
       "codex",
@@ -460,7 +460,7 @@
     "sourceUrl": "https://github.com/juliusbrussee/caveman/tree/0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0/plugins/caveman/skills/caveman",
     "skillPath": "plugins/caveman/skills/caveman",
     "pinnedRef": "0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0",
-    "installs": 356453,
+    "installs": 356706,
     "official": false,
     "compatibility": [
       "codex",
@@ -490,7 +490,7 @@
     "sourceUrl": "https://github.com/anthropics/skills/tree/9d2f1ae187231d8199c64b5b762e1bdf2244733d/skills/skill-creator",
     "skillPath": "skills/skill-creator",
     "pinnedRef": "9d2f1ae187231d8199c64b5b762e1bdf2244733d",
-    "installs": 316788,
+    "installs": 316871,
     "official": true,
     "compatibility": [
       "codex",
@@ -524,7 +524,7 @@
     "sourceUrl": "https://github.com/supabase/agent-skills/tree/1ad9aaeb49caafd9e95c0a91116f71890eebbc53/skills/supabase-postgres-best-practices",
     "skillPath": "skills/supabase-postgres-best-practices",
     "pinnedRef": "1ad9aaeb49caafd9e95c0a91116f71890eebbc53",
-    "installs": 290776,
+    "installs": 290935,
     "official": true,
     "compatibility": [
       "codex",
@@ -553,7 +553,7 @@
     "sourceUrl": "https://github.com/obra/superpowers/tree/d884ae04edebef577e82ff7c4e143debd0bbec99/skills/brainstorming",
     "skillPath": "skills/brainstorming",
     "pinnedRef": "d884ae04edebef577e82ff7c4e143debd0bbec99",
-    "installs": 281321,
+    "installs": 281416,
     "official": false,
     "compatibility": [
       "codex",
@@ -586,7 +586,7 @@
     "sourceUrl": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/f8ac5e1266dba8354ea96e19994d9f4345e7ec31/.claude/skills/ui-ux-pro-max",
     "skillPath": ".claude/skills/ui-ux-pro-max",
     "pinnedRef": "f8ac5e1266dba8354ea96e19994d9f4345e7ec31",
-    "installs": 269874,
+    "installs": 270024,
     "official": false,
     "compatibility": [
       "codex",
@@ -616,7 +616,7 @@
     "sourceUrl": "https://github.com/leonxlnx/taste-skill/tree/7b3782a65f89eb53ab67af4ac40b689704e5a876/skills/taste-skill",
     "skillPath": "skills/taste-skill",
     "pinnedRef": "7b3782a65f89eb53ab67af4ac40b689704e5a876",
-    "installs": 262126,
+    "installs": 262418,
     "official": false,
     "compatibility": [
       "codex",
@@ -650,7 +650,7 @@
     "sourceUrl": "https://github.com/vercel-labs/agent-skills/tree/f8a72b9603728bb92a217a879b7e62e43ad76c81/skills/composition-patterns",
     "skillPath": "skills/composition-patterns",
     "pinnedRef": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
-    "installs": 251476,
+    "installs": 251589,
     "official": true,
     "compatibility": [
       "codex",
@@ -672,6 +672,35 @@
     ]
   },
   {
+    "id": "juliusbrussee/caveman/caveman-commit",
+    "slug": "caveman-commit",
+    "name": "caveman-commit",
+    "description": "Ultra-compressed commit message generator. Cuts noise from commit messages while preserving intent and reasoning. Conventional Commits format. Subject ≤50 chars, body only when \"why\" isn't obvious. Use when user says \"write a commit\", \"commit message\", \"generate commit\", \"/commit\", or invokes /caveman-commit. Auto-triggers when staging changes.",
+    "source": "juliusbrussee/caveman",
+    "sourceUrl": "https://github.com/juliusbrussee/caveman/tree/0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0/skills/caveman-commit",
+    "skillPath": "skills/caveman-commit",
+    "pinnedRef": "0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0",
+    "installs": 244935,
+    "official": false,
+    "compatibility": [
+      "codex",
+      "claude"
+    ],
+    "fileCount": 2,
+    "permissions": [
+      "Read task and workspace context",
+      "May propose or modify workspace files",
+      "May request network or browser tools"
+    ],
+    "risk": "review",
+    "riskSummary": "Review file-writing or command instructions before use.",
+    "categories": [
+      "design",
+      "quality",
+      "workflow"
+    ]
+  },
+  {
     "id": "scrapegraphai/just-scrape/just-scrape",
     "slug": "just-scrape",
     "name": "just-scrape",
@@ -680,7 +709,7 @@
     "sourceUrl": "https://github.com/scrapegraphai/just-scrape/tree/a3d179ffe2695c5bb7aacffec2c6018d3d9f056e/skills/just-scrape",
     "skillPath": "skills/just-scrape",
     "pinnedRef": "a3d179ffe2695c5bb7aacffec2c6018d3d9f056e",
-    "installs": 244856,
+    "installs": 244857,
     "official": false,
     "compatibility": [
       "codex",
@@ -704,35 +733,6 @@
     ]
   },
   {
-    "id": "juliusbrussee/caveman/caveman-commit",
-    "slug": "caveman-commit",
-    "name": "caveman-commit",
-    "description": "Ultra-compressed commit message generator. Cuts noise from commit messages while preserving intent and reasoning. Conventional Commits format. Subject ≤50 chars, body only when \"why\" isn't obvious. Use when user says \"write a commit\", \"commit message\", \"generate commit\", \"/commit\", or invokes /caveman-commit. Auto-triggers when staging changes.",
-    "source": "juliusbrussee/caveman",
-    "sourceUrl": "https://github.com/juliusbrussee/caveman/tree/0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0/skills/caveman-commit",
-    "skillPath": "skills/caveman-commit",
-    "pinnedRef": "0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0",
-    "installs": 244743,
-    "official": false,
-    "compatibility": [
-      "codex",
-      "claude"
-    ],
-    "fileCount": 2,
-    "permissions": [
-      "Read task and workspace context",
-      "May propose or modify workspace files",
-      "May request network or browser tools"
-    ],
-    "risk": "review",
-    "riskSummary": "Review file-writing or command instructions before use.",
-    "categories": [
-      "design",
-      "quality",
-      "workflow"
-    ]
-  },
-  {
     "id": "juliusbrussee/caveman/caveman-review",
     "slug": "caveman-review",
     "name": "caveman-review",
@@ -741,7 +741,7 @@
     "sourceUrl": "https://github.com/juliusbrussee/caveman/tree/0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0/skills/caveman-review",
     "skillPath": "skills/caveman-review",
     "pinnedRef": "0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0",
-    "installs": 242921,
+    "installs": 243107,
     "official": false,
     "compatibility": [
       "codex",
@@ -770,7 +770,7 @@
     "sourceUrl": "https://github.com/shadcn/ui/tree/c49c3061b5b86b130736d36bf20008349f89b416/skills/shadcn",
     "skillPath": "skills/shadcn",
     "pinnedRef": "c49c3061b5b86b130736d36bf20008349f89b416",
-    "installs": 238415,
+    "installs": 238569,
     "official": false,
     "compatibility": [
       "codex",
@@ -799,10 +799,10 @@
     "name": "hyperframes",
     "description": "Mandatory entry point: read this first for any request to make, create, edit, animate, or render a video, animation, or motion graphic, including a promo, explainer, captioned clip, title card, overlay, slideshow or interactive deck, Remotion port, or any HyperFrames HTML composition. Also use it to inspect, diagnose, validate, preview, publish, or batch-render an existing HyperFrames project. Inputs may be a website URL, GitHub PR, Figma design or URL, text or brief, existing footage, or music. It resumes project state, captures intent when applicable, selects and installs the owning workflow, and routes domain capabilities. HyperFrames is the default output framework unless the user explicitly chooses another framework for the deliverable or asks only to record a browser session.",
     "source": "heygen-com/hyperframes",
-    "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/4b9135393e8e4179ab4f7536c69006898cad9a7f/skills/hyperframes",
+    "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/172f2757f0bf8ae93887b7fda46596ac95dd4f9d/skills/hyperframes",
     "skillPath": "skills/hyperframes",
-    "pinnedRef": "4b9135393e8e4179ab4f7536c69006898cad9a7f",
-    "installs": 219728,
+    "pinnedRef": "172f2757f0bf8ae93887b7fda46596ac95dd4f9d",
+    "installs": 220583,
     "official": false,
     "compatibility": [
       "codex",
@@ -832,10 +832,10 @@
     "name": "hyperframes-cli",
     "description": "Use the HyperFrames CLI development loop: init, add, catalog, capture, lint, check, snapshot, compare, grade-compare, preview, play, present, beats, keyframes, single or batch render, publish, cloud, cloudrun, feedback, lambda, doctor, browser, info, upgrade, skills, compositions, docs, benchmark, telemetry, transcribe, auth, tts, and remove-background. Also use when diagnosing build or render failures. validate, inspect, and layout are deprecated aliases; use check. Covers local, HeyGen-hosted cloud, AWS Lambda, and Google Cloud Run rendering.",
     "source": "heygen-com/hyperframes",
-    "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/4b9135393e8e4179ab4f7536c69006898cad9a7f/skills/hyperframes-cli",
+    "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/172f2757f0bf8ae93887b7fda46596ac95dd4f9d/skills/hyperframes-cli",
     "skillPath": "skills/hyperframes-cli",
-    "pinnedRef": "4b9135393e8e4179ab4f7536c69006898cad9a7f",
-    "installs": 218866,
+    "pinnedRef": "172f2757f0bf8ae93887b7fda46596ac95dd4f9d",
+    "installs": 219717,
     "official": false,
     "compatibility": [
       "codex",
@@ -865,10 +865,10 @@
     "name": "hyperframes-registry",
     "description": "Install, discover, and wire registry blocks and components into HyperFrames compositions. Use when running hyperframes add or hyperframes catalog, installing one item or every block matching a tag, wiring an installed item into index.html, or working with hyperframes.json. Covers discovery, install locations, block sub-composition wiring, component snippet merging, and authoring a new block or component to contribute upstream (idea → scaffold → validate → PR).",
     "source": "heygen-com/hyperframes",
-    "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/4b9135393e8e4179ab4f7536c69006898cad9a7f/skills/hyperframes-registry",
+    "sourceUrl": "https://github.com/heygen-com/hyperframes/tree/172f2757f0bf8ae93887b7fda46596ac95dd4f9d/skills/hyperframes-registry",
     "skillPath": "skills/hyperframes-registry",
-    "pinnedRef": "4b9135393e8e4179ab4f7536c69006898cad9a7f",
-    "installs": 207953,
+    "pinnedRef": "172f2757f0bf8ae93887b7fda46596ac95dd4f9d",
+    "installs": 208707,
     "official": false,
     "compatibility": [
       "codex",
@@ -899,7 +899,7 @@
     "sourceUrl": "https://github.com/leonxlnx/taste-skill/tree/7b3782a65f89eb53ab67af4ac40b689704e5a876/skills/soft-skill",
     "skillPath": "skills/soft-skill",
     "pinnedRef": "7b3782a65f89eb53ab67af4ac40b689704e5a876",
-    "installs": 204592,
+    "installs": 204806,
     "official": false,
     "compatibility": [
       "codex",
@@ -927,7 +927,7 @@
     "sourceUrl": "https://github.com/leonxlnx/taste-skill/tree/7b3782a65f89eb53ab67af4ac40b689704e5a876/skills/redesign-skill",
     "skillPath": "skills/redesign-skill",
     "pinnedRef": "7b3782a65f89eb53ab67af4ac40b689704e5a876",
-    "installs": 201354,
+    "installs": 201568,
     "official": false,
     "compatibility": [
       "codex",
@@ -957,7 +957,7 @@
     "sourceUrl": "https://github.com/pbakaus/impeccable/tree/8259c28209b92792005cec14dad573df39f68eaf/.pi/skills/impeccable",
     "skillPath": ".pi/skills/impeccable",
     "pinnedRef": "8259c28209b92792005cec14dad573df39f68eaf",
-    "installs": 195762,
+    "installs": 195854,
     "official": false,
     "compatibility": [
       "codex",
@@ -990,7 +990,7 @@
     "sourceUrl": "https://github.com/obra/superpowers/tree/d884ae04edebef577e82ff7c4e143debd0bbec99/skills/systematic-debugging",
     "skillPath": "skills/systematic-debugging",
     "pinnedRef": "d884ae04edebef577e82ff7c4e143debd0bbec99",
-    "installs": 189277,
+    "installs": 189352,
     "official": false,
     "compatibility": [
       "codex",
@@ -1020,7 +1020,7 @@
     "sourceUrl": "https://github.com/obra/superpowers/tree/d884ae04edebef577e82ff7c4e143debd0bbec99/skills/writing-plans",
     "skillPath": "skills/writing-plans",
     "pinnedRef": "d884ae04edebef577e82ff7c4e143debd0bbec99",
-    "installs": 187067,
+    "installs": 187136,
     "official": false,
     "compatibility": [
       "codex",
@@ -1050,7 +1050,7 @@
     "sourceUrl": "https://github.com/anthropics/skills/tree/9d2f1ae187231d8199c64b5b762e1bdf2244733d/skills/pptx",
     "skillPath": "skills/pptx",
     "pinnedRef": "9d2f1ae187231d8199c64b5b762e1bdf2244733d",
-    "installs": 177722,
+    "installs": 177773,
     "official": true,
     "compatibility": [
       "codex",
@@ -1080,7 +1080,7 @@
     "sourceUrl": "https://github.com/101-skills/skills/tree/fbe0aa4ac8f4be13cbcff551bbbc80554e8eb31f/tools/video/ai-video-generation",
     "skillPath": "tools/video/ai-video-generation",
     "pinnedRef": "fbe0aa4ac8f4be13cbcff551bbbc80554e8eb31f",
-    "installs": 175560,
+    "installs": 177286,
     "official": false,
     "compatibility": [
       "codex",
@@ -1112,7 +1112,7 @@
     "sourceUrl": "https://github.com/101-skills/skills/tree/fbe0aa4ac8f4be13cbcff551bbbc80554e8eb31f/tools/image/ai-image-generation",
     "skillPath": "tools/image/ai-image-generation",
     "pinnedRef": "fbe0aa4ac8f4be13cbcff551bbbc80554e8eb31f",
-    "installs": 175130,
+    "installs": 176852,
     "official": false,
     "compatibility": [
       "codex",
@@ -1145,7 +1145,7 @@
     "sourceUrl": "https://github.com/101-skills/skills/tree/fbe0aa4ac8f4be13cbcff551bbbc80554e8eb31f/tools/video/ai-avatar-video",
     "skillPath": "tools/video/ai-avatar-video",
     "pinnedRef": "fbe0aa4ac8f4be13cbcff551bbbc80554e8eb31f",
-    "installs": 175095,
+    "installs": 176817,
     "official": false,
     "compatibility": [
       "codex",
@@ -1178,7 +1178,7 @@
     "sourceUrl": "https://github.com/supabase/agent-skills/tree/1ad9aaeb49caafd9e95c0a91116f71890eebbc53/skills/supabase",
     "skillPath": "skills/supabase",
     "pinnedRef": "1ad9aaeb49caafd9e95c0a91116f71890eebbc53",
-    "installs": 169681,
+    "installs": 169822,
     "official": true,
     "compatibility": [
       "codex",
@@ -1209,7 +1209,7 @@
     "sourceUrl": "https://github.com/coreyhaines31/marketingskills/tree/67264763cb107d61749f418d081c56e5bcbc0209/skills/seo-audit",
     "skillPath": "skills/seo-audit",
     "pinnedRef": "67264763cb107d61749f418d081c56e5bcbc0209",
-    "installs": 162998,
+    "installs": 163082,
     "official": false,
     "compatibility": [
       "codex",
@@ -1240,7 +1240,7 @@
     "sourceUrl": "https://github.com/coreyhaines31/marketingskills/tree/67264763cb107d61749f418d081c56e5bcbc0209/skills/copywriting",
     "skillPath": "skills/copywriting",
     "pinnedRef": "67264763cb107d61749f418d081c56e5bcbc0209",
-    "installs": 153156,
+    "installs": 153238,
     "official": false,
     "compatibility": [
       "codex",
@@ -1270,7 +1270,7 @@
     "sourceUrl": "https://github.com/emilkowalski/skills/tree/6bf24434f7730ad169077756cf9c7cd7bd675fc6/skills/emil-design-eng",
     "skillPath": "skills/emil-design-eng",
     "pinnedRef": "6bf24434f7730ad169077756cf9c7cd7bd675fc6",
-    "installs": 142257,
+    "installs": 142465,
     "official": false,
     "compatibility": [
       "codex",
@@ -1382,7 +1382,7 @@
     "sourceUrl": "https://github.com/lllllllama/rigorpilot-skills/tree/56bc41c40beabc42f5628f06bb2634a5196071f5/skills/ai-research-explore",
     "skillPath": "skills/ai-research-explore",
     "pinnedRef": "56bc41c40beabc42f5628f06bb2634a5196071f5",
-    "installs": 136353,
+    "installs": 136850,
     "official": false,
     "compatibility": [
       "codex",
@@ -1410,7 +1410,7 @@
     "sourceUrl": "https://github.com/lllllllama/rigorpilot-skills/tree/56bc41c40beabc42f5628f06bb2634a5196071f5/skills/analyze-project",
     "skillPath": "skills/analyze-project",
     "pinnedRef": "56bc41c40beabc42f5628f06bb2634a5196071f5",
-    "installs": 136300,
+    "installs": 136797,
     "official": false,
     "compatibility": [
       "codex",
@@ -1438,7 +1438,7 @@
     "sourceUrl": "https://github.com/lllllllama/rigorpilot-skills/tree/56bc41c40beabc42f5628f06bb2634a5196071f5/skills/ai-research-reproduction",
     "skillPath": "skills/ai-research-reproduction",
     "pinnedRef": "56bc41c40beabc42f5628f06bb2634a5196071f5",
-    "installs": 136090,
+    "installs": 136587,
     "official": false,
     "compatibility": [
       "codex",
@@ -1468,7 +1468,7 @@
     "sourceUrl": "https://github.com/arvindrk/extract-design-system/tree/1873741ba8dea755e35e6e15134f7918cd58e036/skills/extract-design-system",
     "skillPath": "skills/extract-design-system",
     "pinnedRef": "1873741ba8dea755e35e6e15134f7918cd58e036",
-    "installs": 125489,
+    "installs": 125491,
     "official": false,
     "compatibility": [
       "codex",
@@ -1498,7 +1498,7 @@
     "sourceUrl": "https://github.com/coreyhaines31/marketingskills/tree/67264763cb107d61749f418d081c56e5bcbc0209/skills/marketing-psychology",
     "skillPath": "skills/marketing-psychology",
     "pinnedRef": "67264763cb107d61749f418d081c56e5bcbc0209",
-    "installs": 112355,
+    "installs": 112417,
     "official": false,
     "compatibility": [
       "codex",
@@ -1529,7 +1529,7 @@
     "sourceUrl": "https://github.com/firebase/agent-skills/tree/538130c39402a40d9c2586ede87def5914641a33/skills/firebase-basics",
     "skillPath": "skills/firebase-basics",
     "pinnedRef": "538130c39402a40d9c2586ede87def5914641a33",
-    "installs": 107790,
+    "installs": 107854,
     "official": true,
     "compatibility": [
       "codex",
@@ -1560,7 +1560,7 @@
     "sourceUrl": "https://github.com/firebase/agent-skills/tree/538130c39402a40d9c2586ede87def5914641a33/skills/firebase-auth-basics",
     "skillPath": "skills/firebase-auth-basics",
     "pinnedRef": "538130c39402a40d9c2586ede87def5914641a33",
-    "installs": 106940,
+    "installs": 107001,
     "official": true,
     "compatibility": [
       "codex",
@@ -1593,7 +1593,7 @@
     "sourceUrl": "https://github.com/firebase/agent-skills/tree/538130c39402a40d9c2586ede87def5914641a33/skills/firebase-hosting-basics",
     "skillPath": "skills/firebase-hosting-basics",
     "pinnedRef": "538130c39402a40d9c2586ede87def5914641a33",
-    "installs": 104434,
+    "installs": 104495,
     "official": true,
     "compatibility": [
       "codex",
@@ -1624,7 +1624,7 @@
     "sourceUrl": "https://github.com/browser-act/skills/tree/51daea1532eff83baeb1d6e7f1f54a424a5536a9/browser-act",
     "skillPath": "browser-act",
     "pinnedRef": "51daea1532eff83baeb1d6e7f1f54a424a5536a9",
-    "installs": 97787,
+    "installs": 98057,
     "official": false,
     "compatibility": [
       "codex",
@@ -1656,7 +1656,7 @@
     "sourceUrl": "https://github.com/firecrawl/cli/tree/5cf5c926d35fc114dc7579b9dbad09811fd42335/skills/firecrawl-cli",
     "skillPath": "skills/firecrawl-cli",
     "pinnedRef": "5cf5c926d35fc114dc7579b9dbad09811fd42335",
-    "installs": 92560,
+    "installs": 92586,
     "official": true,
     "compatibility": [
       "codex",
@@ -1689,7 +1689,7 @@
     "sourceUrl": "https://github.com/microsoft/playwright-cli/tree/eee5a185c98e6b04d88f580d45a854e9692ab50b/skills/playwright-cli",
     "skillPath": "skills/playwright-cli",
     "pinnedRef": "eee5a185c98e6b04d88f580d45a854e9692ab50b",
-    "installs": 88413,
+    "installs": 88509,
     "official": true,
     "compatibility": [
       "codex",
@@ -1722,7 +1722,7 @@
     "sourceUrl": "https://github.com/higgsfield-ai/skills/tree/9ab6483d45ebead2c0cf7597ae96ab3eb605fa34/higgsfield-generate",
     "skillPath": "higgsfield-generate",
     "pinnedRef": "9ab6483d45ebead2c0cf7597ae96ab3eb605fa34",
-    "installs": 88177,
+    "installs": 88255,
     "official": false,
     "compatibility": [
       "codex",
@@ -1755,7 +1755,7 @@
     "sourceUrl": "https://github.com/get-convex/agent-skills/tree/ec1e6baae7d86c7843c22938c75979c016f5c6e9/skills/convex-quickstart",
     "skillPath": "skills/convex-quickstart",
     "pinnedRef": "ec1e6baae7d86c7843c22938c75979c016f5c6e9",
-    "installs": 85864,
+    "installs": 85930,
     "official": false,
     "compatibility": [
       "codex",
@@ -1789,7 +1789,7 @@
     "sourceUrl": "https://github.com/get-convex/agent-skills/tree/ec1e6baae7d86c7843c22938c75979c016f5c6e9/skills/convex-performance-audit",
     "skillPath": "skills/convex-performance-audit",
     "pinnedRef": "ec1e6baae7d86c7843c22938c75979c016f5c6e9",
-    "installs": 85500,
+    "installs": 85566,
     "official": false,
     "compatibility": [
       "codex",
@@ -1820,7 +1820,7 @@
     "sourceUrl": "https://github.com/get-convex/agent-skills/tree/ec1e6baae7d86c7843c22938c75979c016f5c6e9/skills/convex-setup-auth",
     "skillPath": "skills/convex-setup-auth",
     "pinnedRef": "ec1e6baae7d86c7843c22938c75979c016f5c6e9",
-    "installs": 85171,
+    "installs": 85237,
     "official": false,
     "compatibility": [
       "codex",

@@ -7,6 +7,8 @@ import { dirname, posix } from "node:path";
 const OUTPUT = new URL("../src-tauri/src/community_skills.json", import.meta.url);
 const LIMIT = 60;
 const MAX_PER_SOURCE = 3;
+const MAX_FILES_PER_SKILL = 256;
+const MAX_BYTES_PER_SKILL = 5 * 1024 * 1024;
 
 function gh(path, extra = []) {
   let lastError;
@@ -160,7 +162,19 @@ for (const skill of leaderboard) {
     continue;
   }
   const root = posix.dirname(skillPath);
-  const files = repository.tree.filter(entry => entry.type === "blob" && (entry.path === skillPath || entry.path.startsWith(`${root}/`))).map(entry => entry.path.slice(root.length + 1));
+  if (root.startsWith("/") || posix.normalize(root) !== root || root.split("/").includes("..")) {
+    process.stderr.write(`Skipped unsafe path ${source}/${skill.skillId}\n`);
+    continue;
+  }
+  const scopedEntries = repository.tree.filter(entry => entry.path === skillPath || entry.path.startsWith(`${root}/`));
+  const unsafeEntry = scopedEntries.some(entry => entry.mode === "120000" || !["blob", "tree"].includes(entry.type));
+  const fileEntries = scopedEntries.filter(entry => entry.type === "blob");
+  const totalBytes = fileEntries.reduce((sum, entry) => sum + (entry.size ?? 0), 0);
+  if (unsafeEntry || fileEntries.length > MAX_FILES_PER_SKILL || totalBytes > MAX_BYTES_PER_SKILL) {
+    process.stderr.write(`Skipped unsafe or oversized skill ${source}/${skill.skillId}\n`);
+    continue;
+  }
+  const files = fileEntries.map(entry => entry.path.slice(root.length + 1));
   const classification = classify(skill, content, files);
   output.push({
     id: `${source}/${skill.skillId}`,

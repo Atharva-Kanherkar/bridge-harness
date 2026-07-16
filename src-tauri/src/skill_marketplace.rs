@@ -799,6 +799,9 @@ mod tests {
                 .pinned_ref
                 .chars()
                 .all(|value| value.is_ascii_hexdigit())));
+        assert!(entries.iter().all(|entry| entry.file_count <= 256
+            && !entry.skill_path.starts_with('/')
+            && !entry.skill_path.split('/').any(|part| part == "..")));
         assert!(entries
             .iter()
             .all(|entry| entry.source.split_once('/').is_some()
