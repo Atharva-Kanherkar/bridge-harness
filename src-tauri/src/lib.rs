@@ -9,11 +9,13 @@ mod credential_broker;
 mod delegation;
 mod git;
 mod handoff;
+pub mod learning_router;
 mod model;
 mod marketplace;
 mod orchestrator;
 mod policy;
 pub mod policy_replay;
+pub mod router_replay;
 mod policy_coordinator;
 mod restoration;
 mod secret_interception;
@@ -204,6 +206,25 @@ fn get_session_forest(
     state: State<AppState>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     session_forest_snapshot(&state.db.lock().unwrap(), &session_id)
+}
+
+#[tauri::command]
+fn get_router_preferences(
+    workspace_id: String,
+    state: State<AppState>,
+) -> Result<learning_router::RouterPreferences, BridgeError> {
+    learning_router::load_preferences(&state.db.lock().unwrap(), &workspace_id)
+}
+
+#[tauri::command]
+fn update_router_preferences(
+    workspace_id: String,
+    preferences: learning_router::RouterPreferences,
+    state: State<AppState>,
+) -> Result<learning_router::RouterPreferences, BridgeError> {
+    let db = state.db.lock().unwrap();
+    learning_router::save_preferences(&db, &workspace_id, &preferences)?;
+    learning_router::load_preferences(&db, &workspace_id)
 }
 
 #[tauri::command]
@@ -1682,6 +1703,7 @@ fn reserve_worker_launch_outcome(
     directive: &delegation::DelegationRequest,
     actual_model: &str,
     queue_on_block: bool,
+    router_decision_id: Option<&str>,
 ) -> Result<WorkerReservationOutcome, BridgeError> {
     let route = policy_coordinator::PolicyCoordinator::decide_worker_route(
         db,
@@ -1697,6 +1719,9 @@ fn reserve_worker_launch_outcome(
         branch,
         outcome,
     } = route;
+    if let Some(decision_id) = router_decision_id {
+        learning_router::record_policy_result(db, decision_id, &outcome)?;
+    }
     let handoff = handoff::assess(db, parent_session_id, &directive.runtime_harness())?;
     if queue_on_block && handoff.cross_harness && !handoff.at_phase_boundary {
         worker_pool::WorkerPool::enqueue(
@@ -1882,6 +1907,7 @@ fn reserve_worker_launch(
         directive,
         actual_model,
         queue_on_block,
+        None,
     )? {
         WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
         WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
@@ -1896,6 +1922,31 @@ fn launch_worker_outcome(
     queue_on_block: bool,
 ) -> WorkerLaunchOutcome {
     let state = app.state::<AppState>();
+    let routed = {
+        let db = state.db.lock().unwrap();
+        learning_router::route(
+            &db,
+            parent_session_id,
+            turn_id,
+            directive,
+            &state.adapter_registry.descriptors(),
+        )
+    };
+    let routed = match routed {
+        Ok(routed) => routed,
+        Err(error) => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "router",
+                "router.no_eligible_route",
+                parent_session_id,
+                &error.to_string(),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
+    };
+    let directive = &routed.request;
     let harness = directive.runtime_harness();
     let resolution = match state.adapter_registry.resolve_model(
         &harness,
@@ -1905,6 +1956,11 @@ fn launch_worker_outcome(
         Ok(resolution) => resolution,
         Err(error) => {
             let db = state.db.lock().unwrap();
+            let _ = learning_router::record_route_status(
+                &db,
+                &routed.decision.id,
+                "model_resolution_failed",
+            );
             let _ = store::event(
                 &db,
                 "capability",
@@ -1927,20 +1983,36 @@ fn launch_worker_outcome(
             directive,
             &resolution.actual_model,
             queue_on_block,
+            Some(&routed.decision.id),
         )
     };
     let mut reservation = match reservation {
         Ok(WorkerReservationOutcome::Reserved(reservation)) => reservation,
         Ok(WorkerReservationOutcome::Queued) => {
+            let _ = learning_router::record_route_status(
+                &state.db.lock().unwrap(),
+                &routed.decision.id,
+                "queued",
+            );
             let _ = app.emit("state-changed", ());
             return WorkerLaunchOutcome::Queued;
         }
         Ok(WorkerReservationOutcome::Blocked) => {
+            let _ = learning_router::record_route_status(
+                &state.db.lock().unwrap(),
+                &routed.decision.id,
+                "policy_blocked",
+            );
             let _ = app.emit("state-changed", ());
             return WorkerLaunchOutcome::Failed;
         }
         Err(error) => {
             let db = state.db.lock().unwrap();
+            let _ = learning_router::record_route_status(
+                &db,
+                &routed.decision.id,
+                "policy_failed",
+            );
             let _ = store::event(
                 &db,
                 "policy",
@@ -1953,6 +2025,24 @@ fn launch_worker_outcome(
             return WorkerLaunchOutcome::Failed;
         }
     };
+    if let Err(error) = learning_router::bind_worker(
+        &state.db.lock().unwrap(),
+        &routed.decision.id,
+        &reservation.session_id,
+    ) {
+        fail_reserved_worker(
+            app,
+            &reservation.session_id,
+            &directive.label(),
+            &format!("Could not bind learning-router outcome: {error}"),
+        );
+        return WorkerLaunchOutcome::Failed;
+    }
+    let _ = learning_router::record_route_status(
+        &state.db.lock().unwrap(),
+        &routed.decision.id,
+        "reserved",
+    );
     let requires_child_worktree = matches!(
         &reservation.outcome.decision,
         policy::RouteDecision::SpawnWorker(spec) if spec.requires_child_worktree
@@ -1984,6 +2074,11 @@ fn launch_worker_outcome(
                 let queued = queue_on_block
                     && worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model).is_ok();
                 let _ = store::event(&db, "worktree", "worker.worktree_queued", parent_session_id, &error.to_string());
+                let _ = learning_router::record_route_status(
+                    &db,
+                    &routed.decision.id,
+                    if queued { "queued" } else { "worktree_failed" },
+                );
                 let _ = app.emit("state-changed", ());
                 return if queued {
                     WorkerLaunchOutcome::Queued
@@ -2075,6 +2170,11 @@ fn launch_worker_outcome(
             );
             if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
                 if runtime.send_turn(&instructions).is_ok() {
+                    let _ = learning_router::record_route_status(
+                        &state.db.lock().unwrap(),
+                        &routed.decision.id,
+                        "launched",
+                    );
                     let _ = app.emit("state-changed", ());
                     return WorkerLaunchOutcome::Launched(reservation.session_id);
                 }
@@ -2388,6 +2488,11 @@ fn launch_worker_outcome(
         return WorkerLaunchOutcome::Failed;
     }
     let _ = app.emit("state-changed", ());
+    let _ = learning_router::record_route_status(
+        &state.db.lock().unwrap(),
+        &routed.decision.id,
+        "launched",
+    );
     WorkerLaunchOutcome::Launched(session_id)
 }
 
@@ -4173,6 +4278,8 @@ pub fn run() {
             marketplace_action,
             get_state,
             get_session_forest,
+            get_router_preferences,
+            update_router_preferences,
             activate_session_entry,
             add_project,
             create_workspace,
@@ -4701,6 +4808,7 @@ mod tests {
             &request,
             "gpt-5.6-terra",
             true,
+            None,
         )
         .unwrap();
         assert!(matches!(second, WorkerReservationOutcome::Queued));
@@ -4733,6 +4841,7 @@ mod tests {
             &request,
             "fable",
             true,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, WorkerReservationOutcome::Queued));

@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { bridgeApi } from "./api";
 
 describe("SQLite-shaped mock observability", () => {
+  it("round-trips workspace learning-router preferences", async () => {
+    const defaults = await bridgeApi.routerPreferences("demo-1");
+    expect(defaults).toMatchObject({ mode: "shadow", minimumPassBps: 6500 });
+    const saved = await bridgeApi.updateRouterPreferences("demo-1", {
+      ...defaults,
+      pinnedHarness: "claude",
+      excludedModels: ["opus"],
+    });
+    expect(saved.pinnedHarness).toBe("claude");
+    expect((await bridgeApi.routerPreferences("demo-1")).excludedModels).toEqual(["opus"]);
+  });
+
   it("replays forks, compaction, queue conflict, restoration and conversation-only rewind", async () => {
     const initial = await bridgeApi.sessionForest("session-1");
     expect(initial.leaves.map(entry => entry.id)).toEqual(["entry-5a", "entry-raw"]);

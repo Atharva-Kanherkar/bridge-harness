@@ -10,6 +10,7 @@ import { ComposerPill } from "./components/ComposerPill";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { TerminalPane } from "./components/TerminalPane";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
+import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MarketplaceScreen } from "./components/MarketplaceScreen";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
@@ -67,7 +68,7 @@ export function App() {
   const [view, setView] = useState<"workspace" | "marketplace">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
-  const [modal, setModal] = useState<"chat" | "workspace" | null>(null);
+  const [modal, setModal] = useState<"chat" | "workspace" | "router" | null>(null);
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
@@ -398,6 +399,7 @@ export function App() {
             </div>}
           </div>
           <div className="ml-auto flex items-center gap-[7px]">
+            {!isDirectChat && workspace && <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setModal("router")} aria-label="Learning router settings"><Settings2 size={14} aria-hidden="true" /></Button>}
             {sessionConnected && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => void endChat()}>{busy ? <LoaderCircle className="animate-spin" size={14} aria-hidden="true" /> : <Square size={13} aria-hidden="true" />} End</Button>}
           </div>
         </div>
@@ -498,6 +500,7 @@ export function App() {
       onClose={() => setModal(null)}
       onSubmit={() => void submitNewWorkspace()}
     />
+    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} onClose={() => setModal(null)} onError={setError} />
   </div>;
 }
 

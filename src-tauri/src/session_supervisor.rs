@@ -1,6 +1,7 @@
 use crate::{
     adapters,
     delegation::{SuggestedNextAction, WorkerEvidence, WorkerResult, WorkerResultStatus, MAX_EVIDENCE_REFERENCES},
+    learning_router,
     model::SessionEntry,
     session_forest::{self, EntryKind},
     worker_lifecycle::{validate_transition, WorkerLifecycleState},
@@ -218,6 +219,7 @@ impl SessionSupervisor {
             "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','worker.result.reported',?1,?2,?3)",
             params![session_id, result.status.as_str(), now],
         )?;
+        learning_router::record_worker_outcome(&transaction, session_id, result)?;
         transaction.commit()?;
         Ok(Some(ReportedWorkerResult {
             parent_session_id,
