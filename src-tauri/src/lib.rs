@@ -7,6 +7,7 @@ mod context;
 mod codex_adapter;
 mod credential_broker;
 mod delegation;
+pub mod completion;
 mod git;
 mod handoff;
 pub mod learning_router;

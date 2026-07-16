@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 13;
+const LATEST_SCHEMA_VERSION: i64 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -234,6 +234,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             11 => migration_11_human_blocked_queue(&transaction)?,
             12 => migration_12_adapter_process_claims(&transaction)?,
             13 => migration_13_learning_router(&transaction)?,
+            14 => migration_14_completion_proof(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -680,6 +681,95 @@ fn migration_13_learning_router(transaction: &Transaction<'_>) -> Result<(), Bri
         );
         CREATE INDEX IF NOT EXISTS idx_router_outcomes_candidate
             ON router_outcomes(candidate,recorded_at);",
+    )?;
+    Ok(())
+}
+
+fn migration_14_completion_proof(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS completion_contracts (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            schema_version INTEGER NOT NULL,
+            acceptance_criteria TEXT NOT NULL,
+            markdown_projection TEXT,
+            markdown_committed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_completion_contracts_session
+            ON completion_contracts(session_id,status,created_at);
+        CREATE TABLE IF NOT EXISTS eval_plans (
+            id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL REFERENCES completion_contracts(id) ON DELETE CASCADE,
+            schema_version INTEGER NOT NULL,
+            risk TEXT NOT NULL,
+            plan TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS eval_attempts (
+            id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES eval_plans(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            repository_head TEXT NOT NULL,
+            dirty_digest TEXT NOT NULL,
+            status TEXT NOT NULL,
+            implementer_family TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_eval_attempts_session
+            ON eval_attempts(session_id,status,started_at);
+        CREATE TABLE IF NOT EXISTS eval_check_runs (
+            id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL REFERENCES eval_attempts(id) ON DELETE CASCADE,
+            check_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            required INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            executor TEXT NOT NULL,
+            command TEXT,
+            verifier_family TEXT,
+            detail TEXT,
+            output_digest TEXT,
+            artifact_refs TEXT NOT NULL DEFAULT '[]',
+            started_at TEXT,
+            completed_at TEXT,
+            UNIQUE(attempt_id,check_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_eval_check_runs_attempt
+            ON eval_check_runs(attempt_id,status,required);
+        CREATE TABLE IF NOT EXISTS eval_findings (
+            id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL REFERENCES eval_attempts(id) ON DELETE CASCADE,
+            check_id TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            affected_paths TEXT NOT NULL DEFAULT '[]',
+            resolved_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS eval_waivers (
+            id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL REFERENCES eval_attempts(id) ON DELETE CASCADE,
+            check_ids TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            granted_by TEXT NOT NULL,
+            repository_head TEXT NOT NULL,
+            dirty_digest TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS proof_bundles (
+            id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL UNIQUE REFERENCES eval_attempts(id) ON DELETE CASCADE,
+            schema_version INTEGER NOT NULL,
+            verdict TEXT NOT NULL,
+            bundle TEXT NOT NULL,
+            bundle_digest TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
     )?;
     Ok(())
 }
