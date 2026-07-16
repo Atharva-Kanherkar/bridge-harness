@@ -6,7 +6,8 @@ describe("SQLite-shaped mock observability", () => {
     const planned = await bridgeApi.createCompletionPlan("session-1", ["User flow works"], ["src/App.tsx"], []);
     expect(planned.markdownCommitted).toBe(false);
     expect(planned.totalRequired).toBeGreaterThan(0);
-    const waived = await bridgeApi.waiveCompletion(planned.attemptId, ["user-journey"], "Browser unavailable");
+    await expect(bridgeApi.waiveCompletion(planned.attemptId, ["user-journey"], "Browser unavailable")).rejects.toThrow("every unresolved required check");
+    const waived = await bridgeApi.waiveCompletion(planned.attemptId, ["scrutiny", "user-journey"], "Browser unavailable");
     expect(waived.verdict).toBe("waived");
     expect(waived.waiverReason).toBe("Browser unavailable");
   });

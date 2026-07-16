@@ -29,6 +29,13 @@ describe("AgentConversation", () => {
     expect(html).toContain(checkStatus);
   });
 
+  it("offers a human waiver only for unresolved nonterminal proof", () => {
+    const open = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} onWaiveCompletion={async () => undefined} events={[]} completion={completion("changes_requested")}/>);
+    expect(open).toContain("Waive unresolved checks");
+    const verified = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} onWaiveCompletion={async () => undefined} events={[]} completion={completion("verified")}/>);
+    expect(verified).not.toContain("Waive unresolved checks");
+  });
+
   it("renders normalized primitives as GUI cards without a terminal surface", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "message.completed", { itemId: "m", role: "assistant", text: "Structured response", status: "completed" }),

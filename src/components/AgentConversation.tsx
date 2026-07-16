@@ -90,7 +90,7 @@ function actionLabel(item: ConversationItem): { label: string; meta?: React.Reac
   return { label: item.title || "Used a tool" };
 }
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -113,7 +113,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10 scrollbar-thin scrollbar-thumb-white/10">
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 sm:gap-8">
-      {completion && <VerificationCard summary={completion}/>}
+      {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
       {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
       {continuationFidelity === "projected_at_boundary" && <div role="status" className="mb-4 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-xs text-muted-foreground">Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
       {continuationFidelity === "projected_mid_turn" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
@@ -128,7 +128,12 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   </ScrollFollow>;
 });
 
-function VerificationCard({ summary }: { summary: CompletionSummary }) {
+function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; onWaive?: (attemptId: string, checkIds: string[], reason: string) => Promise<void> }) {
+  const [waiverOpen, setWaiverOpen] = useState(false);
+  const [waiverReason, setWaiverReason] = useState("");
+  const [waiving, setWaiving] = useState(false);
+  const [waiverError, setWaiverError] = useState<string>();
+  const unresolved = summary.checks.filter(check => check.required && check.status !== "passed");
   const tone = summary.verdict === "verified" ? "border-success/30 bg-success/10 text-success" : summary.verdict === "waived" ? "border-warning/30 bg-warning/10 text-warning" : summary.verdict === "changes_requested" || summary.verdict === "failed" ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-info/30 bg-info/10 text-info";
   const title = summary.verdict === "verified" ? "Verified" : summary.verdict === "waived" ? "Verified with waiver" : summary.verdict === "changes_requested" ? "Changes requested" : summary.verdict === "superseded" ? "Evidence superseded" : summary.verdict === "failed" ? "Verification failed" : "Verifying";
   const statusIcon = (status: string) => status === "passed" ? <Check size={12} className="text-success" aria-hidden="true"/> : status === "failed" ? <X size={12} className="text-destructive" aria-hidden="true"/> : status === "skipped" || status === "blocked" || status === "stale" ? <AlertTriangle size={12} className="text-warning" aria-hidden="true"/> : <Circle size={10} className="text-muted-foreground" aria-hidden="true"/>;
@@ -142,6 +147,14 @@ function VerificationCard({ summary }: { summary: CompletionSummary }) {
       <div className="space-y-1 border-t border-current/10 px-4 py-3">
         {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{check.kind.replace("_", " ")}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-[10.5px]">{check.detail}</p>}</div><span className="text-[10px] uppercase tracking-wide">{check.status}</span></div>)}
         {summary.waiverReason && <p className="mt-2 rounded-md border border-warning/20 bg-warning/5 px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
+        {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
+          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="rounded-md border border-warning/30 px-2.5 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/10">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-warning/20 bg-warning/5 p-2.5">
+            <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
+            <textarea autoFocus value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason" className="w-full resize-none rounded-md border border-border bg-background px-2.5 py-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-warning/50"/>
+            {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
+            <div className="flex gap-2"><button type="submit" disabled={waiving} className="rounded-md bg-warning px-2.5 py-1.5 text-xs font-semibold text-warning-foreground disabled:opacity-50">{waiving ? "Recording…" : `Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</button><button type="button" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground disabled:opacity-50">Cancel</button></div>
+          </form>}
+        </div>}
       </div>
     </details>
   </section>;
