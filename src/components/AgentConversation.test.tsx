@@ -1,10 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentConversation } from "./AgentConversation";
-import type { AgentEvent, Session, SessionEntry } from "../types";
+import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
 
 const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh" };
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({ id, sessionId: "s", sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides });
+const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
 describe("AgentConversation", () => {
   it("shows revision-bound verification without requiring a committed contract file", () => {
@@ -14,6 +15,18 @@ describe("AgentConversation", () => {
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
     expect(html).toContain("skipped");
+  });
+
+  it.each([
+    ["verifying", "Verifying", "pending"],
+    ["changes_requested", "Changes requested", "failed"],
+    ["verified", "Verified", "passed"],
+    ["superseded", "Evidence superseded", "stale"],
+    ["waived", "Verified with waiver", "skipped"],
+  ] as const)("renders %s as a distinct proof state", (verdict, title, checkStatus) => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={completion(verdict)}/>);
+    expect(html).toContain(title);
+    expect(html).toContain(checkStatus);
   });
 
   it("renders normalized primitives as GUI cards without a terminal surface", () => {
