@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 12;
+const LATEST_SCHEMA_VERSION: i64 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -233,6 +233,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             10 => migration_10_continuation_fidelity(&transaction)?,
             11 => migration_11_human_blocked_queue(&transaction)?,
             12 => migration_12_adapter_process_claims(&transaction)?,
+            13 => migration_13_learning_router(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -626,6 +627,61 @@ fn migration_11_human_blocked_queue(transaction: &Transaction<'_>) -> Result<(),
 fn migration_12_adapter_process_claims(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(transaction, "sessions", "adapter_pid", "INTEGER")?;
     add_column_if_missing(transaction, "sessions", "adapter_process_identity", "TEXT")
+}
+
+fn migration_13_learning_router(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS router_preferences (
+            workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+            mode TEXT NOT NULL,
+            preferences TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS router_decisions (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL,
+            task_family TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            manual_override INTEGER NOT NULL,
+            baseline_candidate TEXT,
+            recommended_candidate TEXT,
+            executed_candidate TEXT,
+            decision TEXT NOT NULL,
+            policy_outcome TEXT,
+            route_status TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_router_decisions_workspace
+            ON router_decisions(workspace_id,created_at);
+        CREATE INDEX IF NOT EXISTS idx_router_decisions_turn
+            ON router_decisions(parent_session_id,turn_id);
+        CREATE TABLE IF NOT EXISTS router_assignments (
+            decision_id TEXT PRIMARY KEY REFERENCES router_decisions(id) ON DELETE CASCADE,
+            child_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_router_assignments_child
+            ON router_assignments(child_session_id,status,created_at);
+        CREATE TABLE IF NOT EXISTS router_outcomes (
+            decision_id TEXT PRIMARY KEY REFERENCES router_decisions(id) ON DELETE CASCADE,
+            child_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            candidate TEXT NOT NULL,
+            succeeded INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            runtime_ms INTEGER NOT NULL,
+            normalized_cost INTEGER NOT NULL,
+            retry_count INTEGER NOT NULL,
+            human_intervention INTEGER NOT NULL DEFAULT 0,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_router_outcomes_candidate
+            ON router_outcomes(candidate,recorded_at);",
+    )?;
+    Ok(())
 }
 
 #[derive(Debug)]
