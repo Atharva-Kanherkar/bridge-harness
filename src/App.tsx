@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, Gauge, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, BridgeState, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
@@ -11,10 +11,11 @@ import { SpaceBackground } from "./components/SpaceBackground";
 import { TerminalPane } from "./components/TerminalPane";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { MarketplaceScreen } from "./components/MarketplaceScreen";
+import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { pickGreeting } from "./greetings";
-import { extractUsageSnapshot, formatReset, type UsageProvider, type UsageSnapshot } from "./usage";
+import { buildUsageHistory, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
 import { forestSnapshotKey } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
@@ -78,6 +79,7 @@ export function App() {
   const [forest, setForest] = useState<SessionForestSnapshot>();
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string }[]>([]);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
+  const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
   const pendingWelcomeMessageRef = useRef<string | null>(null);
   const forestKeyRef = useRef("");
@@ -103,7 +105,15 @@ export function App() {
     void bridgeApi.onAgentEvent(queueAgentEvent).then(fn => offAgent = fn);
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
-      if (snapshot && snapshot.windows.length) setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
+      if (!snapshot) return;
+      setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
+      if (snapshot.windows.length) {
+        const usedPercent = Math.max(...snapshot.windows.map(window => window.usedPercent));
+        setUsageSamples(current => ({
+          ...current,
+          [payload.provider]: [...(current[payload.provider] ?? []), { usedPercent, capturedAt: snapshot.capturedAt }].slice(-24),
+        }));
+      }
     }).then(fn => offUsage = fn);
     return () => {
       offState?.(); offAgent?.(); offUsage?.();
@@ -130,6 +140,9 @@ export function App() {
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
+  const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
+  const latestContextSource = session?.contextPercent != null ? session.metricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
@@ -355,7 +368,7 @@ export function App() {
     <SpaceBackground paused={turnActive} />
 
     <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
-      <UsageWidget usage={usageByProvider} />
+      <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>
 
     <BridgeSidebar
@@ -531,95 +544,6 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   const restoration = restorationPresentation(session?.restorationMode ?? "fresh");
   return <aside className="hidden">
   </aside>;
-}
-
-const PROVIDER_LABEL: Record<UsageProvider, string> = { claude: "Claude", codex: "Codex" };
-
-// Monochrome-friendly gradient that brightens as a limit fills up.
-function barTone(used: number): string {
-  if (used >= 90) return "from-foreground/75 to-foreground";
-  if (used >= 70) return "from-foreground/45 to-foreground/85";
-  return "from-foreground/25 to-foreground/55";
-}
-
-function UsageRing({ used, size = 18 }: { used: number; size?: number }) {
-  const clamped = Math.min(100, Math.max(0, used));
-  const radius = 7;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - clamped / 100);
-  const tone = clamped >= 90 ? "text-foreground" : clamped >= 70 ? "text-foreground/85" : "text-foreground/60";
-  return <svg width={size} height={size} viewBox="0 0 18 18" className="shrink-0 -rotate-90" aria-hidden="true">
-    <circle cx={9} cy={9} r={radius} fill="none" strokeWidth={2} stroke="currentColor" className="text-foreground/12" />
-    <circle cx={9} cy={9} r={radius} fill="none" strokeWidth={2} strokeLinecap="round" stroke="currentColor" strokeDasharray={circumference} strokeDashoffset={offset} className={`${tone} transition-[stroke-dashoffset] duration-700 ease-out`} />
-  </svg>;
-}
-
-function UsageBar({ used }: { used: number }) {
-  return <span className="block w-full h-[5px] rounded-full bg-foreground/[0.08] overflow-hidden">
-    <span className={`block h-full rounded-full bg-gradient-to-r ${barTone(used)} transition-[width] duration-700 ease-out`} style={{ width: `${Math.min(100, Math.max(0, used))}%` }} />
-  </span>;
-}
-
-function UsageWidget({ usage }: { usage: Partial<Record<UsageProvider, UsageSnapshot>> }) {
-  const entries = (Object.keys(PROVIDER_LABEL) as UsageProvider[])
-    .map(id => ({ id, snapshot: usage[id] }))
-    .filter((entry): entry is { id: UsageProvider; snapshot: UsageSnapshot } => !!entry.snapshot && entry.snapshot.windows.length > 0);
-  if (!entries.length) {
-    return <div className="flex items-center gap-1.5 h-[28px] px-3 rounded-full border border-white/[0.08] bg-white/[0.04] text-neutral-600 text-[10px] font-mono select-none" title="Subscription usage appears here once the agent reports it.">
-      <Gauge size={11} aria-hidden="true" /><span className="tracking-[0.03em]">Usage</span>
-    </div>;
-  }
-  return <div className="group relative flex items-center h-full">
-    <div className="flex items-center gap-2.5 h-[28px] px-3 rounded-full border border-white/[0.08] bg-white/[0.04] backdrop-blur-md cursor-default select-none transition-colors hover:border-white/[0.12] hover:bg-white/[0.07]">
-      {entries.map((entry, index) => <ProviderChip key={entry.id} label={PROVIDER_LABEL[entry.id]} snapshot={entry.snapshot} divided={index > 0} />)}
-    </div>
-    <div className="absolute right-0 top-full pt-2 z-50 invisible opacity-0 translate-y-1 scale-[0.98] transition-all duration-150 ease-out group-hover:visible group-hover:opacity-100 group-hover:translate-y-0 group-hover:scale-100">
-      <div className="w-[318px] p-4 rounded-2xl border border-foreground/10 bg-popover/70 backdrop-blur-2xl backdrop-saturate-150 shadow-[0_28px_80px_-20px_rgba(0,0,0,0.65)] u-hairline-t">
-        <div className="flex items-center gap-1.5 text-muted-foreground/55 text-[9px] font-semibold tracking-[0.14em] uppercase mb-3">
-          <Gauge size={11} aria-hidden="true" /> Subscription usage
-        </div>
-        {entries.map((entry, index) => <ProviderDetail key={entry.id} label={PROVIDER_LABEL[entry.id]} snapshot={entry.snapshot} divided={index > 0} />)}
-      </div>
-    </div>
-  </div>;
-}
-
-function ProviderChip({ label, snapshot, divided }: { label: string; snapshot: UsageSnapshot; divided: boolean }) {
-  const used = Math.round(Math.max(...snapshot.windows.map(window => window.usedPercent)));
-  const left = Math.max(0, 100 - used);
-  return <>
-    {divided && <span className="w-px h-4 bg-border/70" aria-hidden="true" />}
-    <div className="flex items-center gap-[7px]">
-      <UsageRing used={used} />
-      <div className="flex flex-col leading-none gap-[3px]">
-        <span className="text-[10px] text-foreground font-medium tracking-[0.01em]">{label}</span>
-        <span className="text-[9px] font-mono text-muted-foreground/80 tabular-nums">{left}% left</span>
-      </div>
-    </div>
-  </>;
-}
-
-function ProviderDetail({ label, snapshot, divided }: { label: string; snapshot: UsageSnapshot; divided: boolean }) {
-  const used = Math.round(Math.max(...snapshot.windows.map(window => window.usedPercent)));
-  return <div className={divided ? "mt-3.5 pt-3.5 border-t border-border/70" : ""}>
-    <div className="flex items-center gap-2 mb-2.5">
-      <UsageRing used={used} size={16} />
-      <b className="text-[11.5px] text-foreground font-semibold tracking-[-0.01em]">{label}</b>
-      <span className="ml-auto text-[9px] font-mono text-muted-foreground/70 tabular-nums">{Math.max(0, 100 - used)}% left</span>
-      {snapshot.planType && <span className="px-1.5 py-[1px] rounded-full border border-border/80 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground/70">{snapshot.planType}</span>}
-    </div>
-    <div className="grid gap-2.5">
-      {snapshot.windows.map(window => {
-        const windowUsed = Math.round(window.usedPercent);
-        const reset = window.resetsLabel ?? formatReset(window.resetsInSeconds);
-        return <div key={window.id}>
-          <div className="flex items-baseline justify-between text-[10.5px] mb-1.5"><span className="text-muted-foreground">{window.label}</span><span className="font-mono text-foreground/90 tabular-nums">{windowUsed}%</span></div>
-          <UsageBar used={windowUsed} />
-          {reset && <div className="text-[9.5px] text-muted-foreground/55 mt-1">{reset}</div>}
-        </div>;
-      })}
-    </div>
-  </div>;
 }
 
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="p-[38px_44px] max-w-[780px]"><div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGE STORY</div><h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="mt-6 h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]"><b className="text-success font-medium">+{workspace.additions}</b><b className="text-destructive font-medium">−{workspace.deletions}</b><span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/><small className="text-muted-foreground">{workspace.branch}</small></div><div className="mt-5 flex flex-col gap-2.5">{[78,92,64,85,51,70].map((n,i)=><i key={i} className="block h-[7px] bg-muted rounded-[3px]" style={{width:`${n}%`}}/>)}</div></div>; }
