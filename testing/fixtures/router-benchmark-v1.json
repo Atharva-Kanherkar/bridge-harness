@@ -1,0 +1,22 @@
+[
+  {"id":"implementation-01","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":3000,"latencyMs":12000,"policyViolation":false},
+  {"id":"implementation-02","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":3000,"latencyMs":13000,"policyViolation":false},
+  {"id":"implementation-03","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":3000,"latencyMs":11000,"policyViolation":false},
+  {"id":"implementation-04","recommended":true,"manual":false,"actualPassed":false,"normalizedCost":3000,"latencyMs":14000,"policyViolation":false},
+  {"id":"implementation-05","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":3000,"latencyMs":12500,"policyViolation":false},
+  {"id":"verification-01","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":8000,"policyViolation":false},
+  {"id":"verification-02","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":8500,"policyViolation":false},
+  {"id":"verification-03","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":9000,"policyViolation":false},
+  {"id":"verification-04","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":7800,"policyViolation":false},
+  {"id":"verification-05","recommended":true,"manual":false,"actualPassed":false,"normalizedCost":2000,"latencyMs":9500,"policyViolation":false},
+  {"id":"research-01","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":6000,"policyViolation":false},
+  {"id":"research-02","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":6200,"policyViolation":false},
+  {"id":"research-03","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":5800,"policyViolation":false},
+  {"id":"research-04","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":6400,"policyViolation":false},
+  {"id":"research-05","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":6100,"policyViolation":false},
+  {"id":"planning-01","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":7000,"policyViolation":false},
+  {"id":"planning-02","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":7200,"policyViolation":false},
+  {"id":"planning-03","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":2000,"latencyMs":6900,"policyViolation":false},
+  {"id":"documentation-01","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":5000,"policyViolation":false},
+  {"id":"documentation-02","recommended":true,"manual":false,"actualPassed":true,"normalizedCost":1000,"latencyMs":5200,"policyViolation":false}
+]

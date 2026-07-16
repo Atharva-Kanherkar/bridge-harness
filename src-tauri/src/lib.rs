@@ -15,6 +15,7 @@ mod marketplace;
 mod orchestrator;
 mod policy;
 pub mod policy_replay;
+pub mod router_replay;
 mod policy_coordinator;
 mod restoration;
 mod secret_interception;

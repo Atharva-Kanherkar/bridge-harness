@@ -12,6 +12,28 @@ Human approval pauses dependent queue TTLs. A queued request whose parent or any
 
 Provider processes are not reattached after a Bridge supervisor crash. Each Codex/Claude child runs in its own process group, and its leader PID plus OS process identity are persisted on the session. Startup terminates only an exact identity match, marks active sessions recoverably failed, clears the active turn, and routes workers through typed failed-result reconciliation. A PID identity mismatch is never killed. Restart recovery warns that mid-turn worktree changes may be partial and does not invent a checkpoint.
 
+## Cost-and-quality learning router
+
+Every worker route now records the complete harness/model candidate inventory, reason-coded exclusions, conservative prediction, baseline, recommendation, executed candidate, deterministic policy outcome, route status, and eventual worker outcome. Predictions combine explicit tier priors with durable task-family outcomes for pass probability, latency, normalized quota cost, and retry risk. Sparse history remains visibly prior-weighted; it never turns missing data into certainty.
+
+The router starts in `shadow` mode per workspace. Shadow recommendations are measured while the baseline route continues to execute. Autonomous mode cannot be enabled until the workspace has at least 20 completed shadow outcomes with fewer than 5% no-route/manual selections. Users may pin or exclude harnesses and models, but preferences cannot revive a candidate excluded by availability, tools, platform, permissions, quota, context, risk, or the deterministic capability-unit budget. Explicit harness/model selections are retained and labeled as manual overrides.
+
+Learning selects a candidate before the existing policy gate; it does not replace that gate. Owned-path provenance, approval, depth, concurrency, worktree, retry, and budget rules in Rust still decide whether the selected route may spawn, resume, queue, or run at all. Failed worker results become negative outcome labels, not permission to alter safety policy. Escalation only moves to a strictly higher eligible capability tier and is terminal after `strong`.
+
+Replay recorded candidate snapshots without starting a provider or writing to Bridge's database:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --bin router-replay -- /path/to/bridge.db
+```
+
+Filter one workspace or test new pins, exclusions, and quality floors against historical decisions:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --bin router-replay -- /path/to/bridge.db --workspace WORKSPACE_ID --preferences candidate-router-preferences.json
+```
+
+The report includes recommendation coverage, changed recommendations, shadow alternatives, outcomes, pass rate, latency, normalized cost, retries, human intervention, and policy-violation counts. It is an offline sensitivity report, not a claim of causal model superiority.
+
 Default limits are three workers per user turn, one strong worker, 24 capability units, and one automatic retry. These counters are derived from durable usage-ledger rows keyed by the orchestrator turn. Provider model names are audit data; routing is expressed as `fast`, `standard`, or `strong` capability tiers.
 
 ## Offline policy replay

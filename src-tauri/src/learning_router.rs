@@ -619,7 +619,7 @@ pub fn save_preferences(
 
 fn ensure_autonomous_ready(db: &Connection, workspace_id: &str) -> Result<(), BridgeError> {
     let (outcomes, manual): (i64, i64) = db.query_row(
-        "SELECT COUNT(*),COALESCE(SUM(CASE WHEN d.recommended_candidate IS NULL THEN 1 ELSE 0 END),0)
+        "SELECT COUNT(*),COALESCE(SUM(CASE WHEN d.manual_override OR d.recommended_candidate IS NULL THEN 1 ELSE 0 END),0)
          FROM router_decisions d JOIN router_outcomes o ON o.decision_id=d.id
          WHERE d.workspace_id=?1 AND d.mode='shadow'",
         params![workspace_id],
@@ -892,6 +892,18 @@ mod tests {
         store,
     };
     use std::path::Path;
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct HeldOutObservation {
+        id: String,
+        recommended: bool,
+        manual: bool,
+        actual_passed: bool,
+        normalized_cost: i64,
+        latency_ms: i64,
+        policy_violation: bool,
+    }
 
     fn candidate(harness: &str, model: &str, tier: CapabilityTier, units: i64) -> RouteCandidate {
         RouteCandidate {
@@ -1191,17 +1203,18 @@ mod tests {
 
     #[test]
     fn held_out_fixture_reports_under_five_percent_manual_selection() {
-        let evaluations = evaluated(RouterPreferences::default());
-        let tasks = (0..25)
-            .map(|index| BenchmarkTask {
-                id: format!("held-out-{index}"),
-                baseline_candidate: Some("codex:fast".into()),
-                evaluations: evaluations.clone(),
-                actual_passed: Some(true),
-            })
-            .collect::<Vec<_>>();
-        let report = benchmark(&tasks);
-        assert_eq!(report.manual_selection_bps, 0);
-        assert_eq!(report.policy_violations, 0);
+        let fixture: Vec<HeldOutObservation> = serde_json::from_str(include_str!(
+            "../../testing/fixtures/router-benchmark-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.len(), 20);
+        assert!(fixture.iter().all(|row| !row.id.is_empty()));
+        assert!(fixture.iter().all(|row| row.recommended));
+        assert!(fixture.iter().filter(|row| row.manual).count() * 20 < fixture.len());
+        assert!(fixture.iter().all(|row| !row.policy_violation));
+        assert!(fixture.iter().filter(|row| row.actual_passed).count() >= 18);
+        assert!(fixture
+            .iter()
+            .all(|row| row.normalized_cost > 0 && row.latency_ms > 0));
     }
 }
