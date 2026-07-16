@@ -15,7 +15,7 @@ import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { pickGreeting } from "./greetings";
-import { buildUsageHistory, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
+import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
 import { forestSnapshotKey } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
@@ -108,7 +108,7 @@ export function App() {
       if (!snapshot) return;
       setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
       if (snapshot.windows.length) {
-        const usedPercent = Math.max(...snapshot.windows.map(window => window.usedPercent));
+        const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
         setUsageSamples(current => ({
           ...current,
           [payload.provider]: [...(current[payload.provider] ?? []), { usedPercent, capturedAt: snapshot.capturedAt }].slice(-24),

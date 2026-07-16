@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "./types";
 import type { Session, UsageLedgerRow } from "./types";
-import { buildUsageHistory, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, projectUsageExhaustion, windowLabel } from "./usage";
+import { buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, projectUsageExhaustion, windowLabel } from "./usage";
 
 function event(kind: string, data: Record<string, unknown>, sequence = 1): AgentEvent {
   return { id: sequence, sessionId: "s1", sequence, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data, providerMeta: {}, createdAt: new Date().toISOString() };
@@ -91,6 +91,15 @@ describe("contextPressure", () => {
     expect(contextPressure(60)).toMatchObject({ level: "elevated", percent: 60 });
     expect(contextPressure(75).explanation).toContain("75%");
     expect(contextPressure(90).level).toBe("critical");
+    expect(contextPressure().explanation).toContain("recorded");
+  });
+});
+
+describe("clampPercent", () => {
+  it("clamps provider percentages to the display domain", () => {
+    expect(clampPercent(-5)).toBe(0);
+    expect(clampPercent(42)).toBe(42);
+    expect(clampPercent(105)).toBe(100);
   });
 });
 
@@ -109,7 +118,16 @@ describe("projectUsageExhaustion", () => {
       { usedPercent: 80, capturedAt: "2026-07-16T10:10:00Z" },
     ]);
     expect(projection).toMatchObject({ source: "estimated", hoursRemaining: 0.3 });
-    expect(projection!.explanation).toContain("3 reported samples");
+    expect(projection!.explanation).toContain("3 samples");
+  });
+
+  it("clamps out-of-range samples before calculating the trend", () => {
+    const projection = projectUsageExhaustion([
+      { usedPercent: -100, capturedAt: "2026-07-16T10:00:00Z" },
+      { usedPercent: 25, capturedAt: "2026-07-16T10:05:00Z" },
+      { usedPercent: 50, capturedAt: "2026-07-16T10:10:00Z" },
+    ]);
+    expect(projection?.hoursRemaining).toBe(0.2);
   });
 
   it("does not invent exhaustion for flat or distant trends", () => {

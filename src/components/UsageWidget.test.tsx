@@ -39,6 +39,6 @@ describe("UsageWidget", () => {
     expect(html).toContain("turn-51");
     expect(html).toContain("gpt-5");
     expect(html).toContain("completed");
-    expect(html).toContain("Estimated from 3 reported samples");
+    expect(html).toContain("Estimated from 3 samples");
   });
 });

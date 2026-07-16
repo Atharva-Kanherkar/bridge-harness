@@ -81,6 +81,10 @@ function num(value: unknown): number | undefined {
   return undefined;
 }
 
+export function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, value));
+}
+
 function pick(source: Dict | undefined, keys: string[]): unknown {
   if (!source) return undefined;
   for (const key of keys) if (key in source) return source[key];
@@ -194,9 +198,9 @@ export function extractUsageSnapshot(data: unknown): UsageSnapshot | null {
 /** Explain context health using stable, user-visible thresholds. */
 export function contextPressure(percent?: number): ContextPressure {
   if (percent == null || !Number.isFinite(percent)) {
-    return { level: "unknown", label: "Context unknown", explanation: "No context measurement has been reported for this work unit." };
+    return { level: "unknown", label: "Context unknown", explanation: "No context measurement has been recorded for this work unit." };
   }
-  const clamped = Math.min(100, Math.max(0, percent));
+  const clamped = clampPercent(percent);
   if (clamped >= 90) return { level: "critical", label: "Critical pressure", percent: clamped, explanation: "At least 90% of the context window is occupied; compaction or a fresh work unit is recommended." };
   if (clamped >= 75) return { level: "high", label: "High pressure", percent: clamped, explanation: "At least 75% of the context window is occupied; degradation risk is increasing." };
   if (clamped >= 60) return { level: "elevated", label: "Elevated pressure", percent: clamped, explanation: "At least 60% of the context window is occupied; keep the next handoff concise." };
@@ -207,6 +211,7 @@ export function contextPressure(percent?: number): ContextPressure {
 export function projectUsageExhaustion(samples: UsageRateSample[], horizonHours = 24): UsageProjection | null {
   const ordered = samples
     .filter(sample => Number.isFinite(sample.usedPercent) && Number.isFinite(Date.parse(sample.capturedAt)))
+    .map(sample => ({ ...sample, usedPercent: clampPercent(sample.usedPercent) }))
     .sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt));
   if (ordered.length < 3) return null;
   const first = ordered[0];
@@ -221,7 +226,7 @@ export function projectUsageExhaustion(samples: UsageRateSample[], horizonHours 
   return {
     projectedAt: new Date(Date.parse(last.capturedAt) + hoursRemaining * 3_600_000).toISOString(),
     hoursRemaining: roundedHours,
-    explanation: `Estimated from ${ordered.length} reported samples spanning ${Math.round(elapsedHours * 60)} minutes; current pace reaches 100% in about ${roundedHours}h.`,
+    explanation: `Estimated from ${ordered.length} samples spanning ${Math.round(elapsedHours * 60)} minutes; current pace reaches 100% in about ${roundedHours}h.`,
     source: "estimated",
   };
 }

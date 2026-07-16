@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AlertTriangle, Gauge } from "lucide-react";
-import { contextPressure, formatReset, projectUsageExhaustion, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
+import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
@@ -25,11 +25,11 @@ function SourceBadge({ source }: { source: MetricSource }) {
 
 function highestUse(snapshot?: UsageSnapshot): number | undefined {
   if (!snapshot?.windows.length) return undefined;
-  return Math.min(100, Math.max(0, Math.max(...snapshot.windows.map(window => window.usedPercent))));
+  return clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
 }
 
 function UsageRing({ used }: { used?: number }) {
-  const clamped = used == null ? 0 : Math.min(100, Math.max(0, used));
+  const clamped = used == null ? 0 : clampPercent(used);
   const radius = 7;
   const circumference = 2 * Math.PI * radius;
   return <svg width="18" height="18" viewBox="0 0 18 18" className="shrink-0 -rotate-90" aria-hidden="true">
@@ -39,7 +39,7 @@ function UsageRing({ used }: { used?: number }) {
 }
 
 function UsageBar({ used }: { used: number }) {
-  const clamped = Math.min(100, Math.max(0, used));
+  const clamped = clampPercent(used);
   return <span className="block h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]">
     <span className="block h-full rounded-full bg-gradient-to-r from-neutral-600 to-neutral-200 transition-[width] duration-700 ease-out" style={{ width: `${clamped}%` }} />
   </span>;
@@ -116,7 +116,7 @@ function ProviderDetail({ provider, snapshot, samples }: { provider: { id: Usage
       <span className="ml-auto">{snapshot ? <SourceBadge source={snapshot.source} /> : <span className="text-[9px] text-neutral-600">Limit unknown</span>}</span>
     </div>
     {snapshot?.windows.length ? <div className="mt-2.5 grid gap-2.5">{snapshot.windows.map(window => {
-      const clamped = Math.min(100, Math.max(0, window.usedPercent));
+      const clamped = clampPercent(window.usedPercent);
       const reset = window.resetsLabel ?? formatReset(window.resetsInSeconds);
       return <div key={window.id}>
         <div className="mb-1 flex items-center gap-2 text-[10px]"><span className="text-neutral-500">{window.label}</span><span className="ml-auto font-mono text-neutral-300">{Math.round(clamped)}% used</span><SourceBadge source={window.source} /></div>
