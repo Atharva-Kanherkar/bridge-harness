@@ -6,7 +6,7 @@
 //! before a workspace explicitly enables autonomous selection.
 
 use crate::{
-    delegation::{DelegationRequest, Effort, WorkerResult, WorkerResultStatus},
+    delegation::{DelegationRequest, Effort, WorkerResult, WorkerResultStatus, WorkerRole},
     model::{AdapterDescriptor, CapabilityTier},
     policy::{self, PolicyConfig, RestorationKind},
     BridgeError,
@@ -111,6 +111,7 @@ pub enum CandidateExclusion {
     UserExcludedModel,
     PinMismatch,
     BelowQualityFloor,
+    SameAsImplementer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -460,25 +461,49 @@ pub fn route(
     let candidates = build_candidates(descriptors, request, &availability);
     let histories = load_histories(db, policy::role_name(request.role))?;
     let required_capabilities = vec!["tools".into(), "commands".into()];
-    let evaluations = evaluate(EvaluationInput {
+    let mut evaluations = evaluate(EvaluationInput {
         candidates,
         preferences: preferences.clone(),
         histories,
         required_capabilities,
         remaining_capability_units: remaining,
     });
+    let implementer_family: Option<String> = if request.role == WorkerRole::Verification {
+        db.query_row(
+            "SELECT implementer_family FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested') ORDER BY started_at DESC LIMIT 1",
+            params![parent_session_id],
+            |row| row.get(0),
+        ).optional()?.flatten()
+    } else {
+        None
+    };
+    if let Some(implementer_family) = implementer_family.as_deref() {
+        for evaluation in &mut evaluations {
+            if evaluation.candidate.harness.eq_ignore_ascii_case(implementer_family) {
+                evaluation.exclusions.push(CandidateExclusion::SameAsImplementer);
+                evaluation.exclusions.sort();
+                evaluation.exclusions.dedup();
+            }
+        }
+    }
     let baseline = baseline_key(descriptors, request);
     let recommendation = evaluations
         .iter()
         .find(|candidate| candidate.eligible())
         .map(|candidate| candidate.candidate.key());
     let manual_override = request.harness.is_some() || request.model.is_some();
-    let executed = if manual_override || preferences.mode != RouterMode::Autonomous {
+    let independent_verification = implementer_family.is_some();
+    let executed = if independent_verification {
+        recommendation.clone()
+    } else if manual_override || preferences.mode != RouterMode::Autonomous {
         baseline.clone()
     } else {
         recommendation.clone()
     };
-    let explanation = if manual_override {
+    let explanation = if independent_verification {
+        recommendation.as_ref().map(|candidate| format!("Independent verification requires a different harness family; selected {candidate}"))
+            .unwrap_or_else(|| "No different-family verifier satisfies the deterministic route constraints".into())
+    } else if manual_override {
         "Manual harness/model override retained and recorded".to_owned()
     } else {
         match preferences.mode {
@@ -522,9 +547,9 @@ pub fn route(
         routed.model = Some(selected.candidate.model.clone());
         routed.capability_tier = selected.candidate.tier;
         routed.effort = selected.candidate.effort;
-    } else if preferences.mode == RouterMode::Autonomous {
+    } else if preferences.mode == RouterMode::Autonomous || independent_verification {
         return Err(BridgeError::Invalid(
-            "learning router found no eligible autonomous route".into(),
+            "learning router found no eligible route under the required constraints".into(),
         ));
     }
     Ok(RoutedDelegation {
@@ -1065,6 +1090,21 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn active_completion_gate_forces_a_different_verifier_family_even_in_shadow_mode() {
+        let db = routing_db();
+        db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES('c','w','parent',1,'[]',0,'active','now','now')", []).unwrap();
+        db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('p','c',1,'high','{}','now')", []).unwrap();
+        db.execute("INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES('a','p','parent','head','dirty','/tmp','verifying','codex','now')", []).unwrap();
+        let mut verification = request();
+        verification.role = WorkerRole::Verification;
+        let routed = route(&db, "parent", "turn", &verification, &descriptors()).unwrap();
+        assert_eq!(routed.request.runtime_harness(), "claude");
+        assert_eq!(routed.decision.executed_candidate.as_deref(), Some("claude:claude-standard"));
+        let codex = routed.decision.candidates.iter().find(|candidate| candidate.candidate.harness == "codex").unwrap();
+        assert!(codex.exclusions.contains(&CandidateExclusion::SameAsImplementer));
     }
 
     #[test]

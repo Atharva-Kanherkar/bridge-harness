@@ -3088,25 +3088,30 @@ fn report_to_parent(
     let Some(report) = report else {
         return;
     };
-    if let Err(error) = completion::create_from_worker_result(
+    let completion = match completion::create_from_worker_result(
         &state.db.lock().unwrap(),
         child_session_id,
         result,
     ) {
-        let _ = store::event(
-            &state.db.lock().unwrap(),
-            "completion",
-            "completion.plan_failed",
-            child_session_id,
-            &error.to_string(),
-        );
-    }
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = store::event(
+                &state.db.lock().unwrap(),
+                "completion",
+                "completion.plan_failed",
+                child_session_id,
+                &error.to_string(),
+            );
+            None
+        }
+    };
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-evidence",
         "evidenceId": report.evidence_id,
         "status": result.status.as_str(),
         "summary": result.summary,
-        "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical."
+        "completion": completion,
+        "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
     })
     .to_string();
     let delivered = match state

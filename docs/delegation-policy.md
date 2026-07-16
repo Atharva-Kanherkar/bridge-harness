@@ -67,4 +67,14 @@ The policy gate is deterministic about structure: topology, budgets, tiers, retr
 
 Workers return a typed result with status, summary, changed files, verification, decisions, risks, remaining work, and suggested next action. Malformed output gets one repair attempt in the same session. Cancellation is terminal: Bridge interrupts the turn, releases its lease, reports cancellation to the parent, and never retries it automatically.
 
+## Completion proof
+
+A completed implementation worker opens a private, durable completion contract from its typed acceptance criteria. The contract, deterministic eval plan, check runs, findings, waivers, and proof bundle live in SQLite; exporting or committing a Markdown projection is optional. This keeps the useful review discipline without adding a contract file to every change.
+
+Bridge runs implementation and verification sequentially. Deterministic build, test, lint, and repository checks remain continuous, while model scrutiny and user-journey checks run at meaningful completion boundaries. An active completion gate hard-excludes the implementation harness family from verification routing even while the learning router is in shadow mode. A skill or plugin can register a verifier manifest describing triggers, checks, required tools, cross-family requirements, and evidence, but it cannot grant itself capabilities or mint passing evidence.
+
+Every attempt records the exact implementation worktree path, Git HEAD, and dirty-tree digest. A revision change supersedes the attempt instead of reusing stale evidence. Required failures and skips remain visible in the inline proof card. `verified`, `changes requested`, and `verified with waiver` are distinct states; a waiver is scoped to named unresolved checks and the exact revision.
+
+The frozen completion benchmark in `testing/fixtures/completion-benchmark-v1.json` compares proof-gated completion with a baseline that accepts worker “done” claims. Its regression test requires fewer false completions and improved verified quality, normalized cost per accepted task, latency, and human intervention. These labeled fixtures test the measurement contract; production claims should be based on persisted proof and outcome data rather than the fixture alone.
+
 Each accepted worker result is a canonical `worker.result` entry on the parent's active session branch. Its entry ID is the evidence ID. New sibling delegations include up to the 16 most recent active-branch evidence records by default; an orchestrator may select an ordered subset by ID, but Bridge resolves the exact typed payload from SQLite and rejects missing, foreign-session, abandoned-branch, duplicate, or malformed references before provider startup. The parent runtime receives only a routing notice with the evidence ID, status, and summary. Orchestrator prose is not the record, and raw worker transcripts never enter a context packet.

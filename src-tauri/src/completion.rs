@@ -429,6 +429,60 @@ pub struct CompletionSummary {
     pub waiver_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionBenchmarkCase {
+    pub id: String,
+    pub baseline_claimed_done: bool,
+    pub proof_verdict: CompletionVerdict,
+    pub actual_accepted: bool,
+    pub baseline_normalized_cost: i64,
+    pub proof_normalized_cost: i64,
+    pub baseline_latency_ms: i64,
+    pub proof_latency_ms: i64,
+    pub baseline_human_interventions: i64,
+    pub proof_human_interventions: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionBenchmarkReport {
+    pub cases: usize,
+    pub baseline_false_done: usize,
+    pub proof_false_done: usize,
+    pub baseline_verified_quality_bps: u16,
+    pub proof_verified_quality_bps: u16,
+    pub baseline_cost_per_accepted: i64,
+    pub proof_cost_per_accepted: i64,
+    pub baseline_average_latency_ms: i64,
+    pub proof_average_latency_ms: i64,
+    pub baseline_human_interventions: i64,
+    pub proof_human_interventions: i64,
+}
+
+pub fn benchmark(cases: &[CompletionBenchmarkCase]) -> CompletionBenchmarkReport {
+    let proof_claimed_done = |case: &&CompletionBenchmarkCase| case.proof_verdict == CompletionVerdict::Verified;
+    let baseline_claims = cases.iter().filter(|case| case.baseline_claimed_done).count();
+    let proof_claims = cases.iter().filter(proof_claimed_done).count();
+    let baseline_correct = cases.iter().filter(|case| case.baseline_claimed_done && case.actual_accepted).count();
+    let proof_correct = cases.iter().filter(|case| case.proof_verdict == CompletionVerdict::Verified && case.actual_accepted).count();
+    let accepted = cases.iter().filter(|case| case.actual_accepted).count().max(1) as i64;
+    let count = cases.len().max(1) as i64;
+    CompletionBenchmarkReport {
+        cases: cases.len(),
+        baseline_false_done: cases.iter().filter(|case| case.baseline_claimed_done && !case.actual_accepted).count(),
+        proof_false_done: cases.iter().filter(|case| case.proof_verdict == CompletionVerdict::Verified && !case.actual_accepted).count(),
+        baseline_verified_quality_bps: if baseline_claims == 0 { 0 } else { (baseline_correct * 10_000 / baseline_claims) as u16 },
+        proof_verified_quality_bps: if proof_claims == 0 { 0 } else { (proof_correct * 10_000 / proof_claims) as u16 },
+        baseline_cost_per_accepted: cases.iter().map(|case| case.baseline_normalized_cost).sum::<i64>() / accepted,
+        proof_cost_per_accepted: cases.iter().map(|case| case.proof_normalized_cost).sum::<i64>() / accepted,
+        baseline_average_latency_ms: cases.iter().map(|case| case.baseline_latency_ms).sum::<i64>() / count,
+        proof_average_latency_ms: cases.iter().map(|case| case.proof_latency_ms).sum::<i64>() / count,
+        baseline_human_interventions: cases.iter().map(|case| case.baseline_human_interventions).sum(),
+        proof_human_interventions: cases.iter().map(|case| case.proof_human_interventions).sum(),
+    }
+}
+
 pub fn compact_packet(
     attempt_id: &str,
     repository: RepositoryStamp,
@@ -1006,5 +1060,18 @@ mod tests {
         let packet = compact_packet("a", RepositoryStamp { head: "h".into(), dirty_digest: "d".into() }, &["Router saves settings".into(), "Unrelated billing works".into()], &["src/router/settings.rs".into()], &[], &(0..30).map(|index| format!("finding {index}")).collect::<Vec<_>>());
         assert_eq!(packet.relevant_criteria, vec!["Router saves settings"]);
         assert_eq!(packet.unresolved_findings.len(), 16);
+    }
+
+    #[test]
+    fn held_out_completion_fixture_improves_verified_quality_and_rework_metrics() {
+        let cases: Vec<CompletionBenchmarkCase> = serde_json::from_str(include_str!("../../testing/fixtures/completion-benchmark-v1.json")).unwrap();
+        let report = benchmark(&cases);
+        assert_eq!(report.cases, 10);
+        assert_eq!(report.baseline_false_done, 3);
+        assert_eq!(report.proof_false_done, 0);
+        assert!(report.proof_verified_quality_bps > report.baseline_verified_quality_bps);
+        assert!(report.proof_cost_per_accepted < report.baseline_cost_per_accepted);
+        assert!(report.proof_average_latency_ms < report.baseline_average_latency_ms);
+        assert!(report.proof_human_interventions < report.baseline_human_interventions);
     }
 }
