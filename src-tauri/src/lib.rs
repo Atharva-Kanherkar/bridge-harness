@@ -19,6 +19,7 @@ mod orchestrator;
 mod policy;
 pub mod policy_replay;
 pub mod router_replay;
+pub mod routing_policy;
 mod policy_coordinator;
 mod restoration;
 mod secret_interception;
@@ -498,6 +499,14 @@ async fn run_learning(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
+    if matches!(
+        trigger_kind,
+        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude
+    ) {
+        return Err(BridgeError::Invalid(
+            "external learning triggers must use a registered narrow command".into(),
+        ));
+    }
     let run = learning_job::run_learning(&state.db.lock().unwrap(), trigger_kind)?;
     let _ = app.emit("learning-job-changed", &run);
     Ok(run)
@@ -527,14 +536,58 @@ async fn register_learning_trigger(
     kind: learning_job::LearningTriggerKind,
     registration_id: String,
     credential_ref: Option<String>,
+    expires_at: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
-    learning_job::register_trigger(
+    learning_job::register_trigger_with_expiry(
         &state.db.lock().unwrap(),
         kind,
         &registration_id,
         credential_ref.as_deref(),
+        expires_at.as_deref(),
     )
+}
+
+#[tauri::command]
+async fn get_learning_trigger_instructions(
+    kind: learning_job::LearningTriggerKind,
+    database_path: String,
+    registration_id: String,
+) -> Result<String, BridgeError> {
+    learning_job::trigger_instructions(kind, &database_path, &registration_id)
+}
+
+#[tauri::command]
+async fn enable_learning_trigger(
+    kind: learning_job::LearningTriggerKind,
+    registration_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), BridgeError> {
+    learning_job::enable_trigger(&state.db.lock().unwrap(), kind, &registration_id)
+}
+
+#[tauri::command]
+async fn approve_learning_run(
+    run_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningRun, BridgeError> {
+    let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
+    let _ = app.emit("learning-job-changed", &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn rollback_routing_policy(
+    target_version: i64,
+    explanation: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningState, BridgeError> {
+    learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
+    let result = learning_job::learning_state(&state.db.lock().unwrap())?;
+    let _ = app.emit("learning-job-changed", &result);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2286,6 +2339,27 @@ fn launch_worker_outcome(
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
+        if let Err(error) = learning_router::record_actual_execution(
+            &db,
+            &routed.decision.id,
+            &harness,
+            &resolution.actual_model,
+            directive.effort,
+        ) {
+            let _ = learning_router::record_route_status(
+                &db,
+                &routed.decision.id,
+                "actual_resolution_record_failed",
+            );
+            let _ = store::event(
+                &db,
+                "router",
+                "router.actual_resolution_record_failed",
+                parent_session_id,
+                &error.to_string(),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
         reserve_worker_launch_outcome(
             &db,
             parent_session_id,
@@ -4697,6 +4771,10 @@ pub fn run() {
             cancel_learning_run,
             update_learning_schedule,
             register_learning_trigger,
+            get_learning_trigger_instructions,
+            enable_learning_trigger,
+            approve_learning_run,
+            rollback_routing_policy,
             activate_session_entry,
             add_project,
             create_workspace,

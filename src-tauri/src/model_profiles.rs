@@ -165,6 +165,8 @@ pub struct ResolvedProfile {
     pub model: String,
     pub tier: CapabilityTier,
     pub effort: Effort,
+    pub pinned: bool,
+    pub learning_enabled: bool,
     pub used_fallback: bool,
 }
 
@@ -487,6 +489,8 @@ pub fn resolve_profile(
                 model: model.id.clone(),
                 tier: model.tier,
                 effort: profile.effort,
+                pinned: profile.pinned,
+                learning_enabled: profile.learning_enabled,
                 used_fallback: current != purpose,
             }));
         }
@@ -500,6 +504,8 @@ pub fn resolve_profile(
             model: model.id.clone(),
             tier: model.tier,
             effort: purpose.effort(),
+            pinned: false,
+            learning_enabled: true,
             used_fallback: true,
         }),
     )
