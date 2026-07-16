@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
+import type { AgentEvent, BridgeState, CompletionCheckRun, CompletionSummary, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
 import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -84,7 +84,18 @@ const mockForests: Record<string, SessionForestSnapshot> = {
       { id: 101, source: "policy", kind: "worker.spawned", entityId: "session-1w", body: "implementation strong isolated", createdAt: now }
     ],
     policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 },
-    repositoryDivergence: { status: "aligned", selectedState: { status: "clean", head: "demo", dirtyHash: "0" }, currentState: { status: "clean", head: "demo", dirtyHash: "0" } }
+    repositoryDivergence: { status: "aligned", selectedState: { status: "clean", head: "demo", dirtyHash: "0" }, currentState: { status: "clean", head: "demo", dirtyHash: "0" } },
+    completion: {
+      attemptId: "proof-demo", contractId: "contract-demo", verdict: "verifying",
+      repository: { head: "307729bf075c", dirtyDigest: "clean" }, passedRequired: 2, totalRequired: 4,
+      markdownCommitted: false, waiverReason: null,
+      checks: [
+        { checkId: "rust-tests", kind: "deterministic", required: true, status: "passed", executor: "bridge.shell", command: "cargo test", verifierFamily: null, detail: "216 tests passed", outputDigest: "demo", artifactRefs: [] },
+        { checkId: "build", kind: "deterministic", required: true, status: "passed", executor: "bridge.shell", command: "bun run build", verifierFamily: null, detail: null, outputDigest: "demo", artifactRefs: [] },
+        { checkId: "scrutiny", kind: "scrutiny", required: true, status: "running", executor: "bridge.worker", command: null, verifierFamily: "claude", detail: null, outputDigest: null, artifactRefs: [] },
+        { checkId: "user-journey", kind: "user_testing", required: true, status: "pending", executor: "bridge.worker", command: null, verifierFamily: "codex", detail: null, outputDigest: null, artifactRefs: [] }
+      ]
+    }
   }
 };
 function mockForest(sessionId: string): SessionForestSnapshot {
@@ -92,7 +103,7 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   if (existing) return structuredClone(existing);
   const session = mockState.sessions.find(item => item.id === sessionId);
   const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
-  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "none", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} } };
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "none", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null };
   mockForests[sessionId] = created;
   return structuredClone(created);
 }
@@ -151,6 +162,19 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(preferences));
   },
   sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? invoke("get_session_forest", { sessionId }) : Promise.resolve(mockForest(sessionId)),
+  createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
+    if (isTauri()) return invoke("create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
+    const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;
+  },
+  recordCompletionCheck: async (attemptId: string, run: CompletionCheckRun): Promise<CompletionSummary> => {
+    if (isTauri()) return invoke("record_completion_check", { attemptId, run });
+    const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found");
+    const index = forest.completion.checks.findIndex(check => check.checkId === run.checkId); if (index < 0) throw new Error("Completion check not found"); forest.completion.checks[index] = structuredClone(run); forest.completion.passedRequired = forest.completion.checks.filter(check => check.required && check.status === "passed").length; return structuredClone(forest.completion);
+  },
+  waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
+    if (isTauri()) return invoke("waive_completion", { attemptId, checkIds, reason });
+    const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
+  },
   activateSessionEntry: async (sessionId: string, entryId: string): Promise<SessionForestSnapshot> => {
     if (isTauri()) return invoke("activate_session_entry", { sessionId, entryId });
     if (!mockForests[sessionId]) mockForest(sessionId);

@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { bridgeApi } from "./api";
 
 describe("SQLite-shaped mock observability", () => {
+  it("keeps completion contracts private by default and preserves waiver evidence", async () => {
+    const planned = await bridgeApi.createCompletionPlan("session-1", ["User flow works"], ["src/App.tsx"], []);
+    expect(planned.markdownCommitted).toBe(false);
+    expect(planned.totalRequired).toBeGreaterThan(0);
+    const waived = await bridgeApi.waiveCompletion(planned.attemptId, ["user-journey"], "Browser unavailable");
+    expect(waived.verdict).toBe("waived");
+    expect(waived.waiverReason).toBe("Browser unavailable");
+  });
+
   it("round-trips workspace learning-router preferences", async () => {
     const defaults = await bridgeApi.routerPreferences("demo-1");
     expect(defaults).toMatchObject({ mode: "shadow", minimumPassBps: 6500 });

@@ -365,6 +365,20 @@ pub struct VerificationPacket {
     pub artifact_refs: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionSummary {
+    pub attempt_id: String,
+    pub contract_id: String,
+    pub verdict: CompletionVerdict,
+    pub repository: RepositoryStamp,
+    pub passed_required: usize,
+    pub total_required: usize,
+    pub checks: Vec<CheckRun>,
+    pub markdown_committed: bool,
+    pub waiver_reason: Option<String>,
+}
+
 pub fn compact_packet(
     attempt_id: &str,
     repository: RepositoryStamp,
@@ -438,12 +452,127 @@ pub fn save_contract(db: &Connection, contract: &CompletionContract) -> Result<(
     Ok(())
 }
 
+pub fn latest_summary(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    let row: Option<(String, String, String, String, String, Option<String>, bool)> = db.query_row(
+        "SELECT a.id,p.contract_id,a.status,a.repository_head,a.dirty_digest,
+                (SELECT reason FROM eval_waivers w WHERE w.attempt_id=a.id ORDER BY created_at DESC LIMIT 1),
+                c.markdown_committed
+         FROM eval_attempts a
+         JOIN eval_plans p ON p.id=a.plan_id
+         JOIN completion_contracts c ON c.id=p.contract_id
+         WHERE a.session_id=?1 ORDER BY a.started_at DESC LIMIT 1",
+        params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+    ).optional()?;
+    let Some((attempt_id, contract_id, status, head, dirty_digest, waiver_reason, markdown_committed)) = row else {
+        return Ok(None);
+    };
+    let mut statement = db.prepare(
+        "SELECT check_id,kind,required,status,executor,command,verifier_family,detail,output_digest,artifact_refs FROM eval_check_runs WHERE attempt_id=?1 ORDER BY required DESC,rowid",
+    )?;
+    let checks = statement.query_map(params![attempt_id], map_check_run)?.collect::<Result<Vec<_>, _>>()?;
+    let total_required = checks.iter().filter(|check| check.required).count();
+    let passed_required = checks.iter().filter(|check| check.required && check.status == CheckStatus::Passed).count();
+    Ok(Some(CompletionSummary {
+        attempt_id,
+        contract_id,
+        verdict: parse_verdict(&status),
+        repository: RepositoryStamp { head, dirty_digest },
+        passed_required,
+        total_required,
+        checks,
+        markdown_committed,
+        waiver_reason,
+    }))
+}
+
+pub fn completion_allows_ready(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(latest_summary(db, session_id)?
+        .map(|summary| matches!(summary.verdict, CompletionVerdict::Verified | CompletionVerdict::Waived))
+        .unwrap_or(true))
+}
+
+fn parse_verdict(value: &str) -> CompletionVerdict {
+    match value {
+        "changes_requested" => CompletionVerdict::ChangesRequested,
+        "verified" => CompletionVerdict::Verified,
+        "waived" => CompletionVerdict::Waived,
+        "failed" => CompletionVerdict::Failed,
+        "superseded" => CompletionVerdict::Superseded,
+        _ => CompletionVerdict::Verifying,
+    }
+}
+
+fn map_check_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRun> {
+    let kind: String = row.get(1)?;
+    let status: String = row.get(3)?;
+    Ok(CheckRun {
+        check_id: row.get(0)?,
+        kind: match kind.as_str() { "scrutiny" => EvalKind::Scrutiny, "user_testing" => EvalKind::UserTesting, _ => EvalKind::Deterministic },
+        required: row.get(2)?,
+        status: match status.as_str() { "running" => CheckStatus::Running, "passed" => CheckStatus::Passed, "failed" => CheckStatus::Failed, "skipped" => CheckStatus::Skipped, "blocked" => CheckStatus::Blocked, "stale" => CheckStatus::Stale, _ => CheckStatus::Pending },
+        executor: row.get(4)?,
+        command: row.get(5)?,
+        verifier_family: row.get(6)?,
+        detail: row.get(7)?,
+        output_digest: row.get(8)?,
+        artifact_refs: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
+    })
+}
+
 pub fn save_plan(db: &Connection, plan: &EvalPlan) -> Result<(), BridgeError> {
     db.execute(
         "INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
         params![plan.id, plan.contract_id, plan.schema_version, plan.risk.as_str(), serde_json::to_string(plan).map_err(|error| BridgeError::Invalid(error.to_string()))?, Utc::now().to_rfc3339()],
     )?;
     Ok(())
+}
+
+pub fn create_flow(
+    db: &Connection,
+    contract: &CompletionContract,
+    plan: &EvalPlan,
+    session_id: &str,
+    repository: &RepositoryStamp,
+    implementer_family: Option<&str>,
+) -> Result<String, BridgeError> {
+    if contract.acceptance_criteria.is_empty() || plan.contract_id != contract.id {
+        return Err(BridgeError::Invalid(
+            "completion flow requires a non-empty contract and its matching eval plan".into(),
+        ));
+    }
+    repository.validate()?;
+    let now = Utc::now().to_rfc3339();
+    let attempt_id = Uuid::new_v4().to_string();
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_projection,markdown_committed,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,?8)",
+        params![contract.id, contract.workspace_id, contract.session_id, contract.schema_version, serde_json::to_string(&contract.acceptance_criteria).map_err(|error| BridgeError::Invalid(error.to_string()))?, contract.markdown_projection, contract.markdown_committed, now],
+    )?;
+    transaction.execute(
+        "INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![plan.id, plan.contract_id, plan.schema_version, plan.risk.as_str(), serde_json::to_string(plan).map_err(|error| BridgeError::Invalid(error.to_string()))?, now],
+    )?;
+    transaction.execute(
+        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE session_id=?1 AND status IN ('verifying','changes_requested') AND (repository_head<>?3 OR dirty_digest<>?4)",
+        params![session_id, now, repository.head, repository.dirty_digest],
+    )?;
+    transaction.execute(
+        "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,status,implementer_family,started_at) VALUES(?1,?2,?3,?4,?5,'verifying',?6,?7)",
+        params![attempt_id, plan.id, session_id, repository.head, repository.dirty_digest, implementer_family, now],
+    )?;
+    for check in &plan.checks {
+        transaction.execute(
+            "INSERT INTO eval_check_runs(id,attempt_id,check_id,kind,required,status,executor,command,artifact_refs) VALUES(?1,?2,?3,?4,?5,'pending',?6,?7,'[]')",
+            params![Uuid::new_v4().to_string(), attempt_id, check.id, check.kind.as_str(), check.required, check.executor, check.command],
+        )?;
+    }
+    transaction.execute("UPDATE sessions SET status='waiting' WHERE id=?1", params![session_id])?;
+    transaction.commit()?;
+    Ok(attempt_id)
 }
 
 pub fn begin_attempt(
@@ -507,6 +636,13 @@ pub fn record_check(
             ));
         }
     }
+    if run.status == CheckStatus::Passed
+        && run.output_digest.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_none()
+    {
+        return Err(BridgeError::Invalid(
+            "passing check evidence requires an output digest produced by the executor".into(),
+        ));
+    }
     let detail = run.detail.as_deref().map(|value| {
         let mut bounded = value.chars().take(8_192).collect::<String>();
         if value.chars().count() > 8_192 {
@@ -547,22 +683,7 @@ pub fn finalize(
         "SELECT check_id,kind,required,status,executor,command,verifier_family,detail,output_digest,artifact_refs FROM eval_check_runs WHERE attempt_id=?1 ORDER BY rowid",
     )?;
     let checks = statement
-        .query_map(params![attempt_id], |row| {
-            let kind: String = row.get(1)?;
-            let status: String = row.get(3)?;
-            Ok(CheckRun {
-                check_id: row.get(0)?,
-                kind: match kind.as_str() { "scrutiny" => EvalKind::Scrutiny, "user_testing" => EvalKind::UserTesting, _ => EvalKind::Deterministic },
-                required: row.get(2)?,
-                status: match status.as_str() { "running" => CheckStatus::Running, "passed" => CheckStatus::Passed, "failed" => CheckStatus::Failed, "skipped" => CheckStatus::Skipped, "blocked" => CheckStatus::Blocked, "stale" => CheckStatus::Stale, _ => CheckStatus::Pending },
-                executor: row.get(4)?,
-                command: row.get(5)?,
-                verifier_family: row.get(6)?,
-                detail: row.get(7)?,
-                output_digest: row.get(8)?,
-                artifact_refs: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
-            })
-        })?
+        .query_map(params![attempt_id], map_check_run)?
         .collect::<Result<Vec<_>, _>>()?;
     let waiver_reason: Option<String> = db.query_row(
         "SELECT reason FROM eval_waivers WHERE attempt_id=?1 AND repository_head=?2 AND dirty_digest=?3 ORDER BY created_at DESC LIMIT 1",
@@ -620,6 +741,31 @@ pub fn waive(
         ));
     }
     repository.validate()?;
+    let expected: (String, String) = db.query_row(
+        "SELECT repository_head,dirty_digest FROM eval_attempts WHERE id=?1 AND status NOT IN ('verified','waived','superseded')",
+        params![attempt_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if expected.0 != repository.head || expected.1 != repository.dirty_digest {
+        return Err(BridgeError::Invalid(
+            "waiver repository stamp does not match the active verification attempt".into(),
+        ));
+    }
+    if check_ids.iter().collect::<HashSet<_>>().len() != check_ids.len() {
+        return Err(BridgeError::Invalid("waiver check scope contains duplicates".into()));
+    }
+    for check_id in check_ids {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM eval_check_runs WHERE attempt_id=?1 AND check_id=?2 AND required=1 AND status!='passed')",
+            params![attempt_id, check_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(BridgeError::Invalid(format!(
+                "waiver check {check_id} is not an unresolved required check"
+            )));
+        }
+    }
     db.execute(
         "INSERT INTO eval_waivers(id,attempt_id,check_ids,reason,granted_by,repository_head,dirty_digest,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
         params![Uuid::new_v4().to_string(), attempt_id, serde_json::to_string(check_ids).map_err(|error| BridgeError::Invalid(error.to_string()))?, reason.trim(), granted_by.trim(), repository.head, repository.dirty_digest, Utc::now().to_rfc3339()],

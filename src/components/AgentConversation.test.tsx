@@ -7,6 +7,15 @@ const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({ id, sessionId: "s", sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides });
 
 describe("AgentConversation", () => {
+  it("shows revision-bound verification without requiring a committed contract file", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
+    expect(html).toContain("Verified with waiver");
+    expect(html).toContain("private contract");
+    expect(html).toContain("abcdef123456");
+    expect(html).toContain("Browser unavailable");
+    expect(html).toContain("skipped");
+  });
+
   it("renders normalized primitives as GUI cards without a terminal surface", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "message.completed", { itemId: "m", role: "assistant", text: "Structured response", status: "completed" }),

@@ -422,6 +422,7 @@ export function App() {
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
+                  completion={forest?.completion}
                   continuationFidelity={session?.continuationFidelity}
                   preview={false}
                   working={turnActive}

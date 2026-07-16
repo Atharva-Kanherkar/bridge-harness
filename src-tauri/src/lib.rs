@@ -32,7 +32,7 @@ mod worktree_coordinator;
 use chrono::Utc;
 use model::*;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -198,6 +198,7 @@ fn session_forest_snapshot(
             selected_state,
             current_state,
         },
+        completion: completion::latest_summary(db, session_id)?,
     })
 }
 
@@ -207,6 +208,98 @@ fn get_session_forest(
     state: State<AppState>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     session_forest_snapshot(&state.db.lock().unwrap(), &session_id)
+}
+
+fn completion_repository_stamp(
+    db: &Connection,
+    session_id: &str,
+) -> Result<completion::RepositoryStamp, BridgeError> {
+    let state = store::repository_state_for_session(db, session_id)?;
+    let head = state.get("head").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof requires a Git repository HEAD".into()))?;
+    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof requires a deterministic dirty-tree digest".into()))?;
+    Ok(completion::RepositoryStamp { head: head.into(), dirty_digest: dirty.into() })
+}
+
+#[tauri::command]
+fn create_completion_plan(
+    session_id: String,
+    acceptance_criteria: Vec<String>,
+    changed_paths: Vec<String>,
+    repository_commands: Vec<String>,
+    markdown_projection: Option<String>,
+    markdown_committed: bool,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<completion::CompletionSummary, BridgeError> {
+    let db = state.db.lock().unwrap();
+    let workspace_id: String = db.query_row("SELECT workspace_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
+    let implementer_family: Option<String> = db.query_row(
+        "SELECT s.harness FROM worker_runtime r JOIN worker_leases l ON l.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.parent_session_id=?1 AND l.role='implementation' ORDER BY r.updated_at DESC LIMIT 1",
+        params![session_id],
+        |row| row.get(0),
+    ).optional()?;
+    let contract = completion::CompletionContract {
+        id: Uuid::new_v4().to_string(),
+        workspace_id,
+        session_id: session_id.clone(),
+        schema_version: completion::COMPLETION_SCHEMA_VERSION,
+        acceptance_criteria: acceptance_criteria.clone(),
+        markdown_projection,
+        markdown_committed,
+    };
+    let plan = completion::plan(completion::PlanInput {
+        contract_id: contract.id.clone(),
+        acceptance_criteria,
+        changed_paths,
+        repository_commands,
+        available_capabilities: std::collections::HashSet::new(),
+    });
+    let repository = completion_repository_stamp(&db, &session_id)?;
+    completion::create_flow(&db, &contract, &plan, &session_id, &repository, implementer_family.as_deref())?;
+    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion plan was not persisted".into()))?;
+    let _ = app.emit("state-changed", ());
+    Ok(summary)
+}
+
+#[tauri::command]
+fn record_completion_check(
+    attempt_id: String,
+    run: completion::CheckRun,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<completion::CompletionSummary, BridgeError> {
+    let db = state.db.lock().unwrap();
+    let session_id: String = db.query_row("SELECT session_id FROM eval_attempts WHERE id=?1", params![attempt_id], |row| row.get(0))?;
+    completion::record_check(&db, &attempt_id, &run)?;
+    let repository = completion_repository_stamp(&db, &session_id)?;
+    let bundle = completion::finalize(&db, &attempt_id, &repository)?;
+    if matches!(bundle.verdict, completion::CompletionVerdict::Verified | completion::CompletionVerdict::Waived) {
+        db.execute("UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'", params![session_id])?;
+    }
+    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
+    let _ = app.emit("state-changed", ());
+    Ok(summary)
+}
+
+#[tauri::command]
+fn waive_completion(
+    attempt_id: String,
+    check_ids: Vec<String>,
+    reason: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<completion::CompletionSummary, BridgeError> {
+    let db = state.db.lock().unwrap();
+    let session_id: String = db.query_row("SELECT session_id FROM eval_attempts WHERE id=?1", params![attempt_id], |row| row.get(0))?;
+    let repository = completion_repository_stamp(&db, &session_id)?;
+    completion::waive(&db, &attempt_id, &check_ids, &reason, "local_user", &repository)?;
+    let bundle = completion::finalize(&db, &attempt_id, &repository)?;
+    if bundle.verdict == completion::CompletionVerdict::Waived {
+        db.execute("UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'", params![session_id])?;
+    }
+    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
+    let _ = app.emit("state-changed", ());
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -4279,6 +4372,9 @@ pub fn run() {
             marketplace_action,
             get_state,
             get_session_forest,
+            create_completion_plan,
+            record_completion_check,
+            waive_completion,
             get_router_preferences,
             update_router_preferences,
             activate_session_entry,
