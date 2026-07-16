@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
@@ -8,10 +8,8 @@ import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
 import { SpaceBackground } from "./components/SpaceBackground";
-import { TerminalPane } from "./components/TerminalPane";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
-import { MarketplaceScreen } from "./components/MarketplaceScreen";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
@@ -27,6 +25,9 @@ import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
+
+const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
+const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
@@ -395,7 +396,7 @@ export function App() {
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
-      {view === "marketplace" ? <MarketplaceScreen /> : session ? <>
+      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
@@ -479,7 +480,7 @@ export function App() {
               </div>
             </>}
             {hasRepo && workspace && activeTab === "changes" && <ChangesPanel workspace={workspace}/>}
-            {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><TerminalPane workspaceId={workspace.id}/></div>}
+            {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
           </div>
         </section>
       </> : <Welcome adapters={adapters} busy={busy} onStartChat={text => void openNewChat(text)} onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}/>}
@@ -510,6 +511,10 @@ export function App() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} onClose={() => setModal(null)} onError={setError} />
   </div>;
+}
+
+function PanelLoading({ label }: { label: string }) {
+  return <div role="status" className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">{label}</div>;
 }
 
 

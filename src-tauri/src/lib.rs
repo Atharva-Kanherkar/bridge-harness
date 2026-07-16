@@ -113,8 +113,8 @@ struct Health {
 }
 
 #[tauri::command]
-fn health(state: State<AppState>) -> Health {
-    Health {
+async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
+    Ok(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         harnesses: HashMap::from([
@@ -126,21 +126,21 @@ fn health(state: State<AppState>) -> Health {
         telemetry_database: state.telemetry_database_path.to_string_lossy().into(),
         snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
         adapters: state.adapter_registry.descriptors(),
-    }
+    })
 }
 
 #[tauri::command]
-fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
+async fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
     marketplace::catalog()
 }
 
 #[tauri::command]
-fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
+async fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
     marketplace::app_auth_states()
 }
 
 #[tauri::command]
-fn marketplace_action(
+async fn marketplace_action(
     provider: marketplace::MarketplaceProvider,
     plugin_id: String,
     marketplace: Option<String>,
@@ -149,7 +149,7 @@ fn marketplace_action(
     marketplace::execute_action(provider, &plugin_id, marketplace.as_deref(), action)
 }
 #[tauri::command]
-fn get_state(state: State<AppState>) -> Result<BridgeState, BridgeError> {
+async fn get_state(state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
     store::state(&state.db.lock().unwrap())
 }
 
@@ -259,7 +259,7 @@ fn completion_attempt_repository(
 }
 
 #[tauri::command]
-fn create_completion_plan(
+async fn create_completion_plan(
     session_id: String,
     acceptance_criteria: Vec<String>,
     changed_paths: Vec<String>,
@@ -267,7 +267,7 @@ fn create_completion_plan(
     markdown_projection: Option<String>,
     markdown_committed: bool,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = state.db.lock().unwrap();
     let workspace_id: String = db.query_row("SELECT workspace_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
@@ -302,11 +302,11 @@ fn create_completion_plan(
 }
 
 #[tauri::command]
-fn record_completion_check(
+async fn record_completion_check(
     attempt_id: String,
     run: completion::CheckRun,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
@@ -319,12 +319,12 @@ fn record_completion_check(
 }
 
 #[tauri::command]
-fn waive_completion(
+async fn waive_completion(
     attempt_id: String,
     check_ids: Vec<String>,
     reason: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
@@ -337,19 +337,19 @@ fn waive_completion(
 }
 
 #[tauri::command]
-fn register_verifier_manifest(
+async fn register_verifier_manifest(
     source: String,
     manifest: completion::VerifierManifest,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
     completion::register_verifier_manifest(&state.db.lock().unwrap(), &source, &manifest)
 }
 
 #[tauri::command]
-fn verifier_candidates(
+async fn verifier_candidates(
     change_labels: Vec<String>,
     available_capabilities: Vec<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<completion::VerifierCandidate>, BridgeError> {
     completion::verifier_candidates(
         &state.db.lock().unwrap(),
@@ -359,18 +359,18 @@ fn verifier_candidates(
 }
 
 #[tauri::command]
-fn get_router_preferences(
+async fn get_router_preferences(
     workspace_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
     learning_router::load_preferences(&state.db.lock().unwrap(), &workspace_id)
 }
 
 #[tauri::command]
-fn update_router_preferences(
+async fn update_router_preferences(
     workspace_id: String,
     preferences: learning_router::RouterPreferences,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
     let db = state.db.lock().unwrap();
     learning_router::save_preferences(&db, &workspace_id, &preferences)?;
@@ -378,11 +378,11 @@ fn update_router_preferences(
 }
 
 #[tauri::command]
-fn activate_session_entry(
+async fn activate_session_entry(
     session_id: String,
     entry_id: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     let db = state.db.lock().unwrap();
     let snapshot = activate_session_entry_records(&db, &session_id, &entry_id)?;
@@ -409,7 +409,7 @@ fn activate_session_entry_records(
 }
 
 #[tauri::command]
-fn add_project(path: String, state: State<AppState>) -> Result<BridgeState, BridgeError> {
+async fn add_project(path: String, state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
     let clean = git::validate_repo(Path::new(&path))?;
     let name = Path::new(&clean)
         .file_name()
@@ -453,7 +453,7 @@ fn chat_label(title: Option<&str>) -> String {
 
 /// Create a repo-less workspace. A folder/git repo can be connected later.
 #[tauri::command]
-fn create_workspace(title: String, state: State<AppState>) -> Result<BridgeState, BridgeError> {
+async fn create_workspace(title: String, state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
     let name = title.trim();
     if name.is_empty() {
         return Err(BridgeError::Invalid("Workspace name is required".into()));
@@ -470,11 +470,11 @@ fn create_workspace(title: String, state: State<AppState>) -> Result<BridgeState
 
 /// Create a standalone direct chat (no workspace). Runs in a private scratch dir.
 #[tauri::command]
-fn create_chat(
+async fn create_chat(
     harness: Harness,
     model: Option<String>,
     title: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
     let id = Uuid::new_v4().to_string();
@@ -492,9 +492,9 @@ fn create_chat(
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 #[tauri::command]
-fn create_workspace_session(
+async fn create_workspace_session(
     workspace_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let id = Uuid::new_v4().to_string();
     let db = state.db.lock().unwrap();
@@ -516,11 +516,11 @@ fn create_workspace_session(
 /// Change a direct chat's harness/model. Stops any running adapter so the next
 /// message starts a fresh provider session with the new model.
 #[tauri::command]
-fn update_chat_model(
+async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
@@ -548,7 +548,7 @@ struct SlashCommandResolve {
 /// Enumerate slash commands + skills from every signed-in provider, so the UI
 /// can offer a labeled `/` menu.
 #[tauri::command]
-fn list_slash_commands(state: State<AppState>) -> Result<Vec<slash::SlashCommand>, BridgeError> {
+async fn list_slash_commands(state: State<'_, AppState>) -> Result<Vec<slash::SlashCommand>, BridgeError> {
     let available: std::collections::HashSet<String> = state
         .adapter_registry
         .descriptors()
@@ -562,10 +562,10 @@ fn list_slash_commands(state: State<AppState>) -> Result<Vec<slash::SlashCommand
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
 /// harness before sending.
 #[tauri::command]
-fn resolve_slash_command(
+async fn resolve_slash_command(
     text: String,
     session_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Option<SlashCommandResolve>, BridgeError> {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix('/') else {
@@ -624,10 +624,10 @@ fn resolve_slash_command(
 
 /// Attach a folder (optionally a git repo) to a workspace as its working directory.
 #[tauri::command]
-fn connect_workspace_folder(
+async fn connect_workspace_folder(
     workspace_id: String,
     path: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let folder = Path::new(&path);
     if !folder.is_dir() {
@@ -661,12 +661,12 @@ fn connect_workspace_folder(
 }
 
 #[tauri::command]
-fn start_session(
+async fn start_session(
     workspace_id: String,
     _harness: Option<Harness>,
     _model: Option<String>,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     // The user chooses neither harness nor model. Bridge starts its fast-tier
     // orchestrator and resolves the provider model through adapter inventory.
@@ -997,10 +997,10 @@ fn start_session(
 /// harness/model with no briefing; an `orchestrator` session runs codex with the
 /// routing briefing + delegation protocol (workers enabled via the reader gate).
 #[tauri::command]
-fn start_chat(
+async fn start_chat(
     session_id: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
         String,
@@ -3413,10 +3413,10 @@ fn start_history_snapshot_maintenance(app: AppHandle) {
 }
 
 #[tauri::command]
-fn open_terminal(
+async fn open_terminal(
     workspace_id: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
     let runtime_id = format!("terminal:{workspace_id}");
     if state.runtimes.lock().unwrap().contains_key(&runtime_id) {
@@ -3490,10 +3490,10 @@ fn open_terminal(
 }
 
 #[tauri::command]
-fn write_terminal(
+async fn write_terminal(
     workspace_id: String,
     data: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
     let mut sessions = state.runtimes.lock().unwrap();
     let runtime = sessions
@@ -3505,7 +3505,7 @@ fn write_terminal(
 }
 
 #[tauri::command]
-fn prepare_turn(session_id: String, text: String, state: State<AppState>) -> Result<secret_interception::SanitizedTurn, BridgeError> {
+async fn prepare_turn(session_id: String, text: String, state: State<'_, AppState>) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
@@ -3561,7 +3561,7 @@ fn persist_submitted_user_turn(
 }
 
 #[tauri::command]
-fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppState>) -> Result<(), BridgeError> {
+async fn send_turn(session_id: String, text: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
@@ -3591,7 +3591,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
 
     let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
         slash::SlashDispatch::Usage => {
-            refresh_account_usage(app.clone(), state.clone())?;
+            refresh_account_usage(app.clone(), state.clone()).await?;
             emit_local_assistant(
                 &app,
                 &state,
@@ -3602,7 +3602,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
             return Ok(());
         }
         slash::SlashDispatch::Compact { .. } => {
-            compact_session(session_id.clone(), app.clone(), state.clone())?;
+            compact_session(session_id.clone(), app.clone(), state.clone()).await?;
             return Ok(());
         }
         slash::SlashDispatch::Clear => {
@@ -3681,7 +3681,7 @@ fn send_turn(session_id: String, text: String, app: AppHandle, state: State<AppS
     Ok(())
 }
 
-fn record_recoverable_adapter_failure(state: &State<AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
+fn record_recoverable_adapter_failure(state: &State<'_, AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
     let db = state.db.lock().unwrap();
     db.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
     store::event(&db, "adapter", "adapter.request_failed", session_id, &error.to_string())?;
@@ -3690,7 +3690,7 @@ fn record_recoverable_adapter_failure(state: &State<AppState>, session_id: &str,
 
 fn emit_local_assistant(
     app: &AppHandle,
-    state: &State<AppState>,
+    state: &State<'_, AppState>,
     session_id: &str,
     adapter_id: &str,
     text: &str,
@@ -3715,10 +3715,10 @@ fn emit_local_assistant(
 }
 
 #[tauri::command]
-fn compact_session(
+async fn compact_session(
     session_id: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
     let prompt = {
         let db = state.db.lock().unwrap();
@@ -3767,7 +3767,7 @@ fn compact_session(
 }
 
 #[tauri::command]
-fn interrupt_turn(session_id: String, state: State<AppState>) -> Result<(), BridgeError> {
+async fn interrupt_turn(session_id: String, state: State<'_, AppState>) -> Result<(), BridgeError> {
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
@@ -3780,7 +3780,7 @@ fn interrupt_turn(session_id: String, state: State<AppState>) -> Result<(), Brid
 /// command; Codex is asked on a live session and answers on its event stream.
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
-fn refresh_account_usage(app: AppHandle, state: State<AppState>) -> Result<(), BridgeError> {
+async fn refresh_account_usage(app: AppHandle, state: State<'_, AppState>) -> Result<(), BridgeError> {
     // Claude: a global, read-only account query — no running session required.
     if binary::resolve("claude").is_some() {
         let app = app.clone();
@@ -3838,12 +3838,12 @@ fn emit_account_usage(app: &AppHandle, provider: &str, rate_limits: serde_json::
 }
 
 #[tauri::command]
-fn resolve_approval(
+async fn resolve_approval(
     session_id: String,
     event_id: i64,
     decision: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
     if !matches!(
         decision.as_str(),
@@ -4062,11 +4062,11 @@ fn resolve_policy_delegation_approval(
 }
 
 #[tauri::command]
-fn resize_terminal(
+async fn resize_terminal(
     workspace_id: String,
     rows: u16,
     cols: u16,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), BridgeError> {
     if let Some(runtime) = state
         .runtimes
@@ -4087,10 +4087,10 @@ fn resize_terminal(
     Ok(())
 }
 #[tauri::command]
-fn stop_session(
+async fn stop_session(
     session_id: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let is_worker = state
         .db
@@ -4276,10 +4276,10 @@ async fn refresh_workspace(
 }
 
 #[tauri::command]
-fn archive_workspace(
+async fn archive_workspace(
     workspace_id: String,
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let db = state.db.lock().unwrap();
     let (path, repo): (String, String) = db.query_row(
@@ -4529,6 +4529,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tauri_commands_never_block_the_ui_thread() {
+        let source = include_str!("lib.rs");
+        assert!(
+            !source.contains("#[tauri::command]\nfn "),
+            "Tauri commands must be async so native work never runs on the macOS UI thread"
+        );
+    }
 
     struct RecordingRuntime {
         sent: Arc<Mutex<Vec<String>>>,

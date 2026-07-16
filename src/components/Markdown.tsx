@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 
 type Block =
@@ -95,7 +95,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   );
 }
 
-export function Markdown({ text, dim }: { text: string; dim?: boolean }) {
+export const Markdown = memo(function Markdown({ text, dim }: { text: string; dim?: boolean }) {
   return (
     <div className={dim ? "md dim" : "md"}>
       {splitBlocks(text).map((block, index) => {
@@ -114,4 +114,4 @@ export function Markdown({ text, dim }: { text: string; dim?: boolean }) {
       })}
     </div>
   );
-}
+});

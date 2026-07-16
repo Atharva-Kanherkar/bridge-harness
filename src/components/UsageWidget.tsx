@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { AlertTriangle, Gauge } from "lucide-react";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 
@@ -45,7 +45,7 @@ function UsageBar({ used }: { used: number }) {
   </span>;
 }
 
-export function UsageWidget({ usage, samples = {}, history = [], contextPercent, contextSource = "measured" }: UsageWidgetProps) {
+export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, history = [], contextPercent, contextSource = "measured" }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
   const pressure = contextPressure(contextPercent);
   const projections = PROVIDERS.map(provider => {
@@ -102,7 +102,7 @@ export function UsageWidget({ usage, samples = {}, history = [], contextPercent,
       </div>
     </div>
   </div>;
-}
+});
 
 function ProviderDetail({ provider, snapshot, samples }: { provider: { id: UsageProvider; label: string }; snapshot?: UsageSnapshot; samples: UsageRateSample[] }) {
   const used = highestUse(snapshot);
