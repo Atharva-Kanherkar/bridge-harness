@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, CompletionCheckRun, CompletionSummary, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk } from "./types";
+import type { AgentEvent, BridgeState, CompletionCheckRun, CompletionSummary, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
+const mockVerifierManifests = new Map<string, VerifierManifest>();
 let nextEventId = 20;
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
@@ -174,6 +175,19 @@ export const bridgeApi = {
   waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
     if (isTauri()) return invoke("waive_completion", { attemptId, checkIds, reason });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
+  },
+  registerVerifierManifest: async (source: string, manifest: VerifierManifest): Promise<void> => {
+    if (isTauri()) return invoke("register_verifier_manifest", { source, manifest });
+    mockVerifierManifests.set(manifest.id, structuredClone(manifest));
+  },
+  verifierCandidates: async (changeLabels: string[], availableCapabilities: string[]): Promise<VerifierCandidate[]> => {
+    if (isTauri()) return invoke("verifier_candidates", { changeLabels, availableCapabilities });
+    return [...mockVerifierManifests.values()].map(manifest => {
+      const triggerMatch = !manifest.triggers.length || manifest.triggers.some(trigger => changeLabels.includes(trigger));
+      const missing = manifest.requiredCapabilities.filter(capability => !availableCapabilities.includes(capability));
+      const exclusionReasons = [...(!triggerMatch ? ["change triggers do not match"] : []), ...(missing.length ? [`missing capabilities: ${missing.join(", ")}`] : [])];
+      return { manifest: structuredClone(manifest), eligible: exclusionReasons.length === 0, exclusionReasons };
+    });
   },
   activateSessionEntry: async (sessionId: string, entryId: string): Promise<SessionForestSnapshot> => {
     if (isTauri()) return invoke("activate_session_entry", { sessionId, entryId });

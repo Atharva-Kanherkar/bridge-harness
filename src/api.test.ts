@@ -11,6 +11,13 @@ describe("SQLite-shaped mock observability", () => {
     expect(waived.waiverReason).toBe("Browser unavailable");
   });
 
+  it("lets skills contribute verifier instructions without hiding missing tools", async () => {
+    await bridgeApi.registerVerifierManifest("skill:review-checkpoint", { id:"browser-journey",kind:"user_testing",triggers:["frontend"],requiredCapabilities:["browser","network_inspection"],differentModelFamily:true,checks:["exercise user journey"],evidenceRequired:["trace"] });
+    const [blocked] = await bridgeApi.verifierCandidates(["frontend"], ["browser"]);
+    expect(blocked.eligible).toBe(false);
+    expect(blocked.exclusionReasons[0]).toContain("network_inspection");
+  });
+
   it("round-trips workspace learning-router preferences", async () => {
     const defaults = await bridgeApi.routerPreferences("demo-1");
     expect(defaults).toMatchObject({ mode: "shadow", minimumPassBps: 6500 });

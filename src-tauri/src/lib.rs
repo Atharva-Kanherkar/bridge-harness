@@ -303,6 +303,28 @@ fn waive_completion(
 }
 
 #[tauri::command]
+fn register_verifier_manifest(
+    source: String,
+    manifest: completion::VerifierManifest,
+    state: State<AppState>,
+) -> Result<(), BridgeError> {
+    completion::register_verifier_manifest(&state.db.lock().unwrap(), &source, &manifest)
+}
+
+#[tauri::command]
+fn verifier_candidates(
+    change_labels: Vec<String>,
+    available_capabilities: Vec<String>,
+    state: State<AppState>,
+) -> Result<Vec<completion::VerifierCandidate>, BridgeError> {
+    completion::verifier_candidates(
+        &state.db.lock().unwrap(),
+        &change_labels,
+        &available_capabilities.into_iter().collect(),
+    )
+}
+
+#[tauri::command]
 fn get_router_preferences(
     workspace_id: String,
     state: State<AppState>,
@@ -4375,6 +4397,8 @@ pub fn run() {
             create_completion_plan,
             record_completion_check,
             waive_completion,
+            register_verifier_manifest,
+            verifier_candidates,
             get_router_preferences,
             update_router_preferences,
             activate_session_entry,

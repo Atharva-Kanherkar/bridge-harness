@@ -86,6 +86,11 @@ export interface CompletionSummary {
   passedRequired: number; totalRequired: number; checks: CompletionCheckRun[];
   markdownCommitted: boolean; waiverReason: string | null;
 }
+export interface VerifierManifest {
+  id: string; kind: EvalKind; triggers: string[]; requiredCapabilities: string[];
+  differentModelFamily: boolean; checks: string[]; evidenceRequired: string[];
+}
+export interface VerifierCandidate { manifest: VerifierManifest; eligible: boolean; exclusionReasons: string[] }
 export interface ModelOption { id: string; label: string; tier: CapabilityTier; defaultForTier: boolean }
 export interface AdapterDescriptor {
   id: string; label: string; available: boolean; version: string | null; capabilities: string[];

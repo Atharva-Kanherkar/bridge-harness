@@ -139,6 +139,14 @@ pub struct VerifierManifest {
     pub evidence_required: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifierCandidate {
+    pub manifest: VerifierManifest,
+    pub eligible: bool,
+    pub exclusion_reasons: Vec<String>,
+}
+
 impl VerifierManifest {
     pub fn validate(&self) -> Result<(), BridgeError> {
         if self.id.trim().is_empty() || self.checks.is_empty() {
@@ -191,6 +199,46 @@ impl VerifierManifest {
         }
         Ok(())
     }
+}
+
+pub fn register_verifier_manifest(
+    db: &Connection,
+    source: &str,
+    manifest: &VerifierManifest,
+) -> Result<(), BridgeError> {
+    manifest.validate()?;
+    if source.trim().is_empty() {
+        return Err(BridgeError::Invalid("verifier manifest source cannot be empty".into()));
+    }
+    db.execute(
+        "INSERT INTO verifier_manifests(id,source,schema_version,manifest,enabled,updated_at) VALUES(?1,?2,?3,?4,1,?5)
+         ON CONFLICT(id) DO UPDATE SET source=excluded.source,schema_version=excluded.schema_version,manifest=excluded.manifest,updated_at=excluded.updated_at",
+        params![manifest.id, source.trim(), COMPLETION_SCHEMA_VERSION, serde_json::to_string(manifest).map_err(|error| BridgeError::Invalid(error.to_string()))?, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+pub fn verifier_candidates(
+    db: &Connection,
+    change_labels: &[String],
+    available_capabilities: &HashSet<String>,
+) -> Result<Vec<VerifierCandidate>, BridgeError> {
+    let labels = change_labels.iter().map(|label| label.to_ascii_lowercase()).collect::<HashSet<_>>();
+    let mut statement = db.prepare("SELECT manifest FROM verifier_manifests WHERE enabled=1 ORDER BY id")?;
+    let manifests = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    manifests.into_iter().map(|serialized| {
+        let manifest: VerifierManifest = serde_json::from_str(&serialized).map_err(|error| BridgeError::Invalid(format!("stored verifier manifest is malformed: {error}")))?;
+        manifest.validate()?;
+        let mut exclusion_reasons = Vec::new();
+        if !manifest.triggers.is_empty() && !manifest.triggers.iter().any(|trigger| labels.contains(&trigger.to_ascii_lowercase())) {
+            exclusion_reasons.push("change triggers do not match".into());
+        }
+        let missing = manifest.required_capabilities.iter().filter(|capability| !available_capabilities.contains(capability.as_str())).cloned().collect::<Vec<_>>();
+        if !missing.is_empty() {
+            exclusion_reasons.push(format!("missing capabilities: {}", missing.join(", ")));
+        }
+        Ok(VerifierCandidate { eligible: exclusion_reasons.is_empty(), manifest, exclusion_reasons })
+    }).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -805,6 +853,19 @@ mod tests {
         assert!(manifest.eligible(Some("codex"), Some("codex"), &HashSet::from(["browser".into()])).is_err());
         assert!(manifest.eligible(Some("codex"), Some("claude"), &HashSet::new()).unwrap_err().contains("browser"));
         assert!(manifest.eligible(Some("codex"), Some("claude"), &HashSet::from(["browser".into()])).is_ok());
+    }
+
+    #[test]
+    fn skill_verifier_manifests_add_checks_without_granting_missing_tools() {
+        let db = fixture();
+        let manifest = VerifierManifest { id: "playwright-journey".into(), kind: EvalKind::UserTesting, triggers: vec!["frontend".into()], required_capabilities: vec!["browser".into(), "network_inspection".into()], different_model_family: true, checks: vec!["exercise acceptance journey".into()], evidence_required: vec!["trace".into(), "screenshot".into()] };
+        register_verifier_manifest(&db, "skill:review-checkpoint", &manifest).unwrap();
+        let blocked = verifier_candidates(&db, &["frontend".into()], &HashSet::from(["browser".into()])).unwrap();
+        assert!(!blocked[0].eligible);
+        assert!(blocked[0].exclusion_reasons[0].contains("network_inspection"));
+        let eligible = verifier_candidates(&db, &["frontend".into()], &HashSet::from(["browser".into(), "network_inspection".into()])).unwrap();
+        assert!(eligible[0].eligible);
+        assert!(eligible[0].manifest.different_model_family);
     }
 
     #[test]

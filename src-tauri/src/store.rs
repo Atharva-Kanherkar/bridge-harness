@@ -769,6 +769,14 @@ fn migration_14_completion_proof(transaction: &Transaction<'_>) -> Result<(), Br
             bundle TEXT NOT NULL,
             bundle_digest TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS verifier_manifests (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            manifest TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
         );",
     )?;
     Ok(())
