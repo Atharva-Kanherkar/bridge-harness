@@ -6,7 +6,7 @@
 //! before a workspace explicitly enables autonomous selection.
 
 use crate::{
-    delegation::{DelegationRequest, Effort, WorkerResult, WorkerResultStatus, WorkerRole},
+    delegation::{DelegationRequest, Effort, TestStatus, WorkerResult, WorkerResultStatus, WorkerRole},
     model::{AdapterDescriptor, CapabilityTier},
     policy::{self, PolicyConfig, RestorationKind},
     BridgeError,
@@ -14,10 +14,11 @@ use crate::{
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-pub const ROUTER_SCHEMA_VERSION: u32 = 1;
+pub const ROUTER_SCHEMA_VERSION: u32 = 2;
 pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
 const PRIOR_WEIGHT: i64 = 4;
 
@@ -183,7 +184,21 @@ pub struct RouterDecision {
     pub workspace_id: String,
     pub parent_session_id: String,
     pub turn_id: String,
+    #[serde(default)]
+    pub trace_id: Option<String>,
     pub task_family: String,
+    #[serde(default)]
+    pub task_fingerprint: String,
+    #[serde(default)]
+    pub repository_revision: Option<String>,
+    #[serde(default)]
+    pub profile_version: Option<i64>,
+    #[serde(default)]
+    pub profile_purpose: Option<String>,
+    #[serde(default = "default_policy_version")]
+    pub policy_version: i64,
+    #[serde(default)]
+    pub catalog_snapshot: serde_json::Value,
     pub mode: RouterMode,
     pub manual_override: bool,
     pub baseline_candidate: Option<String>,
@@ -191,7 +206,81 @@ pub struct RouterDecision {
     pub executed_candidate: Option<String>,
     pub explanation: String,
     pub candidates: Vec<CandidateEvaluation>,
+    #[serde(default)]
+    pub actual_provider: Option<String>,
+    #[serde(default)]
+    pub actual_model: Option<String>,
+    #[serde(default)]
+    pub actual_effort: Option<Effort>,
     pub created_at: String,
+}
+
+fn default_policy_version() -> i64 {
+    1
+}
+
+fn task_fingerprint(request: &DelegationRequest) -> String {
+    let body = serde_json::json!({
+        "role": request.role,
+        "acceptanceCriteria": request.acceptance_criteria,
+        "relevantFiles": request.relevant_files,
+        "writeMode": request.write_mode,
+        "capabilityTier": request.capability_tier,
+        "verification": request.verification,
+        "outputContract": request.output_contract,
+    });
+    format!("{:x}", Sha256::digest(body.to_string().as_bytes()))
+}
+
+fn repository_revision(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
+    let state = crate::store::repository_state_for_session(db, session_id)?;
+    Ok(state.get("head").and_then(serde_json::Value::as_str).map(|head| {
+        format!(
+            "{}:{}",
+            head,
+            state
+                .get("dirtyHash")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+        )
+    }))
+}
+
+fn active_policy(
+    db: &Connection,
+    fingerprint: &str,
+) -> Result<(i64, BTreeMap<String, String>), BridgeError> {
+    let (mut version, status, predecessor, mut weights): (i64, String, Option<i64>, String) = db.query_row(
+        "SELECT version,status,predecessor,weights FROM routing_policies WHERE status IN ('active','canary') ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    if status == "canary" && canary_bucket(fingerprint) >= 20 {
+        if let Some(predecessor) = predecessor {
+            (version, weights) = db.query_row(
+                "SELECT version,weights FROM routing_policies WHERE version=?1",
+                params![predecessor],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        }
+    }
+    let value: serde_json::Value = serde_json::from_str(&weights).unwrap_or_default();
+    let preferred = value
+        .get("preferredCandidates")
+        .and_then(serde_json::Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.into())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((version, preferred))
+}
+
+fn canary_bucket(fingerprint: &str) -> u8 {
+    let digest = Sha256::digest(fingerprint.as_bytes());
+    (u16::from_be_bytes([digest[0], digest[1]]) % 100) as u8
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +296,8 @@ pub struct EvaluationInput {
     pub histories: BTreeMap<String, HistoricalOutcome>,
     pub required_capabilities: Vec<String>,
     pub remaining_capability_units: i64,
+    pub budget_preference: Option<String>,
+    pub latency_preference: Option<String>,
 }
 
 fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
@@ -329,8 +420,25 @@ pub fn evaluate(input: EvaluationInput) -> Vec<CandidateEvaluation> {
                 exclusions.insert(CandidateExclusion::BelowQualityFloor);
             }
             let pass = i64::from(prediction.pass_probability_bps.max(1));
-            let expected_cost_score = prediction.normalized_quota_cost * 10_000 / pass
-                + prediction.latency_ms / 1_000
+            let cost_score = prediction.normalized_quota_cost * 10_000 / pass;
+            let cost_score = match input.budget_preference.as_deref() {
+                Some("economy") => cost_score.saturating_mul(2),
+                Some("quality") => cost_score / 2,
+                _ => cost_score,
+            };
+            let latency_score = match input.latency_preference.as_deref() {
+                Some("fast") => prediction.latency_ms / 100,
+                Some("patient") => prediction.latency_ms / 5_000,
+                _ => prediction.latency_ms / 1_000,
+            };
+            let quality_score = if input.budget_preference.as_deref() == Some("quality") {
+                (10_000 - pass).saturating_mul(10)
+            } else {
+                0
+            };
+            let expected_cost_score = cost_score
+                + latency_score
+                + quality_score
                 + i64::from(prediction.retry_risk_bps);
             CandidateEvaluation {
                 candidate,
@@ -448,17 +556,28 @@ pub fn route(
     request: &DelegationRequest,
     descriptors: &[AdapterDescriptor],
 ) -> Result<RoutedDelegation, BridgeError> {
-    let workspace_id: String = db.query_row(
-        "SELECT workspace_id FROM sessions WHERE id=?1",
+    let (workspace_id, trace_id): (String, Option<String>) = db.query_row(
+        "SELECT workspace_id,trace_id FROM sessions WHERE id=?1",
         params![parent_session_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let fingerprint = task_fingerprint(request);
     let preferences = load_preferences(db, &workspace_id)?;
+    let (policy_version, preferred_candidates) = active_policy(db, &fingerprint)?;
     let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
     let remaining =
         PolicyConfig::default().max_capability_units_per_turn - budget.capability_units_used;
+    let resolved_profile = if request.harness.is_none() && request.model.is_none() {
+        crate::model_profiles::resolve_for_role(db, descriptors, request.role)?
+    } else {
+        None
+    };
+    let mut profiled_request = request.clone();
+    if let Some(profile) = &resolved_profile {
+        profiled_request.effort = profile.effort;
+    }
     let availability = harness_capacity(db, &workspace_id)?;
-    let candidates = build_candidates(descriptors, request, &availability);
+    let candidates = build_candidates(descriptors, &profiled_request, &availability);
     let histories = load_histories(db, policy::role_name(request.role))?;
     let required_capabilities = vec!["tools".into(), "commands".into()];
     let mut evaluations = evaluate(EvaluationInput {
@@ -467,6 +586,12 @@ pub fn route(
         histories,
         required_capabilities,
         remaining_capability_units: remaining,
+        budget_preference: resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.budget_preference.clone()),
+        latency_preference: resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.latency_preference.clone()),
     });
     let implementer_family: Option<String> = if request.role == WorkerRole::Verification {
         db.query_row(
@@ -486,11 +611,36 @@ pub fn route(
             }
         }
     }
-    let baseline = baseline_key(descriptors, request);
-    let recommendation = evaluations
-        .iter()
-        .find(|candidate| candidate.eligible())
-        .map(|candidate| candidate.candidate.key());
+    let profile_locked = resolved_profile
+        .as_ref()
+        .is_some_and(|profile| profile.pinned || !profile.learning_enabled);
+    let profile_baseline = resolved_profile
+        .as_ref()
+        .map(|profile| format!("{}:{}", profile.provider, profile.model))
+        .filter(|key| candidate_for_key(&evaluations, key).is_some());
+    let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
+    let policy_preference = preferred_candidates
+        .get(&fingerprint)
+        .or_else(|| preferred_candidates.get(policy::role_name(request.role)))
+        .filter(|key| {
+            candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
+        })
+        .cloned();
+    let recommendation = if profile_locked {
+        baseline
+            .as_ref()
+            .filter(|key| {
+                candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
+            })
+            .cloned()
+    } else {
+        policy_preference.or_else(|| {
+            evaluations
+                .iter()
+                .find(|candidate| candidate.eligible())
+                .map(|candidate| candidate.candidate.key())
+        })
+    };
     let manual_override = request.harness.is_some() || request.model.is_some();
     let independent_verification = implementer_family.is_some();
     let eligible_manual_baseline = baseline.as_deref().filter(|key| candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible));
@@ -498,7 +648,7 @@ pub fn route(
         baseline.clone()
     } else if independent_verification {
         recommendation.clone()
-    } else if manual_override || preferences.mode != RouterMode::Autonomous {
+    } else if manual_override || profile_locked || preferences.mode != RouterMode::Autonomous {
         baseline.clone()
     } else {
         recommendation.clone()
@@ -510,6 +660,9 @@ pub fn route(
             .unwrap_or_else(|| "No different-family verifier satisfies the deterministic route constraints".into())
     } else if manual_override {
         "Manual harness/model override retained and recorded".to_owned()
+    } else if profile_locked {
+        "Pinned or learning-disabled role profile retained as a deterministic route constraint"
+            .to_owned()
     } else {
         match preferences.mode {
             RouterMode::Disabled => "Learning router disabled; baseline route retained".into(),
@@ -532,7 +685,17 @@ pub fn route(
         workspace_id: workspace_id.clone(),
         parent_session_id: parent_session_id.into(),
         turn_id: turn_id.into(),
+        trace_id,
         task_family: policy::role_name(request.role).into(),
+        task_fingerprint: fingerprint,
+        repository_revision: repository_revision(db, parent_session_id)?,
+        profile_version: resolved_profile.as_ref().map(|profile| profile.profile_version),
+        profile_purpose: resolved_profile
+            .as_ref()
+            .map(|profile| profile.purpose.as_str().to_owned()),
+        policy_version,
+        catalog_snapshot: serde_json::to_value(descriptors)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
         mode: preferences.mode,
         manual_override,
         baseline_candidate: baseline,
@@ -540,6 +703,9 @@ pub fn route(
         executed_candidate: executed.clone(),
         explanation,
         candidates: evaluations,
+        actual_provider: None,
+        actual_model: None,
+        actual_effort: None,
         created_at: Utc::now().to_rfc3339(),
     };
     persist_decision(db, &decision)?;
@@ -680,14 +846,25 @@ fn normalized_list(values: &[String]) -> Vec<String> {
 
 fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,task_family,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         params![
             decision.id,
             decision.workspace_id,
             decision.parent_session_id,
             decision.turn_id,
+            decision.trace_id,
             decision.task_family,
+            decision.task_fingerprint,
+            decision.repository_revision,
+            decision.profile_version,
+            decision.profile_purpose,
+            decision.policy_version,
+            decision.catalog_snapshot.to_string(),
+            decision.explanation,
+            decision.actual_provider,
+            decision.actual_model,
+            decision.actual_effort.map(Effort::as_str),
             decision.mode.as_str(),
             decision.manual_override,
             decision.baseline_candidate,
@@ -696,6 +873,20 @@ fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), Br
             serde_json::to_string(decision).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             decision.created_at,
         ],
+    )?;
+    Ok(())
+}
+
+pub fn record_actual_execution(
+    db: &Connection,
+    decision_id: &str,
+    provider: &str,
+    model: &str,
+    effort: Effort,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE router_decisions SET actual_provider=?2,actual_model=?3,actual_effort=?4 WHERE id=?1",
+        params![decision_id, provider, model, effort.as_str()],
     )?;
     Ok(())
 }
@@ -777,17 +968,66 @@ pub fn record_worker_outcome(
         params![child_session_id, Utc::now().to_rfc3339()],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let normalized_cost: i64 = db.query_row(
+    let fallback_normalized_cost: i64 = db.query_row(
         "SELECT COALESCE(SUM(capability_units),0) FROM usage_ledger WHERE session_id=?1",
         params![child_session_id],
         |row| row.get::<_, i64>(0),
     )? * 1_000;
+    let cost: Option<(i64, Option<String>)> = db
+        .query_row(
+            "SELECT cost_microusd,cost_source FROM usage_ledger WHERE session_id=?1 AND cost_microusd IS NOT NULL ORDER BY id DESC LIMIT 1",
+            params![child_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let total_tokens: Option<i64> = db
+        .query_row(
+            "SELECT COALESCE(input_tokens,0)+COALESCE(output_tokens,0)+COALESCE(cache_read_tokens,0)+COALESCE(cache_write_tokens,0)
+             FROM usage_ledger WHERE session_id=?1 AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cache_read_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL)
+             ORDER BY id DESC LIMIT 1",
+            params![child_session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
     let succeeded = matches!(result.status, WorkerResultStatus::Completed);
+    let success_state = match result.status {
+        WorkerResultStatus::Completed => "success",
+        WorkerResultStatus::Failed => "failure",
+        WorkerResultStatus::Cancelled
+        | WorkerResultStatus::Blocked
+        | WorkerResultStatus::NeedsDelegation => "unknown",
+    };
+    let has_failed_test = result.tests.iter().any(|test| test.status == TestStatus::Failed);
+    let has_passed_test = result.tests.iter().any(|test| test.status == TestStatus::Passed);
+    let acceptance_state = if has_failed_test || result.status == WorkerResultStatus::Failed {
+        "rejected"
+    } else if succeeded && has_passed_test {
+        "accepted"
+    } else {
+        "unknown"
+    };
+    let confidence_bps = if has_failed_test || has_passed_test {
+        9_500
+    } else if matches!(result.status, WorkerResultStatus::Completed | WorkerResultStatus::Failed) {
+        7_000
+    } else {
+        4_000
+    };
+    let evidence_entry_ids = db
+        .query_row(
+            "SELECT request FROM worker_completion_inputs WHERE child_session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|request| serde_json::from_str::<DelegationRequest>(&request).ok())
+        .map(|request| request.evidence_ids)
+        .unwrap_or_default();
     let now = Utc::now().to_rfc3339();
     db.execute(
-        "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,recorded_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-         ON CONFLICT(decision_id) DO UPDATE SET succeeded=excluded.succeeded,status=excluded.status,runtime_ms=excluded.runtime_ms,normalized_cost=excluded.normalized_cost,retry_count=excluded.retry_count,recorded_at=excluded.recorded_at",
+        "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,cost_microusd,cost_source,confidence_bps,edit_count,override_signal,total_tokens,latency_source,recorded_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+         ON CONFLICT(decision_id) DO UPDATE SET succeeded=excluded.succeeded,status=excluded.status,runtime_ms=excluded.runtime_ms,normalized_cost=excluded.normalized_cost,retry_count=excluded.retry_count,human_intervention=excluded.human_intervention,success_state=excluded.success_state,acceptance_state=excluded.acceptance_state,cost_microusd=excluded.cost_microusd,cost_source=excluded.cost_source,confidence_bps=excluded.confidence_bps,edit_count=excluded.edit_count,override_signal=excluded.override_signal,total_tokens=excluded.total_tokens,latency_source=excluded.latency_source,recorded_at=excluded.recorded_at",
         params![
             decision_id,
             child_session_id,
@@ -795,9 +1035,41 @@ pub fn record_worker_outcome(
             succeeded,
             result.status.as_str(),
             runtime.0,
-            normalized_cost,
+            fallback_normalized_cost,
             runtime.1,
             human_intervention,
+            success_state,
+            acceptance_state,
+            cost.as_ref().map(|value| value.0),
+            cost.as_ref().and_then(|value| value.1.clone()),
+            confidence_bps,
+            result.files_changed.len() as i64,
+            human_intervention,
+            total_tokens,
+            "session_runtime",
+            now,
+        ],
+    )?;
+    db.execute(
+        "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,score_bps,confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+         VALUES(?1,?2,'deterministic','worker-result-v1',?3,?4,?5,?6,'completed',?7)
+         ON CONFLICT(id) DO UPDATE SET score_bps=excluded.score_bps,confidence_bps=excluded.confidence_bps,evidence_entry_ids=excluded.evidence_entry_ids,bounded_metrics=excluded.bounded_metrics,status=excluded.status,created_at=excluded.created_at",
+        params![
+            format!("deterministic:{decision_id}"),
+            decision_id,
+            match success_state { "success" => Some(10_000_i64), "failure" => Some(0_i64), _ => None },
+            confidence_bps,
+            serde_json::to_string(&evidence_entry_ids).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            serde_json::json!({
+                "successState": success_state,
+                "acceptanceState": acceptance_state,
+                "runtimeMs": runtime.0,
+                "retryCount": runtime.1,
+                "editCount": result.files_changed.len(),
+                "overrideSignal": human_intervention,
+                "costReported": cost.is_some(),
+                "tokensReported": total_tokens.is_some(),
+            }).to_string(),
             now,
         ],
     )?;
@@ -921,6 +1193,7 @@ mod tests {
         model::{ModelOption, UsageLedgerRow, WorkerRuntimeRecord},
         store,
     };
+    use serde_json::json;
     use std::path::Path;
 
     #[derive(serde::Deserialize)]
@@ -964,6 +1237,8 @@ mod tests {
             histories: BTreeMap::new(),
             required_capabilities: vec!["tools".into()],
             remaining_capability_units: 24,
+            budget_preference: None,
+            latency_preference: None,
         })
     }
 
@@ -1028,6 +1303,24 @@ mod tests {
     }
 
     #[test]
+    fn profile_quality_preference_changes_ranking_without_widening_eligibility() {
+        let result = evaluate(EvaluationInput {
+            candidates: vec![
+                candidate("codex", "fast", CapabilityTier::Fast, 2),
+                candidate("claude", "standard", CapabilityTier::Standard, 4),
+            ],
+            preferences: RouterPreferences::default(),
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into()],
+            remaining_capability_units: 24,
+            budget_preference: Some("quality".into()),
+            latency_preference: Some("patient".into()),
+        });
+        assert!(result.iter().all(CandidateEvaluation::eligible));
+        assert_eq!(result[0].candidate.key(), "claude:standard");
+    }
+
+    #[test]
     fn every_constraint_has_a_stable_reason_code() {
         let mut blocked = candidate("codex", "fast", CapabilityTier::Fast, 30);
         blocked.available = false;
@@ -1049,6 +1342,8 @@ mod tests {
             histories: BTreeMap::new(),
             required_capabilities: vec!["tools".into()],
             remaining_capability_units: 1,
+            budget_preference: None,
+            latency_preference: None,
         });
         assert_eq!(result[0].exclusions.len(), 12);
         assert!(!result[0].eligible());
@@ -1095,6 +1390,41 @@ mod tests {
                 .unwrap(),
             1
         );
+        let evidence: (i64, i64, String, String) = db.query_row(
+            "SELECT policy_version,LENGTH(catalog_snapshot),task_fingerprint,selection_reason FROM router_decisions LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(evidence.0, 1);
+        assert!(evidence.1 > 2);
+        assert_eq!(evidence.2.len(), 64);
+        assert!(!evidence.3.is_empty());
+    }
+
+    #[test]
+    fn learned_preference_cannot_revive_an_excluded_candidate() {
+        let db = routing_db();
+        db.execute(
+            "UPDATE routing_policies SET weights=?1 WHERE version=1",
+            params![json!({"preferredCandidates":{"implementation":"claude:claude-standard"}}).to_string()],
+        ).unwrap();
+        save_preferences(&db, "w", &RouterPreferences {
+            excluded_harnesses: vec!["claude".into()],
+            ..RouterPreferences::default()
+        }).unwrap();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        assert_eq!(routed.decision.recommended_candidate.as_deref(), Some("codex:codex-standard"));
+        let claude = routed.decision.candidates.iter().find(|candidate| candidate.candidate.harness == "claude").unwrap();
+        assert!(claude.exclusions.contains(&CandidateExclusion::UserExcludedHarness));
+    }
+
+    #[test]
+    fn canary_assignment_is_deterministic_and_bounded_to_twenty_percent() {
+        assert_eq!(canary_bucket("same-task"), canary_bucket("same-task"));
+        let assigned = (0..10_000)
+            .filter(|index| canary_bucket(&format!("task-{index}")) < 20)
+            .count();
+        assert!((1_800..=2_200).contains(&assigned), "unexpected canary sample {assigned}");
     }
 
     #[test]
@@ -1152,13 +1482,41 @@ mod tests {
                 cache_read_tokens: None,
                 cache_write_tokens: None,
                 context_percent: None,
-                capability_units: 3,
+                capability_units: 0,
                 runtime_ms: None,
+                cost_microusd: None,
+                cost_source: None,
                 source: "policy.spawn.standard".into(),
                 created_at: "now".into(),
             },
         )
         .unwrap();
+        store::append_usage_ledger(
+            &db,
+            &UsageLedgerRow {
+                id: 0,
+                workspace_id: "w".into(),
+                session_id: Some("child".into()),
+                turn_id: Some("turn".into()),
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                context_percent: None,
+                capability_units: 3,
+                runtime_ms: Some(90),
+                cost_microusd: Some(12_345),
+                cost_source: Some("provider_reported".into()),
+                source: "usage.updated".into(),
+                created_at: "later".into(),
+            },
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')",
+            params![serde_json::to_string(&request()).unwrap()],
+        ).unwrap();
+        record_actual_execution(&db, &routed.decision.id, "codex", "codex-standard", Effort::Medium).unwrap();
         bind_worker(&db, &routed.decision.id, "child").unwrap();
         record_worker_outcome(
             &db,
@@ -1178,14 +1536,23 @@ mod tests {
             },
         )
         .unwrap();
-        let outcome: (bool, i64, i64) = db
+        let outcome: (bool, i64, i64, Option<i64>, Option<i64>, String, String) = db
             .query_row(
-                "SELECT succeeded,normalized_cost,retry_count FROM router_outcomes",
+                "SELECT succeeded,normalized_cost,retry_count,cost_microusd,total_tokens,success_state,acceptance_state FROM router_outcomes",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
             )
             .unwrap();
-        assert_eq!(outcome, (true, 3_000, 1));
+        assert_eq!(outcome, (true, 3_000, 1, Some(12_345), Some(120), "success".into(), "unknown".into()));
+        let evaluation: (String, i64, String) = db.query_row(
+            "SELECT evaluator_kind,confidence_bps,bounded_metrics FROM routing_evaluations WHERE decision_id=?1",
+            params![routed.decision.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(evaluation.0, "deterministic");
+        assert_eq!(evaluation.1, 7_000);
+        assert!(!evaluation.2.contains("done"));
+        assert_eq!(db.query_row("SELECT actual_model FROM router_decisions LIMIT 1", [], |row| row.get::<_, String>(0)).unwrap(), "codex-standard");
         assert_eq!(
             load_histories(&db, "implementation").unwrap()["codex:codex-standard"].samples,
             1

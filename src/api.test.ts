@@ -31,6 +31,25 @@ describe("SQLite-shaped mock observability", () => {
     expect((await bridgeApi.routerPreferences("demo-1")).excludedModels).toEqual(["opus"]);
   });
 
+  it("persists catalog-derived model setup as immutable versions", async () => {
+    const recommended = await bridgeApi.recommendedModelProfiles();
+    expect(recommended).toHaveLength(9);
+    const first = await bridgeApi.saveModelProfiles(recommended);
+    expect(first).toMatchObject({ complete: true, activeVersion: 1 });
+    expect(first.profiles.find(profile => profile.purpose === "reviewer")?.canonicalRole).toBe("verification");
+    const reset = await bridgeApi.resetModelProfiles();
+    expect(reset.activeVersion).toBe(2);
+  });
+
+  it("uses one learning runner and reports duplicate triggers as no-ops", async () => {
+    const first = await bridgeApi.runLearning("manual");
+    expect(first).toMatchObject({ status: "noop", duplicate: false });
+    expect(first.report?.recommendationOnly).toBe(true);
+    const duplicate = await bridgeApi.runLearning("in_app");
+    expect(duplicate.id).toBe(first.id);
+    expect(duplicate.duplicate).toBe(true);
+  });
+
   it("replays forks, compaction, queue conflict, restoration and conversation-only rewind", async () => {
     const initial = await bridgeApi.sessionForest("session-1");
     expect(initial.leaves.map(entry => entry.id)).toEqual(["entry-5a", "entry-raw"]);

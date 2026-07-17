@@ -11,12 +11,15 @@ pub mod completion;
 mod git;
 mod handoff;
 pub mod learning_router;
+pub mod learning_job;
+pub mod model_profiles;
 mod model;
 mod marketplace;
 mod orchestrator;
 mod policy;
 pub mod policy_replay;
 pub mod router_replay;
+pub mod routing_policy;
 mod policy_coordinator;
 mod restoration;
 mod secret_interception;
@@ -448,6 +451,151 @@ async fn update_router_preferences(
 }
 
 #[tauri::command]
+async fn get_model_setup(
+    state: State<'_, AppState>,
+) -> Result<model_profiles::ModelSetupState, BridgeError> {
+    model_profiles::setup_state(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+async fn recommended_model_profiles(
+    state: State<'_, AppState>,
+) -> Result<Vec<model_profiles::ModelProfileDraft>, BridgeError> {
+    model_profiles::recommended_profiles(&state.adapter_registry.descriptors())
+}
+
+#[tauri::command]
+async fn save_model_profiles(
+    profiles: Vec<model_profiles::ModelProfileDraft>,
+    state: State<'_, AppState>,
+) -> Result<model_profiles::ModelSetupState, BridgeError> {
+    model_profiles::save_profiles(
+        &state.db.lock().unwrap(),
+        &state.adapter_registry.descriptors(),
+        &profiles,
+    )
+}
+
+#[tauri::command]
+async fn reset_model_profiles(
+    state: State<'_, AppState>,
+) -> Result<model_profiles::ModelSetupState, BridgeError> {
+    model_profiles::reset_profiles(
+        &state.db.lock().unwrap(),
+        &state.adapter_registry.descriptors(),
+    )
+}
+
+#[tauri::command]
+async fn get_learning_state(
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningState, BridgeError> {
+    learning_job::learning_state(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+async fn run_learning(
+    trigger_kind: learning_job::LearningTriggerKind,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningRun, BridgeError> {
+    if matches!(
+        trigger_kind,
+        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude
+    ) {
+        return Err(BridgeError::Invalid(
+            "external learning triggers must use a registered narrow command".into(),
+        ));
+    }
+    let database_path = state.database_path.clone();
+    let run = tauri::async_runtime::spawn_blocking(move || {
+        learning_job::run_local_database(&database_path, trigger_kind)
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Learning task failed: {error}")))??;
+    let _ = app.emit("learning-job-changed", &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn cancel_learning_run(
+    run_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningRun, BridgeError> {
+    let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
+    let _ = app.emit("learning-job-changed", &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn update_learning_schedule(
+    schedule: learning_job::LearningSchedule,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningSchedule, BridgeError> {
+    learning_job::update_schedule(&state.db.lock().unwrap(), &schedule)
+}
+
+#[tauri::command]
+async fn register_learning_trigger(
+    kind: learning_job::LearningTriggerKind,
+    registration_id: String,
+    credential_ref: Option<String>,
+    expires_at: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), BridgeError> {
+    learning_job::register_trigger_with_expiry(
+        &state.db.lock().unwrap(),
+        kind,
+        &registration_id,
+        credential_ref.as_deref(),
+        expires_at.as_deref(),
+    )
+}
+
+#[tauri::command]
+async fn get_learning_trigger_instructions(
+    kind: learning_job::LearningTriggerKind,
+    database_path: String,
+    registration_id: String,
+) -> Result<String, BridgeError> {
+    learning_job::trigger_instructions(kind, &database_path, &registration_id)
+}
+
+#[tauri::command]
+async fn enable_learning_trigger(
+    kind: learning_job::LearningTriggerKind,
+    registration_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), BridgeError> {
+    learning_job::enable_trigger(&state.db.lock().unwrap(), kind, &registration_id)
+}
+
+#[tauri::command]
+async fn approve_learning_run(
+    run_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningRun, BridgeError> {
+    let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
+    let _ = app.emit("learning-job-changed", &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn rollback_routing_policy(
+    target_version: i64,
+    explanation: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<learning_job::LearningState, BridgeError> {
+    learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
+    let result = learning_job::learning_state(&state.db.lock().unwrap())?;
+    let _ = app.emit("learning-job-changed", &result);
+    Ok(result)
+}
+
+#[tauri::command]
 async fn activate_session_entry(
     session_id: String,
     entry_id: String,
@@ -561,6 +709,51 @@ async fn create_chat(
 
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
+#[derive(Debug, Clone)]
+struct OrchestratorSelection {
+    adapter_id: String,
+    model: String,
+    tier: CapabilityTier,
+    effort: Option<delegation::Effort>,
+}
+
+fn resolve_orchestrator_selection(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+) -> Result<OrchestratorSelection, BridgeError> {
+    let descriptors = registry.descriptors();
+    if let Some(profile) = model_profiles::resolve_profile(
+        db,
+        &descriptors,
+        model_profiles::ProfilePurpose::StandardOrchestrator,
+    )? {
+        let resolution = registry.resolve_model(
+            &profile.provider,
+            profile.tier,
+            Some(&profile.model),
+        )?;
+        return Ok(OrchestratorSelection {
+            adapter_id: profile.provider,
+            model: resolution.actual_model,
+            tier: profile.tier,
+            effort: Some(profile.effort),
+        });
+    }
+    for descriptor in descriptors.iter().filter(|descriptor| descriptor.available) {
+        if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
+            return Ok(OrchestratorSelection {
+                adapter_id: descriptor.id.clone(),
+                model: resolution.actual_model,
+                tier: orchestrator::TIER,
+                effort: None,
+            });
+        }
+    }
+    Err(BridgeError::Invalid(
+        "no available adapter can resolve the Standard orchestrator profile".into(),
+    ))
+}
+
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
@@ -568,6 +761,7 @@ async fn create_workspace_session(
 ) -> Result<BridgeState, BridgeError> {
     let id = Uuid::new_v4().to_string();
     let db = state.db.lock().unwrap();
+    let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
     let ws_path: Option<String> = db
         .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
             r.get::<_, Option<String>>(0)
@@ -576,8 +770,8 @@ async fn create_workspace_session(
         .flatten();
     let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
     db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,requested_tier,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'orchestrator',?6,0)",
-        params![id, workspace_id, orchestrator::HARNESS, orchestrator::SESSION_LABEL, orchestrator::TIER.as_str(), cwd],
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
+        params![id, workspace_id, selection.adapter_id, orchestrator::SESSION_LABEL, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
     )?;
     store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
     store::state(&db)
@@ -738,14 +932,17 @@ async fn start_session(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    // The user chooses neither harness nor model. Bridge starts its fast-tier
-    // orchestrator and resolves the provider model through adapter inventory.
-    let adapter_id = orchestrator::HARNESS;
+    // The persisted Standard orchestrator profile owns the default provider,
+    // model, tier, and effort. Resolution still happens against live inventory.
+    let selection = {
+        let db = state.db.lock().unwrap();
+        resolve_orchestrator_selection(&db, &state.adapter_registry)?
+    };
+    let adapter_id = selection.adapter_id.as_str();
     let session_label = orchestrator::SESSION_LABEL;
-    let resolution = state
-        .adapter_registry
-        .resolve_model(adapter_id, orchestrator::TIER, None)?;
-    let chosen_model = Some(resolution.actual_model);
+    let chosen_model = Some(selection.model.clone());
+    let chosen_effort = selection.effort;
+    let chosen_effort_name = chosen_effort.map(|effort| effort.as_str());
     let db = state.db.lock().unwrap();
     let path: Option<String> = db.query_row(
         "SELECT path FROM workspaces WHERE id=?1",
@@ -831,7 +1028,7 @@ async fn start_session(
             adapters::StartRequest {
                 cwd: &path,
                 model: chosen_model.as_deref(),
-                effort: None,
+                effort: chosen_effort_name,
                 instructions: Some(instructions),
                 write_mode: None,
             },
@@ -851,7 +1048,7 @@ async fn start_session(
                     provider_session_id: provider_id,
                     cwd: &path,
                     model: chosen_model.as_deref(),
-                    effort: None,
+                    effort: chosen_effort_name,
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: None,
                 },
@@ -951,19 +1148,21 @@ async fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,requested_tier=?5,label=?6,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
+            "UPDATE sessions SET harness=?2,status='working',started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
+                adapter_id,
                 started_at,
                 thread_id,
                 chosen_model,
-                orchestrator::TIER.as_str(),
+                selection.tier.as_str(),
+                chosen_effort_name,
                 session_label
             ],
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,0,?9)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,0,?10)",
             params![
                 session_id,
                 workspace_id,
@@ -972,7 +1171,8 @@ async fn start_session(
                 started_at,
                 thread_id,
                 chosen_model,
-                orchestrator::TIER.as_str(),
+                selection.tier.as_str(),
+                chosen_effort_name,
                 Uuid::new_v4().simple().to_string()
             ],
         )?;
@@ -2196,6 +2396,14 @@ fn launch_worker_outcome(
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
+        record_actual_execution_best_effort(
+            &db,
+            &routed.decision.id,
+            &harness,
+            &resolution.actual_model,
+            directive.effort,
+            parent_session_id,
+        );
         reserve_worker_launch_outcome(
             &db,
             parent_session_id,
@@ -2744,6 +2952,36 @@ fn launch_worker_outcome(
         "launched",
     );
     WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn record_actual_execution_best_effort(
+    db: &Connection,
+    decision_id: &str,
+    harness: &str,
+    model: &str,
+    effort: delegation::Effort,
+    parent_session_id: &str,
+) {
+    if let Err(error) = learning_router::record_actual_execution(
+        db,
+        decision_id,
+        harness,
+        model,
+        effort,
+    ) {
+        let _ = learning_router::record_route_status(
+            db,
+            decision_id,
+            "actual_resolution_record_failed",
+        );
+        let _ = store::event(
+            db,
+            "router",
+            "router.actual_resolution_record_failed",
+            parent_session_id,
+            &error.to_string(),
+        );
+    }
 }
 
 fn deliver_worker_objective(
@@ -3469,6 +3707,23 @@ fn start_worker_maintenance(app: AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         maintain_worker_pool(&app);
+    });
+}
+
+fn start_learning_maintenance(app: AppHandle) {
+    thread::spawn(move || loop {
+        let ran = {
+            let state = app.state::<AppState>();
+            let database_path = state.database_path.clone();
+            let result = learning_job::run_due_database(&database_path, Utc::now())
+                .ok()
+                .flatten();
+            result
+        };
+        if let Some(run) = ran {
+            let _ = app.emit("learning-job-changed", run);
+        }
+        thread::sleep(Duration::from_secs(60));
     });
 }
 
@@ -4559,6 +4814,7 @@ pub fn run() {
                 credential_broker,
             });
             start_worker_maintenance(app.handle().clone());
+            start_learning_maintenance(app.handle().clone());
             start_history_snapshot_maintenance(app.handle().clone());
             Ok(())
         })
@@ -4580,6 +4836,19 @@ pub fn run() {
             verifier_candidates,
             get_router_preferences,
             update_router_preferences,
+            get_model_setup,
+            recommended_model_profiles,
+            save_model_profiles,
+            reset_model_profiles,
+            get_learning_state,
+            run_learning,
+            cancel_learning_run,
+            update_learning_schedule,
+            register_learning_trigger,
+            get_learning_trigger_instructions,
+            enable_learning_trigger,
+            approve_learning_run,
+            rollback_routing_policy,
             activate_session_entry,
             add_project,
             create_workspace,
@@ -4613,11 +4882,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn orchestrator_start_uses_the_persisted_standard_profile() {
+        let registry = adapters::AdapterRegistry::built_in().unwrap();
+        let descriptors = registry.descriptors();
+        let Ok(mut profiles) = model_profiles::recommended_profiles(&descriptors) else {
+            // Provider-binary availability is environment-owned. Catalog/profile
+            // resolution itself is covered with a deterministic fake catalog.
+            return;
+        };
+        let expected = profiles
+            .iter_mut()
+            .find(|profile| profile.purpose == model_profiles::ProfilePurpose::StandardOrchestrator)
+            .unwrap();
+        expected.effort = delegation::Effort::High;
+        let expected_provider = expected.provider.clone();
+        let expected_model = expected.model.clone();
+        let db = store::open(Path::new(":memory:")).unwrap();
+        model_profiles::save_profiles(&db, &descriptors, &profiles).unwrap();
+        let selected = resolve_orchestrator_selection(&db, &registry).unwrap();
+        assert_eq!(selected.adapter_id, expected_provider);
+        assert_eq!(selected.model, expected_model);
+        assert_eq!(selected.effort, Some(delegation::Effort::High));
+        assert_eq!(selected.tier, CapabilityTier::Standard);
+    }
+
+    #[test]
     fn tauri_commands_never_block_the_ui_thread() {
         let source = include_str!("lib.rs");
         assert!(
             !source.contains("#[tauri::command]\nfn "),
             "Tauri commands must be async so native work never runs on the macOS UI thread"
+        );
+        assert!(source.contains("learning_job::run_local_database(&database_path, trigger_kind)"));
+        let locked_learning_call = [
+            "learning_job::run_learning(",
+            "&state.db.lock().unwrap()",
+            ", trigger_kind)",
+        ]
+        .concat();
+        assert!(!source.contains(&locked_learning_call));
+    }
+
+    #[test]
+    fn evidence_recording_failure_is_not_load_bearing_for_worker_launch() {
+        let db = Connection::open_in_memory().unwrap();
+        record_actual_execution_best_effort(
+            &db,
+            "missing-decision",
+            "codex",
+            "model",
+            delegation::Effort::Medium,
+            "missing-parent",
         );
     }
 

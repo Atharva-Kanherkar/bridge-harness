@@ -3,16 +3,18 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
+import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
+import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
+import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
@@ -66,6 +68,7 @@ export function App() {
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [health, setHealth] = useState<Health>();
+  const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "marketplace">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -92,7 +95,9 @@ export function App() {
 
   const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
   useEffect(() => {
-    void Promise.all([reload(), bridgeApi.health().then(setHealth)]);
+    void Promise.all([reload(), bridgeApi.health(), bridgeApi.modelSetup()])
+      .then(([, healthValue, setup]) => { setHealth(healthValue); setModelSetup(setup); })
+      .catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
@@ -244,10 +249,12 @@ export function App() {
   // New chat opens instantly (no picker up front): create a direct chat with the
   // default model and select it. The model can be changed inside the chat.
   async function openNewChat(initialMessage?: string) {
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex or Claude, then retry model setup."); return; }
     setView("workspace");
-    const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
+    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
+    const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
-    const model = preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+    const model = profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
     const draft = initialMessage?.trim() ?? "";
     if (draft) pendingWelcomeMessageRef.current = draft;
     setBusy(true); setError(undefined);
@@ -271,6 +278,7 @@ export function App() {
   }, [session?.id]);
   // Workspace "+": start a classic orchestrator session tied to the workspace.
   async function newWorkspaceSession(workspaceId: string) {
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex or Claude before starting an orchestrator."); return; }
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createWorkspaceSession(workspaceId);
@@ -382,6 +390,8 @@ export function App() {
   const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
+  if (!health || !modelSetup) return <div className="space-dark relative grid h-[100dvh] place-items-center overflow-hidden text-neutral-500"><SpaceBackground paused /><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="space-dark relative h-[100dvh] overflow-hidden"><SpaceBackground paused /><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   return <div className="space-dark relative flex h-[100dvh] overflow-hidden text-neutral-200">
     <SpaceBackground paused={turnActive} />
 
@@ -406,6 +416,7 @@ export function App() {
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
+      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex or Claude is installed and signed in.</AlertDescription></Alert>}
       {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
@@ -494,7 +505,14 @@ export function App() {
             {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
           </div>
         </section>
-      </> : <Welcome adapters={adapters} busy={busy} onStartChat={text => void openNewChat(text)} onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}/>}
+      </> : <Welcome
+        adapters={adapters}
+        modelSetup={modelSetup}
+        canStartChat={adaptersReady}
+        busy={busy}
+        onStartChat={text => void openNewChat(text)}
+        onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
+      />}
     </main>
     {error && (() => {
       const described = describeError(error, {
@@ -520,7 +538,7 @@ export function App() {
       onClose={() => setModal(null)}
       onSubmit={() => void submitNewWorkspace()}
     />
-    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} onClose={() => setModal(null)} onError={setError} />
+    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
   </div>;
 }
 
@@ -575,14 +593,15 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="p-[38px_44px] max-w-[780px]"><div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGE STORY</div><h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="mt-6 h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]"><b className="text-success font-medium">+{workspace.additions}</b><b className="text-destructive font-medium">−{workspace.deletions}</b><span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/><small className="text-muted-foreground">{workspace.branch}</small></div><div className="mt-5 flex flex-col gap-2.5">{[78,92,64,85,51,70].map((n,i)=><i key={i} className="block h-[7px] bg-muted rounded-[3px]" style={{width:`${n}%`}}/>)}</div></div>; }
 function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="max-w-[720px] px-8 py-[22px]">{events.length ? events.map(e => <article key={e.id} className="flex gap-3 py-[13px] border-b border-border text-muted-foreground"><CircleDot size={14} aria-hidden="true" /><div><b className="text-foreground text-[11px] font-medium tracking-[0.02em] capitalize">{e.kind.replaceAll(".", " ")}</b><p className="text-[12.5px] my-1 text-foreground">{e.body}</p><small className="font-mono text-[10.5px] text-muted-foreground/65">{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="text-muted-foreground text-[12.5px] p-7">No events for this workspace yet.</div>}</div>; }
-function WelcomeModelBadge({ adapters }: { adapters: import("./types").AdapterDescriptor[] }) {
-  const preferred = adapters.find(adapter => adapter.available) ?? adapters[0];
-  const model = preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
+function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState }) {
+  const profile = resolveProfileOption("standard_orchestrator", modelSetup, adapters);
+  const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+  const model = profile?.model ?? preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
   const tierLabel = model?.tier === "strong" ? "High" : model?.tier === "standard" ? "Balanced" : "Fast";
   return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400">{tierLabel}<ChevronDown size={14} className="text-neutral-600" aria-hidden="true" /></span>;
 }
 
-function Welcome({ adapters, busy, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; busy: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
+function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; canStartChat: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
   const submit = () => {
@@ -599,10 +618,10 @@ function Welcome({ adapters, busy, onStartChat, onNewWorkspace }: { adapters: im
       onChange={setDraft}
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
-      placeholder="Ask Bridge…"
-      disabled={busy}
+      placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
+      disabled={busy || !canStartChat}
       onPlusClick={onNewWorkspace}
-      trailing={<WelcomeModelBadge adapters={adapters} />}
+      trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />
     <p className="mt-5 max-w-md text-[13px] leading-relaxed text-neutral-500">{greeting.hint}</p>
   </div>;

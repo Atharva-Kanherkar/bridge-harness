@@ -433,6 +433,8 @@ pub struct UsageReport {
     pub cache_write_tokens: Option<i64>,
     pub context_percent: Option<i64>,
     pub runtime_ms: Option<i64>,
+    pub cost_microusd: Option<i64>,
+    pub cost_source: Option<String>,
 }
 
 impl UsageReport {
@@ -453,6 +455,10 @@ impl UsageReport {
             context_percent: integer_alias(data, &["context_percent", "contextPercent"])
                 .or_else(|| integer_alias(usage, &["context_percent", "contextPercent"])),
             runtime_ms: integer_alias(data, &["runtime_ms", "runtimeMs", "duration_ms"]),
+            cost_microusd: decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
+                .map(|value| (value * 1_000_000.0).round() as i64),
+            cost_source: decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
+                .map(|_| "provider_reported".into()),
         };
         (report != Self::default()).then_some(report)
     }
@@ -476,6 +482,8 @@ impl UsageReport {
             context_percent: self.context_percent,
             capability_units: 0,
             runtime_ms: self.runtime_ms,
+            cost_microusd: self.cost_microusd,
+            cost_source: self.cost_source.clone(),
             source: source.into(),
             created_at: Utc::now().to_rfc3339(),
         }
@@ -491,6 +499,20 @@ fn integer_alias(value: &Value, keys: &[&str]) -> Option<i64> {
             child
                 .is_object()
                 .then(|| integer_alias(child, keys))
+                .flatten()
+        })
+    })
+}
+
+fn decimal_alias(value: &Value, keys: &[&str]) -> Option<f64> {
+    if let Some(found) = keys.iter().find_map(|key| value.get(*key)?.as_f64()) {
+        return Some(found);
+    }
+    value.as_object().and_then(|object| {
+        object.values().find_map(|child| {
+            child
+                .is_object()
+                .then(|| decimal_alias(child, keys))
                 .flatten()
         })
     })
@@ -680,6 +702,8 @@ pub fn record_spawn_usage(
             context_percent: None,
             capability_units: outcome.capability_units,
             runtime_ms: None,
+            cost_microusd: None,
+            cost_source: None,
             source: source.into(),
             created_at: Utc::now().to_rfc3339(),
         },
@@ -1170,7 +1194,8 @@ mod tests {
                 "input_tokens": 11,
                 "output_tokens": 5,
                 "cached_input_tokens": 2,
-                "cache_write_tokens": 1
+                "cache_write_tokens": 1,
+                "cost_usd": 0.012345
             },
             "duration_ms": 100
         }))
@@ -1178,6 +1203,13 @@ mod tests {
         assert_eq!(claude.output_tokens, Some(5));
         assert_eq!(claude.cache_write_tokens, Some(1));
         assert_eq!(claude.runtime_ms, Some(100));
+        assert_eq!(claude.cost_microusd, Some(12_345));
+
+        let unknown_cost = UsageReport::from_normalized(&json!({
+            "usage": {"input_tokens": 1}
+        }))
+        .unwrap();
+        assert_eq!(unknown_cost.cost_microusd, None);
     }
 
     #[test]

@@ -50,6 +50,13 @@ struct ReplayReport {
     limitation: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FullReplayReport {
+    deterministic_safety_replay: ReplayReport,
+    realized_outcome_replay: Option<crate::routing_policy::CandidatePolicy>,
+}
+
 struct LoadedCases {
     source_decisions: usize,
     legacy_skipped: usize,
@@ -88,12 +95,40 @@ where
 
     let loaded = load_database(Path::new(&database))?;
     let report = replay(loaded, candidate);
+    let realized_outcome_replay = load_realized_outcome_replay(Path::new(&database))?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&report)
+        serde_json::to_string_pretty(&FullReplayReport {
+            deterministic_safety_replay: report,
+            realized_outcome_replay,
+        })
             .map_err(|error| format!("cannot serialize replay report: {error}"))?
     );
     Ok(())
+}
+
+fn load_realized_outcome_replay(
+    path: &Path,
+) -> Result<Option<crate::routing_policy::CandidatePolicy>, String> {
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("cannot open {} for outcome replay: {error}", path.display()))?;
+    let boundary: i64 = db
+        .query_row("SELECT COALESCE(MAX(rowid),0) FROM router_outcomes", [], |row| row.get(0))
+        .map_err(|error| format!("cannot freeze realized-outcome boundary: {error}"))?;
+    let weights: String = db
+        .query_row(
+            "SELECT weights FROM routing_policies WHERE status IN ('active','canary') LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("cannot load active learned policy: {error}"))?;
+    let weights = serde_json::from_str(&weights)
+        .map_err(|error| format!("active learned policy weights are invalid: {error}"))?;
+    crate::routing_policy::build_candidate(&db, boundary, &weights)
+        .map_err(|error| format!("realized-outcome replay failed: {error}"))
 }
 
 fn usage(program: &str) -> String {
@@ -232,7 +267,7 @@ fn replay(loaded: LoadedCases, candidate: PolicyConfig) -> ReplayReport {
         recorded,
         candidate_summary,
         capability_units_delta,
-        limitation: "Structural replay only: realized quality, provider billing, and savings require separately collected outcome and cost labels.",
+        limitation: "This section replays deterministic safety structure. The sibling realizedOutcomeReplay section uses typed held-out outcomes and reported provider costs without claiming causal model superiority.",
     }
 }
 

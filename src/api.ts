@@ -1,13 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, Harness, Health, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, Harness, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
+import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
+let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
+let mockLearningState: LearningState = {
+  schedule: { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "manual" },
+  latestRun: null,
+  activePolicyVersion: 1,
+  canaryPolicyVersion: null,
+};
 let nextEventId = 20;
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
@@ -73,8 +81,8 @@ const mockForests: Record<string, SessionForestSnapshot> = {
     ],
     workerQueue: [{ id: "queue-1", parentSessionId: "session-1", workspaceId: "demo-1", turnId: "mock-turn-1", request: { role: "implementation", objective: "Update the auth serializer", ownedPaths: ["src/auth/**"], writeMode: "isolated", reason: "owned_path_conflict" }, actualModel: "gpt-5.6-terra", queueStatus: "queued", sequence: 1, dispatchedSessionId: null, createdAt: now, updatedAt: now }],
     usage: [
-      { id: 1, workspaceId: "demo-1", sessionId: "session-1", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 38, capabilityUnits: 0, runtimeMs: null, source: "provider.codex", createdAt: now },
-      { id: 2, workspaceId: "demo-1", sessionId: "session-1w", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: null, capabilityUnits: 8, runtimeMs: null, source: "policy.spawn.strong", createdAt: now }
+      { id: 1, workspaceId: "demo-1", sessionId: "session-1", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 38, capabilityUnits: 0, runtimeMs: null, costMicrousd: 12_500, costSource: "provider_reported", source: "provider.codex", createdAt: now },
+      { id: 2, workspaceId: "demo-1", sessionId: "session-1w", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: null, capabilityUnits: 8, runtimeMs: null, costMicrousd: null, costSource: null, source: "policy.spawn.strong", createdAt: now }
     ],
     reasons: [
       { id: 106, source: "adapter", kind: "session.shutdown", entityId: "session-old", body: "user_stopped", createdAt: now },
@@ -142,6 +150,26 @@ const mockSkills: SkillCatalog = {
 };
 const mockSkillConsents = new Map<string, { skillId: string; action: SkillAction; targets: SkillProvider[] }>();
 
+function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
+  const version = (mockModelSetup.activeVersion ?? 0) + 1;
+  mockModelSetup = {
+    complete: true,
+    activeVersion: version,
+    profiles: profiles.map(profile => ({
+      ...structuredClone(profile),
+      schemaVersion: 1,
+      version,
+      profileId: profile.purpose,
+      canonicalRole: profile.purpose === "implementer" ? "implementation"
+        : ["verifier", "reviewer", "evaluator"].includes(profile.purpose) ? "verification"
+          : profile.purpose === "research" ? "research"
+            : profile.purpose === "documentation" ? "documentation" : "planning",
+      createdAt: new Date().toISOString(),
+    })),
+  };
+  return structuredClone(mockModelSetup);
+}
+
 export const bridgeApi = {
   skillCatalog: (): Promise<SkillCatalog> => isTauri() ? invoke("skill_catalog") : Promise.resolve(structuredClone(mockSkills)),
   skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? invoke("skill_suggestions", { query, provider }) : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
@@ -182,6 +210,57 @@ export const bridgeApi = {
   },
   health: (): Promise<Health> => isTauri() ? invoke("health") : Promise.resolve(structuredClone(mockHealth)),
   state: (): Promise<BridgeState> => isTauri() ? invoke("get_state") : Promise.resolve(snapshot()),
+  modelSetup: (): Promise<ModelSetupState> => isTauri() ? invoke("get_model_setup") : Promise.resolve(structuredClone(mockModelSetup)),
+  recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? invoke("recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
+  saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? invoke("save_model_profiles", { profiles }) : Promise.resolve(saveMockProfiles(profiles)),
+  resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? invoke("reset_model_profiles") : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  learningState: (): Promise<LearningState> => isTauri() ? invoke("get_learning_state") : Promise.resolve(structuredClone(mockLearningState)),
+  runLearning: (triggerKind: LearningTriggerKind = "manual"): Promise<LearningRun> => {
+    if (isTauri()) return invoke("run_learning", { triggerKind });
+    if (mockLearningState.latestRun) {
+      const duplicate = { ...structuredClone(mockLearningState.latestRun), triggerKind, duplicate: true };
+      return Promise.resolve(duplicate);
+    }
+    const createdAt = new Date().toISOString();
+    const run: LearningRun = { id: crypto.randomUUID(), jobId: "default", triggerKind, idempotencyKey: "default:0:1", evidenceBoundary: 0, basePolicyVersion: 1, status: "noop", report: { reason: "insufficient evidence: 0/5 outcomes", evidenceBoundary: 0, evidenceCount: 0, basePolicyVersion: 1, candidatePolicyVersion: null, qualityBps: null, averageCostMicrousd: null, averageLatencyMs: null, retryRateBps: null, interventionRateBps: null, averageConfidenceBps: null, costComplete: false, evaluatedSpendMicrousd: 0, evaluatedTokens: 0, evaluationExecution: "not_run", replayPassed: null, promotionStatus: "not_requested", policyDiff: {}, recommendationOnly: true }, candidatePolicyVersion: null, cancellationRequested: false, leaseExpiresAt: null, replayPassed: null, promotionStatus: "not_requested", duplicate: false, createdAt, completedAt: createdAt };
+    mockLearningState.latestRun = run;
+    return Promise.resolve(structuredClone(run));
+  },
+  cancelLearningRun: (runId: string): Promise<LearningRun> => {
+    if (isTauri()) return invoke("cancel_learning_run", { runId });
+    if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId) return Promise.reject(new Error("Learning run not found"));
+    mockLearningState.latestRun = { ...mockLearningState.latestRun, status: "cancelled", cancellationRequested: true, promotionStatus: "cancelled", completedAt: new Date().toISOString() };
+    return Promise.resolve(structuredClone(mockLearningState.latestRun));
+  },
+  updateLearningSchedule: (schedule: LearningSchedule): Promise<LearningSchedule> => {
+    if (isTauri()) return invoke("update_learning_schedule", { schedule });
+    mockLearningState.schedule = structuredClone(schedule);
+    return Promise.resolve(structuredClone(schedule));
+  },
+  approveLearningRun: (runId: string): Promise<LearningRun> => {
+    if (isTauri()) return invoke("approve_learning_run", { runId });
+    if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId || mockLearningState.latestRun.promotionStatus !== "awaiting_approval") return Promise.reject(new Error("Learning run is not awaiting approval"));
+    mockLearningState.activePolicyVersion = mockLearningState.latestRun.candidatePolicyVersion ?? mockLearningState.activePolicyVersion;
+    mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
+    return Promise.resolve(structuredClone(mockLearningState.latestRun));
+  },
+  rollbackRoutingPolicy: (targetVersion: number, explanation: string): Promise<LearningState> => {
+    if (isTauri()) return invoke("rollback_routing_policy", { targetVersion, explanation });
+    void targetVersion;
+    void explanation;
+    mockLearningState.activePolicyVersion += 1;
+    mockLearningState.canaryPolicyVersion = null;
+    return Promise.resolve(structuredClone(mockLearningState));
+  },
+  registerLearningTrigger: (kind: "codex" | "claude", registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
+    ? invoke("register_learning_trigger", { kind, registrationId, credentialRef, expiresAt })
+    : Promise.resolve(),
+  learningTriggerInstructions: (kind: "codex" | "claude", databasePath: string, registrationId: string): Promise<string> => isTauri()
+    ? invoke("get_learning_trigger_instructions", { kind, databasePath, registrationId })
+    : Promise.resolve(`Run \`bridge learning run --database "${databasePath}" --trigger ${kind}:${registrationId}\` locally as a wake-up trigger only. Bridge owns replay, approval, promotion, and rollback.`),
+  enableLearningTrigger: (kind: "codex" | "claude", registrationId: string): Promise<void> => isTauri()
+    ? invoke("enable_learning_trigger", { kind, registrationId })
+    : Promise.resolve(),
   routerPreferences: (workspaceId: string): Promise<RouterPreferences> => isTauri()
     ? invoke("get_router_preferences", { workspaceId })
     : Promise.resolve(structuredClone(mockRouterPreferences.get(workspaceId) ?? { mode: "shadow", minimumPassBps: 6500, pinnedHarness: null, pinnedModel: null, excludedHarnesses: [], excludedModels: [] })),

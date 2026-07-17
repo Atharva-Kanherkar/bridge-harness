@@ -153,7 +153,9 @@ fn load_database(
                 continue;
             }
         };
-        if decision.schema_version != crate::learning_router::ROUTER_SCHEMA_VERSION {
+        if decision.schema_version == 0
+            || decision.schema_version > crate::learning_router::ROUTER_SCHEMA_VERSION
+        {
             invalid.push(InvalidDecision {
                 id,
                 error: format!(
@@ -378,7 +380,14 @@ mod tests {
             workspace_id: "w".into(),
             parent_session_id: "p".into(),
             turn_id: "t".into(),
+            trace_id: Some("trace-replay".into()),
             task_family: "implementation".into(),
+            task_fingerprint: "fixture".into(),
+            repository_revision: Some("head:clean".into()),
+            profile_version: Some(1),
+            profile_purpose: Some("implementer".into()),
+            policy_version: 1,
+            catalog_snapshot: serde_json::json!({}),
             mode: RouterMode::Shadow,
             manual_override: false,
             baseline_candidate: Some("claude:standard".into()),
@@ -386,6 +395,9 @@ mod tests {
             executed_candidate: Some("claude:standard".into()),
             explanation: "shadow".into(),
             candidates: vec![candidate],
+            actual_provider: Some("claude".into()),
+            actual_model: Some("standard".into()),
+            actual_effort: Some(Effort::Medium),
             created_at: "now".into(),
         }
     }

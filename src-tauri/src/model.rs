@@ -352,6 +352,8 @@ pub struct UsageLedgerRow {
     pub context_percent: Option<i64>,
     pub capability_units: i64,
     pub runtime_ms: Option<i64>,
+    pub cost_microusd: Option<i64>,
+    pub cost_source: Option<String>,
     pub source: String,
     pub created_at: String,
 }
