@@ -14,7 +14,7 @@ import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
-import { resolveProfileOption } from "./modelProfiles";
+import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
@@ -249,6 +249,7 @@ export function App() {
   // New chat opens instantly (no picker up front): create a direct chat with the
   // default model and select it. The model can be changed inside the chat.
   async function openNewChat(initialMessage?: string) {
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex or Claude, then retry model setup."); return; }
     setView("workspace");
     const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
     const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
@@ -277,6 +278,7 @@ export function App() {
   }, [session?.id]);
   // Workspace "+": start a classic orchestrator session tied to the workspace.
   async function newWorkspaceSession(workspaceId: string) {
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex or Claude before starting an orchestrator."); return; }
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createWorkspaceSession(workspaceId);
@@ -389,7 +391,7 @@ export function App() {
 
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="space-dark relative grid h-[100dvh] place-items-center overflow-hidden text-neutral-500"><SpaceBackground paused /><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
-  if (!modelSetup.complete) return <div className="space-dark relative h-[100dvh] overflow-hidden"><SpaceBackground paused /><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
+  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="space-dark relative h-[100dvh] overflow-hidden"><SpaceBackground paused /><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   return <div className="space-dark relative flex h-[100dvh] overflow-hidden text-neutral-200">
     <SpaceBackground paused={turnActive} />
 
@@ -414,6 +416,7 @@ export function App() {
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
+      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex or Claude is installed and signed in.</AlertDescription></Alert>}
       {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
@@ -505,6 +508,7 @@ export function App() {
       </> : <Welcome
         adapters={adapters}
         modelSetup={modelSetup}
+        canStartChat={adaptersReady}
         busy={busy}
         onStartChat={text => void openNewChat(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
@@ -597,7 +601,7 @@ function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types
   return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400">{tierLabel}<ChevronDown size={14} className="text-neutral-600" aria-hidden="true" /></span>;
 }
 
-function Welcome({ adapters, modelSetup, busy, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
+function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; canStartChat: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
   const submit = () => {
@@ -614,8 +618,8 @@ function Welcome({ adapters, modelSetup, busy, onStartChat, onNewWorkspace }: { 
       onChange={setDraft}
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
-      placeholder="Ask Bridge…"
-      disabled={busy}
+      placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
+      disabled={busy || !canStartChat}
       onPlusClick={onNewWorkspace}
       trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />

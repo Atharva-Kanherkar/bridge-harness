@@ -87,10 +87,16 @@ pub struct LearningReport {
     pub cost_complete: bool,
     pub evaluated_spend_microusd: i64,
     pub evaluated_tokens: i64,
+    #[serde(default = "default_evaluation_execution")]
+    pub evaluation_execution: String,
     pub replay_passed: Option<bool>,
     pub promotion_status: String,
     pub policy_diff: serde_json::Value,
     pub recommendation_only: bool,
+}
+
+fn default_evaluation_execution() -> String {
+    "not_run".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,12 +242,31 @@ fn active_policy_weights(db: &Connection, version: i64) -> Result<serde_json::Va
     serde_json::from_str(&weights).map_err(|error| BridgeError::Invalid(error.to_string()))
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DeferredEvaluationSummary {
+    pending: i64,
+    reused_existing: i64,
+}
+
+impl DeferredEvaluationSummary {
+    fn execution_status(&self) -> &'static str {
+        if self.pending > 0 {
+            "deferred"
+        } else if self.reused_existing > 0 {
+            "reused_existing_evidence"
+        } else {
+            "deterministic_only"
+        }
+    }
+}
+
 fn record_deferred_model_evaluations(
     db: &Connection,
     learning_run_id: &str,
     previous_boundary: i64,
     boundary: i64,
-) -> Result<(), BridgeError> {
+) -> Result<DeferredEvaluationSummary, BridgeError> {
+    let mut summary = DeferredEvaluationSummary::default();
     let active_profile_version: Option<i64> = db
         .query_row(
             "SELECT active_version FROM model_setup_state WHERE id='default'",
@@ -352,15 +377,20 @@ fn record_deferred_model_evaluations(
                 Utc::now().to_rfc3339(),
             ],
         )?;
+        match status {
+            "pending_bounded_model_eval" => summary.pending += 1,
+            "completed" => summary.reused_existing += 1,
+            _ => {}
+        }
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRun, BridgeError> {
-    let (boundary, base_policy_version): (i64, i64) = db.query_row(
-        "SELECT evidence_boundary,base_policy_version FROM learning_job_runs WHERE id=?1",
+    let (boundary, base_policy_version, candidate_policy_version): (i64, i64, Option<i64>) = db.query_row(
+        "SELECT evidence_boundary,base_policy_version,candidate_policy_version FROM learning_job_runs WHERE id=?1",
         params![id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let summary = EvidenceSummary::load(db, boundary).unwrap_or_default();
     let report = LearningReport {
@@ -378,16 +408,58 @@ fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRu
         cost_complete: false,
         evaluated_spend_microusd: 0,
         evaluated_tokens: 0,
+        evaluation_execution: "not_run".into(),
         replay_passed: None,
         promotion_status: "failed".into(),
         policy_diff: json!({}),
         recommendation_only: true,
     };
-    db.execute(
+    let transaction = db.unchecked_transaction()?;
+    if let Some(candidate) = candidate_policy_version {
+        transaction.execute(
+            "UPDATE routing_policies SET status='abandoned' WHERE version=?1 AND status='candidate'",
+            params![candidate],
+        )?;
+    }
+    transaction.execute(
         "UPDATE learning_job_runs SET status='failed',report=?2,lease_owner=NULL,lease_expires_at=NULL,promotion_status='failed',completed_at=?3 WHERE id=?1",
         params![id, serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, Utc::now().to_rfc3339()],
     )?;
+    transaction.commit()?;
     load_run(db, id)?.ok_or_else(|| BridgeError::Invalid("failed learning run disappeared".into()))
+}
+
+fn persist_candidate_policy(
+    db: &Connection,
+    run_id: &str,
+    base_version: i64,
+    boundary: i64,
+    candidate: &routing_policy::CandidatePolicy,
+) -> Result<i64, BridgeError> {
+    let replay_json = serde_json::to_string(&candidate.replay)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let transaction = db.unchecked_transaction()?;
+    let next_version: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version),0)+1 FROM routing_policies",
+        [],
+        |row| row.get(0),
+    )?;
+    transaction.execute(
+        "INSERT INTO routing_policies(version,status,predecessor,weights,thresholds,replay_report,created_reason,created_at)
+         VALUES(?1,'candidate',?2,?3,?4,?5,?6,?7)",
+        params![next_version, base_version, candidate.weights.to_string(), candidate.thresholds.to_string(), replay_json, format!("learning candidate from frozen evidence boundary {boundary}"), Utc::now().to_rfc3339()],
+    )?;
+    let linked = transaction.execute(
+        "UPDATE learning_job_runs SET candidate_policy_version=?2 WHERE id=?1 AND status='running'",
+        params![run_id, next_version],
+    )?;
+    if linked != 1 {
+        return Err(BridgeError::Invalid(
+            "candidate policy could not be linked to its running learning job".into(),
+        ));
+    }
+    transaction.commit()?;
+    Ok(next_version)
 }
 
 pub fn run_learning(
@@ -548,6 +620,7 @@ fn process_run(
     let mut promotion_status = "not_requested".to_owned();
     let mut policy_diff = json!({});
     let mut consumed_evidence = false;
+    let mut evaluation_execution = "not_run".to_owned();
     let canary_pending = schedule.mode == "automatic"
         && db.query_row(
             "SELECT EXISTS(SELECT 1 FROM routing_policies WHERE status='canary')",
@@ -569,7 +642,8 @@ fn process_run(
             format!("insufficient new evidence: {new_evidence_count}/{MIN_EVIDENCE_SAMPLES} outcomes since boundary {previous_boundary}"),
         )
     } else {
-        record_deferred_model_evaluations(db, id, previous_boundary, boundary)?;
+        let evaluation_summary = record_deferred_model_evaluations(db, id, previous_boundary, boundary)?;
+        evaluation_execution = evaluation_summary.execution_status().into();
         consumed_evidence = true;
         let base_weights = active_policy_weights(db, base_version)?;
         match routing_policy::build_candidate(db, boundary, &base_weights)? {
@@ -581,13 +655,7 @@ fn process_run(
             }
             Some(candidate) => {
                 replay_passed = Some(true);
-                let next_version: i64 = db.query_row("SELECT COALESCE(MAX(version),0)+1 FROM routing_policies", [], |row| row.get(0))?;
-                let replay_json = serde_json::to_string(&candidate.replay).map_err(|error| BridgeError::Invalid(error.to_string()))?;
-                db.execute(
-                    "INSERT INTO routing_policies(version,status,predecessor,weights,thresholds,replay_report,created_reason,created_at)
-                     VALUES(?1,'candidate',?2,?3,?4,?5,?6,?7)",
-                    params![next_version, base_version, candidate.weights.to_string(), candidate.thresholds.to_string(), replay_json, format!("learning candidate from frozen evidence boundary {boundary}"), Utc::now().to_rfc3339()],
-                )?;
+                let next_version = persist_candidate_policy(db, id, base_version, boundary, &candidate)?;
                 candidate_policy_version = Some(next_version);
                 policy_diff = json!({
                     "weights": candidate.weights,
@@ -637,22 +705,25 @@ fn process_run(
         cost_complete: summary.count > 0 && summary.cost_reported == summary.count,
         evaluated_spend_microusd: 0,
         evaluated_tokens: 0,
+        evaluation_execution,
         replay_passed,
         promotion_status: promotion_status.clone(),
         policy_diff,
         recommendation_only: schedule.mode != "automatic",
     };
     let completed_at = Utc::now().to_rfc3339();
-    db.execute(
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
         "UPDATE learning_job_runs SET status=?2,report=?3,candidate_policy_version=?4,evaluated_spend_microusd=0,evaluated_tokens=0,replay_passed=?5,promotion_status=?6,lease_owner=NULL,lease_expires_at=NULL,completed_at=?7 WHERE id=?1",
         params![id, status.as_str(), serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, candidate_policy_version, replay_passed, promotion_status, completed_at],
     )?;
     if consumed_evidence {
-        db.execute(
+        transaction.execute(
             "UPDATE learning_jobs SET last_evidence_boundary=MAX(last_evidence_boundary,?2),updated_at=?3 WHERE id=?1",
             params![DEFAULT_JOB_ID, boundary, completed_at],
         )?;
     }
+    transaction.commit()?;
     load_run(db, &id)?.ok_or_else(|| BridgeError::Invalid("learning run disappeared".into()))
 }
 
@@ -944,28 +1015,34 @@ fn settle_canary(db: &Connection) -> Result<(), BridgeError> {
     }
     let expected: routing_policy::PolicyReplayReport = serde_json::from_str(&replay_json)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    let quality = (known > 0).then(|| successes * 10_000 / known);
+    let quality = (known == count && known > 0).then(|| successes * 10_000 / known);
     let cost = (cost_reported == count && successes > 0).then(|| cost_total / successes);
     let latency = (count > 0).then(|| latency_total / count);
     let retry = retries * 10_000 / count;
     let intervention = interventions * 10_000 / count;
     let regressed = quality
         .zip(expected.candidate.quality_bps)
-        .is_none_or(|(actual, expected)| actual + 500 < expected)
+        .is_some_and(|(actual, expected)| actual + 500 < expected)
         || cost
             .zip(expected.candidate.cost_per_success_microusd)
-            .is_none_or(|(actual, expected)| actual * 10_000 > expected * 11_000)
+            .is_some_and(|(actual, expected)| actual * 10_000 > expected * 11_000)
         || latency
             .zip(expected.candidate.average_latency_ms)
-            .is_none_or(|(actual, expected)| actual * 10_000 > expected * 12_000)
+            .is_some_and(|(actual, expected)| actual * 10_000 > expected * 12_000)
         || expected
             .candidate
             .retry_rate_bps
-            .is_none_or(|expected| retry > expected + 500)
+            .is_some_and(|expected| retry > expected + 500)
         || expected
             .candidate
             .intervention_rate_bps
-            .is_none_or(|expected| intervention > expected + 500);
+            .is_some_and(|expected| intervention > expected + 500);
+    let required_metrics_available = expected.candidate.quality_bps.is_none_or(|_| quality.is_some())
+        && expected.candidate.cost_per_success_microusd.is_none_or(|_| cost.is_some())
+        && expected.candidate.average_latency_ms.is_none_or(|_| latency.is_some());
+    if !regressed && !required_metrics_available {
+        return Ok(());
+    }
     if regressed {
         rollback_policy_internal(
             db,
@@ -1272,8 +1349,7 @@ pub fn run_database(
             database_path.display()
         )));
     }
-    let db = Connection::open(database_path)?;
-    db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    let db = open_existing_database(database_path)?;
     if let Some(registration_id) = registration_id {
         run_external_trigger(&db, kind, &registration_id, credential_ref)
     } else if credential_ref.is_some() {
@@ -1288,6 +1364,35 @@ pub fn run_database(
             run: Some(run),
         })
     }
+}
+
+fn open_existing_database(database_path: &std::path::Path) -> Result<Connection, BridgeError> {
+    let db = Connection::open(database_path)?;
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    Ok(db)
+}
+
+pub fn run_local_database(
+    database_path: &std::path::Path,
+    trigger_kind: LearningTriggerKind,
+) -> Result<LearningRun, BridgeError> {
+    if !database_path.is_file() {
+        return Err(BridgeError::Invalid(format!(
+            "Bridge database does not exist: {}",
+            database_path.display()
+        )));
+    }
+    run_learning(&open_existing_database(database_path)?, trigger_kind)
+}
+
+pub fn run_due_database(
+    database_path: &std::path::Path,
+    now: DateTime<Utc>,
+) -> Result<Option<LearningRun>, BridgeError> {
+    if !database_path.is_file() {
+        return Ok(None);
+    }
+    run_due(&open_existing_database(database_path)?, now)
 }
 
 fn parse_trigger(
@@ -1857,6 +1962,51 @@ mod tests {
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM routing_policy_promotions WHERE action='canary_completed'", [], |row| row.get::<_, i64>(0)).unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn automatic_canary_holds_when_required_cost_is_unknown() {
+        let db = database();
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        assert_eq!(run.promotion_status, "canary");
+        for index in 100..105 {
+            add_outcome(&db, index, "b", true, None, 2);
+        }
+        settle_canary(&db).unwrap();
+        assert_eq!(active_policy_version(&db).unwrap(), 2);
+        assert_eq!(
+            db.query_row("SELECT status FROM routing_policies WHERE version=2", [], |row| row.get::<_, String>(0)).unwrap(),
+            "canary"
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM routing_policies WHERE rollback_of IS NOT NULL", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn failed_run_abandons_its_linked_candidate_atomically() {
+        let db = database();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,weights,thresholds,created_reason,created_at)
+             VALUES(2,'candidate',1,'{}','{}','fixture','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,snapshot_frozen_at,candidate_policy_version,created_at)
+             VALUES('failed-fixture','default','manual','default:0:1',0,1,'running','now',2,'now')",
+            [],
+        )
+        .unwrap();
+        let failed = fail_run(&db, "failed-fixture", &BridgeError::Invalid("injected failure".into())).unwrap();
+        assert_eq!(failed.status, LearningRunStatus::Failed);
+        assert_eq!(
+            db.query_row("SELECT status FROM routing_policies WHERE version=2", [], |row| row.get::<_, String>(0)).unwrap(),
+            "abandoned"
         );
     }
 

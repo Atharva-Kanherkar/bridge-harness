@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { availableModelOptions, recommendedProfileDrafts, resolveProfileOption } from "./modelProfiles";
+import { availableModelOptions, modelProfilesChanged, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import type { AdapterDescriptor, ModelSetupState } from "./types";
 
 const adapters: AdapterDescriptor[] = [{
@@ -55,5 +55,23 @@ describe("model profile catalog helpers", () => {
     alternate.available = false;
     expect(resolveProfileOption("standard_orchestrator", setup, [...adapters, alternate])?.value)
       .toBe("catalog:balanced");
+  });
+
+  it("does not trap users in setup when no adapter is available", () => {
+    const setup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
+    expect(shouldRequireModelSetup(setup, adapters.map(adapter => ({ ...adapter, available: false })))).toBe(false);
+    expect(shouldRequireModelSetup(setup, adapters)).toBe(true);
+  });
+
+  it("detects profile edits without churning identical immutable versions", () => {
+    const drafts = recommendedProfileDrafts(adapters);
+    const setup: ModelSetupState = {
+      complete: true,
+      activeVersion: 1,
+      profiles: drafts.map(profile => ({ ...profile, schemaVersion: 1, version: 1, profileId: profile.purpose, canonicalRole: "planning", createdAt: "now" })),
+    };
+    expect(profileDraftsFromSetup(setup)).toEqual(drafts);
+    expect(modelProfilesChanged(drafts, setup)).toBe(false);
+    expect(modelProfilesChanged(drafts.map((profile, index) => index ? profile : { ...profile, effort: "high" }), setup)).toBe(true);
   });
 });

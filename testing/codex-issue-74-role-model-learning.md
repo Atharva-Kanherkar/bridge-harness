@@ -24,7 +24,7 @@
 - Automatic promotion enters a canary state; subsequent evidence is checked for regression and automatically rolls back before full activation when quality, cost, latency, retry, or intervention guardrails regress.
 - Automatic mode cannot stack a second canary while the first is gathering evidence, and deterministic hash bucketing keeps canary traffic near the configured 20% share.
 - Cancellation requested before promotion marks the run cancelled. No trigger adapter or model evaluator can directly promote policy.
-- Each learning run enforces configurable monetary and token ceilings against the frozen snapshot and records the actual evaluated spend/tokens.
+- Each learning run records actual evaluator spend/tokens and an explicit execution state. The current evaluator is deferred rather than executed, so those counters remain zero and a zero ceiling prevents queuing; positive configurable ceilings are reserved for the future bounded evaluator executor rather than presented as active enforcement.
 - In-app scheduling persists `nextRunAt`, performs at most one startup/due catch-up, advances the next due time from the current run, and never emits one run per missed interval.
 - Codex and Claude scheduling are represented as optional trigger adapters over the same runner. The UI exposes truthful, copyable setup guidance; both firing for the same snapshot produces one run and an auditable duplicate no-op.
 - Only one external trigger provider is enabled by default. Trigger metadata stores credential references and an authentication digest only; raw bearer tokens are rejected and never enter session history. Disabled, removed, expired, or incorrectly authenticated registrations cannot start learning.
@@ -49,12 +49,15 @@
 - `learning_job::ask_requires_approval_and_promotion_rollback_are_versioned` — Ask never promotes inline; approval and rollback preserve immutable predecessor history.
 - `learning_job::automatic_mode_never_stacks_canary_promotions` — Automatic cannot create a second candidate/canary while one is active.
 - `learning_job::automatic_canary_rolls_back_on_regression` — a guardrail regression reverses the canary atomically.
+- `learning_job::automatic_canary_holds_when_required_cost_is_unknown` — an unknown provider cost holds the canary for more evidence instead of creating a promote/rollback treadmill.
+- `learning_job::failed_run_abandons_its_linked_candidate_atomically` — failure cleanup transactionally abandons a linked candidate rather than leaving an orphan.
 - `learning_job::cost_per_success_requires_complete_provider_costs` — missing cost stays unknown and complete cost divides total spend by successful outcomes.
 - `learning_job::due_schedule_catches_up_once` — missed intervals advance from now and create one catch-up run.
 - `learning_job::replay_fixtures_cover_cost_regression_and_unavailable_models` plus the recommendation/no-op/canary tests — quality improvement, cost regression, insufficient evidence, unavailable models, and rollback are deterministic fixtures.
 - `learning_router::profile_quality_preference_changes_ranking_without_widening_eligibility` — advanced cost/latency preferences affect ranking but cannot revive excluded candidates.
 - `UsageReport` parsing tests — reported cost is retained; absent provider cost remains unknown.
 - Frontend profile helpers — catalog choices exclude unavailable/unsupported models and produce stable profile labels.
+- Frontend profile helpers and settings integration — unavailable adapters do not trap the user in setup, and an unrelated settings save does not create a new profile version.
 
 ## Integration / Functional Tests
 
@@ -63,6 +66,8 @@
 - Tauri learning commands use the single runner for manual, in-app, Codex, and Claude trigger kinds; expose approval, rollback, cancellation, and persisted reports without giving external adapters promotion authority.
 - The existing learning router resolves a role profile through the live adapter registry before delegating, while deterministic policy remains authoritative.
 - Routed execution persists the live catalog snapshot and the actual post-resolution provider/model/effort, then builds typed outcome/evaluation records from normalized events without concatenating raw transcripts.
+- Routing cost accounting keeps capability-normalized quota cost separate from provider-reported micro-USD, and evidence-recording failure cannot prevent a worker launch.
+- Learning runs use a dedicated SQLite connection and a bounded replay window so the global application connection is not held while history is loaded and evaluated.
 - The learning runner extends policy replay with realized outcomes and held-out guardrails before any promotion.
 - Frontend API mock and native command shapes agree for setup status, profile save/reset, learning status/run/cancel, and schedule update.
 - Setup and learning UI tests cover recommended defaults, advanced disclosure, manual run state, failed/duplicate jobs, Ask approval, Automatic/canary/rollback state, cost confidence, and scheduler limitation copy.

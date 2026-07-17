@@ -1035,7 +1035,7 @@ pub fn record_worker_outcome(
             succeeded,
             result.status.as_str(),
             runtime.0,
-            cost.as_ref().map(|value| value.0).unwrap_or(fallback_normalized_cost),
+            fallback_normalized_cost,
             runtime.1,
             human_intervention,
             success_state,
@@ -1482,7 +1482,7 @@ mod tests {
                 cache_read_tokens: None,
                 cache_write_tokens: None,
                 context_percent: None,
-                capability_units: 3,
+                capability_units: 0,
                 runtime_ms: None,
                 cost_microusd: None,
                 cost_source: None,
@@ -1503,7 +1503,7 @@ mod tests {
                 cache_read_tokens: None,
                 cache_write_tokens: None,
                 context_percent: None,
-                capability_units: 0,
+                capability_units: 3,
                 runtime_ms: Some(90),
                 cost_microusd: Some(12_345),
                 cost_source: Some("provider_reported".into()),
@@ -1543,7 +1543,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
             )
             .unwrap();
-        assert_eq!(outcome, (true, 12_345, 1, Some(12_345), Some(120), "success".into(), "unknown".into()));
+        assert_eq!(outcome, (true, 3_000, 1, Some(12_345), Some(120), "success".into(), "unknown".into()));
         let evaluation: (String, i64, String) = db.query_row(
             "SELECT evaluator_kind,confidence_bps,bounded_metrics FROM routing_evaluations WHERE decision_id=?1",
             params![routed.decision.id],

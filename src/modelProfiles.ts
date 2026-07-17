@@ -101,3 +101,17 @@ export function resolveProfileOption(
   return options.find(option => option.model.tier === tier && option.model.defaultForTier)
     ?? options.find(option => option.model.tier === tier);
 }
+
+export function profileDraftsFromSetup(setup: ModelSetupState): ModelProfileDraft[] {
+  return setup.profiles.map(({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference }) => ({
+    purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference,
+  }));
+}
+
+export function modelProfilesChanged(profiles: ModelProfileDraft[], setup?: ModelSetupState): boolean {
+  return !setup || JSON.stringify(profiles) !== JSON.stringify(profileDraftsFromSetup(setup));
+}
+
+export function shouldRequireModelSetup(setup: ModelSetupState, adapters: AdapterDescriptor[]): boolean {
+  return !setup.complete && adapters.some(adapter => adapter.available);
+}

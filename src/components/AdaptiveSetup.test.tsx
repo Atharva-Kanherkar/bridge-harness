@@ -24,7 +24,7 @@ function learningState(run: Partial<LearningRun> = {}): LearningState {
       basePolicyVersion: 1, candidatePolicyVersion: 2, qualityBps: 9000,
       averageCostMicrousd: null, averageLatencyMs: 120, retryRateBps: 0,
       interventionRateBps: 0, averageConfidenceBps: 9000, costComplete: false,
-      evaluatedSpendMicrousd: 0, evaluatedTokens: 0, replayPassed: true,
+      evaluatedSpendMicrousd: 0, evaluatedTokens: 0, evaluationExecution: "deterministic_only", replayPassed: true,
       promotionStatus: "awaiting_approval", policyDiff: {}, recommendationOnly: true,
     },
     candidatePolicyVersion: 2, cancellationRequested: false, leaseExpiresAt: null,

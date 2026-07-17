@@ -507,7 +507,12 @@ async fn run_learning(
             "external learning triggers must use a registered narrow command".into(),
         ));
     }
-    let run = learning_job::run_learning(&state.db.lock().unwrap(), trigger_kind)?;
+    let database_path = state.database_path.clone();
+    let run = tauri::async_runtime::spawn_blocking(move || {
+        learning_job::run_local_database(&database_path, trigger_kind)
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Learning task failed: {error}")))??;
     let _ = app.emit("learning-job-changed", &run);
     Ok(run)
 }
@@ -2391,27 +2396,14 @@ fn launch_worker_outcome(
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
-        if let Err(error) = learning_router::record_actual_execution(
+        record_actual_execution_best_effort(
             &db,
             &routed.decision.id,
             &harness,
             &resolution.actual_model,
             directive.effort,
-        ) {
-            let _ = learning_router::record_route_status(
-                &db,
-                &routed.decision.id,
-                "actual_resolution_record_failed",
-            );
-            let _ = store::event(
-                &db,
-                "router",
-                "router.actual_resolution_record_failed",
-                parent_session_id,
-                &error.to_string(),
-            );
-            return WorkerLaunchOutcome::Failed;
-        }
+            parent_session_id,
+        );
         reserve_worker_launch_outcome(
             &db,
             parent_session_id,
@@ -2960,6 +2952,36 @@ fn launch_worker_outcome(
         "launched",
     );
     WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn record_actual_execution_best_effort(
+    db: &Connection,
+    decision_id: &str,
+    harness: &str,
+    model: &str,
+    effort: delegation::Effort,
+    parent_session_id: &str,
+) {
+    if let Err(error) = learning_router::record_actual_execution(
+        db,
+        decision_id,
+        harness,
+        model,
+        effort,
+    ) {
+        let _ = learning_router::record_route_status(
+            db,
+            decision_id,
+            "actual_resolution_record_failed",
+        );
+        let _ = store::event(
+            db,
+            "router",
+            "router.actual_resolution_record_failed",
+            parent_session_id,
+            &error.to_string(),
+        );
+    }
 }
 
 fn deliver_worker_objective(
@@ -3692,7 +3714,8 @@ fn start_learning_maintenance(app: AppHandle) {
     thread::spawn(move || loop {
         let ran = {
             let state = app.state::<AppState>();
-            let result = learning_job::run_due(&state.db.lock().unwrap(), Utc::now())
+            let database_path = state.database_path.clone();
+            let result = learning_job::run_due_database(&database_path, Utc::now())
                 .ok()
                 .flatten();
             result
@@ -4761,7 +4784,6 @@ pub fn run() {
             let snapshot_dir = data.join("history-snapshots");
             let connection =
                 store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            let _ = learning_job::run_due(&connection, Utc::now());
             let telemetry_connection = store::open_telemetry(&telemetry_db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)
@@ -4890,6 +4912,27 @@ mod tests {
         assert!(
             !source.contains("#[tauri::command]\nfn "),
             "Tauri commands must be async so native work never runs on the macOS UI thread"
+        );
+        assert!(source.contains("learning_job::run_local_database(&database_path, trigger_kind)"));
+        let locked_learning_call = [
+            "learning_job::run_learning(",
+            "&state.db.lock().unwrap()",
+            ", trigger_kind)",
+        ]
+        .concat();
+        assert!(!source.contains(&locked_learning_call));
+    }
+
+    #[test]
+    fn evidence_recording_failure_is_not_load_bearing_for_worker_launch() {
+        let db = Connection::open_in_memory().unwrap();
+        record_actual_execution_best_effort(
+            &db,
+            "missing-decision",
+            "codex",
+            "model",
+            delegation::Effort::Medium,
+            "missing-parent",
         );
     }
 

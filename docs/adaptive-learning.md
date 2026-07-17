@@ -6,7 +6,7 @@ Bridge stores versioned role profiles and typed learning evidence in its local `
 
 Use **Learning router → Run learning now** for an immediate local run. The same settings panel can enable Bridge's in-app schedule. If Bridge was closed across several intervals, startup performs at most one catch-up and advances `next_run_at` from the current time.
 
-Each run acquires an expiring durable lease, freezes an evidence high-water mark, runs deterministic evaluations before any bounded model evaluation, aggregates by task fingerprint/profile/provider/model/effort, and replays a candidate against held-out realized outcomes. Reports compare quality, provider-reported cost per successful task, latency, retries, interventions, and confidence. Missing provider cost remains unknown.
+Each run acquires an expiring durable lease, freezes an evidence high-water mark, runs deterministic evaluations, aggregates by task fingerprint/profile/provider/model/effort, and replays a candidate against held-out realized outcomes. Bounded model evaluations are currently recorded as deferred work; no model evaluator executes or spends tokens yet. Reports expose that execution state and therefore report zero evaluator spend/tokens until an executor exists. A zero ceiling prevents deferred work from being queued; positive ceiling enforcement is reserved for that executor. Reports compare quality, provider-reported cost per successful task, latency, retries, interventions, and confidence. Missing provider cost remains unknown.
 
 Modes are explicit:
 
@@ -14,7 +14,7 @@ Modes are explicit:
 - **Ask** requires a separate user approval before one atomic promotion transaction.
 - **Automatic** is opt-in and promotes only to a guarded canary. Regression creates and activates a new immutable rollback version based on the predecessor.
 
-Cold start, insufficient confidence, duplicate triggers, unavailable candidates, replay regressions, and exhausted spend/token ceilings are visible, auditable no-ops.
+Cold start, insufficient confidence, duplicate triggers, unavailable candidates, replay regressions, and a zero deferred-evaluation ceiling are visible, auditable no-ops.
 
 ## Optional external triggers
 
@@ -35,6 +35,6 @@ The checked-in [Codex scheduled-task prompt](./prompts/codex-learning-scheduled-
 
 ## Evidence and policy history
 
-Routing decisions persist the eligible/excluded catalog snapshot, selected and actual provider/model/effort, profile and policy versions, task fingerprint, repository revision, reason, and override state. Outcomes bind normalized success/unknown, acceptance, retry/edit/intervention, latency, provider cost, token count, and confidence to the decision. Evaluations store typed bounded metrics and evidence IDs—not concatenated transcripts.
+Routing decisions persist the eligible/excluded catalog snapshot, selected and actual provider/model/effort, profile and policy versions, task fingerprint, repository revision, reason, and override state. Outcomes bind normalized success/unknown, acceptance, retry/edit/intervention, latency, provider cost, token count, and confidence to the decision. Capability-normalized quota cost and provider-reported micro-USD remain separate units. Evaluations store typed bounded metrics and evidence IDs—not concatenated transcripts.
 
 `policy-replay` emits both deterministic safety replay and realized-outcome replay. Promotions and rollbacks are append-only in `routing_policy_promotions`; historical policies and profile versions are never rewritten.

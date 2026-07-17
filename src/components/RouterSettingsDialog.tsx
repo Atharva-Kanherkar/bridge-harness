@@ -3,6 +3,7 @@ import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, LoaderCir
 import { bridgeApi } from "../api";
 import type { AdapterDescriptor, LearningState, ModelProfileDraft, ModelSetupState, RouterMode, RouterPreferences } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
+import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
 
 const defaults: RouterPreferences = {
   mode: "shadow",
@@ -29,7 +30,7 @@ export function LearningRunSummary({ learning, running = false, onApprove, onCan
   const report = run.report;
   return <div className="mt-4 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 text-xs text-neutral-400">
     <div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-white/[0.07] px-2 py-1 text-[10px] uppercase tracking-wider text-neutral-300">{run.duplicate ? "duplicate · no-op" : run.status}</span><span>{report?.reason ?? "Learning run queued"}</span></div>
-    {report && <><dl className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3 lg:grid-cols-6"><div><dt className="text-neutral-600">Evidence</dt><dd>{report.evidenceCount} runs · #{report.evidenceBoundary}</dd></div><div><dt className="text-neutral-600">Quality</dt><dd>{report.qualityBps == null ? "Unknown" : `${(report.qualityBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-neutral-600">Cost / success</dt><dd>{report.averageCostMicrousd == null ? "Unknown" : `$${(report.averageCostMicrousd / 1_000_000).toFixed(4)}`}</dd></div><div><dt className="text-neutral-600">Confidence</dt><dd>{report.averageConfidenceBps == null ? "Unknown" : `${(report.averageConfidenceBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-neutral-600">Replay</dt><dd>{report.replayPassed == null ? "Not run" : report.replayPassed ? "Passed" : "Blocked"}</dd></div><div><dt className="text-neutral-600">Policy</dt><dd>v{report.basePolicyVersion} → {report.candidatePolicyVersion ? `v${report.candidatePolicyVersion} · ${run.promotionStatus.replaceAll("_", " ")}` : "unchanged"}</dd></div></dl>{!report.costComplete && <p className="mt-2 text-[10px] text-amber-300/75">Cost comparison is unknown because at least one provider did not report cost.</p>}<div className="mt-3 flex flex-wrap gap-2">{run.promotionStatus === "awaiting_approval" && <button type="button" disabled={running} onClick={onApprove} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300 px-2.5 py-1.5 text-[11px] font-medium text-emerald-950"><CircleCheck size={12} aria-hidden="true" />Approve replayed policy</button>}{["recommended", "awaiting_approval"].includes(run.promotionStatus) && <button type="button" disabled={running} onClick={onCancel} className="rounded-lg border border-white/[0.08] px-2.5 py-1.5 text-[11px] text-neutral-400">Cancel candidate</button>}{learning.activePolicyVersion !== report.basePolicyVersion && <button type="button" disabled={running} onClick={onRollback} className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300/20 px-2.5 py-1.5 text-[11px] text-amber-200"><Undo2 size={12} aria-hidden="true" />Roll back to v{report.basePolicyVersion}</button>}</div></>}
+    {report && <><dl className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3 lg:grid-cols-6"><div><dt className="text-neutral-600">Evidence</dt><dd>{report.evidenceCount} runs · #{report.evidenceBoundary}</dd></div><div><dt className="text-neutral-600">Quality</dt><dd>{report.qualityBps == null ? "Unknown" : `${(report.qualityBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-neutral-600">Cost / success</dt><dd>{report.averageCostMicrousd == null ? "Unknown" : `$${(report.averageCostMicrousd / 1_000_000).toFixed(4)}`}</dd></div><div><dt className="text-neutral-600">Confidence</dt><dd>{report.averageConfidenceBps == null ? "Unknown" : `${(report.averageConfidenceBps / 100).toFixed(0)}%`}</dd></div><div><dt className="text-neutral-600">Replay</dt><dd>{report.replayPassed == null ? "Not run" : report.replayPassed ? "Passed" : "Blocked"}</dd></div><div><dt className="text-neutral-600">Policy</dt><dd>v{report.basePolicyVersion} → {report.candidatePolicyVersion ? `v${report.candidatePolicyVersion} · ${run.promotionStatus.replaceAll("_", " ")}` : "unchanged"}</dd></div></dl><p className="mt-2 text-[10px] text-neutral-600">Evaluator usage: {report.evaluatedSpendMicrousd} µUSD · {report.evaluatedTokens} tokens · {report.evaluationExecution.replaceAll("_", " ")}. Deferred evaluation does not execute or spend provider resources.</p>{!report.costComplete && <p className="mt-2 text-[10px] text-amber-300/75">Cost comparison is unknown because at least one provider did not report cost.</p>}<div className="mt-3 flex flex-wrap gap-2">{run.promotionStatus === "awaiting_approval" && <button type="button" disabled={running} onClick={onApprove} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-300 px-2.5 py-1.5 text-[11px] font-medium text-emerald-950"><CircleCheck size={12} aria-hidden="true" />Approve replayed policy</button>}{["recommended", "awaiting_approval"].includes(run.promotionStatus) && <button type="button" disabled={running} onClick={onCancel} className="rounded-lg border border-white/[0.08] px-2.5 py-1.5 text-[11px] text-neutral-400">Cancel candidate</button>}{learning.activePolicyVersion !== report.basePolicyVersion && <button type="button" disabled={running} onClick={onRollback} className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300/20 px-2.5 py-1.5 text-[11px] text-amber-200"><Undo2 size={12} aria-hidden="true" />Roll back to v{report.basePolicyVersion}</button>}</div></>}
   </div>;
 }
 
@@ -70,7 +71,7 @@ export function RouterSettingsDialog({
       setExcludedHarnesses(value.excludedHarnesses.join(", "));
       setExcludedModels(value.excludedModels.join(", "));
       setModelSetup(setup);
-      setProfiles(setup.profiles.map(({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference }) => ({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference })));
+      setProfiles(profileDraftsFromSetup(setup));
       setLearning(learningState);
     }).catch(error => { if (active) onError(String(error)); }).finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
@@ -87,7 +88,7 @@ export function RouterSettingsDialog({
         excludedModels: parseList(excludedModels),
       });
       setPreferences(saved);
-      if (profiles.length) {
+      if (profiles.length && modelProfilesChanged(profiles, modelSetup)) {
         const setup = await bridgeApi.saveModelProfiles(profiles);
         setModelSetup(setup);
         onModelSetupChange?.(setup);
@@ -119,7 +120,7 @@ export function RouterSettingsDialog({
       const setup = await bridgeApi.resetModelProfiles();
       setModelSetup(setup);
       onModelSetupChange?.(setup);
-      setProfiles(setup.profiles.map(({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference }) => ({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference })));
+      setProfiles(profileDraftsFromSetup(setup));
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
   };

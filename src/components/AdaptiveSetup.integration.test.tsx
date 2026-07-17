@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bridgeApi } from "../api";
 import type { AdapterDescriptor, ModelSetupState } from "../types";
 import { ModelSetupWizard } from "./ModelSetupWizard";
 import { RouterSettingsDialog } from "./RouterSettingsDialog";
@@ -85,5 +86,18 @@ describe("adaptive setup journeys", () => {
     expect(container.textContent).toContain("insufficient evidence");
     expect(container.textContent).toContain("Cost comparison is unknown");
     expect(container.textContent).toContain("Policy");
+  });
+
+  it("does not create a profile version when settings save without profile edits", async () => {
+    const before = await bridgeApi.modelSetup();
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} databasePath="/tmp/bridge.db" onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => {
+      button(container, "Save").click();
+      await flush();
+    });
+    expect((await bridgeApi.modelSetup()).activeVersion).toBe(before.activeVersion);
   });
 });

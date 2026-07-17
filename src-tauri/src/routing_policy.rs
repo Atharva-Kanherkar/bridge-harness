@@ -11,6 +11,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MIN_EVIDENCE_SAMPLES: i64 = 5;
+const MAX_REPLAY_EVIDENCE_ROWS: i64 = 5_000;
 const MIN_GROUP_SAMPLES: i64 = 2;
 const MIN_CONFIDENCE_BPS: i64 = 6_500;
 const MIN_REPLAY_COVERAGE_BPS: i64 = 8_000;
@@ -211,6 +212,7 @@ impl Aggregate {
 }
 
 fn load_evidence(db: &Connection, boundary: i64) -> Result<Vec<EvidenceRow>, BridgeError> {
+    let lower_bound = boundary.saturating_sub(MAX_REPLAY_EVIDENCE_ROWS);
     let mut statement = db.prepare(
         "SELECT o.rowid,d.task_fingerprint,d.task_family,COALESCE(d.profile_version,0),COALESCE(d.profile_purpose,''),
                 o.candidate,COALESCE(d.actual_effort,''),o.success_state,
@@ -219,9 +221,9 @@ fn load_evidence(db: &Connection, boundary: i64) -> Result<Vec<EvidenceRow>, Bri
                 COALESCE((SELECT e.confidence_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),o.confidence_bps),
                 d.decision
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE o.rowid<=?1 ORDER BY o.rowid",
+         WHERE o.rowid>?2 AND o.rowid<=?1 ORDER BY o.rowid",
     )?;
-    let rows = statement.query_map(params![boundary], |row| {
+    let rows = statement.query_map(params![boundary, lower_bound], |row| {
         let decision_body = row.get::<_, String>(14)?;
         let decision = serde_json::from_str(&decision_body).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
