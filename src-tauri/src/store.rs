@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 15;
+const LATEST_SCHEMA_VERSION: i64 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -236,6 +236,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             13 => migration_13_learning_router(&transaction)?,
             14 => migration_14_completion_proof(&transaction)?,
             15 => migration_15_role_profiles_and_learning_jobs(&transaction)?,
+            16 => migration_16_complete_role_profile_schema(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -947,6 +948,31 @@ fn migration_15_role_profiles_and_learning_jobs(
     )?;
     add_column_if_missing(transaction, "model_profiles", "profile_id", "TEXT NOT NULL DEFAULT 'legacy'")?;
     add_column_if_missing(transaction, "learning_jobs", "last_evidence_boundary", "INTEGER NOT NULL DEFAULT 0")?;
+    transaction.execute(
+        "CREATE INDEX IF NOT EXISTS idx_model_profiles_id ON model_profiles(profile_id,version)",
+        [],
+    )?;
+    Ok(())
+}
+
+fn migration_16_complete_role_profile_schema(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    // These columns were added to migration 15 after some databases had
+    // already recorded version 15. A new migration is required to repair
+    // those databases because completed migrations are never replayed.
+    add_column_if_missing(
+        transaction,
+        "model_profiles",
+        "profile_id",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_jobs",
+        "last_evidence_boundary",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     transaction.execute(
         "CREATE INDEX IF NOT EXISTS idx_model_profiles_id ON model_profiles(profile_id,version)",
         [],
@@ -2004,7 +2030,10 @@ mod tests {
         let path = dir.path().join("bridge.db");
         create_legacy_fixture(&path);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(
+            migration_versions(&db),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
         for table in [
             "model_profiles",
             "routing_policies",
@@ -2066,8 +2095,50 @@ mod tests {
         );
         drop(backup);
         let db = open(&path).unwrap();
-        assert_eq!(migration_versions(&db), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(
+            migration_versions(&db),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
         assert_eq!(backup_paths(dir.path()).len(), 1);
+    }
+
+    #[test]
+    fn migration_16_repairs_databases_created_by_early_migration_15() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "DROP INDEX idx_model_profiles_id;
+             ALTER TABLE model_profiles DROP COLUMN profile_id;
+             ALTER TABLE learning_jobs DROP COLUMN last_evidence_boundary;
+             DELETE FROM schema_version WHERE version=16;",
+        )
+        .unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), 16);
+        for (table, column) in [
+            ("model_profiles", "profile_id"),
+            ("learning_jobs", "last_evidence_boundary"),
+        ] {
+            let exists = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .iter()
+                .any(|name| name == column);
+            assert!(exists, "migration 16 did not restore {table}.{column}");
+        }
+        db.execute(
+            "INSERT INTO model_profiles(version,profile_id,purpose,canonical_role,provider,model,effort,created_at)
+             VALUES(1,'standard_orchestrator','standard_orchestrator','orchestrator','codex','test-model','medium','now')",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]
