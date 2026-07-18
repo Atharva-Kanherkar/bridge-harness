@@ -54,7 +54,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
   }).filter((value): value is NonNullable<typeof value> => value != null);
 
   return <div className="group relative">
-    <button type="button" className="flex h-9 cursor-pointer items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-neutral-300 backdrop-blur-md transition-colors hover:border-white/[0.13] hover:bg-white/[0.07]" aria-label="Open usage health details" aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
+    <button type="button" className="flex h-9 cursor-pointer items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.045] px-3 text-neutral-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-xl backdrop-saturate-[1.8] transition-all hover:border-white/[0.14] hover:bg-white/[0.075]" aria-label="Open usage health details" aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
       <Gauge size={12} className="text-neutral-500" aria-hidden="true" />
       {PROVIDERS.map((provider, index) => {
         const snapshot = usage[provider.id];
@@ -72,7 +72,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
     </button>
 
     <div id="usage-health-panel" className={`absolute right-0 top-full z-50 pt-2 transition-all duration-150 group-hover:visible group-hover:opacity-100 ${open ? "visible opacity-100" : "invisible opacity-0"}`}>
-      <div className="max-h-[min(640px,80vh)] w-[390px] overflow-y-auto rounded-2xl border border-white/[0.1] bg-[#0c0c10]/95 p-4 shadow-2xl shadow-black/50 backdrop-blur-2xl">
+      <div className="u-glass-popover max-h-[min(640px,80vh)] w-[390px] overflow-y-auto rounded-2xl p-4">
         <div className="mb-3 flex items-center gap-2">
           <Gauge size={13} className="text-neutral-500" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-neutral-100">Usage health</h2>

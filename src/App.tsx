@@ -462,23 +462,23 @@ export function App() {
                   onResolve={resolveApproval}
                 />
               </div>
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#0a0a0c] to-transparent sm:h-20" />
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#050507]/90 to-transparent sm:h-20" />
               <div className="relative z-10 flex-none safe-bottom">
                 {hasRepo && workspace && workspace.dirtyFiles > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
-                  <div className="inline-flex items-center gap-2 h-[30px] px-3 rounded-full border border-white/[0.08] bg-white/[0.03] text-neutral-400 text-xs">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-neutral-400 text-xs">
                     <FileDiff size={12} aria-hidden="true" />
                     <span>{`${workspace.dirtyFiles} file${workspace.dirtyFiles === 1 ? "" : "s"}`}</span>
                     <em className="not-italic font-mono text-[11px]"><b className="text-emerald-400">+{workspace.additions}</b> <b className="text-red-400">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
                 <div className="relative mx-auto max-w-2xl">
-                  {!slashOpen && skillSuggestions.length > 0 && <div className="absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c0c10]/95 shadow-2xl shadow-black/40 backdrop-blur-xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
-                  {slashOpen && <div className="absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl border border-white/[0.08] bg-[#0c0c10]/95 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                  {!slashOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                  {slashOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
                       <span>Commands & skills</span>
                       <span className="normal-case tracking-normal text-neutral-700">{slashMatches.length}</span>
                     </div>
-                    <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-white/10" onWheel={e => e.stopPropagation()}>
+                    <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
                       {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
                         <span className="font-mono text-[12px] text-neutral-100 whitespace-nowrap">/{command.name}</span>
                         <span className="flex-1 min-w-0 text-[11px] text-neutral-500 whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
@@ -565,7 +565,7 @@ function ChatModelControl({ adapters, harness, model, disabled, onChange, compac
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div className="absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl border border-white/[0.1] bg-[#0c0c10]/95 backdrop-blur-xl shadow-2xl shadow-black/40 max-h-[340px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
+      <div className="u-glass-popover absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl max-h-[340px] overflow-y-auto">
         {chatAdapters.map((adapter, index) => <div key={adapter.id} className={index > 0 ? "mt-1 pt-1 border-t border-border/60" : ""}>
           <div className="px-3 py-1.5 text-[9px] font-semibold tracking-[0.12em] uppercase text-muted-foreground/50 flex items-center gap-2">
             <span>{adapter.label}</span>
@@ -614,7 +614,7 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
     setDraft("");
   };
   return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
-    <h1 className="mb-8 max-w-xl font-display text-[1.65rem] font-medium tracking-[-0.02em] text-white sm:mb-10 sm:text-[2.1rem]">{greeting.headline}</h1>
+    <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-white sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
     <ComposerPill
       layout="hero"
       value={draft}
@@ -626,7 +626,7 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       onPlusClick={onNewWorkspace}
       trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />
-    <p className="mt-5 max-w-md text-[13px] leading-relaxed text-neutral-500">{greeting.hint}</p>
+    <p className="mt-6 max-w-md text-[13px] leading-relaxed text-neutral-500">{greeting.hint}</p>
   </div>;
 }
 function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-[10px] font-semibold tracking-[0.09em]">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-[12.5px] font-medium">{w.title}</b><small className="text-[10.5px] text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-[10px]">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-[10.5px]"><span>↑↓ navigate</span><span>esc close</span></div></>; }

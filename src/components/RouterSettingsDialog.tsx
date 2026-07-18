@@ -164,8 +164,8 @@ export function RouterSettingsDialog({
     finally { setRunning(false); }
   };
 
-  return <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 p-4 pt-[7vh] backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="router-settings-title" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="animate-page-enter w-full max-w-4xl overflow-hidden rounded-3xl border border-white/[0.09] bg-[#121214]/95 shadow-2xl shadow-black/50">
+  return <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 pt-[7vh] backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="router-settings-title" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="u-glass-popover animate-page-enter w-full max-w-4xl overflow-hidden rounded-3xl">
       <header className="flex items-start gap-3 border-b border-white/[0.08] px-5 py-4">
         <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-400/[0.09] text-violet-300"><BrainCircuit size={18} aria-hidden="true" /></span>
         <div className="min-w-0 flex-1"><h2 id="router-settings-title" className="font-display text-base font-semibold text-white">Learning router</h2><p className="mt-1 text-[13px] leading-relaxed text-neutral-500">Choose the least expensive route that preserves your measured quality floor.</p></div>

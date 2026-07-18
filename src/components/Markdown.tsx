@@ -1,5 +1,6 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { highlightCode, normalizeLang } from "./highlight";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
@@ -78,19 +79,21 @@ function renderInline(text: string): React.ReactNode[] {
 
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
   const [copied, setCopied] = useState(false);
+  const highlighted = useMemo(() => highlightCode(body, lang), [body, lang]);
+  const label = normalizeLang(lang) || lang.toLowerCase() || "text";
   const copy = () => {
     void navigator.clipboard?.writeText(body).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
   };
   return (
     <div className="code-block">
       <div className="code-block-header">
-        <span className="code-block-lang">{lang || "text"}</span>
+        <span className="code-block-lang">{label}</span>
         <button type="button" className="code-block-copy" onClick={copy}>
           {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre><code>{body}</code></pre>
+      <pre><code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} /></pre>
     </div>
   );
 }

@@ -31,25 +31,39 @@ export const SpaceBackground = memo(function SpaceBackground({ paused = false }:
   const animationPlayState = paused ? "paused" : "running";
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden [contain:strict]">
-      <div className="absolute inset-0 bg-[#020204]" />
+      <div className="absolute inset-0 bg-[#050507]" />
+      {/* macOS-style aurora: soft indigo → violet wash over the top… */}
       <div
-        className="absolute -top-[20%] -left-[10%] h-[60rem] w-[60rem] rounded-full opacity-[0.12] will-change-transform"
+        className="absolute -top-[24%] -left-[12%] h-[62rem] w-[62rem] rounded-full opacity-[0.16] will-change-transform"
         style={{
-          background: "radial-gradient(circle, rgba(99,102,241,0.4) 0%, rgba(45,212,191,0.15) 40%, transparent 70%)",
-          filter: "blur(100px)",
-          animation: "space-drift-a 40s ease-in-out infinite alternate",
+          background: "radial-gradient(circle, rgba(129,140,248,0.42) 0%, rgba(192,132,252,0.16) 42%, transparent 70%)",
+          filter: "blur(110px)",
+          animation: "space-drift-a 44s ease-in-out infinite alternate",
           animationPlayState,
         }}
       />
+      {/* …a warm teal counterweight low on the right… */}
       <div
-        className="absolute -bottom-[20%] -right-[10%] h-[50rem] w-[50rem] rounded-full opacity-[0.10] will-change-transform"
+        className="absolute -bottom-[24%] -right-[12%] h-[54rem] w-[54rem] rounded-full opacity-[0.12] will-change-transform"
         style={{
-          background: "radial-gradient(circle, rgba(167,139,250,0.35) 0%, rgba(45,212,191,0.1) 50%, transparent 70%)",
+          background: "radial-gradient(circle, rgba(167,139,250,0.34) 0%, rgba(45,212,191,0.12) 52%, transparent 72%)",
+          filter: "blur(130px)",
+          animation: "space-drift-b 56s ease-in-out infinite alternate",
+          animationPlayState,
+        }}
+      />
+      {/* …and a faint rose ember off-center for depth. */}
+      <div
+        className="absolute top-[38%] left-[46%] h-[34rem] w-[34rem] rounded-full opacity-[0.05] will-change-transform"
+        style={{
+          background: "radial-gradient(circle, rgba(244,114,182,0.5) 0%, transparent 62%)",
           filter: "blur(120px)",
-          animation: "space-drift-b 50s ease-in-out infinite alternate",
+          animation: "space-drift-a 64s ease-in-out infinite alternate-reverse",
           animationPlayState,
         }}
       />
+      {/* Subtle top light, like light falling off a macOS wallpaper. */}
+      <div className="absolute inset-0 bg-gradient-to-b from-white/[0.035] via-transparent to-black/[0.22]" />
       <StarField paused={paused} />
     </div>
   );

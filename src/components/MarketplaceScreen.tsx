@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Check, ChevronDown, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
+import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, verifiedBrandLogoUrl, type MarketplaceService } from "../marketplace";
 import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
@@ -24,6 +24,11 @@ function serviceScope(service: MarketplaceService): CatalogScope {
   return values.some(value => value === "personal" || value === "private" || value === "local") ? "personal" : "public";
 }
 
+function serviceSourceUrl(service: MarketplaceService): string | null {
+  const source = service.variants.find(variant => variant.source || variant.repository);
+  return source?.repository?.startsWith("http") ? source.repository : source?.source?.startsWith("http") ? source.source : null;
+}
+
 const iconThemes = [
   "from-blue-400 to-blue-600 text-white",
   "from-violet-400 to-fuchsia-600 text-white",
@@ -33,15 +38,17 @@ const iconThemes = [
   "from-cyan-300 to-sky-600 text-neutral-950",
 ];
 
-function ServiceIcon({ service, size = "md" }: { service: MarketplaceService; size?: "sm" | "md" }) {
+function ServiceIcon({ service, size = "md" }: { service: MarketplaceService; size?: "sm" | "md" | "lg" }) {
   const [failedIcons, setFailedIcons] = useState<string[]>([]);
   const seed = [...service.name].reduce((total, letter) => total + letter.charCodeAt(0), 0);
   const initials = service.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join("").toUpperCase() || "P";
   const icon = [service.variants.find(variant => variant.iconDataUrl)?.iconDataUrl, verifiedBrandLogoUrl(service)]
     .find(candidate => candidate && !failedIcons.includes(candidate));
-  const dimensions = size === "sm" ? "h-8 w-8" : "h-10 w-10";
-  if (icon) return <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-white/[0.06] p-1 ${dimensions}`} aria-hidden="true"><img src={icon} alt="" referrerPolicy="no-referrer" onError={() => setFailedIcons(current => current.includes(icon) ? current : [...current, icon])} className="h-full w-full object-contain" /></span>;
-  return <span className={`inline-flex shrink-0 items-center justify-center rounded-xl border border-white/10 bg-gradient-to-br font-display font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] ${iconThemes[seed % iconThemes.length]} ${dimensions} ${size === "sm" ? "text-[10px]" : "text-xs"}`} aria-hidden="true">{initials}</span>;
+  const dimensions = size === "sm" ? "h-8 w-8" : size === "lg" ? "h-16 w-16" : "h-11 w-11";
+  const rounding = size === "lg" ? "rounded-[20px]" : "rounded-[14px]";
+  const text = size === "sm" ? "text-[10px]" : size === "lg" ? "text-lg" : "text-[13px]";
+  if (icon) return <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden ${rounding} border border-white/[0.09] bg-white/[0.05] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_6px_16px_-8px_rgba(0,0,0,0.5)] ${dimensions}`} aria-hidden="true"><img src={icon} alt="" referrerPolicy="no-referrer" onError={() => setFailedIcons(current => current.includes(icon) ? current : [...current, icon])} className="h-full w-full object-contain" /></span>;
+  return <span className={`inline-flex shrink-0 items-center justify-center ${rounding} border border-white/[0.09] bg-gradient-to-br font-display font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_6px_16px_-8px_rgba(0,0,0,0.5)] ${iconThemes[seed % iconThemes.length]} ${dimensions} ${text}`} aria-hidden="true">{initials}</span>;
 }
 
 function Status({ variant }: { variant: MarketplaceVariant }) {
@@ -61,13 +68,39 @@ function actionLabel(action: MarketplaceAction): string {
   return action[0].toUpperCase() + action.slice(1);
 }
 
-function ServiceRow({ service, busyKey, target, results, expanded, onToggle, onTarget, onInstall, onRetry, onAction }: {
+function ServiceRow({ service, busyKey, onOpen, onInstall }: {
+  service: MarketplaceService;
+  busyKey: string | null;
+  onOpen: () => void;
+  onInstall: () => void;
+}) {
+  const installable = service.variants.some(variant => !variant.installed);
+  const working = busyKey === `${service.id}:install`;
+  return <article className="u-glass-soft group rounded-2xl transition-all duration-300 hover:bg-white/[0.05] hover:shadow-[0_10px_32px_-16px_rgba(0,0,0,0.6)]">
+    <div className="flex min-h-[76px] items-center gap-3.5 px-4 py-3.5">
+      <button type="button" className="flex min-w-0 flex-1 items-center gap-3.5 rounded-xl text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30" onClick={onOpen}>
+        <ServiceIcon service={service} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-[13.5px] font-semibold tracking-[-0.008em] text-neutral-100">{service.name}</span>
+            {service.variants.every(variant => variant.installed) && <Check size={12} className="shrink-0 text-emerald-400" aria-label="Installed" />}
+          </span>
+          <span className="mt-1 truncate block text-[11.5px] leading-[1.5] text-neutral-500">{service.description || "Provider plugin for Bridge agents"}</span>
+        </span>
+      </button>
+      {installable
+        ? <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : "Install"}</Button>
+        : <ChevronRight size={15} className="shrink-0 text-neutral-600 transition-colors group-hover:text-neutral-400" aria-hidden="true" />}
+    </div>
+  </article>;
+}
+
+function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget, onInstall, onRetry, onAction }: {
   service: MarketplaceService;
   busyKey: string | null;
   target: InstallTarget;
   results: MarketplaceActionResult[];
-  expanded: boolean;
-  onToggle: () => void;
+  onBack: () => void;
   onTarget: (target: InstallTarget) => void;
   onInstall: () => void;
   onRetry: () => void;
@@ -75,72 +108,94 @@ function ServiceRow({ service, busyKey, target, results, expanded, onToggle, onT
 }) {
   const labels = compatibilityLabels(service);
   const failed = results.filter(result => !result.success);
-  const source = service.variants.find(variant => variant.source || variant.repository);
-  const sourceUrl = source?.repository?.startsWith("http") ? source.repository : source?.source?.startsWith("http") ? source.source : null;
+  const sourceUrl = serviceSourceUrl(service);
   const hasCodex = service.variants.some(variant => variant.provider === "codex");
   const hasClaude = service.variants.some(variant => variant.provider === "claude");
   const installable = service.variants.some(variant => !variant.installed);
   const working = busyKey === `${service.id}:install`;
+  const capabilities = [...new Set(service.variants.flatMap(variant => variant.capabilities))];
 
-  return <article className={`group border-b border-white/[0.055] transition-colors ${expanded ? "bg-white/[0.025]" : "hover:bg-white/[0.018]"}`}>
-    <div className="flex min-h-[76px] items-center gap-3 px-2 py-3">
-      <button type="button" className="flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30" onClick={onToggle} aria-expanded={expanded}>
-        <ServiceIcon service={service} />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-medium text-neutral-100">{service.name}</span>
-            {service.variants.every(variant => variant.installed) && <Check size={12} className="shrink-0 text-emerald-400" aria-label="Installed" />}
-          </span>
-          <span className="mt-0.5 line-clamp-1 block text-[11px] leading-relaxed text-neutral-500">{service.description || "Provider plugin for Bridge agents"}</span>
-        </span>
+  return <div className="h-full min-h-0 overflow-y-auto">
+    <main className="animate-page-enter mx-auto w-full max-w-3xl px-5 pb-16 pt-6 sm:px-8 sm:pt-8">
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-0.5 rounded-full py-1 pl-1 pr-3 text-[12px] font-medium text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200">
+        <ChevronLeft size={14} aria-hidden="true" /> Plugins
       </button>
-      {installable ? <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : "Install"}</Button> : <button type="button" onClick={onToggle} className="rounded-lg p-1.5 text-neutral-600 transition-colors hover:bg-white/5 hover:text-neutral-300" aria-label={`${expanded ? "Hide" : "Show"} ${service.name} details`}><ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} /></button>}
-    </div>
 
-    {expanded && <div className="mx-2 mb-3 rounded-xl border border-white/[0.06] bg-black/10 p-3">
-      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+      <header className="mt-6 flex items-start gap-4">
+        <ServiceIcon service={service} size="lg" />
+        <div className="min-w-0 flex-1 pt-1">
+          <h1 className="font-display text-[26px] font-semibold tracking-[-0.02em] text-white">{service.name}</h1>
+          {sourceUrl && <a className="mt-1.5 inline-flex items-center gap-1 truncate text-[11.5px] text-neutral-500 transition-colors hover:text-neutral-300" href={sourceUrl} target="_blank" rel="noreferrer">{sourceUrl.replace(/^https?:\/\//, "")} <ExternalLink size={10} /></a>}
+        </div>
+        <div className="shrink-0 pt-2">
+          {installable
+            ? <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={13} /> : <Package size={13} />} Install</Button>
+            : <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-1.5 text-[11px] font-medium text-emerald-300"><Check size={12} aria-hidden="true" /> Installed</span>}
+        </div>
+      </header>
+
+      <div className="mt-5 flex flex-wrap items-center gap-1.5">
         {hasCodex && <Badge variant="secondary" size="sm">Codex</Badge>}
         {hasClaude && <Badge variant="secondary" size="sm">Claude Code</Badge>}
-        {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-[9px] ${label === "Separate login required" ? "border-amber-400/20 bg-amber-400/[0.06] text-amber-300" : "border-white/[0.07] text-neutral-500"}`}>{label}</span>)}
-        {sourceUrl && <a className="ml-auto inline-flex items-center gap-1 text-[9.5px] text-neutral-500 transition-colors hover:text-neutral-200" href={sourceUrl} target="_blank" rel="noreferrer">Source <ExternalLink size={9} /></a>}
+        {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-[9.5px] ${label === "Separate login required" ? "border-amber-400/20 bg-amber-400/[0.06] text-amber-300" : "border-white/[0.07] text-neutral-500"}`}>{label}</span>)}
       </div>
-      <div className="divide-y divide-white/[0.055]">
-        {service.variants.map(variant => {
-          const key = `${service.id}:${variant.provider}`;
-          const variantWorking = busyKey === key;
-          const nextToggle: MarketplaceAction = variant.enabled ? "disable" : "enable";
-          const canToggle = variant.supportedActions.includes(nextToggle);
-          const isCodexApp = variant.provider === "codex" && variant.connectorType === "app";
-          const canAuthenticate = variant.supportedActions.includes("authenticate") && ((isCodexApp && variant.authenticationState.toLowerCase() !== "connected") || variant.authenticationState.toLowerCase() === "required");
-          return <div key={`${variant.provider}:${variant.pluginId}`} className="flex flex-col gap-2 py-2 first:pt-0 last:pb-0 sm:flex-row sm:items-center">
-            <div className="min-w-0 flex-1">
-              <div className="mb-0.5 text-[11px] font-medium text-neutral-300">{providerLabel(variant.provider)} {variant.version && <span className="font-mono text-[9px] font-normal text-neutral-600">v{variant.version}</span>}</div>
-              <Status variant={variant} />
-            </div>
-            <div className="flex flex-wrap items-center gap-1">
-              {variant.installed && canToggle && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, nextToggle)}>{variantWorking ? <LoaderCircle className="animate-spin" size={11} /> : actionLabel(nextToggle)}</Button>}
-              {variant.installed && variant.supportedActions.includes("update") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>}
-              {variant.installed && variant.supportedActions.includes("uninstall") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>}
-              {variant.installed && canAuthenticate && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={11} /> {isCodexApp ? "Connect" : `Connect ${providerLabel(variant.provider)}`}</Button>}
-            </div>
-          </div>;
-        })}
-      </div>
-      {installable && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.055] pt-3">
-        <div className="flex items-center gap-1 rounded-lg bg-white/[0.025] p-0.5">
-          {(["codex", "claude", "both"] as InstallTarget[]).map(value => {
-            const disabled = (value === "codex" && !hasCodex) || (value === "claude" && !hasClaude) || (value === "both" && (!hasCodex || !hasClaude));
-            return <button key={value} type="button" disabled={disabled} onClick={() => onTarget(value)} className={`rounded-md px-2 py-1 text-[9.5px] transition-colors disabled:opacity-25 ${target === value ? "bg-white/[0.09] text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}`}>{value === "both" ? "Both" : providerLabel(value)}</button>;
+
+      <section className="mt-8">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">About</h2>
+        <p className="mt-3 text-[13.5px] leading-[1.7] text-neutral-300">{service.description || "Provider plugin for Bridge agents"}</p>
+        {capabilities.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
+          {capabilities.map(capability => <span key={capability} className="rounded-full border border-white/[0.07] bg-white/[0.03] px-2.5 py-1 text-[10.5px] text-neutral-400">{capability}</span>)}
+        </div>}
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">Providers</h2>
+        <div className="mt-3 grid gap-3">
+          {service.variants.map(variant => {
+            const key = `${service.id}:${variant.provider}`;
+            const variantWorking = busyKey === key;
+            const nextToggle: MarketplaceAction = variant.enabled ? "disable" : "enable";
+            const canToggle = variant.supportedActions.includes(nextToggle);
+            const isCodexApp = variant.provider === "codex" && variant.connectorType === "app";
+            const canAuthenticate = variant.supportedActions.includes("authenticate") && ((isCodexApp && variant.authenticationState.toLowerCase() !== "connected") || variant.authenticationState.toLowerCase() === "required");
+            return <div key={`${variant.provider}:${variant.pluginId}`} className="u-glass-soft rounded-2xl p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 text-[12.5px] font-semibold text-neutral-100">{providerLabel(variant.provider)} {variant.version && <span className="ml-1 font-mono text-[10px] font-normal text-neutral-500">v{variant.version}</span>}</div>
+                  <Status variant={variant} />
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {variant.installed && canToggle && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, nextToggle)}>{variantWorking ? <LoaderCircle className="animate-spin" size={11} /> : actionLabel(nextToggle)}</Button>}
+                  {variant.installed && variant.supportedActions.includes("update") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "update")}>Update</Button>}
+                  {variant.installed && variant.supportedActions.includes("uninstall") && <Button size="xs" variant="ghost" disabled={!!busyKey} onClick={() => onAction(variant, "uninstall")}>Uninstall</Button>}
+                  {variant.installed && canAuthenticate && <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={() => onAction(variant, "authenticate")}><ShieldCheck size={11} /> {isCodexApp ? "Connect" : `Connect ${providerLabel(variant.provider)}`}</Button>}
+                </div>
+              </div>
+            </div>;
           })}
         </div>
-        <Button size="xs" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={11} /> : <Package size={11} />} Install for {target === "both" ? "both" : providerLabel(target)}</Button>
-      </div>}
-      {!!results.length && <div className="mt-3 space-y-1 border-t border-white/[0.055] pt-3 text-[10.5px]">
-        {results.map(result => <div key={`${result.provider}:${result.pluginId}`} className="flex items-start gap-2">{result.success ? <Check className="mt-0.5 shrink-0 text-emerald-400" size={11} /> : <X className="mt-0.5 shrink-0 text-red-400" size={11} />}<span className="text-neutral-400"><b className="font-medium text-neutral-300">{providerLabel(result.provider)}:</b> {result.error ?? result.message}</span></div>)}
-        {!!failed.length && <Button size="xs" variant="secondary" className="mt-2" disabled={!!busyKey} onClick={onRetry}><RefreshCw size={10} /> Retry failed provider</Button>}
-      </div>}
-    </div>}
-  </article>;
+      </section>
+
+      {installable && <section className="mt-6">
+        <div className="u-glass-soft flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
+          <div className="u-segmented">
+            {(["codex", "claude", "both"] as InstallTarget[]).map(value => {
+              const disabled = (value === "codex" && !hasCodex) || (value === "claude" && !hasClaude) || (value === "both" && (!hasCodex || !hasClaude));
+              return <button key={value} type="button" data-active={target === value} disabled={disabled} onClick={() => onTarget(value)} className="u-segmented-item disabled:opacity-25">{value === "both" ? "Both" : providerLabel(value)}</button>;
+            })}
+          </div>
+          <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : <Package size={12} />} Install for {target === "both" ? "both" : providerLabel(target)}</Button>
+        </div>
+      </section>}
+
+      {!!results.length && <section className="mt-6">
+        <div className="u-glass-soft rounded-2xl p-4 text-[11px]">
+          {results.map(result => <div key={`${result.provider}:${result.pluginId}`} className="flex items-start gap-2 py-1">{result.success ? <Check className="mt-0.5 shrink-0 text-emerald-400" size={12} /> : <X className="mt-0.5 shrink-0 text-red-400" size={12} />}<span className="text-neutral-400"><b className="font-medium text-neutral-200">{providerLabel(result.provider)}:</b> {result.error ?? result.message}</span></div>)}
+          {!!failed.length && <Button size="xs" variant="secondary" className="mt-2" disabled={!!busyKey} onClick={onRetry}><RefreshCw size={10} /> Retry failed provider</Button>}
+        </div>
+      </section>}
+    </main>
+  </div>;
 }
 
 function PluginMarketplace() {
@@ -149,7 +204,7 @@ function PluginMarketplace() {
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState<MarketplaceProvider | "all">("all");
   const [scope, setScope] = useState<CatalogScope>("public");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [targets, setTargets] = useState<Record<string, InstallTarget>>({});
   const [results, setResults] = useState<Record<string, MarketplaceActionResult[]>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -192,7 +247,7 @@ function PluginMarketplace() {
     const selected = retry ? failedVariants(service.variants, previous) : service.variants.filter(variant => target === "both" || variant.provider === target).filter(variant => !variant.installed);
     if (!selected.length) return;
     setBusyKey(`${service.id}:install`);
-    try { const next = await installVariants(selected, bridgeApi.marketplaceAction); setResults(current => ({ ...current, [service.id]: retry ? [...previous.filter(item => item.success), ...next] : next })); setExpandedId(service.id); await refresh(); void refreshAuth(); }
+    try { const next = await installVariants(selected, bridgeApi.marketplaceAction); setResults(current => ({ ...current, [service.id]: retry ? [...previous.filter(item => item.success), ...next] : next })); setSelectedId(service.id); await refresh(); void refreshAuth(); }
     finally { setBusyKey(null); }
   };
   const act = async (service: MarketplaceService, variant: MarketplaceVariant, action: MarketplaceAction) => {
@@ -200,32 +255,46 @@ function PluginMarketplace() {
     try { const result = await bridgeApi.marketplaceAction(variant.provider, variant.pluginId, variant.marketplace, action); setResults(current => ({ ...current, [service.id]: [result] })); await refresh(); void refreshAuth(); }
     finally { setBusyKey(null); }
   };
-  const row = (service: MarketplaceService) => <ServiceRow key={service.id} service={service} busyKey={busyKey} target={targets[service.id] ?? (service.variants.length > 1 ? "both" : service.variants[0].provider)} results={results[service.id] ?? []} expanded={expandedId === service.id} onToggle={() => setExpandedId(current => current === service.id ? null : service.id)} onTarget={target => setTargets(current => ({ ...current, [service.id]: target }))} onInstall={() => void install(service)} onRetry={() => void install(service, true)} onAction={(variant, action) => void act(service, variant, action)} />;
 
-  return <div className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
-    <main className="mx-auto w-full max-w-5xl px-5 pb-12 pt-7 sm:px-8 sm:pt-10">
+  const selected = selectedId ? allServices.find(service => service.id === selectedId) : undefined;
+  if (selected) {
+    return <PluginDetailPage
+      service={selected}
+      busyKey={busyKey}
+      target={targets[selected.id] ?? (selected.variants.length > 1 ? "both" : selected.variants[0].provider)}
+      results={results[selected.id] ?? []}
+      onBack={() => setSelectedId(null)}
+      onTarget={target => setTargets(current => ({ ...current, [selected.id]: target }))}
+      onInstall={() => void install(selected)}
+      onRetry={() => void install(selected, true)}
+      onAction={(variant, action) => void act(selected, variant, action)}
+    />;
+  }
+
+  return <div className="h-full min-h-0 overflow-y-auto">
+    <main className="mx-auto w-full max-w-5xl px-5 pb-16 pt-8 sm:px-8 sm:pt-12">
       <div className="flex items-start justify-between gap-4">
-        <div><h1 className="font-display text-[26px] font-semibold tracking-tight text-white">Plugins</h1><p className="mt-1 text-[13px] text-neutral-500">Work with your favorite tools across Codex and Claude Code</p></div>
-        <Button size="xs" variant="ghost" onClick={() => void refresh()} disabled={loading} aria-label="Refresh plugins"><RefreshCw size={13} className={loading ? "animate-spin" : ""} /></Button>
+        <div><h1 className="font-display text-[32px] font-semibold tracking-[-0.025em] text-white">Plugins</h1><p className="mt-1.5 text-[13.5px] leading-relaxed text-neutral-500">Work with your favorite tools across Codex and Claude Code</p></div>
+        <button type="button" onClick={() => void refresh()} disabled={loading} aria-label="Refresh plugins" className="mt-1.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200 disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>
       </div>
-      <div className="relative mt-5"><Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search plugins" className="h-8 rounded-xl border-white/[0.12] bg-white/[0.055] pl-9 text-[11.5px]" /></div>
+      <div className="relative mt-6"><Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-500" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search plugins" className="h-10 rounded-full border-white/[0.09] bg-white/[0.04] pl-10 text-[13px] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl placeholder:text-neutral-600 focus-visible:border-white/[0.18] focus-visible:bg-white/[0.06]" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-amber-400/15 bg-amber-400/[0.04] px-3 py-2 text-[10.5px] text-amber-200/80"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
       {loading && !catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-neutral-500"><LoaderCircle className="animate-spin" size={15} /> Discovering provider marketplaces…</div>}
 
       {!!catalog && <>
-        <section className="mt-7 border-b border-white/[0.06] pb-5" aria-labelledby="installed-heading">
-          <div className="flex items-center justify-between"><h2 id="installed-heading" className="text-[12px] font-medium text-neutral-200">Installed</h2><span className="text-[9.5px] text-neutral-600">{installed.length} plugins</span></div>
-          {installed.length ? <div className="mt-3 flex flex-wrap gap-2">{installed.map(service => <button key={service.id} type="button" title={service.name} aria-label={`Show ${service.name} details`} onClick={() => { setScope(serviceScope(service)); setExpandedId(service.id); }} className={`rounded-xl ring-offset-2 ring-offset-background transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 ${expandedId === service.id ? "ring-1 ring-white/30" : ""}`}><ServiceIcon service={service} size="sm" /></button>)}</div> : <p className="mt-3 text-[10.5px] text-neutral-600">No plugins installed yet.</p>}
+        <section className="mt-8" aria-labelledby="installed-heading">
+          <div className="flex items-center justify-between"><h2 id="installed-heading" className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">Installed</h2><span className="text-[10px] text-neutral-600">{installed.length} plugins</span></div>
+          {installed.length ? <div className="mt-3.5 flex flex-wrap gap-2.5">{installed.map(service => <button key={service.id} type="button" title={service.name} aria-label={`Open ${service.name}`} onClick={() => setSelectedId(service.id)} className="rounded-[14px] transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_-10px_rgba(0,0,0,0.6)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"><ServiceIcon service={service} size="sm" /></button>)}</div> : <p className="mt-3 text-[11px] text-neutral-600">No plugins installed yet.</p>}
         </section>
 
-        <section className="mt-4" aria-labelledby="catalog-heading">
-          <div className="flex items-center justify-between border-b border-white/[0.06] pb-2">
-            <div className="flex items-center gap-1">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" onClick={() => setScope(value)} className={`rounded-lg px-2.5 py-1 text-[10.5px] capitalize transition-colors ${scope === value ? "bg-white/[0.07] text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}`}>{value}</button>)}</div>
-            <div className="flex items-center gap-1 text-neutral-500"><SlidersHorizontal size={11} aria-hidden="true" />{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" onClick={() => setProvider(value)} className={`rounded-md px-1.5 py-1 text-[9.5px] transition-colors ${provider === value ? "text-neutral-100" : "hover:text-neutral-300"}`}>{value === "all" ? "All" : providerLabel(value)}</button>)}</div>
+        <section className="mt-9" aria-labelledby="catalog-heading">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="u-segmented">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" data-active={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div>
+            <div className="flex items-center gap-2 text-neutral-500"><SlidersHorizontal size={12} aria-hidden="true" /><div className="u-segmented">{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" data-active={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div></div>
           </div>
-          <h2 id="catalog-heading" className="mt-5 text-[12px] font-medium text-neutral-200">{query ? "Search results" : scope === "public" ? "Featured" : "Personal plugins"}</h2>
-          {services.length ? <div className="mt-2 grid grid-cols-1 gap-x-7 lg:grid-cols-2">{services.map(row)}</div> : <div className="flex min-h-44 flex-col items-center justify-center text-center"><Unplug className="mb-2 text-neutral-700" size={20} /><p className="text-xs text-neutral-400">No matching plugins</p><p className="mt-1 text-[10.5px] text-neutral-600">Try another search, scope, or provider.</p></div>}
+          <h2 id="catalog-heading" className="mt-7 text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">{query ? "Search results" : scope === "public" ? "Featured" : "Personal plugins"}</h2>
+          {services.length ? <div className="mt-3.5 grid grid-cols-1 gap-3 lg:grid-cols-2">{services.map(service => <ServiceRow key={service.id} service={service} busyKey={busyKey} onOpen={() => setSelectedId(service.id)} onInstall={() => void install(service)} />)}</div> : <div className="u-glass-soft mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl text-center"><Unplug className="mb-2.5 text-neutral-600" size={22} /><p className="text-[13px] font-medium text-neutral-300">No matching plugins</p><p className="mt-1 text-[11px] text-neutral-600">Try another search, scope, or provider.</p></div>}
         </section>
       </>}
     </main>
@@ -235,8 +304,10 @@ function PluginMarketplace() {
 export function MarketplaceScreen() {
   const [resource, setResource] = useState<"plugins" | "skills">("plugins");
   return <div className="flex h-full min-h-0 flex-col">
-    <nav className="flex h-11 shrink-0 items-center justify-center gap-1 border-b border-white/[0.06] bg-black/10" aria-label="Marketplace sections">
-      {(["plugins", "skills"] as const).map(value => <button key={value} type="button" onClick={() => setResource(value)} className={`rounded-lg px-3 py-1.5 text-[11px] capitalize transition-colors ${resource === value ? "bg-white/[0.08] text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}`}>{value}</button>)}
+    <nav className="flex h-14 shrink-0 items-center justify-center border-b border-white/[0.05]" aria-label="Marketplace sections" data-tauri-drag-region>
+      <div className="u-segmented">
+        {(["plugins", "skills"] as const).map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}
+      </div>
     </nav>
     <div className="min-h-0 flex-1">{resource === "plugins" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>
   </div>;

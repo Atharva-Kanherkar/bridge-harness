@@ -1,10 +1,11 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FileText, Gauge, GitFork, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
 import type { AgentEvent, CompletionSummary, ContinuationFidelity, Session, SessionEntry } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
+import { highlightDiff, looksLikeDiff } from "./highlight";
 import { Markdown } from "./Markdown";
 
 function providerLabel(harness?: string | null): string | undefined {
@@ -14,9 +15,9 @@ function providerLabel(harness?: string | null): string | undefined {
   return harness.charAt(0).toUpperCase() + harness.slice(1);
 }
 
-// Codex-style conversation: prose messages, quiet collapsible thinking, and
-// consecutive tool work folded into activity groups ("Edited files, read
-// files, ran commands") that expand into per-action rows.
+// Codex-style conversation: prose messages, live tool-call cards, clickable
+// thinking, and consecutive tool work folded into activity groups that expand
+// into per-action rows.
 
 type Rendered =
   | { kind: "item"; item: ConversationItem }
@@ -45,50 +46,215 @@ function groupItems(items: ConversationItem[]): Rendered[] {
   return out;
 }
 
-type ActionVerb = "edit" | "read" | "run" | "search" | "tool";
+/* ── Tool-call presentation ─────────────────────────────────────────────── */
 
-function verbOf(item: ConversationItem): ActionVerb {
-  const dataType = String(item.data.type ?? "");
-  if (item.type === "diff" || dataType.includes("patch") || dataType.includes("fileChange")) return "edit";
-  if (dataType === "readFile" || /^read /i.test(item.title ?? "")) return "read";
-  if (dataType === "commandExecution" || item.data.command) return "run";
-  if (dataType === "webSearch") return "search";
-  return "tool";
+type ActionVerb = "edit" | "read" | "run" | "search" | "tool";
+type ToolTone = "indigo" | "sky" | "violet" | "teal" | "amber" | "neutral";
+
+interface ToolInfo {
+  verb: ActionVerb;
+  icon: React.ReactNode;
+  tone: ToolTone;
+  doing: string;
+  done: string;
+  target?: string;
+  detail?: string;
 }
 
-const VERB_ICON: Record<ActionVerb, React.ReactNode> = {
-  edit: <Pencil size={13}/>, read: <FileText size={13}/>, run: <SquareTerminal size={13}/>,
-  search: <Search size={13}/>, tool: <Wrench size={13}/>,
+const TONE_STYLES: Record<ToolTone, string> = {
+  indigo: "border-indigo-300/20 bg-indigo-400/[0.09] text-indigo-300",
+  sky: "border-sky-300/20 bg-sky-400/[0.09] text-sky-300",
+  violet: "border-violet-300/20 bg-violet-400/[0.09] text-violet-300",
+  teal: "border-teal-300/20 bg-teal-400/[0.09] text-teal-300",
+  amber: "border-amber-300/20 bg-amber-400/[0.09] text-amber-300",
+  neutral: "border-white/[0.08] bg-white/[0.05] text-neutral-400",
 };
-const VERB_SUMMARY: Record<ActionVerb, string> = {
+
+const VERB_DONE: Record<ActionVerb, string> = {
   edit: "edited files", read: "read files", run: "ran commands", search: "searched the web", tool: "used tools",
 };
+const VERB_DOING: Record<ActionVerb, string> = {
+  edit: "editing files", read: "reading files", run: "running commands", search: "searching the web", tool: "using tools",
+};
 
-function summarize(items: ConversationItem[]): string {
-  const seen: ActionVerb[] = [];
-  for (const item of items) { const verb = verbOf(item); if (!seen.includes(verb)) seen.push(verb); }
-  const parts = seen.map(verb => VERB_SUMMARY[verb]);
-  const text = parts.join(", ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function actionLabel(item: ConversationItem): { label: string; meta?: React.ReactNode } {
-  const verb = verbOf(item);
+function baseName(path: string): string {
+  const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);
+  return parts[parts.length - 1] || path;
+}
+
+function fileTarget(input: Record<string, unknown>): { target?: string; detail?: string } {
+  const path = str(input.file_path) ?? str(input.notebook_path) ?? str(input.path);
+  return path ? { target: baseName(path), detail: path } : {};
+}
+
+/** Map a conversation item from either provider to a pretty tool card. */
+function toolInfo(item: ConversationItem): ToolInfo {
+  const data = item.data;
+  const input = (data.input && typeof data.input === "object" ? data.input : {}) as Record<string, unknown>;
+  const name = str(data.name);
+  const dataType = String(data.type ?? "");
+  const title = item.title ?? "";
+
+  // Claude tool_use blocks: name + input.
+  if (name) {
+    const key = name.toLowerCase();
+    if (key === "bash" || key === "shell") {
+      const command = str(input.command);
+      return { verb: "run", icon: <SquareTerminal size={13}/>, tone: "indigo", doing: "Running", done: "Ran", target: command ?? (title || "command"), detail: command };
+    }
+    if (key === "read") {
+      const { target, detail } = fileTarget(input);
+      return { verb: "read", icon: <FileText size={13}/>, tone: "sky", doing: "Reading", done: "Read", target: target ?? "file", detail };
+    }
+    if (key === "edit" || key === "multiedit" || key === "notebookedit") {
+      const { target, detail } = fileTarget(input);
+      return { verb: "edit", icon: <Pencil size={13}/>, tone: "violet", doing: "Editing", done: "Edited", target: target ?? "file", detail };
+    }
+    if (key === "write") {
+      const { target, detail } = fileTarget(input);
+      return { verb: "edit", icon: <FilePlus2 size={13}/>, tone: "violet", doing: "Writing", done: "Wrote", target: target ?? "file", detail };
+    }
+    if (key === "grep" || key === "glob") {
+      const pattern = str(input.pattern);
+      return { verb: "search", icon: <Search size={13}/>, tone: "teal", doing: "Searching", done: "Searched", target: pattern ? `“${pattern}”` : "files", detail: str(input.path) };
+    }
+    if (key === "websearch") {
+      return { verb: "search", icon: <Globe size={13}/>, tone: "teal", doing: "Searching the web", done: "Searched the web", target: str(input.query) };
+    }
+    if (key === "webfetch") {
+      return { verb: "search", icon: <Globe size={13}/>, tone: "teal", doing: "Fetching", done: "Fetched", target: str(input.url) };
+    }
+    if (key === "task") {
+      return { verb: "tool", icon: <GitFork size={13}/>, tone: "amber", doing: "Delegating", done: "Delegated", target: str(input.description) };
+    }
+    if (key === "todowrite") {
+      return { verb: "tool", icon: <ListChecks size={13}/>, tone: "amber", doing: "Updating tasks", done: "Updated tasks" };
+    }
+    if (key.startsWith("mcp__")) {
+      const parts = name.replace(/^mcp__/, "").split("__");
+      const server = parts[0] ?? name;
+      const tool = parts.slice(1).join(" ").replaceAll("_", " ") || name;
+      return { verb: "tool", icon: <Wrench size={13}/>, tone: "neutral", doing: `Using ${server}`, done: `Used ${server}`, target: tool };
+    }
+    return { verb: "tool", icon: <Wrench size={13}/>, tone: "neutral", doing: `Using ${name}`, done: `Used ${name}`, target: title || undefined };
+  }
+
+  // Codex-shaped items.
+  if (item.type === "diff" || dataType.includes("patch") || dataType.includes("fileChange")) {
+    const path = str(data.path) ?? (title || undefined);
+    return { verb: "edit", icon: <Pencil size={13}/>, tone: "violet", doing: "Editing", done: "Edited", target: path ? baseName(path) : "files", detail: path };
+  }
+  if (dataType === "readFile" || /^read /i.test(title)) {
+    const path = str(data.path) ?? title.replace(/^read /i, "");
+    return { verb: "read", icon: <FileText size={13}/>, tone: "sky", doing: "Reading", done: "Read", target: path ? baseName(path) : "file", detail: path || undefined };
+  }
+  if (dataType === "commandExecution" || data.command) {
+    const command = str(data.command) ?? (title || undefined);
+    return { verb: "run", icon: <SquareTerminal size={13}/>, tone: "indigo", doing: "Running", done: "Ran", target: command ?? "command", detail: command };
+  }
+  if (dataType === "webSearch") {
+    return { verb: "search", icon: <Globe size={13}/>, tone: "teal", doing: "Searching the web", done: "Searched the web", target: title || undefined };
+  }
+  return { verb: "tool", icon: <Wrench size={13}/>, tone: "neutral", doing: "Using a tool", done: "Used a tool", target: title || undefined };
+}
+
+function summarize(items: ConversationItem[], live: boolean): string {
+  const seen: ActionVerb[] = [];
+  for (const item of items) {
+    const verb = toolInfo(item).verb;
+    if (!seen.includes(verb)) seen.push(verb);
+  }
+  const table = live ? VERB_DOING : VERB_DONE;
+  const text = seen.map(verb => table[verb]).join(", ");
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  return live ? `${sentence}…` : sentence;
+}
+
+/** The expandable payload behind a tool row: explicit output, else the item text. */
+function toolOutput(item: ConversationItem): string {
+  const direct = str(item.data.aggregatedOutput) ?? str(item.data.output);
+  if (direct) return direct;
+  const text = item.text ?? "";
+  if (!text.trim()) return "";
+  if (item.title && text.trim() === item.title.trim()) return "";
+  return text;
+}
+
+function DiffPatch({ patch }: { patch: string }) {
+  const html = useMemo(() => highlightDiff(patch.slice(-8000)), [patch]);
+  return <div className="diff-view max-h-[320px] overflow-auto p-3" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function ActionRow({ item }: { item: ConversationItem }) {
+  const [open, setOpen] = useState(false);
+  const live = item.status === "inProgress" || item.status === "streaming";
+  const failed = item.status === "failed";
+  const info = toolInfo(item);
+  const output = toolOutput(item);
   const additions = Number(item.data.additions ?? NaN);
   const deletions = Number(item.data.deletions ?? NaN);
   const durationMs = Number(item.data.durationMs ?? NaN);
-  if (verb === "edit") {
-    const file = item.title || String(item.data.path ?? "files");
-    return { label: `Edited ${file}`, meta: Number.isFinite(additions) ? <span className="dstat"><b className="add">+{additions}</b> <b className="del">−{deletions}</b></span> : undefined };
-  }
-  if (verb === "run") {
-    const command = String(item.data.command ?? item.title ?? "command");
-    return { label: `Ran ${command}`, meta: Number.isFinite(durationMs) ? <span>{Math.round(durationMs / 1000) || 1}s</span> : undefined };
-  }
-  if (verb === "read") return { label: item.title || `Read ${String(item.data.path ?? "file")}` };
-  if (verb === "search") return { label: item.title || "Searched the web" };
-  return { label: item.title || "Used a tool" };
+  const label = `${live ? info.doing : info.done}${info.target ? ` ${info.target}` : ""}`;
+  const detail = info.detail && info.detail !== info.target ? info.detail : undefined;
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        className="group/row flex w-full items-center gap-2.5 rounded-xl px-1.5 py-1.5 text-left transition-colors hover:bg-white/[0.035] disabled:cursor-default"
+        disabled={!output}
+        onClick={() => output && setOpen(value => !value)}
+      >
+        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border ${TONE_STYLES[info.tone]}`}>
+          {info.icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className={`block truncate text-[12px] font-medium ${live ? "text-neutral-100" : "text-neutral-300"}`}>{label}</span>
+          {detail && <span className="mt-px block truncate font-mono text-[10.5px] text-neutral-600">{detail}</span>}
+        </span>
+        {info.verb === "edit" && Number.isFinite(additions) && (
+          <span className="shrink-0 font-mono text-[10.5px]"><b className="font-medium text-emerald-400/90">+{additions}</b> <b className="font-medium text-red-400/90">−{deletions}</b></span>
+        )}
+        {Number.isFinite(durationMs) && !live && <span className="shrink-0 font-mono text-[10.5px] text-neutral-600">{Math.max(1, Math.round(durationMs / 1000))}s</span>}
+        {live && <LoaderCircle size={12} className="shrink-0 animate-spin text-indigo-300/80" aria-hidden="true"/>}
+        {!live && failed && <X size={12} className="shrink-0 text-rose-400" aria-hidden="true"/>}
+        {output && <ChevronRight size={12} className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true"/>}
+      </button>
+      {open && output && (
+        <div className="mb-2 ml-[42px] mt-0.5 overflow-hidden rounded-xl border border-white/[0.06] bg-black/30">
+          {looksLikeDiff(output)
+            ? <DiffPatch patch={output}/>
+            : <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap p-3 font-mono text-[11.5px] leading-relaxed text-neutral-400">{output.slice(-6000)}</pre>}
+        </div>
+      )}
+    </div>
+  );
 }
+
+function ActivityGroup({ items }: { items: ConversationItem[] }) {
+  const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
+  const [open, setOpen] = useState(false);
+  const expanded = open || live;
+  return (
+    <div className="my-2.5">
+      <button
+        type="button"
+        className="group inline-flex items-center gap-2 rounded-lg px-1 py-1 text-left text-[12px] text-neutral-500 transition-colors hover:text-neutral-300"
+        onClick={() => setOpen(value => !value)}
+      >
+        {live ? <PulseDot size={7}/> : <Check size={12} className="text-neutral-600" aria-hidden="true"/>}
+        <span className={live ? "text-neutral-300" : undefined}>{summarize(items, live)}</span>
+        <ChevronDown size={13} className={`text-neutral-600 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true"/>
+      </button>
+      {expanded && <div className="mt-1 grid gap-0.5">{items.map(item => <ActionRow key={item.key} item={item}/>)}</div>}
+    </div>
+  );
+}
+
+/* ── Conversation ───────────────────────────────────────────────────────── */
 
 export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const visibleItems = useMemo(() => {
@@ -111,7 +277,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
-  return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10 scrollbar-thin scrollbar-thumb-white/10">
+  return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10">
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 sm:gap-8">
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
       {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
@@ -122,7 +288,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
         : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} errorContext={errorContext}/>)}
-      {optimistic.map((text, index) => <div key={`pending-${index}`} className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-2xl rounded-tr-sm bg-white/[0.04] px-5 py-3 text-[15px] leading-[1.7] text-neutral-100 ring-1 ring-white/[0.06] whitespace-pre-wrap">{text}</div></div>)}
+      {optimistic.map((text, index) => <div key={`pending-${index}`} className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{text}</div></div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start pl-4"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
     </div>
   </ScrollFollow>;
@@ -173,13 +339,6 @@ function ScrollFollow({ signature, className, children }: { signature: string; c
   }}>{children}</div>;
 }
 
-function ThinkingIndicator() {
-  return <div className="my-4 flex items-center gap-[9px]">
-    <PulseDot size={7}/>
-    <span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Thinking…</span>
-  </div>;
-}
-
 function PulseDot({ size = 8 }: { size?: number }) {
   return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
 }
@@ -193,15 +352,15 @@ function GreetingEmpty({ seed }: { seed?: string }) {
 function Empty({ title, copy }: { title: string; copy: string }) {
   return <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center animate-page-enter">
     <div className="flex max-w-[440px] flex-col items-center">
-      <h2 className="font-display text-lg font-medium tracking-tight text-white">{title}</h2>
-      <p className="mt-2 text-sm leading-relaxed text-neutral-500">{copy}</p>
+      <h2 className="font-display text-[22px] font-medium tracking-[-0.02em] text-white">{title}</h2>
+      <p className="mt-2.5 max-w-[380px] text-[13.5px] leading-relaxed tracking-[-0.004em] text-neutral-500">{copy}</p>
     </div>
   </div>;
 }
 
 function ItemView({ item, onResolve, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
-    if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-2xl rounded-tr-sm bg-white/[0.04] px-5 py-3 text-[15px] leading-[1.7] text-neutral-100 ring-1 ring-white/[0.06] whitespace-pre-wrap">{item.text}</div></div>;
+    if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{item.text}</div></div>;
     return <div className="chat-message-enter flex w-full justify-start"><div className="relative max-w-[min(100%,44rem)] py-1 pl-1 text-neutral-300">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div></div>;
   }
   if (item.type === "reasoning") return <Reasoning item={item}/>;
@@ -247,43 +406,33 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
 function Reasoning({ item }: { item: ConversationItem }) {
   const streaming = item.status === "streaming";
   const text = item.text || stringList(item.data.summary);
-  if (streaming) return <div className="my-4 flex items-center gap-[9px] before:content-[''] before:w-[7px] before:h-[7px] before:rounded-full before:bg-muted-foreground/50 before:animate-[thinking-pulse_1.6s_ease-in-out_infinite]"><span className="text-muted-foreground text-[12.5px] bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">{lastLine(text) || "Thinking…"}</span></div>;
-  return <details className="my-[15px] group [&_summary::-webkit-details-marker]:hidden">
-    <summary className="inline-flex items-center gap-2 text-muted-foreground text-[13px] py-1 cursor-pointer transition-colors hover:text-foreground"><ChevronRight size={12} className="text-muted-foreground/70 transition-transform group-open:rotate-90" aria-hidden="true" />Thought for a moment</summary>
-    <div className="mt-2 pl-[15px] border-l-[1.5px] border-border text-muted-foreground text-[12.5px] leading-relaxed"><Markdown text={text}/></div>
-  </details>;
-}
-
-function ActivityGroup({ items }: { items: ConversationItem[] }) {
-  const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
-  const [open, setOpen] = useState(false);
-  const expanded = open || live;
-  return <div className="my-3">
-    <button className="inline-flex items-center gap-[9px] text-muted-foreground text-[12px] py-1 text-left transition-colors hover:text-foreground group" onClick={() => setOpen(value => !value)}>
-      {live ? <PulseDot size={7}/> : <Pencil size={13} className="text-muted-foreground/70" aria-hidden="true" />}
-      <span>{summarize(items)}</span>
-      <ChevronDown size={13} className={`text-muted-foreground/70 transition-transform opacity-70 ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
-    </button>
-    {expanded && <div className="mt-[5px] pl-[21px] border-l border-border/50 grid gap-[1px]">
-      {items.map(item => <ActionRow key={item.key} item={item}/>)}
-    </div>}
-  </div>;
-}
-
-function ActionRow({ item }: { item: ConversationItem }) {
-  const [open, setOpen] = useState(false);
-  const output = String(item.data.aggregatedOutput ?? item.data.output ?? "");
-  const live = item.status === "inProgress" || item.status === "streaming";
-  const { label, meta } = actionLabel(item);
-  return <div className="min-w-0">
-    <button className="w-full flex items-center gap-[9px] min-h-[26px] py-1 pr-2 rounded-md text-left text-muted-foreground text-[12px] hover:text-foreground disabled:hover:text-muted-foreground transition-colors" disabled={!output} onClick={() => output && setOpen(value => !value)}>
-      <span className="flex-none grid place-items-center text-muted-foreground/70">{live ? <PulseDot size={7}/> : VERB_ICON[verbOf(item)]}</span>
-      <span className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis font-mono text-[11.5px]">{label}</span>
-      {meta && <span className="flex-none text-muted-foreground/70 font-mono text-[10.5px]">{meta}</span>}
-      {output && <ChevronRight size={12} className={`flex-none text-muted-foreground/70 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
-    </button>
-    {open && output && <pre className="mt-[3px] mb-2 ml-[25px] p-2.5 max-h-[260px] overflow-auto border border-border rounded-xl bg-code text-muted-foreground font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap scrollbar-thin scrollbar-thumb-foreground/10">{output.slice(-4000)}</pre>}
-  </div>;
+  if (streaming) {
+    const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+    const recent = lines.slice(-3);
+    return (
+      <div className="chat-message-enter my-3 flex items-start gap-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] px-4 py-3">
+        <Brain size={14} className="mt-0.5 shrink-0 text-violet-300/80 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" aria-hidden="true"/>
+        <div className="min-w-0 flex-1">
+          <span className="text-[12px] font-medium bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[shimmer_2s_linear_infinite]">Thinking…</span>
+          {recent.length > 0 && <div className="mt-1.5 space-y-0.5">
+            {recent.map((line, index) => <p key={index} className={`truncate text-[12px] leading-relaxed ${index === recent.length - 1 ? "text-neutral-400" : "text-neutral-600"}`}>{line}</p>)}
+          </div>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <details className="group my-3 rounded-2xl border border-white/[0.05] bg-white/[0.02] [&_summary::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer items-center gap-2.5 px-4 py-2.5 text-[12px] text-neutral-500 transition-colors hover:text-neutral-300">
+        <Brain size={13} className="shrink-0 text-violet-300/70" aria-hidden="true"/>
+        <span className="font-medium">Thought for a moment</span>
+        <ChevronRight size={12} className="ml-auto text-neutral-600 transition-transform group-open:rotate-90" aria-hidden="true"/>
+      </summary>
+      <div className="border-t border-white/[0.045] px-4 py-3 text-neutral-400">
+        <Markdown text={text}/>
+      </div>
+    </details>
+  );
 }
 
 function PlanCard({ item }: { item: ConversationItem }) {
@@ -336,10 +485,6 @@ function titleAddsInfo(item: ConversationItem, isResult: boolean): boolean {
   return isResult ? !/^worker result$/i.test(title) : true;
 }
 
-function lastLine(text: string): string {
-  const lines = text.trim().split("\n").filter(Boolean);
-  return lines[lines.length - 1] ?? "";
-}
 function stringList(value: unknown) { return Array.isArray(value) ? value.join("\n") : ""; }
 function planSteps(data: Record<string, unknown>): Array<{ step: string; status: string }> {
   return Array.isArray(data.plan) ? data.plan.filter((v): v is { step: string; status: string } => !!v && typeof v === "object" && "step" in v && "status" in v) : [];
