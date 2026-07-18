@@ -1,5 +1,6 @@
 mod adapters;
 mod agent;
+mod agent_config;
 mod binary;
 mod claude_adapter;
 mod compaction_controller;
@@ -487,6 +488,41 @@ async fn reset_model_profiles(
 }
 
 #[tauri::command]
+async fn get_config_state(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::state(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+async fn save_harness_config(config: agent_config::HarnessConfig, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::save_harness(&state.db.lock().unwrap(), config)
+}
+
+#[tauri::command]
+async fn reset_harness_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::reset_harness(&state.db.lock().unwrap(), &id)
+}
+
+#[tauri::command]
+async fn save_agent_config(agent: agent_config::AgentDefinition, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::save_agent(&state.db.lock().unwrap(), agent)
+}
+
+#[tauri::command]
+async fn delete_agent_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::delete_agent(&state.db.lock().unwrap(), &id)
+}
+
+#[tauri::command]
+async fn set_default_agent(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::set_default(&state.db.lock().unwrap(), &id)
+}
+
+#[tauri::command]
+async fn reset_all_config(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+    agent_config::reset_all(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
 async fn get_learning_state(
     state: State<'_, AppState>,
 ) -> Result<learning_job::LearningState, BridgeError> {
@@ -715,6 +751,7 @@ struct OrchestratorSelection {
     model: String,
     tier: CapabilityTier,
     effort: Option<delegation::Effort>,
+    label: String,
 }
 
 fn resolve_orchestrator_selection(
@@ -722,11 +759,30 @@ fn resolve_orchestrator_selection(
     registry: &adapters::AdapterRegistry,
 ) -> Result<OrchestratorSelection, BridgeError> {
     let descriptors = registry.descriptors();
+    let configured_agent = agent_config::default_orchestrator(db);
+    if let Some(agent) = configured_agent.as_ref() {
+        if agent.enabled && (agent.harness == "codex" || agent.harness == "claude") {
+            let harness_config = agent_config::harness_config(db, &agent.harness);
+            let preferred_model = agent.model.as_deref().filter(|value| !value.trim().is_empty())
+                .or_else(|| harness_config.as_ref().and_then(|config| config.default_model.as_deref()).filter(|value| !value.trim().is_empty()));
+            if harness_config.is_some() {
+                if let Ok(resolution) = registry.resolve_model(&agent.harness, CapabilityTier::Standard, preferred_model) {
+                    return Ok(OrchestratorSelection {
+                        adapter_id: agent.harness.clone(),
+                        model: resolution.actual_model,
+                        tier: CapabilityTier::Standard,
+                        effort: harness_config.and_then(|config| config.effort).or(Some(agent.effort)),
+                        label: agent.name.clone(),
+                    });
+                }
+            }
+        }
+    }
     if let Some(profile) = model_profiles::resolve_profile(
         db,
         &descriptors,
         model_profiles::ProfilePurpose::StandardOrchestrator,
-    )? {
+    )?.filter(|profile| agent_config::is_harness_enabled(db, &profile.provider)) {
         let resolution = registry.resolve_model(
             &profile.provider,
             profile.tier,
@@ -736,16 +792,21 @@ fn resolve_orchestrator_selection(
             adapter_id: profile.provider,
             model: resolution.actual_model,
             tier: profile.tier,
-            effort: Some(profile.effort),
+            effort: configured_agent.as_ref()
+                .filter(|agent| !agent.is_built_in || !agent.updated_at.is_empty())
+                .map(|agent| agent.effort)
+                .or(Some(profile.effort)),
+            label: configured_agent.as_ref().map(|agent| agent.name.clone()).unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
         });
     }
-    for descriptor in descriptors.iter().filter(|descriptor| descriptor.available) {
+    for descriptor in descriptors.iter().filter(|descriptor| descriptor.available && agent_config::is_harness_enabled(db, &descriptor.id)) {
         if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
             return Ok(OrchestratorSelection {
                 adapter_id: descriptor.id.clone(),
                 model: resolution.actual_model,
                 tier: orchestrator::TIER,
                 effort: None,
+                label: orchestrator::SESSION_LABEL.into(),
             });
         }
     }
@@ -771,7 +832,7 @@ async fn create_workspace_session(
     let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
     db.execute(
         "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-        params![id, workspace_id, selection.adapter_id, orchestrator::SESSION_LABEL, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
+        params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
     )?;
     store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
     store::state(&db)
@@ -939,7 +1000,7 @@ async fn start_session(
         resolve_orchestrator_selection(&db, &state.adapter_registry)?
     };
     let adapter_id = selection.adapter_id.as_str();
-    let session_label = orchestrator::SESSION_LABEL;
+    let session_label = selection.label.as_str();
     let chosen_model = Some(selection.model.clone());
     let chosen_effort = selection.effort;
     let chosen_effort_name = chosen_effort.map(|effort| effort.as_str());
@@ -1010,10 +1071,12 @@ async fn start_session(
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
+    let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
     let orchestrator_instructions = format!(
-        "{}\n\n{}\n\n{}",
+        "{}\n\n{}{}\n\n{}",
         orchestrator::briefing(),
         delegation::protocol(0),
+        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
         state.credential_broker.instructions(&session_id),
     );
     let plan = restoration::select_plan(
@@ -1313,24 +1376,29 @@ async fn start_chat(
         }
     };
     std::fs::create_dir_all(&cwd)?;
-    let adapter_id: &str = if is_orchestrator { orchestrator::HARNESS } else { harness.as_str() };
+    let adapter_id: &str = harness.as_str();
+    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
+        return Err(BridgeError::Invalid(format!("{adapter_id} is disabled in Settings")));
+    }
     let tier = if is_orchestrator { orchestrator::TIER } else { CapabilityTier::Fast };
-    let chosen_model = if is_orchestrator {
-        state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model)
-    } else {
-        match model {
-            Some(value) if !value.is_empty() => Some(value),
-            _ => state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model),
-        }
-    };
+    let configured_harness = agent_config::harness_config(&state.db.lock().unwrap(), adapter_id);
+    let chosen_model = model.as_ref().filter(|value| !value.is_empty()).cloned()
+        .or_else(|| configured_harness.as_ref().and_then(|config| config.default_model.clone()))
+        .or_else(|| state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model));
     let proxy_instructions = state.credential_broker.instructions(&session_id);
-    let orchestrator_instructions = if is_orchestrator {
-        format!("{}\n\n{}\n\n{}", orchestrator::briefing(), delegation::protocol(0), proxy_instructions)
+    let configured_prompt = if is_orchestrator {
+        agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id)
     } else {
-        proxy_instructions
+        agent_config::session_prompt(&state.db.lock().unwrap(), adapter_id)
+    };
+    let orchestrator_instructions = if is_orchestrator {
+        format!("{}\n\n{}{}\n\n{}", orchestrator::briefing(), delegation::protocol(0), if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") }, proxy_instructions)
+    } else {
+        format!("{}{}", if configured_prompt.is_empty() { String::new() } else { format!("{configured_prompt}\n\n") }, proxy_instructions)
     };
     let instructions_ref = Some(orchestrator_instructions.as_str());
-    let effort_ref = effort.as_deref().filter(|value| !value.is_empty());
+    let configured_effort = configured_harness.and_then(|config| config.effort).map(|value| value.as_str().to_owned());
+    let effort_ref = effort.as_deref().filter(|value| !value.is_empty()).or(configured_effort.as_deref());
     let resumable = provider_id
         .as_deref()
         .filter(|value| !value.is_empty())
@@ -2368,6 +2436,14 @@ fn launch_worker_outcome(
     };
     let directive = &routed.request;
     let harness = directive.runtime_harness();
+    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), &harness) {
+        let db = state.db.lock().unwrap();
+        let _ = learning_router::record_route_status(&db, &routed.decision.id, "harness_disabled");
+        let _ = store::event(&db, "capability", "capability.harness_disabled", parent_session_id, &format!("{harness} is disabled in Settings"));
+        drop(db);
+        let _ = app.emit("state-changed", ());
+        return WorkerLaunchOutcome::Failed;
+    }
     let resolution = match state.adapter_registry.resolve_model(
         &harness,
         directive.capability_tier,
@@ -2565,9 +2641,12 @@ fn launch_worker_outcome(
             return WorkerLaunchOutcome::Failed;
         }
     };
+    let role = directive.role.as_str();
+    let configured_prompt = agent_config::prompt_suffix(&state.db.lock().unwrap(), &harness, role);
     let instructions = format!(
-        "{}\n\n{}",
+        "{}{}\n\n{}",
         delegation::worker_briefing(directive, reservation.depth, &reservation.branch, &evidence),
+        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
         state.credential_broker.instructions(&reservation.session_id)
     );
 
@@ -4840,6 +4919,13 @@ pub fn run() {
             recommended_model_profiles,
             save_model_profiles,
             reset_model_profiles,
+            get_config_state,
+            save_harness_config,
+            reset_harness_config,
+            save_agent_config,
+            delete_agent_config,
+            set_default_agent,
+            reset_all_config,
             get_learning_state,
             run_learning,
             cancel_learning_run,

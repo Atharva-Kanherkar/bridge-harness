@@ -115,6 +115,18 @@ export interface ModelProfile extends ModelProfileDraft {
   schemaVersion: number; version: number; profileId: string; canonicalRole: CanonicalWorkerRole; createdAt: string;
 }
 export interface ModelSetupState { complete: boolean; activeVersion: number | null; profiles: ModelProfile[] }
+export interface HarnessConfig {
+  id: "bridge" | "codex" | "claude"; label: string; enabled: boolean;
+  defaultModel: string | null; effort: ReasoningEffort | null; systemPrompt: string;
+  advanced: Record<string, unknown>; isOverride: boolean;
+}
+export type AgentRole = "orchestrator" | "research" | "implementation" | "verification" | "planning" | "documentation";
+export interface AgentDefinition {
+  id: string; name: string; description: string; role: AgentRole; harness: "bridge" | "codex" | "claude";
+  model: string | null; effort: ReasoningEffort; systemPrompt: string; enabled: boolean;
+  isDefault: boolean; isBuiltIn: boolean; createdAt: string; updatedAt: string;
+}
+export interface ConfigState { harnesses: HarnessConfig[]; agents: AgentDefinition[]; defaultAgentId: string }
 export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude";
 export type LearningRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "noop";
 export interface LearningReport {

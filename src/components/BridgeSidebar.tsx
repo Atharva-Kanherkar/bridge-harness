@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight, FolderGit2, FolderOpen, GitBranch, MessageSquarePlus, Package, PanelLeft, Plus, Sparkles } from "lucide-react";
+import { ChevronRight, FolderGit2, FolderOpen, GitBranch, MessageSquarePlus, Package, PanelLeft, Plus, Settings2, Sparkles } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 
@@ -69,10 +69,12 @@ export type BridgeSidebarProps = {
   workspaceChats: (workspaceId: string) => Session[];
   activeSessionId?: string;
   marketplaceActive: boolean;
+  settingsActive: boolean;
   expanded: Set<string>;
   busy: boolean;
   onOpenNewChat: () => void;
   onOpenMarketplace: () => void;
+  onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   onToggleWorkspace: (id: string) => void;
   onNewWorkspace: () => void;
@@ -86,10 +88,12 @@ export function BridgeSidebar({
   workspaceChats,
   activeSessionId,
   marketplaceActive,
+  settingsActive,
   expanded,
   busy,
   onOpenNewChat,
   onOpenMarketplace,
+  onOpenSettings,
   onOpenSession,
   onToggleWorkspace,
   onNewWorkspace,
@@ -323,6 +327,21 @@ export function BridgeSidebar({
         >
           <Package size={15} strokeWidth={1.6} aria-hidden="true" />
           {!collapsed && "Marketplace"}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          title={collapsed ? "Settings" : undefined}
+          className={cn(
+            "mt-1 flex shrink-0 items-center rounded-xl transition-all",
+            collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 border border-transparent px-2.5 text-[12px] font-medium",
+            settingsActive
+              ? "border-white/[0.07] bg-white/[0.07] text-neutral-100"
+              : "text-neutral-500 hover:bg-white/[0.045] hover:text-neutral-200",
+          )}
+        >
+          <Settings2 size={15} strokeWidth={1.6} aria-hidden="true" />
+          {!collapsed && "Settings"}
         </button>
       </div>
 
