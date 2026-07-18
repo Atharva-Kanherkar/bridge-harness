@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, Harness, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentDefinition, AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
@@ -10,6 +10,22 @@ const stateListeners = new Set<() => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
 let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
+let mockConfigState: ConfigState = {
+  harnesses: [
+    { id: "bridge", label: "Bridge", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
+    { id: "codex", label: "Codex", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
+    { id: "claude", label: "Claude Code", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
+  ],
+  agents: [
+    { id: "bridge-orchestrator", name: "Bridge orchestrator", description: "Plans, routes, and owns the final answer.", role: "orchestrator", harness: "bridge", model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: true, isBuiltIn: true, createdAt: "", updatedAt: "" },
+    { id: "bridge-research", name: "Research agent", description: "Collects scoped evidence and findings.", role: "research", harness: "bridge", model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
+    { id: "bridge-implementation", name: "Implementation agent", description: "Makes focused code changes.", role: "implementation", harness: "bridge", model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
+    { id: "bridge-verification", name: "Verification agent", description: "Tests outcomes independently.", role: "verification", harness: "bridge", model: null, effort: "high", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
+    { id: "bridge-planning", name: "Planning agent", description: "Turns ambiguous work into an executable plan.", role: "planning", harness: "bridge", model: null, effort: "high", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
+    { id: "bridge-documentation", name: "Documentation agent", description: "Produces concise project documentation.", role: "documentation", harness: "bridge", model: null, effort: "low", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
+  ],
+  defaultAgentId: "bridge-orchestrator",
+};
 let mockLearningState: LearningState = {
   schedule: { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "manual" },
   latestRun: null,
@@ -214,6 +230,46 @@ export const bridgeApi = {
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? invoke("recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
   saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? invoke("save_model_profiles", { profiles }) : Promise.resolve(saveMockProfiles(profiles)),
   resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? invoke("reset_model_profiles") : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  configState: (): Promise<ConfigState> => isTauri() ? invoke("get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
+  saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
+    if (isTauri()) return invoke("save_harness_config", { config });
+    mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === config.id ? { ...structuredClone(config), isOverride: true } : item);
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
+  resetHarnessConfig: (id: HarnessConfig["id"]): Promise<ConfigState> => {
+    if (isTauri()) return invoke("reset_harness_config", { id });
+    mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
+  saveAgentConfig: (agent: AgentDefinition): Promise<ConfigState> => {
+    if (isTauri()) return invoke("save_agent_config", { agent });
+    const value = { ...structuredClone(agent), id: agent.id || `custom-${crypto.randomUUID()}`, isDefault: false, updatedAt: new Date().toISOString() };
+    const index = mockConfigState.agents.findIndex(item => item.id === value.id);
+    if (index >= 0) mockConfigState.agents[index] = value; else mockConfigState.agents.push(value);
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
+  deleteAgentConfig: (id: string): Promise<ConfigState> => {
+    if (isTauri()) return invoke("delete_agent_config", { id });
+    const original = mockConfigState.agents.find(item => item.id === id);
+    if (original?.isBuiltIn) mockConfigState.agents = mockConfigState.agents.map(item => item.id === id ? { ...item, systemPrompt: "", enabled: true, model: null } : item);
+    else mockConfigState.agents = mockConfigState.agents.filter(item => item.id !== id);
+    if (mockConfigState.defaultAgentId === id) mockConfigState.defaultAgentId = "bridge-orchestrator";
+    mockConfigState.agents = mockConfigState.agents.map(item => ({ ...item, isDefault: item.id === mockConfigState.defaultAgentId }));
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
+  setDefaultAgent: (id: string): Promise<ConfigState> => {
+    if (isTauri()) return invoke("set_default_agent", { id });
+    mockConfigState.defaultAgentId = id;
+    mockConfigState.agents = mockConfigState.agents.map(item => ({ ...item, isDefault: item.id === id }));
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
+  resetAllConfig: (): Promise<ConfigState> => {
+    if (isTauri()) return invoke("reset_all_config");
+    mockConfigState.harnesses = mockConfigState.harnesses.map(item => ({ ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false }));
+    mockConfigState.agents = mockConfigState.agents.filter(item => item.isBuiltIn).map(item => ({ ...item, enabled: true, model: null, systemPrompt: "", isDefault: item.id === "bridge-orchestrator" }));
+    mockConfigState.defaultAgentId = "bridge-orchestrator";
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
   learningState: (): Promise<LearningState> => isTauri() ? invoke("get_learning_state") : Promise.resolve(structuredClone(mockLearningState)),
   runLearning: (triggerKind: LearningTriggerKind = "manual"): Promise<LearningRun> => {
     if (isTauri()) return invoke("run_learning", { triggerKind });

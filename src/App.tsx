@@ -29,6 +29,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
 
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
+const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
@@ -70,7 +71,7 @@ export function App() {
   const [health, setHealth] = useState<Health>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
-  const [view, setView] = useState<"workspace" | "marketplace">("workspace");
+  const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
   const [modal, setModal] = useState<"chat" | "workspace" | "router" | null>(null);
@@ -405,10 +406,12 @@ export function App() {
       workspaceChats={workspaceId => topSessions.filter(s => s.workspaceId === workspaceId)}
       activeSessionId={session?.id}
       marketplaceActive={view === "marketplace"}
+      settingsActive={view === "settings"}
       expanded={expanded}
       busy={busy}
       onOpenNewChat={() => void openNewChat()}
       onOpenMarketplace={() => setView("marketplace")}
+      onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       onToggleWorkspace={toggleExpanded}
       onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
@@ -417,7 +420,7 @@ export function App() {
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex or Claude is installed and signed in.</AlertDescription></Alert>}
-      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : session ? <>
+      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>

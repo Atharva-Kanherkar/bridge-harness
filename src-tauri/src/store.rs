@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 16;
+const LATEST_SCHEMA_VERSION: i64 = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -237,6 +237,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             14 => migration_14_completion_proof(&transaction)?,
             15 => migration_15_role_profiles_and_learning_jobs(&transaction)?,
             16 => migration_16_complete_role_profile_schema(&transaction)?,
+            17 => migration_17_configuration_entries(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -249,6 +250,21 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
         )?;
         transaction.commit()?;
     }
+    Ok(())
+}
+
+fn migration_17_configuration_entries(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE configuration_entries (
+            kind TEXT NOT NULL,
+            id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(kind,id)
+        );
+        CREATE INDEX idx_configuration_entries_kind ON configuration_entries(kind,updated_at);",
+    )?;
     Ok(())
 }
 
@@ -2032,7 +2048,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         );
         for table in [
             "model_profiles",
@@ -2097,7 +2113,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
@@ -2111,13 +2127,14 @@ mod tests {
             "DROP INDEX idx_model_profiles_id;
              ALTER TABLE model_profiles DROP COLUMN profile_id;
              ALTER TABLE learning_jobs DROP COLUMN last_evidence_boundary;
-             DELETE FROM schema_version WHERE version=16;",
+             DROP TABLE configuration_entries;
+             DELETE FROM schema_version WHERE version IN (16,17);",
         )
         .unwrap();
         drop(db);
 
         let db = open(&path).unwrap();
-        assert_eq!(current_schema_version(&db).unwrap(), 16);
+        assert_eq!(current_schema_version(&db).unwrap(), 17);
         for (table, column) in [
             ("model_profiles", "profile_id"),
             ("learning_jobs", "last_evidence_boundary"),

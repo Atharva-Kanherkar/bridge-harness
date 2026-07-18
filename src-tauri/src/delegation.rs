@@ -23,6 +23,18 @@ pub enum WorkerRole {
     Documentation,
 }
 
+impl WorkerRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Research => "research",
+            Self::Implementation => "implementation",
+            Self::Verification => "verification",
+            Self::Planning => "planning",
+            Self::Documentation => "documentation",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WriteMode {

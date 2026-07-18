@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight, FolderGit2, GitBranch, MessageSquarePlus, Package, PanelLeft, Plus } from "lucide-react";
+import { ChevronRight, FolderGit2, GitBranch, MessageSquarePlus, Package, PanelLeft, Plus, Settings2 } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 
@@ -57,10 +57,12 @@ export type BridgeSidebarProps = {
   workspaceChats: (workspaceId: string) => Session[];
   activeSessionId?: string;
   marketplaceActive: boolean;
+  settingsActive: boolean;
   expanded: Set<string>;
   busy: boolean;
   onOpenNewChat: () => void;
   onOpenMarketplace: () => void;
+  onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   onToggleWorkspace: (id: string) => void;
   onNewWorkspace: () => void;
@@ -74,10 +76,12 @@ export function BridgeSidebar({
   workspaceChats,
   activeSessionId,
   marketplaceActive,
+  settingsActive,
   expanded,
   busy,
   onOpenNewChat,
   onOpenMarketplace,
+  onOpenSettings,
   onOpenSession,
   onToggleWorkspace,
   onNewWorkspace,
@@ -292,6 +296,10 @@ export function BridgeSidebar({
         <button type="button" onClick={onOpenMarketplace} title={collapsed ? "Marketplace" : undefined} className={cn("mt-3 flex shrink-0 items-center rounded-xl text-neutral-400 transition-colors hover:bg-neutral-800/50 hover:text-neutral-200", collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 px-2.5 text-[12px]", marketplaceActive && "bg-neutral-800/70 text-neutral-100")}>
           <Package size={15} strokeWidth={1.6} aria-hidden="true" />
           {!collapsed && "Marketplace"}
+        </button>
+        <button type="button" onClick={onOpenSettings} title={collapsed ? "Settings" : undefined} className={cn("mt-1 flex shrink-0 items-center rounded-xl text-neutral-400 transition-colors hover:bg-neutral-800/50 hover:text-neutral-200", collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 px-2.5 text-[12px]", settingsActive && "bg-neutral-800/70 text-neutral-100")}>
+          <Settings2 size={15} strokeWidth={1.6} aria-hidden="true" />
+          {!collapsed && "Settings"}
         </button>
       </div>
 
