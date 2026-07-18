@@ -27,7 +27,7 @@ export function ModelSetupWizard({ adapters, onComplete, onError }: {
   };
 
   return <main className="relative z-50 flex h-[100dvh] w-full items-center justify-center overflow-hidden px-4 py-8 text-neutral-200">
-    <div className={`w-full overflow-hidden rounded-3xl border border-white/[0.09] bg-[#121214]/95 shadow-2xl shadow-black/50 backdrop-blur-2xl ${advanced ? "max-w-5xl" : "max-w-xl"}`}>
+    <div className={`u-glass-popover w-full overflow-hidden rounded-3xl ${advanced ? "max-w-5xl" : "max-w-xl"}`}>
       <header className="border-b border-white/[0.07] px-6 py-6 text-center">
         <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-400/[0.1] text-violet-300"><Bot size={23} aria-hidden="true" /></span>
         <h1 className="font-display text-2xl font-semibold text-white">Set up Bridge models</h1>
@@ -43,7 +43,7 @@ export function ModelSetupWizard({ adapters, onComplete, onError }: {
         </> : <>
           <div className="mb-5 flex items-center justify-between gap-3"><div><h2 className="font-display text-lg font-semibold text-white">Advanced role profiles</h2><p className="mt-1 text-xs text-neutral-500">Only models advertised by available adapters can be selected.</p></div><button type="button" className="text-xs text-neutral-500 hover:text-neutral-300" onClick={() => setAdvanced(false)}>Back to defaults</button></div>
           <ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles} />
-          <div className="sticky bottom-0 mt-5 flex justify-end border-t border-white/[0.07] bg-[#121214]/95 pt-4"><button type="button" disabled={busy || profiles.length === 0} onClick={() => void save()} className="inline-flex h-10 min-w-36 items-center justify-center gap-2 rounded-xl bg-white px-4 text-sm font-medium text-neutral-900 disabled:opacity-40">{busy && <LoaderCircle className="animate-spin" size={14} aria-hidden="true" />}Save model setup</button></div>
+          <div className="sticky bottom-0 mt-5 flex justify-end border-t border-white/[0.06] bg-neutral-950/70 pt-4 backdrop-blur-xl"><button type="button" disabled={busy || profiles.length === 0} onClick={() => void save()} className="inline-flex h-10 min-w-36 items-center justify-center gap-2 rounded-xl bg-white px-4 text-sm font-medium text-neutral-900 disabled:opacity-40">{busy && <LoaderCircle className="animate-spin" size={14} aria-hidden="true" />}Save model setup</button></div>
         </>}
       </div>
     </div>

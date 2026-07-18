@@ -41,7 +41,7 @@ export function WorkspaceCreateDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 p-4 pt-[10vh] backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 pt-[10vh] backdrop-blur-md"
       onClick={event => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -52,12 +52,12 @@ export function WorkspaceCreateDialog({
       aria-modal="true"
       aria-labelledby="workspace-create-title"
     >
-      <div className="animate-page-enter w-full max-w-md overflow-hidden rounded-3xl border border-white/[0.08] bg-[#121214]/95 shadow-2xl shadow-black/40">
-        <div className="relative border-b border-white/[0.08] px-5 py-4">
-          <div className="absolute inset-0 bg-gradient-to-r from-white/[0.04] via-transparent to-white/[0.02]" />
+      <div className="u-glass-popover animate-page-enter w-full max-w-md overflow-hidden rounded-3xl">
+        <div className="relative border-b border-white/[0.06] px-5 py-4">
+          <div className="absolute inset-0 bg-gradient-to-r from-white/[0.03] via-transparent to-white/[0.015]" />
           <div className="relative flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/[0.06]">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] border border-white/[0.08] bg-white/[0.05] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                 <FolderGit2 className="h-4 w-4 text-neutral-300" strokeWidth={1.5} aria-hidden="true" />
               </span>
               <div className="min-w-0">
@@ -100,9 +100,10 @@ export function WorkspaceCreateDialog({
               }
             }}
             className={cn(
-              "w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-5 py-4",
-              "text-[15px] text-neutral-200 placeholder:text-neutral-600",
-              "transition-all focus:border-white/[0.15] focus:bg-white/[0.05] focus:outline-none",
+              "w-full rounded-2xl border border-white/[0.08] bg-white/[0.035] px-4 py-3.5",
+              "text-[15px] tracking-[-0.006em] text-neutral-100 placeholder:text-neutral-600",
+              "shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+              "transition-all focus:border-white/[0.18] focus:bg-white/[0.055] focus:outline-none",
             )}
           />
 
@@ -111,7 +112,7 @@ export function WorkspaceCreateDialog({
               type="button"
               disabled={!canSubmit}
               onClick={onSubmit}
-              className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-medium text-neutral-900 transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-30"
+              className="flex-1 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-neutral-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_10px_24px_-12px_rgba(0,0,0,0.6)] transition-all hover:brightness-105 active:scale-[0.98] disabled:opacity-30"
             >
               {busy ? "Creating…" : "Create workspace"}
             </button>
@@ -119,7 +120,7 @@ export function WorkspaceCreateDialog({
               type="button"
               disabled={busy}
               onClick={onClose}
-              className="rounded-2xl border border-white/[0.1] px-4 py-3 text-sm text-neutral-500 transition-colors hover:text-neutral-300 disabled:opacity-30"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-neutral-200 disabled:opacity-30"
             >
               Cancel
             </button>
