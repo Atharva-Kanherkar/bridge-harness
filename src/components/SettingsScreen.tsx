@@ -52,7 +52,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
   }, [onError]);
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || selectedAgentId === "") return;
     const selected = config.agents.find(item => item.id === selectedAgentId) ?? config.agents[0];
     if (selected) { setSelectedAgentId(selected.id); setAgentDraft(structuredClone(selected)); }
   }, [config, selectedAgentId]);
