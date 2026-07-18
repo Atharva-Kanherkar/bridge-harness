@@ -17,6 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MINIMUM_VERSION: (u64, u64, u64) = (1, 18, 3);
+
 pub struct OpenCodeRuntime {
     child: Child,
     client: Client,
@@ -63,6 +65,7 @@ fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
 ) -> Result<StartedOpenCode, BridgeError> {
+    ensure_supported_version()?;
     let binary = binary::resolve("opencode")
         .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
     let port = reserve_port()?;
@@ -433,11 +436,50 @@ impl Drop for OpenCodeRuntime {
 }
 
 pub fn supports_native_resume() -> bool {
-    binary::resolve("opencode").is_some()
+    binary_version().as_deref().is_some_and(is_supported_version)
 }
 
 pub fn binary_version() -> Option<String> {
     binary::version("opencode")
+}
+
+pub fn go_credentials_configured() -> bool {
+    let Some(binary) = binary::resolve("opencode") else {
+        return false;
+    };
+    Command::new(binary)
+        .args(["auth", "list"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .to_ascii_lowercase()
+                .contains("opencode go")
+        })
+}
+
+pub fn is_supported_version(version: &str) -> bool {
+    let mut parts = version
+        .trim()
+        .trim_start_matches('v')
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .take(3)
+        .filter_map(|part| part.parse::<u64>().ok());
+    let parsed = (parts.next(), parts.next(), parts.next());
+    matches!(parsed, (Some(major), Some(minor), Some(patch)) if (major, minor, patch) >= MINIMUM_VERSION)
+}
+
+fn ensure_supported_version() -> Result<(), BridgeError> {
+    let version = binary_version()
+        .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
+    if is_supported_version(&version) {
+        return Ok(());
+    }
+    Err(BridgeError::Invalid(format!(
+        "OpenCode {version} is incompatible with Bridge. Upgrade to OpenCode 1.18.3 or newer."
+    )))
 }
 
 pub struct ChannelReader {
@@ -498,6 +540,14 @@ mod tests {
         assert_eq!(model.provider_id, "anthropic");
         assert_eq!(model.model_id, "claude-sonnet-4");
         assert!(parse_model("unqualified").is_none());
+    }
+
+    #[test]
+    fn rejects_opencode_versions_with_the_incompatible_context_schema() {
+        assert!(!is_supported_version("1.17.4"));
+        assert!(is_supported_version("1.18.3"));
+        assert!(is_supported_version("v1.18.4"));
+        assert!(!is_supported_version("unknown"));
     }
 
     #[test]

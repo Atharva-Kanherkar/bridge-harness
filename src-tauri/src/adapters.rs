@@ -179,6 +179,22 @@ fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOptio
         .collect()
 }
 
+fn opencode_model_options(go_connected: bool) -> Vec<ModelOption> {
+    if go_connected {
+        model_options(&[
+            ("opencode-go/deepseek-v4-flash", "DeepSeek V4 Flash (Go)", CapabilityTier::Fast, true),
+            ("opencode-go/kimi-k2.7-code", "Kimi K2.7 Code (Go)", CapabilityTier::Standard, true),
+            ("opencode-go/qwen3.7-max", "Qwen3.7 Max (Go)", CapabilityTier::Strong, true),
+        ])
+    } else {
+        model_options(&[
+            ("opencode/deepseek-v4-flash-free", "DeepSeek V4 Flash", CapabilityTier::Fast, true),
+            ("opencode/north-mini-code-free", "North Mini Code", CapabilityTier::Standard, true),
+            ("opencode/big-pickle", "Big Pickle", CapabilityTier::Strong, true),
+        ])
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelResolution {
     pub requested_tier: CapabilityTier,
@@ -330,10 +346,21 @@ struct OpenCodeAdapter {
 impl HarnessAdapter for OpenCodeAdapter {
     fn descriptor(&self) -> AdapterDescriptor {
         let version = opencode_adapter::binary_version();
+        let supported = version
+            .as_deref()
+            .is_some_and(opencode_adapter::is_supported_version);
+        let go_connected = opencode_adapter::go_credentials_configured();
+        let unavailable_reason = if version.is_none() {
+            Some("OpenCode binary is not installed".into())
+        } else if !supported {
+            Some("OpenCode 1.18.3 or newer is required".into())
+        } else {
+            None
+        };
         AdapterDescriptor {
             id: "opencode".into(),
             label: "OpenCode".into(),
-            available: version.is_some(),
+            available: supported,
             version,
             capabilities: [
                 "messages", "streaming", "reasoning", "plans", "tools", "commands",
@@ -342,15 +369,13 @@ impl HarnessAdapter for OpenCodeAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            unavailable_reason: binary::resolve("opencode")
-                .is_none()
-                .then(|| "OpenCode binary is not installed".into()),
-            models: model_options(&[
-                ("opencode/deepseek-v4-flash-free", "DeepSeek V4 Flash", CapabilityTier::Fast, true),
-                ("opencode/north-mini-code-free", "North Mini Code", CapabilityTier::Standard, true),
-                ("opencode/big-pickle", "Big Pickle", CapabilityTier::Strong, true),
-            ]),
-            default_model: Some("opencode/north-mini-code-free".into()),
+            unavailable_reason,
+            models: opencode_model_options(go_connected),
+            default_model: Some(if go_connected {
+                "opencode-go/kimi-k2.7-code".into()
+            } else {
+                "opencode/north-mini-code-free".into()
+            }),
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -594,6 +619,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn opencode_go_credentials_select_go_models_for_every_tier() {
+        let models = opencode_model_options(true);
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().all(|model| model.id.starts_with("opencode-go/")));
+        assert!(models.iter().all(|model| model.default_for_tier));
     }
 
     #[test]
