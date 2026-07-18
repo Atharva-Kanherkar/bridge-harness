@@ -27,10 +27,19 @@ export function selectActiveBranch(entries: SessionEntry[], activeLeafId: string
   return branch.reverse();
 }
 
+/** Lifecycle kinds whose started/completed entries describe one tool call. */
+const LIFECYCLE_KINDS = new Set([
+  "tool.started", "tool.completed",
+  "command.started", "command.completed",
+  "file_change.started", "file_change.completed",
+  "item.started", "item.completed",
+]);
+
 /** Project immutable forest entries into UI items with entry-derived, branch-stable keys. */
 export function projectSessionConversation(entries: SessionEntry[], activeLeafId: string | null): ConversationItem[] {
   const items: ConversationItem[] = [];
   const approvalsBySequence = new Map<number, ConversationItem>();
+  const lifecycleByItemId = new Map<string, ConversationItem>();
   for (const entry of selectActiveBranch(entries, activeLeafId)) {
     if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
       throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
@@ -46,6 +55,21 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
       }
     }
     const item = projectSessionEntry(entry);
+    // Tool calls are stored as separate started/completed entries — fold them
+    // into a single row so a stale "inProgress" ghost never lingers.
+    const itemId = stringValue(entry.payload.itemId);
+    if (itemId && LIFECYCLE_KINDS.has(entry.kind)) {
+      const existing = lifecycleByItemId.get(itemId);
+      if (existing) {
+        existing.status = item.status ?? existing.status;
+        existing.title = item.title ?? existing.title;
+        if (item.text) existing.text = item.text;
+        existing.data = { ...existing.data, ...item.data };
+        existing.eventId = item.eventId;
+        continue;
+      }
+      lifecycleByItemId.set(itemId, item);
+    }
     items.push(item);
     if (entry.kind === "approval.requested") approvalsBySequence.set(entry.sequence, item);
   }
@@ -99,6 +123,9 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         role: stringValue(payload.role),
         title: stringValue(payload.title) ?? humanizeKind(entry.kind),
         text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",
+        // Flatten the stored wrapper: the inner event data (tool input, command,
+        // output…) wins, so durable items render like live ones.
+        data: { ...payload, ...objectValue(payload.data) },
       };
   }
 }
@@ -162,7 +189,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     const existing = items.get(itemKey);
     const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
     next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
-    if (event.text) next.text = event.text; next.data = event.data; items.set(itemKey,next);
+    if (event.text) next.text = event.text; next.data = { ...next.data, ...event.data }; items.set(itemKey,next);
   }
   return [...items.values()]
     .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
