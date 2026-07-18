@@ -1166,6 +1166,7 @@ pub fn harness(value: &str) -> Harness {
     match value {
         "claude" => Harness::Claude,
         "codex" => Harness::Codex,
+        "opencode" => Harness::OpenCode,
         _ => Harness::Shell,
     }
 }
@@ -1204,6 +1205,7 @@ pub fn harness_name(value: &Harness) -> &'static str {
     match value {
         Harness::Claude => "claude",
         Harness::Codex => "codex",
+        Harness::OpenCode => "opencode",
         Harness::Shell => "shell",
     }
 }

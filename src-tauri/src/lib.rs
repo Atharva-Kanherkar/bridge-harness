@@ -6,6 +6,7 @@ mod claude_adapter;
 mod compaction_controller;
 mod context;
 mod codex_adapter;
+mod opencode_adapter;
 mod credential_broker;
 mod delegation;
 pub mod completion;
@@ -127,6 +128,7 @@ async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
         harnesses: HashMap::from([
             ("claude", binary::resolve("claude").is_some()),
             ("codex", binary::resolve("codex").is_some()),
+            ("opencode", binary::resolve("opencode").is_some()),
             ("shell", true),
         ]),
         database: state.database_path.to_string_lossy().into(),
@@ -537,7 +539,7 @@ async fn run_learning(
 ) -> Result<learning_job::LearningRun, BridgeError> {
     if matches!(
         trigger_kind,
-        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude
+        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude | learning_job::LearningTriggerKind::OpenCode
     ) {
         return Err(BridgeError::Invalid(
             "external learning triggers must use a registered narrow command".into(),
@@ -761,7 +763,7 @@ fn resolve_orchestrator_selection(
     let descriptors = registry.descriptors();
     let configured_agent = agent_config::default_orchestrator(db);
     if let Some(agent) = configured_agent.as_ref() {
-        if agent.enabled && (agent.harness == "codex" || agent.harness == "claude") {
+        if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
             let harness_config = agent_config::harness_config(db, &agent.harness);
             let preferred_model = agent.model.as_deref().filter(|value| !value.trim().is_empty())
                 .or_else(|| harness_config.as_ref().and_then(|config| config.default_model.as_deref()).filter(|value| !value.trim().is_empty()));
@@ -3949,7 +3951,7 @@ fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    if adapter_id != "claude" {
+    if adapter_id == "codex" {
         return Ok(None);
     }
     let user_event = agent::NormalizedEvent {
@@ -4782,6 +4784,7 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, cred
                         "harnesses": {
                             "claude": binary::resolve("claude").is_some(),
                             "codex": binary::resolve("codex").is_some(),
+                            "opencode": binary::resolve("opencode").is_some(),
                             "shell": true
                         }
                     }).to_string();

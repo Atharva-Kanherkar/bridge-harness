@@ -1,5 +1,5 @@
 use crate::{
-    agent, binary, claude_adapter, codex_adapter,
+    agent, binary, claude_adapter, codex_adapter, opencode_adapter,
     delegation::WriteMode,
     model::{AdapterDescriptor, CapabilityTier, ModelOption},
     BridgeError,
@@ -195,6 +195,9 @@ impl AdapterRegistry {
         registry.register(Box::new(ClaudeAdapter {
             streams: Mutex::new(HashMap::new()),
         }))?;
+        registry.register(Box::new(OpenCodeAdapter {
+            streams: Mutex::new(HashMap::new()),
+        }))?;
         Ok(registry)
     }
 
@@ -318,6 +321,63 @@ impl AdapterRegistry {
             actual_model: selected.id.clone(),
             warning,
         })
+    }
+}
+
+struct OpenCodeAdapter {
+    streams: Mutex<HashMap<String, agent::OpenCodeStreamState>>,
+}
+impl HarnessAdapter for OpenCodeAdapter {
+    fn descriptor(&self) -> AdapterDescriptor {
+        let version = opencode_adapter::binary_version();
+        AdapterDescriptor {
+            id: "opencode".into(),
+            label: "OpenCode".into(),
+            available: version.is_some(),
+            version,
+            capabilities: [
+                "messages", "streaming", "reasoning", "plans", "tools", "commands",
+                "file_changes", "approvals", "usage", "history", "interrupt",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            unavailable_reason: binary::resolve("opencode")
+                .is_none()
+                .then(|| "OpenCode binary is not installed".into()),
+            models: model_options(&[
+                ("opencode/deepseek-v4-flash-free", "DeepSeek V4 Flash", CapabilityTier::Fast, true),
+                ("opencode/north-mini-code-free", "North Mini Code", CapabilityTier::Standard, true),
+                ("opencode/big-pickle", "Big Pickle", CapabilityTier::Strong, true),
+            ]),
+            default_model: Some("opencode/north-mini-code-free".into()),
+        }
+    }
+    fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let started = opencode_adapter::start(request)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime),
+            reader: Box::new(started.reader),
+            startup_messages: started.startup_messages,
+        })
+    }
+    fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let started = opencode_adapter::resume(request)?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime),
+            reader: Box::new(started.reader),
+            startup_messages: started.startup_messages,
+        })
+    }
+    fn supports_native_resume(&self) -> bool {
+        opencode_adapter::supports_native_resume()
+    }
+    fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
+        let session_key = value.pointer("/properties/sessionID")
+            .and_then(Value::as_str).unwrap_or("default").to_owned();
+        let mut streams = self.streams.lock().unwrap();
+        let state = streams.entry(session_key).or_default();
+        agent::normalize_opencode_message_with_state(value, state)
     }
 }
 

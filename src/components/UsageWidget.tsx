@@ -5,6 +5,7 @@ import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, typ
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
   { id: "claude", label: "Claude" },
+  { id: "opencode", label: "OpenCode" },
 ];
 
 export interface UsageWidgetProps {

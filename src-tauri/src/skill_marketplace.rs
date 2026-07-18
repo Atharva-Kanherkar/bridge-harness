@@ -39,6 +39,7 @@ struct CatalogSkill {
 pub enum SkillProvider {
     Codex,
     Claude,
+    OpenCode,
 }
 
 impl SkillProvider {
@@ -46,6 +47,7 @@ impl SkillProvider {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude-code",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -54,6 +56,7 @@ impl SkillProvider {
             // skills@1.5.19 uses the Agent Skills standard root for Codex.
             Self::Codex => home.join(".agents/skills"),
             Self::Claude => home.join(".claude/skills"),
+            Self::OpenCode => home.join(".config/opencode/skills"),
         }
     }
 
@@ -62,6 +65,12 @@ impl SkillProvider {
             // Codex supports both the shared standard and legacy native root.
             Self::Codex => vec![home.join(".agents/skills"), home.join(".codex/skills")],
             Self::Claude => vec![home.join(".claude/skills")],
+            // OpenCode supports its native root plus the Agent Skills and Claude-compatible roots.
+            Self::OpenCode => vec![
+                home.join(".config/opencode/skills"),
+                home.join(".agents/skills"),
+                home.join(".claude/skills"),
+            ],
         }
     }
 }
@@ -389,7 +398,11 @@ fn collect_skill_files(root: &Path) -> Vec<(String, PathBuf)> {
 
 fn personal_skills(home: &Path, store: &Path) -> Vec<PersonalSkill> {
     let mut grouped: HashMap<String, PersonalSkill> = HashMap::new();
-    for provider in [SkillProvider::Codex, SkillProvider::Claude] {
+    for provider in [
+        SkillProvider::Codex,
+        SkillProvider::Claude,
+        SkillProvider::OpenCode,
+    ] {
         for (name, path) in provider
             .discovery_roots(home)
             .into_iter()

@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedEvent {
@@ -9,6 +10,264 @@ pub struct NormalizedEvent {
     pub title: Option<String>,
     pub text: Option<String>,
     pub data: Value,
+}
+
+#[derive(Debug, Default)]
+pub struct OpenCodeStreamState {
+    message_roles: HashMap<String, String>,
+}
+
+pub fn normalize_opencode_message_with_state(
+    message: &Value,
+    state: &mut OpenCodeStreamState,
+) -> Vec<NormalizedEvent> {
+    let Some(event_type) = message.get("type").and_then(Value::as_str) else {
+        return vec![];
+    };
+    let properties = message
+        .get("properties")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    match event_type {
+        "session.created" => vec![with_data(
+            "session.started",
+            &properties,
+            properties.clone(),
+        )],
+        "session.status" => {
+            let status = properties
+                .pointer("/status/type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            match status {
+                "busy" | "retry" => {
+                    let mut event = with_data("turn.started", &properties, properties.clone());
+                    event.status = Some(
+                        if status == "retry" {
+                            "retrying"
+                        } else {
+                            "working"
+                        }
+                        .into(),
+                    );
+                    event.data["turnId"] = message.get("id").cloned().unwrap_or(Value::Null);
+                    vec![event]
+                }
+                "idle" => {
+                    let mut event = with_data("turn.completed", &properties, properties.clone());
+                    event.status = Some("completed".into());
+                    vec![event]
+                }
+                _ => vec![],
+            }
+        }
+        "session.idle" => {
+            let mut event = with_data("turn.completed", &properties, properties.clone());
+            event.status = Some("completed".into());
+            vec![event]
+        }
+        "message.updated" => {
+            let info = properties.get("info").cloned().unwrap_or_else(|| json!({}));
+            let message_id = info.get("id").and_then(Value::as_str).unwrap_or_default();
+            let role = info.get("role").and_then(Value::as_str).unwrap_or_default();
+            if !message_id.is_empty() && !role.is_empty() {
+                state.message_roles.insert(message_id.into(), role.into());
+            }
+            if role != "assistant" {
+                return vec![];
+            }
+            let Some(tokens) = info.get("tokens") else {
+                return vec![];
+            };
+            let mut event = with_data(
+                "usage.updated",
+                &properties,
+                json!({
+                    "usage": {
+                        "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
+                        "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
+                        "cached_input_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
+                        "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
+                    },
+                    "cost": info.get("cost").cloned().unwrap_or(Value::Null),
+                    "model": info.get("modelID").cloned().unwrap_or(Value::Null),
+                    "provider": info.get("providerID").cloned().unwrap_or(Value::Null),
+                }),
+            );
+            event.item_id = (!message_id.is_empty()).then(|| message_id.into());
+            vec![event]
+        }
+        "message.part.delta" => {
+            let message_id = properties
+                .get("messageID")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if state.message_roles.get(message_id).map(String::as_str) != Some("assistant") {
+                return vec![];
+            }
+            let field = properties
+                .get("field")
+                .and_then(Value::as_str)
+                .unwrap_or("text");
+            let mut event = with_data(
+                if field.contains("reasoning") {
+                    "reasoning.delta"
+                } else {
+                    "message.delta"
+                },
+                &properties,
+                properties.clone(),
+            );
+            event.item_id = properties
+                .get("partID")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            event.role = Some("assistant".into());
+            event.text = properties
+                .get("delta")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            vec![event]
+        }
+        "message.part.updated" => normalize_opencode_part(&properties, state),
+        "session.diff" => vec![with_data("diff.updated", &properties, properties.clone())],
+        "todo.updated" => {
+            let mut event = with_data("plan.updated", &properties, properties.clone());
+            event.title = Some("OpenCode plan".into());
+            vec![event]
+        }
+        "permission.v2.asked" | "permission.asked" => {
+            let mut event = with_data("approval.requested", &properties, properties.clone());
+            event.item_id = properties
+                .pointer("/source/callID")
+                .or_else(|| properties.pointer("/tool/callID"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let action = properties
+                .get("action")
+                .or_else(|| properties.get("permission"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool action");
+            event.title = Some(format!("Approve {action}"));
+            event.text = properties
+                .get("resources")
+                .or_else(|| properties.get("patterns"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                });
+            event.status = Some("pending".into());
+            event.data["requestId"] = properties.get("id").cloned().unwrap_or(Value::Null);
+            vec![event]
+        }
+        "session.error" => {
+            let mut event = with_data("error", &properties, properties.clone());
+            event.status = Some("failed".into());
+            event.text = properties
+                .pointer("/error/data/message")
+                .or_else(|| properties.pointer("/error/message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| properties.get("error").map(Value::to_string));
+            vec![event]
+        }
+        _ => {
+            let mut event = with_data("provider.unknown", &properties, properties.clone());
+            event.title = Some(event_type.into());
+            vec![event]
+        }
+    }
+}
+
+fn normalize_opencode_part(
+    properties: &Value,
+    state: &OpenCodeStreamState,
+) -> Vec<NormalizedEvent> {
+    let part = properties.get("part").cloned().unwrap_or_else(|| json!({}));
+    let part_type = part
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let message_id = part
+        .get("messageID")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let is_assistant = state.message_roles.get(message_id).map(String::as_str) == Some("assistant");
+    let item_id = part.get("id").and_then(Value::as_str).map(str::to_owned);
+    match part_type {
+        "text" if is_assistant && part.pointer("/time/end").is_some() => {
+            let mut event = with_data("message.completed", &part, part.clone());
+            event.item_id = item_id;
+            event.role = Some("assistant".into());
+            event.status = Some("completed".into());
+            event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
+            vec![event]
+        }
+        "reasoning" if is_assistant && part.pointer("/time/end").is_some() => {
+            let mut event = with_data("reasoning.completed", &part, part.clone());
+            event.item_id = item_id;
+            event.status = Some("completed".into());
+            event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
+            vec![event]
+        }
+        "tool" if is_assistant => {
+            let status = part
+                .pointer("/state/status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
+            let suffix = if matches!(status, "completed" | "error") {
+                "completed"
+            } else {
+                "started"
+            };
+            let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
+            let kind = if tool == "bash" {
+                format!("command.{suffix}")
+            } else if matches!(tool, "edit" | "write" | "patch") {
+                format!("file_change.{suffix}")
+            } else {
+                format!("tool.{suffix}")
+            };
+            let mut event = with_data(&kind, &part, part.clone());
+            event.item_id = item_id;
+            event.title = part
+                .pointer("/state/title")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some(tool.into()));
+            event.status = Some(
+                if status == "running" {
+                    "inProgress"
+                } else {
+                    status
+                }
+                .into(),
+            );
+            event.text = part
+                .pointer("/state/output")
+                .or_else(|| part.pointer("/state/error"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            vec![event]
+        }
+        "patch" => vec![with_data("diff.updated", &part, part.clone())],
+        "step-start" => {
+            let mut event = with_data("turn.started", &part, part.clone());
+            event.data["turnId"] = part.get("id").cloned().unwrap_or(Value::Null);
+            event.status = Some("working".into());
+            vec![event]
+        }
+        "step-finish" => {
+            let mut event = with_data("usage.updated", &part, json!({"usage": part.get("tokens")}));
+            event.item_id = item_id;
+            vec![event]
+        }
+        _ => vec![],
+    }
 }
 
 impl NormalizedEvent {
@@ -271,9 +530,9 @@ pub fn normalize_claude_message_with_state(
             *state = ClaudeStreamState::default();
             normalize_claude_result(message)
         }
-        "control_request" | "sdk_control_request" => {
-            normalize_claude_control_request(message).into_iter().collect()
-        }
+        "control_request" | "sdk_control_request" => normalize_claude_control_request(message)
+            .into_iter()
+            .collect(),
         _ => vec![],
     }
 }
@@ -312,10 +571,7 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
     }
 }
 
-fn normalize_claude_stream(
-    message: &Value,
-    state: &mut ClaudeStreamState,
-) -> Vec<NormalizedEvent> {
+fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
     let event = message.get("event").cloned().unwrap_or_else(|| json!({}));
     let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
     match event_type {
@@ -391,10 +647,7 @@ fn normalize_claude_stream(
                         .to_owned();
                     let mut normalized = with_data("tool.started", message, block.clone());
                     normalized.item_id = Some(tool_id);
-                    normalized.title = block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
+                    normalized.title = block.get("name").and_then(Value::as_str).map(str::to_owned);
                     normalized.status = Some("inProgress".into());
                     vec![normalized]
                 }
@@ -428,7 +681,12 @@ fn normalize_claude_assistant(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| state.active_message_id.clone())
-        .or_else(|| message.get("uuid").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| {
+            message
+                .get("uuid")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| "assistant".into());
     state.active_message_id = Some(message_id.clone());
     state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
@@ -504,26 +762,28 @@ fn normalize_claude_user(message: &Value) -> Vec<NormalizedEvent> {
                 let mut event = with_data("tool.completed", message, part.clone());
                 event.item_id = Some(tool_id);
                 event.status = Some(
-                    if part.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+                    if part
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
                         "failed"
                     } else {
                         "completed"
                     }
                     .into(),
                 );
-                event.text = part
-                    .get("content")
-                    .and_then(|value| match value {
-                        Value::String(text) => Some(text.clone()),
-                        Value::Array(items) => Some(
-                            items
-                                .iter()
-                                .filter_map(|item| item.get("text").and_then(Value::as_str))
-                                .collect::<Vec<_>>()
-                                .join(""),
-                        ),
-                        _ => None,
-                    });
+                event.text = part.get("content").and_then(|value| match value {
+                    Value::String(text) => Some(text.clone()),
+                    Value::Array(items) => Some(
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("text").and_then(Value::as_str))
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    ),
+                    _ => None,
+                });
                 // Keep tool cards compact in the GUI.
                 if let Some(text) = &event.text {
                     event.data["aggregatedOutput"] = Value::String(text.clone());
@@ -743,10 +1003,13 @@ mod tests {
     #[test]
     fn normalizes_claude_tool_and_result() {
         let mut state = ClaudeStreamState::default();
-        let started = normalize_claude_message_with_state(&json!({
-            "type":"assistant",
-            "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}
-        }), &mut state);
+        let started = normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}
+            }),
+            &mut state,
+        );
         assert_eq!(started[0].kind, "tool.started");
         assert_eq!(started[0].title.as_deref(), Some("Bash"));
         let completed = normalize_claude_message(&json!({
@@ -764,5 +1027,55 @@ mod tests {
         }));
         assert!(events.iter().any(|event| event.kind == "turn.completed"));
         assert!(events.iter().any(|event| event.kind == "usage.updated"));
+    }
+
+    #[test]
+    fn normalizes_opencode_streaming_messages_and_usage() {
+        let mut state = OpenCodeStreamState::default();
+        let usage = normalize_opencode_message_with_state(&json!({
+            "type":"message.updated",
+            "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}},"cost":0.01,"modelID":"model","providerID":"provider"}}
+        }), &mut state);
+        assert_eq!(usage[0].kind, "usage.updated");
+        assert_eq!(usage[0].data["usage"]["input_tokens"], 4);
+
+        let delta = normalize_opencode_message_with_state(&json!({
+            "type":"message.part.delta",
+            "properties":{"sessionID":"ses_1","messageID":"msg_1","partID":"prt_1","field":"text","delta":"hello"}
+        }), &mut state);
+        assert_eq!(delta[0].kind, "message.delta");
+        assert_eq!(delta[0].item_id.as_deref(), Some("prt_1"));
+        assert_eq!(delta[0].text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn normalizes_opencode_tools_permissions_and_turn_state() {
+        let mut state = OpenCodeStreamState::default();
+        let _ = normalize_opencode_message_with_state(&json!({
+            "type":"message.updated",
+            "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant"}}
+        }), &mut state);
+        let tool = normalize_opencode_message_with_state(&json!({
+            "type":"message.part.updated",
+            "properties":{"sessionID":"ses_1","part":{"id":"prt_2","sessionID":"ses_1","messageID":"msg_1","type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/tmp","title":"Run pwd"}}}
+        }), &mut state);
+        assert_eq!(tool[0].kind, "command.completed");
+        assert_eq!(tool[0].text.as_deref(), Some("/tmp"));
+
+        let permission = normalize_opencode_message_with_state(&json!({
+            "type":"permission.v2.asked",
+            "properties":{"id":"per_1","sessionID":"ses_1","action":"bash","resources":["git status"],"source":{"callID":"call_1"}}
+        }), &mut state);
+        assert_eq!(permission[0].kind, "approval.requested");
+        assert_eq!(permission[0].data["requestId"], "per_1");
+
+        let busy = normalize_opencode_message_with_state(&json!({
+            "id":"evt_1","type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}
+        }), &mut state);
+        assert_eq!(busy[0].kind, "turn.started");
+        let idle = normalize_opencode_message_with_state(&json!({
+            "type":"session.idle","properties":{"sessionID":"ses_1"}
+        }), &mut state);
+        assert_eq!(idle[0].kind, "turn.completed");
     }
 }

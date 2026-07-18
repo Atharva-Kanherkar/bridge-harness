@@ -1,7 +1,7 @@
 //! Slash-command catalog for Bridge chats.
 //!
-//! Combines provider builtins (Claude Code + Codex) with user-installed
-//! commands/skills from `~/.claude` and `~/.codex`. Direct chats auto-route
+//! Combines provider builtins (Claude Code, Codex, and OpenCode) with user-installed
+//! commands/skills. Direct chats auto-route
 //! to the command's harness; skills/custom prompts are expanded into the
 //! turn text so they work outside each provider's TUI.
 
@@ -75,6 +75,15 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
                 harness: "codex".into(),
                 kind: "skill".into(),
             });
+        }
+    }
+
+    if available.contains("opencode") {
+        out.extend(opencode_builtins());
+        for root in [home.join(".config/opencode/skills"), home.join(".agents/skills"), home.join(".claude/skills")] {
+            for (name, path) in collect_skills(&root) {
+                out.push(SlashCommand { name, description: read_md_description(&path), harness: "opencode".into(), kind: "skill".into() });
+            }
         }
     }
 
@@ -210,6 +219,7 @@ fn is_forwardable_builtin(harness: &str, name: &str) -> bool {
     match harness {
         "claude" => CLAUDE.iter().any(|value| *value == name),
         "codex" => CODEX.iter().any(|value| *value == name),
+        "opencode" => matches!(name, "models" | "sessions" | "new" | "undo" | "redo" | "share" | "help"),
         _ => false,
     }
 }
@@ -224,6 +234,11 @@ fn load_expandable_body(harness: &str, name: &str) -> Option<String> {
         "codex" => vec![
             home.join(".codex/prompts").join(format!("{name}.md")),
             home.join(".codex/skills").join(name).join("SKILL.md"),
+        ],
+        "opencode" => vec![
+            home.join(".config/opencode/skills").join(name).join("SKILL.md"),
+            home.join(".agents/skills").join(name).join("SKILL.md"),
+            home.join(".claude/skills").join(name).join("SKILL.md"),
         ],
         _ => Vec::new(),
     };
@@ -505,6 +520,24 @@ fn codex_builtins() -> Vec<SlashCommand> {
     ]
     .into_iter()
     .map(|(name, description)| builtin(name, description, "codex"))
+    .collect()
+}
+
+fn opencode_builtins() -> Vec<SlashCommand> {
+    [
+        ("clear", "Start a fresh OpenCode session"),
+        ("compact", "Compact the current session context"),
+        ("help", "Open OpenCode help"),
+        ("models", "Choose an OpenCode provider and model"),
+        ("new", "Start a new OpenCode session"),
+        ("redo", "Restore the last reverted message"),
+        ("sessions", "Browse OpenCode sessions"),
+        ("share", "Share the current OpenCode session"),
+        ("stats", "Show OpenCode token and cost statistics"),
+        ("undo", "Revert the last OpenCode message"),
+    ]
+    .into_iter()
+    .map(|(name, description)| builtin(name, description, "opencode"))
     .collect()
 }
 

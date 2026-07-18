@@ -12,7 +12,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -42,7 +43,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -73,7 +75,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -99,7 +102,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 76,
     "permissions": [
@@ -130,7 +134,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -163,7 +168,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -189,7 +195,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 3,
     "permissions": [
@@ -217,7 +224,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -246,7 +254,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 165,
     "permissions": [
@@ -279,7 +288,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 16,
     "permissions": [
@@ -309,7 +319,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 41,
     "permissions": [
@@ -340,7 +351,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 51,
     "permissions": [
@@ -370,7 +382,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 19,
     "permissions": [
@@ -403,7 +416,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 26,
     "permissions": [
@@ -433,7 +447,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 59,
     "permissions": [
@@ -464,7 +479,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 4,
     "permissions": [
@@ -494,7 +510,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 18,
     "permissions": [
@@ -528,7 +545,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 36,
     "permissions": [
@@ -557,7 +575,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 8,
     "permissions": [
@@ -590,7 +609,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 43,
     "permissions": [
@@ -620,7 +640,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -654,7 +675,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 14,
     "permissions": [
@@ -684,7 +706,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -713,7 +736,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -745,7 +769,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -774,7 +799,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 15,
     "permissions": [
@@ -806,7 +832,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 6,
     "permissions": [
@@ -839,7 +866,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 11,
     "permissions": [
@@ -872,7 +900,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 10,
     "permissions": [
@@ -903,7 +932,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -931,7 +961,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -961,7 +992,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 102,
     "permissions": [
@@ -994,7 +1026,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 11,
     "permissions": [
@@ -1024,7 +1057,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -1054,7 +1088,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 59,
     "permissions": [
@@ -1084,7 +1119,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -1116,7 +1152,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -1149,7 +1186,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -1182,7 +1220,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 4,
     "permissions": [
@@ -1213,7 +1252,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 4,
     "permissions": [
@@ -1244,7 +1284,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 4,
     "permissions": [
@@ -1274,7 +1315,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -1306,7 +1348,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 3,
     "permissions": [
@@ -1332,7 +1375,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 5,
     "permissions": [
@@ -1360,7 +1404,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 8,
     "permissions": [
@@ -1386,7 +1431,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 34,
     "permissions": [
@@ -1414,7 +1460,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 4,
     "permissions": [
@@ -1442,7 +1489,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 13,
     "permissions": [
@@ -1472,7 +1520,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 3,
     "permissions": [
@@ -1502,7 +1551,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 2,
     "permissions": [
@@ -1533,7 +1583,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 20,
     "permissions": [
@@ -1564,7 +1615,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 6,
     "permissions": [
@@ -1597,7 +1649,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 3,
     "permissions": [
@@ -1628,7 +1681,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 1,
     "permissions": [
@@ -1660,7 +1714,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 3,
     "permissions": [
@@ -1693,7 +1748,8 @@
     "official": true,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 10,
     "permissions": [
@@ -1726,7 +1782,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 13,
     "permissions": [
@@ -1759,7 +1816,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 3,
     "permissions": [
@@ -1793,7 +1851,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 7,
     "permissions": [
@@ -1824,7 +1883,8 @@
     "official": false,
     "compatibility": [
       "codex",
-      "claude"
+      "claude",
+      "opencode"
     ],
     "fileCount": 7,
     "permissions": [

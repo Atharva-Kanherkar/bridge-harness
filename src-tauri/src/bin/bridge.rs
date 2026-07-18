@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 fn usage(program: &str) -> String {
     format!(
-        "usage: {program} learning run --database <bridge.db> --trigger <manual|in-app|codex:ID|claude:ID> [--credential-ref <reference>]"
+        "usage: {program} learning run --database <bridge.db> --trigger <manual|in-app|codex:ID|claude:ID|opencode:ID> [--credential-ref <reference>]"
     )
 }
 

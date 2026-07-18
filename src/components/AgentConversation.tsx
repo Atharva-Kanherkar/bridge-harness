@@ -12,6 +12,7 @@ function providerLabel(harness?: string | null): string | undefined {
   if (!harness) return undefined;
   if (harness === "claude") return "Claude";
   if (harness === "codex") return "Codex";
+  if (harness === "opencode") return "OpenCode";
   return harness.charAt(0).toUpperCase() + harness.slice(1);
 }
 

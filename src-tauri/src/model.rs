@@ -85,6 +85,7 @@ impl ResumeEligibility {
 pub enum Harness {
     Claude,
     Codex,
+    OpenCode,
     Shell,
 }
 
@@ -93,6 +94,7 @@ impl Harness {
         match self {
             Self::Claude => "Claude",
             Self::Codex => "Codex",
+            Self::OpenCode => "OpenCode",
             Self::Shell => "Shell",
         }
     }
