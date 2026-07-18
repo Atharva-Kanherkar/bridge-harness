@@ -6,10 +6,11 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
+    any::Any,
     collections::HashMap,
     io::BufRead,
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     thread,
     time::Duration,
 };
@@ -155,7 +156,8 @@ pub struct StartedAdapter {
     pub startup_messages: Vec<Value>,
 }
 
-pub trait HarnessAdapter: Send + Sync {
+pub trait HarnessAdapter: Send + Sync + Any {
+    fn as_any(&self) -> &dyn Any;
     fn descriptor(&self) -> AdapterDescriptor;
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
@@ -179,22 +181,6 @@ fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOptio
         .collect()
 }
 
-fn opencode_model_options(go_connected: bool) -> Vec<ModelOption> {
-    if go_connected {
-        model_options(&[
-            ("opencode-go/deepseek-v4-flash", "DeepSeek V4 Flash (Go)", CapabilityTier::Fast, true),
-            ("opencode-go/kimi-k2.7-code", "Kimi K2.7 Code (Go)", CapabilityTier::Standard, true),
-            ("opencode-go/qwen3.7-max", "Qwen3.7 Max (Go)", CapabilityTier::Strong, true),
-        ])
-    } else {
-        model_options(&[
-            ("opencode/deepseek-v4-flash-free", "DeepSeek V4 Flash", CapabilityTier::Fast, true),
-            ("opencode/north-mini-code-free", "North Mini Code", CapabilityTier::Standard, true),
-            ("opencode/big-pickle", "Big Pickle", CapabilityTier::Strong, true),
-        ])
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelResolution {
     pub requested_tier: CapabilityTier,
@@ -204,6 +190,12 @@ pub struct ModelResolution {
 
 impl AdapterRegistry {
     pub fn built_in() -> Result<Self, BridgeError> {
+        Self::built_in_with_opencode(opencode_adapter::OpenCodeSettings::default())
+    }
+
+    pub fn built_in_with_opencode(
+        opencode_settings: opencode_adapter::OpenCodeSettings,
+    ) -> Result<Self, BridgeError> {
         let mut registry = Self {
             adapters: HashMap::new(),
         };
@@ -211,9 +203,7 @@ impl AdapterRegistry {
         registry.register(Box::new(ClaudeAdapter {
             streams: Mutex::new(HashMap::new()),
         }))?;
-        registry.register(Box::new(OpenCodeAdapter {
-            streams: Mutex::new(HashMap::new()),
-        }))?;
+        registry.register(Box::new(OpenCodeAdapter::new(opencode_settings)))?;
         Ok(registry)
     }
 
@@ -290,6 +280,29 @@ impl AdapterRegistry {
             .unwrap_or_default()
     }
 
+    pub fn refresh_opencode(
+        &self,
+        settings: opencode_adapter::OpenCodeSettings,
+        directory: &str,
+    ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+        self.opencode_adapter()?.refresh(settings, directory)
+    }
+
+    pub fn opencode_catalog(&self) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+        self.opencode_adapter()?.catalog()
+    }
+
+    pub fn opencode_settings(&self) -> Result<opencode_adapter::OpenCodeSettings, BridgeError> {
+        Ok(self.opencode_adapter()?.settings())
+    }
+
+    fn opencode_adapter(&self) -> Result<&OpenCodeAdapter, BridgeError> {
+        self.adapters
+            .get("opencode")
+            .and_then(|adapter| adapter.as_any().downcast_ref::<OpenCodeAdapter>())
+            .ok_or_else(|| BridgeError::Invalid("OpenCode adapter is not registered".into()))
+    }
+
     pub fn resolve_model(
         &self,
         id: &str,
@@ -342,26 +355,90 @@ impl AdapterRegistry {
 
 struct OpenCodeAdapter {
     streams: Mutex<HashMap<String, agent::OpenCodeStreamState>>,
+    settings: RwLock<opencode_adapter::OpenCodeSettings>,
+    catalog: RwLock<Option<opencode_adapter::OpenCodeCatalog>>,
+    catalog_error: RwLock<Option<String>>,
+}
+impl OpenCodeAdapter {
+    fn new(settings: opencode_adapter::OpenCodeSettings) -> Self {
+        let adapter = Self {
+            streams: Mutex::new(HashMap::new()),
+            settings: RwLock::new(settings.clone()),
+            catalog: RwLock::new(None),
+            catalog_error: RwLock::new(None),
+        };
+        let directory = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned))
+            .unwrap_or_else(|| ".".into());
+        let _ = adapter.refresh(settings, &directory);
+        adapter
+    }
+
+    fn refresh(
+        &self,
+        settings: opencode_adapter::OpenCodeSettings,
+        directory: &str,
+    ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+        *self.settings.write().unwrap() = settings.clone();
+        match opencode_adapter::discover(&settings, directory) {
+            Ok(catalog) => {
+                *self.catalog.write().unwrap() = Some(catalog.clone());
+                *self.catalog_error.write().unwrap() = None;
+                Ok(catalog)
+            }
+            Err(error) => {
+                *self.catalog.write().unwrap() = None;
+                *self.catalog_error.write().unwrap() = Some(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    fn catalog(&self) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+        self.catalog.read().unwrap().clone().ok_or_else(|| {
+            BridgeError::Adapter(
+                self.catalog_error
+                    .read()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "OpenCode provider catalog is unavailable".into()),
+            )
+        })
+    }
+
+    fn settings(&self) -> opencode_adapter::OpenCodeSettings {
+        self.settings.read().unwrap().clone()
+    }
 }
 impl HarnessAdapter for OpenCodeAdapter {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn descriptor(&self) -> AdapterDescriptor {
-        let version = opencode_adapter::binary_version();
-        let supported = version
-            .as_deref()
-            .is_some_and(opencode_adapter::is_supported_version);
-        let go_connected = opencode_adapter::go_credentials_configured();
-        let unavailable_reason = if version.is_none() {
-            Some("OpenCode binary is not installed".into())
-        } else if !supported {
-            Some("OpenCode 1.18.3 or newer is required".into())
+        let catalog = self.catalog.read().unwrap().clone();
+        let models = catalog
+            .as_ref()
+            .map(|catalog| {
+                opencode_adapter::model_options(catalog, &self.settings.read().unwrap().visible_models)
+            })
+            .unwrap_or_default();
+        let default_model = models
+            .iter()
+            .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
+            .or_else(|| models.iter().find(|model| model.default_for_tier))
+            .map(|model| model.id.clone());
+        let available = catalog.is_some() && !models.is_empty();
+        let unavailable_reason = if catalog.is_some() && models.is_empty() {
+            Some("OpenCode has no connected provider models selected".into())
         } else {
-            None
+            self.catalog_error.read().unwrap().clone()
         };
         AdapterDescriptor {
             id: "opencode".into(),
             label: "OpenCode".into(),
-            available: supported,
-            version,
+            available,
+            version: catalog.as_ref().map(|catalog| catalog.version.clone()),
             capabilities: [
                 "messages", "streaming", "reasoning", "plans", "tools", "commands",
                 "file_changes", "approvals", "usage", "history", "interrupt",
@@ -370,16 +447,13 @@ impl HarnessAdapter for OpenCodeAdapter {
             .map(str::to_owned)
             .collect(),
             unavailable_reason,
-            models: opencode_model_options(go_connected),
-            default_model: Some(if go_connected {
-                "opencode-go/kimi-k2.7-code".into()
-            } else {
-                "opencode/north-mini-code-free".into()
-            }),
+            models,
+            default_model,
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = opencode_adapter::start(request)?;
+        let settings = self.settings();
+        let started = opencode_adapter::start_with_settings(request, &settings)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -387,7 +461,8 @@ impl HarnessAdapter for OpenCodeAdapter {
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
-        let started = opencode_adapter::resume(request)?;
+        let settings = self.settings();
+        let started = opencode_adapter::resume_with_settings(request, &settings)?;
         Ok(StartedAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
@@ -395,7 +470,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         })
     }
     fn supports_native_resume(&self) -> bool {
-        opencode_adapter::supports_native_resume()
+        self.catalog.read().unwrap().is_some()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value.pointer("/properties/sessionID")
@@ -408,6 +483,9 @@ impl HarnessAdapter for OpenCodeAdapter {
 
 struct CodexAdapter;
 impl HarnessAdapter for CodexAdapter {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = codex_adapter::binary_version();
         AdapterDescriptor {
@@ -480,6 +558,9 @@ struct ClaudeAdapter {
     streams: Mutex<HashMap<String, agent::ClaudeStreamState>>,
 }
 impl HarnessAdapter for ClaudeAdapter {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = claude_adapter::binary_version();
         AdapterDescriptor {
@@ -546,6 +627,9 @@ mod tests {
     use super::*;
     struct Fake;
     impl HarnessAdapter for Fake {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn descriptor(&self) -> AdapterDescriptor {
             AdapterDescriptor {
                 id: "fake".into(),
@@ -590,9 +674,12 @@ mod tests {
     }
 
     #[test]
-    fn every_advertised_model_has_one_tier_and_each_tier_has_one_default() {
+    fn every_advertised_model_has_one_tier_and_each_populated_tier_has_one_default() {
         let registry = AdapterRegistry::built_in().unwrap();
         for descriptor in registry.descriptors() {
+            if !descriptor.available {
+                continue;
+            }
             assert!(!descriptor.models.is_empty());
             for tier in [
                 CapabilityTier::Fast,
@@ -604,12 +691,9 @@ mod tests {
                     .iter()
                     .filter(|model| model.tier == tier)
                     .collect::<Vec<_>>();
-                assert!(
-                    !models.is_empty(),
-                    "{} lacks {}",
-                    descriptor.id,
-                    tier.as_str()
-                );
+                if models.is_empty() {
+                    continue;
+                }
                 assert_eq!(
                     models.iter().filter(|model| model.default_for_tier).count(),
                     1,
@@ -619,14 +703,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn opencode_go_credentials_select_go_models_for_every_tier() {
-        let models = opencode_model_options(true);
-        assert_eq!(models.len(), 3);
-        assert!(models.iter().all(|model| model.id.starts_with("opencode-go/")));
-        assert!(models.iter().all(|model| model.default_for_tier));
     }
 
     #[test]

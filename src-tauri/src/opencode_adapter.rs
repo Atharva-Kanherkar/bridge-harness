@@ -2,15 +2,20 @@ use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
     binary,
     delegation::WriteMode,
+    model::{CapabilityTier, ModelOption},
     BridgeError,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
+    env,
     io::{BufRead, Read},
     net::TcpListener,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -18,6 +23,56 @@ use std::{
 };
 
 const MINIMUM_VERSION: (u64, u64, u64) = (1, 18, 3);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenCodeSettings {
+    pub executable_path: Option<String>,
+    pub visible_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeCatalog {
+    pub executable_path: String,
+    pub version: String,
+    pub providers: Vec<OpenCodeProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeProvider {
+    pub id: String,
+    pub name: String,
+    pub connected: bool,
+    pub source: Option<String>,
+    pub environment_variables: Vec<String>,
+    pub default_model: Option<String>,
+    pub auth_methods: Vec<OpenCodeAuthMethod>,
+    pub models: Vec<OpenCodeModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeAuthMethod {
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeModel {
+    pub id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub label: String,
+    pub reasoning: bool,
+    pub tool_call: bool,
+    pub attachment: bool,
+    pub context_window: Option<u64>,
+    pub output_limit: Option<u64>,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
+}
 
 pub struct OpenCodeRuntime {
     child: Child,
@@ -45,10 +100,24 @@ struct ModelRef {
 }
 
 pub fn start(request: StartRequest<'_>) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None)
+    start_with_settings(request, &OpenCodeSettings::default())
 }
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedOpenCode, BridgeError> {
+    resume_with_settings(request, &OpenCodeSettings::default())
+}
+
+pub fn start_with_settings(
+    request: StartRequest<'_>,
+    settings: &OpenCodeSettings,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request, None, settings)
+}
+
+pub fn resume_with_settings(
+    request: ResumeRequest<'_>,
+    settings: &OpenCodeSettings,
+) -> Result<StartedOpenCode, BridgeError> {
     launch(
         StartRequest {
             cwd: request.cwd,
@@ -58,20 +127,21 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedOpenCode, BridgeError
             write_mode: request.write_mode,
         },
         Some(request.provider_session_id),
+        settings,
     )
 }
 
 fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
+    settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    ensure_supported_version()?;
-    let binary = binary::resolve("opencode")
-        .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
+    let binary = resolve_executable(settings)?;
+    ensure_supported_version(&binary)?;
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
-    let mut command = Command::new(binary);
+    let mut command = Command::new(&binary);
     command
         .args([
             "serve",
@@ -89,11 +159,15 @@ fn launch(
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
     let mut headers = HeaderMap::new();
-    let authorization = format!("Basic {}", BASE64.encode(format!("bridge:{server_password}")));
+    let authorization = format!(
+        "Basic {}",
+        BASE64.encode(format!("bridge:{server_password}"))
+    );
     headers.insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&authorization)
-            .map_err(|error| BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}")))?,
+        HeaderValue::from_str(&authorization).map_err(|error| {
+            BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}"))
+        })?,
     );
     let client = Client::builder()
         .default_headers(headers)
@@ -436,27 +510,86 @@ impl Drop for OpenCodeRuntime {
 }
 
 pub fn supports_native_resume() -> bool {
-    binary_version().as_deref().is_some_and(is_supported_version)
+    binary_version()
+        .as_deref()
+        .is_some_and(is_supported_version)
 }
 
 pub fn binary_version() -> Option<String> {
     binary::version("opencode")
 }
 
-pub fn go_credentials_configured() -> bool {
-    let Some(binary) = binary::resolve("opencode") else {
+pub fn resolve_executable(settings: &OpenCodeSettings) -> Result<PathBuf, BridgeError> {
+    choose_executable(
+        settings.executable_path.as_deref(),
+        &managed_executable_candidates(),
+        binary::resolve("opencode"),
+    )
+}
+
+fn choose_executable(
+    explicit: Option<&str>,
+    managed: &[PathBuf],
+    system: Option<PathBuf>,
+) -> Result<PathBuf, BridgeError> {
+    if let Some(explicit) = explicit.map(str::trim).filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(explicit);
+        if is_executable(&path) {
+            return Ok(path);
+        }
+        return Err(BridgeError::Invalid(format!(
+            "Configured OpenCode executable is missing or not executable: {}",
+            path.display()
+        )));
+    }
+
+    if let Some(path) = managed.iter().find(|path| is_executable(path)) {
+        return Ok(path.clone());
+    }
+    system
+        .filter(|path| is_executable(path))
+        .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))
+}
+
+fn managed_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = env::var_os("BRIDGE_OPENCODE_SIDECAR") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(executable) = env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            candidates.push(directory.join("opencode"));
+            candidates.push(directory.join("../Resources/bin/opencode"));
+            candidates.push(directory.join("../Resources/opencode"));
+        }
+    }
+    candidates
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
         return false;
-    };
-    Command::new(binary)
-        .args(["auth", "list"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .is_some_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .to_ascii_lowercase()
-                .contains("opencode go")
-        })
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn binary_version_at(executable: &Path) -> Option<String> {
+    let output = Command::new(executable).arg("--version").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 pub fn is_supported_version(version: &str) -> bool {
@@ -471,15 +604,387 @@ pub fn is_supported_version(version: &str) -> bool {
     matches!(parsed, (Some(major), Some(minor), Some(patch)) if (major, minor, patch) >= MINIMUM_VERSION)
 }
 
-fn ensure_supported_version() -> Result<(), BridgeError> {
-    let version = binary_version()
-        .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
+fn ensure_supported_version(executable: &Path) -> Result<String, BridgeError> {
+    let version = binary_version_at(executable).ok_or_else(|| {
+        BridgeError::Invalid(format!(
+            "Cannot read OpenCode version from {}",
+            executable.display()
+        ))
+    })?;
     if is_supported_version(&version) {
-        return Ok(());
+        return Ok(version);
     }
     Err(BridgeError::Invalid(format!(
         "OpenCode {version} is incompatible with Bridge. Upgrade to OpenCode 1.18.3 or newer."
     )))
+}
+
+pub fn discover(
+    settings: &OpenCodeSettings,
+    directory: &str,
+) -> Result<OpenCodeCatalog, BridgeError> {
+    let executable = resolve_executable(settings)?;
+    let version = ensure_supported_version(&executable)?;
+    with_control_server(&executable, directory, |client, base_url| {
+        let providers = checked_json(
+            client
+                .get(endpoint(base_url, "/provider", directory))
+                .timeout(Duration::from_secs(20))
+                .send()
+                .map_err(http_error("discover OpenCode providers"))?,
+            "discover OpenCode providers",
+        )?;
+        let auth_methods = checked_json(
+            client
+                .get(endpoint(base_url, "/provider/auth", directory))
+                .timeout(Duration::from_secs(20))
+                .send()
+                .map_err(http_error("discover OpenCode authentication methods"))?,
+            "discover OpenCode authentication methods",
+        )?;
+        parse_catalog(
+            &providers,
+            &auth_methods,
+            executable.to_string_lossy().as_ref(),
+            &version,
+        )
+    })
+}
+
+pub fn set_provider_api_key(
+    settings: &OpenCodeSettings,
+    directory: &str,
+    provider_id: &str,
+    api_key: &str,
+) -> Result<OpenCodeCatalog, BridgeError> {
+    validate_provider_id(provider_id)?;
+    if api_key.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "Provider API key cannot be empty".into(),
+        ));
+    }
+    let executable = resolve_executable(settings)?;
+    ensure_supported_version(&executable)?;
+    with_control_server(&executable, directory, |client, base_url| {
+        checked_json(
+            client
+                .put(format!("{base_url}/auth/{provider_id}"))
+                .timeout(Duration::from_secs(20))
+                .json(&json!({"type":"api", "key":api_key.trim()}))
+                .send()
+                .map_err(http_error("save OpenCode provider authentication"))?,
+            "save OpenCode provider authentication",
+        )?;
+        Ok(())
+    })?;
+    discover(settings, directory)
+}
+
+pub fn remove_provider_auth(
+    settings: &OpenCodeSettings,
+    directory: &str,
+    provider_id: &str,
+) -> Result<OpenCodeCatalog, BridgeError> {
+    validate_provider_id(provider_id)?;
+    let executable = resolve_executable(settings)?;
+    ensure_supported_version(&executable)?;
+    with_control_server(&executable, directory, |client, base_url| {
+        checked_json(
+            client
+                .delete(format!("{base_url}/auth/{provider_id}"))
+                .timeout(Duration::from_secs(20))
+                .send()
+                .map_err(http_error("remove OpenCode provider authentication"))?,
+            "remove OpenCode provider authentication",
+        )?;
+        Ok(())
+    })?;
+    discover(settings, directory)
+}
+
+fn validate_provider_id(provider_id: &str) -> Result<(), BridgeError> {
+    let valid = !provider_id.is_empty()
+        && provider_id.len() <= 128
+        && provider_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    valid.then_some(()).ok_or_else(|| {
+        BridgeError::Invalid("OpenCode provider id contains unsupported characters".into())
+    })
+}
+
+fn with_control_server<T>(
+    executable: &Path,
+    directory: &str,
+    action: impl FnOnce(&Client, &str) -> Result<T, BridgeError>,
+) -> Result<T, BridgeError> {
+    let port = reserve_port()?;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let password = uuid::Uuid::new_v4().to_string();
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ])
+        .current_dir(directory)
+        .env("OPENCODE_SERVER_USERNAME", "bridge")
+        .env("OPENCODE_SERVER_PASSWORD", &password)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.spawn()?;
+    let authorization = format!("Basic {}", BASE64.encode(format!("bridge:{password}")));
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&authorization).map_err(|error| {
+            BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}"))
+        })?,
+    );
+    let client = Client::builder()
+        .default_headers(headers)
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(None)
+        .build()
+        .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))?;
+    let result =
+        wait_until_ready(&client, &base_url, &mut child).and_then(|_| action(&client, &base_url));
+    let _ = crate::adapters::terminate_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn parse_catalog(
+    providers: &Value,
+    auth_methods: &Value,
+    executable_path: &str,
+    version: &str,
+) -> Result<OpenCodeCatalog, BridgeError> {
+    let connected = providers
+        .get("connected")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            BridgeError::Adapter("OpenCode provider catalog has no connected list".into())
+        })?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<HashSet<_>>();
+    let defaults = providers
+        .get("default")
+        .and_then(Value::as_object)
+        .ok_or_else(|| BridgeError::Adapter("OpenCode provider catalog has no defaults".into()))?;
+    let all = providers
+        .get("all")
+        .and_then(Value::as_array)
+        .ok_or_else(|| BridgeError::Adapter("OpenCode provider catalog has no providers".into()))?;
+    let auth = auth_methods.as_object();
+    let mut normalized = all
+        .iter()
+        .filter_map(|provider| {
+            let id = provider.get("id")?.as_str()?.to_owned();
+            let is_connected = connected.contains(id.as_str());
+            let mut models = if is_connected {
+                provider
+                    .get("models")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|models| models.values())
+                    .filter_map(|model| normalize_model(&id, model))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            models.sort_by(|left, right| left.id.cmp(&right.id));
+            let methods = auth
+                .and_then(|items| items.get(&id))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|method| {
+                    Some(OpenCodeAuthMethod {
+                        kind: method.get("type")?.as_str()?.to_owned(),
+                        label: method.get("label")?.as_str()?.to_owned(),
+                    })
+                })
+                .collect();
+            Some(OpenCodeProvider {
+                name: provider
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&id)
+                    .to_owned(),
+                connected: is_connected,
+                source: provider
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                environment_variables: provider
+                    .get("env")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+                default_model: defaults
+                    .get(&id)
+                    .and_then(Value::as_str)
+                    .map(|model| format!("{id}/{model}")),
+                auth_methods: methods,
+                models,
+                id,
+            })
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_by(|left, right| {
+        right
+            .connected
+            .cmp(&left.connected)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(OpenCodeCatalog {
+        executable_path: executable_path.to_owned(),
+        version: version.to_owned(),
+        providers: normalized,
+    })
+}
+
+fn normalize_model(provider_id: &str, model: &Value) -> Option<OpenCodeModel> {
+    let model_id = model.get("id")?.as_str()?.to_owned();
+    let id = format!("{provider_id}/{model_id}");
+    Some(OpenCodeModel {
+        label: model
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&model_id)
+            .to_owned(),
+        reasoning: model
+            .pointer("/capabilities/reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        tool_call: model
+            .pointer("/capabilities/toolcall")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        attachment: model
+            .pointer("/capabilities/attachment")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        context_window: model.pointer("/limit/context").and_then(Value::as_u64),
+        output_limit: model.pointer("/limit/output").and_then(Value::as_u64),
+        input_cost: model.pointer("/cost/input").and_then(Value::as_f64),
+        output_cost: model.pointer("/cost/output").and_then(Value::as_f64),
+        provider_id: provider_id.to_owned(),
+        model_id,
+        id,
+    })
+}
+
+pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Vec<ModelOption> {
+    let visible = visible_models
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut models = catalog
+        .providers
+        .iter()
+        .filter(|provider| provider.connected)
+        .flat_map(|provider| provider.models.iter())
+        .filter(|model| visible.is_empty() || visible.contains(model.id.as_str()))
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| {
+        model_strength(left)
+            .total_cmp(&model_strength(right))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let count = models.len();
+    let mut options = models
+        .into_iter()
+        .enumerate()
+        .map(|(index, model)| ModelOption {
+            id: model.id.clone(),
+            label: format!(
+                "{} · {}",
+                provider_name(catalog, &model.provider_id),
+                model.label
+            ),
+            tier: if count == 1 {
+                CapabilityTier::Standard
+            } else if count == 2 {
+                if index == 0 {
+                    CapabilityTier::Fast
+                } else {
+                    CapabilityTier::Strong
+                }
+            } else if index < count / 3 {
+                CapabilityTier::Fast
+            } else if index >= (count * 2) / 3 {
+                CapabilityTier::Strong
+            } else {
+                CapabilityTier::Standard
+            },
+            default_for_tier: false,
+        })
+        .collect::<Vec<_>>();
+    let provider_defaults = catalog
+        .providers
+        .iter()
+        .filter_map(|provider| provider.default_model.as_deref())
+        .collect::<HashSet<_>>();
+    for tier in [
+        CapabilityTier::Fast,
+        CapabilityTier::Standard,
+        CapabilityTier::Strong,
+    ] {
+        let preferred = options
+            .iter()
+            .position(|option| {
+                option.tier == tier && provider_defaults.contains(option.id.as_str())
+            })
+            .or_else(|| options.iter().position(|option| option.tier == tier));
+        if let Some(index) = preferred {
+            options[index].default_for_tier = true;
+        }
+    }
+    options
+}
+
+fn provider_name<'a>(catalog: &'a OpenCodeCatalog, provider_id: &'a str) -> &'a str {
+    catalog
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .map(|provider| provider.name.as_str())
+        .unwrap_or(provider_id)
+}
+
+fn model_strength(model: &OpenCodeModel) -> f64 {
+    let name = format!("{} {}", model.id, model.label).to_ascii_lowercase();
+    let keyword_score = [
+        ("nano", -4.0),
+        ("mini", -3.0),
+        ("flash", -2.0),
+        ("haiku", -2.0),
+        ("small", -2.0),
+        ("pro", 2.0),
+        ("max", 3.0),
+        ("opus", 3.0),
+        ("ultra", 3.0),
+        ("reasoning", 2.0),
+        ("thinking", 2.0),
+    ]
+    .into_iter()
+    .filter(|(keyword, _)| name.contains(keyword))
+    .map(|(_, score)| score)
+    .sum::<f64>();
+    keyword_score + model.output_cost.unwrap_or_default().max(0.0).ln_1p()
 }
 
 pub struct ChannelReader {
@@ -534,6 +1039,30 @@ impl BufRead for ChannelReader {
 mod tests {
     use super::*;
 
+    fn catalog_fixture() -> OpenCodeCatalog {
+        let providers = json!({
+            "connected": ["opencode-go"],
+            "default": {"opencode-go":"standard", "other":"hidden"},
+            "all": [
+                {
+                    "id":"opencode-go", "name":"OpenCode Go", "source":"api",
+                    "env":["OPENCODE_API_KEY"],
+                    "models": {
+                        "flash":{"id":"flash", "name":"Flash", "capabilities":{"reasoning":true,"toolcall":true,"attachment":false}, "limit":{"context":1000,"output":100}, "cost":{"input":0.1,"output":0.2}},
+                        "standard":{"id":"standard", "name":"Standard", "capabilities":{"reasoning":true,"toolcall":true,"attachment":true}, "limit":{"context":2000,"output":200}, "cost":{"input":1.0,"output":2.0}},
+                        "pro":{"id":"pro", "name":"Pro", "capabilities":{"reasoning":true,"toolcall":true,"attachment":true}, "limit":{"context":3000,"output":300}, "cost":{"input":3.0,"output":6.0}}
+                    }
+                },
+                {"id":"other", "name":"Other", "source":"env", "env":["OTHER_KEY"], "models":{"hidden":{"id":"hidden","name":"Hidden"}}}
+            ]
+        });
+        let auth = json!({
+            "opencode-go":[{"type":"api","label":"API key","prompts":[]}],
+            "other":[{"type":"oauth","label":"OAuth","prompts":[]}]
+        });
+        parse_catalog(&providers, &auth, "/managed/opencode", "1.18.3").unwrap()
+    }
+
     #[test]
     fn parses_provider_qualified_models() {
         let model = parse_model("anthropic/claude-sonnet-4").unwrap();
@@ -548,6 +1077,95 @@ mod tests {
         assert!(is_supported_version("1.18.3"));
         assert!(is_supported_version("v1.18.4"));
         assert!(!is_supported_version("unknown"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolves_custom_managed_and_system_executables_in_order() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let make_executable = |name: &str| {
+            let path = directory.path().join(name);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&path, permissions).unwrap();
+            path
+        };
+        let custom = make_executable("custom");
+        let managed = make_executable("managed");
+        let system = make_executable("system");
+        assert_eq!(
+            choose_executable(custom.to_str(), &[managed.clone()], Some(system.clone())).unwrap(),
+            custom
+        );
+        assert_eq!(
+            choose_executable(None, &[managed.clone()], Some(system.clone())).unwrap(),
+            managed
+        );
+        assert_eq!(
+            choose_executable(None, &[], Some(system.clone())).unwrap(),
+            system
+        );
+        assert!(choose_executable(Some("/missing/opencode"), &[], None).is_err());
+    }
+
+    #[test]
+    fn parses_structured_provider_catalog_without_credentials() {
+        let catalog = catalog_fixture();
+        assert_eq!(catalog.executable_path, "/managed/opencode");
+        assert_eq!(catalog.providers[0].id, "opencode-go");
+        assert!(catalog.providers[0].connected);
+        assert_eq!(catalog.providers[0].models.len(), 3);
+        assert_eq!(
+            catalog.providers[0].default_model.as_deref(),
+            Some("opencode-go/standard")
+        );
+        assert_eq!(catalog.providers[0].auth_methods[0].label, "API key");
+        assert!(!catalog.providers[1].connected);
+        assert!(catalog.providers[1].models.is_empty());
+    }
+
+    #[test]
+    fn filters_visible_models_and_preserves_qualified_ids() {
+        let catalog = catalog_fixture();
+        let options = model_options(
+            &catalog,
+            &["opencode-go/standard".into(), "other/hidden".into()],
+        );
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, "opencode-go/standard");
+    }
+
+    #[test]
+    fn assigns_deterministic_bridge_tiers_to_discovered_models() {
+        let catalog = catalog_fixture();
+        let first = model_options(&catalog, &[]);
+        let second = model_options(&catalog, &[]);
+        assert_eq!(
+            first
+                .iter()
+                .map(|model| (&model.id, model.tier))
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|model| (&model.id, model.tier))
+                .collect::<Vec<_>>()
+        );
+        for tier in [
+            CapabilityTier::Fast,
+            CapabilityTier::Standard,
+            CapabilityTier::Strong,
+        ] {
+            assert_eq!(first.iter().filter(|model| model.tier == tier).count(), 1);
+            assert_eq!(
+                first
+                    .iter()
+                    .filter(|model| model.tier == tier && model.default_for_tier)
+                    .count(),
+                1
+            );
+        }
     }
 
     #[test]
