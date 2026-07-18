@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Bot, Check, ChevronRight, Code2, LoaderCircle, Plus, RotateCcw, Save, Settings2, Shield, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
-import type { AdapterDescriptor, AgentDefinition, AgentRole, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, ReasoningEffort } from "../types";
+import type { AdapterDescriptor, AgentDefinition, AgentRole, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, ReasoningEffort } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
+import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { cn } from "@/lib/utils";
 
 type Section = "agents" | "harnesses" | "models";
@@ -36,6 +37,8 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
   const [agentDraft, setAgentDraft] = useState<AgentDefinition>();
   const [harnessDrafts, setHarnessDrafts] = useState<Record<string, HarnessConfig>>({});
   const [advancedText, setAdvancedText] = useState<Record<string, string>>({});
+  const [openCodeCatalog, setOpenCodeCatalog] = useState<OpenCodeCatalog>();
+  const [openCodeDiscoveryError, setOpenCodeDiscoveryError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -52,12 +55,31 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
   }, [onError]);
 
   useEffect(() => {
+    if (section !== "harnesses" || openCodeCatalog || openCodeDiscoveryError) return;
+    let active = true;
+    bridgeApi.refreshOpenCodeCatalog()
+      .then(catalog => { if (active) setOpenCodeCatalog(catalog); })
+      .catch(error => { if (active) setOpenCodeDiscoveryError(error instanceof Error ? error.message : String(error)); });
+    return () => { active = false; };
+  }, [section, openCodeCatalog, openCodeDiscoveryError]);
+
+  useEffect(() => {
     if (!config || selectedAgentId === "") return;
     const selected = config.agents.find(item => item.id === selectedAgentId) ?? config.agents[0];
     if (selected) { setSelectedAgentId(selected.id); setAgentDraft(structuredClone(selected)); }
   }, [config, selectedAgentId]);
 
-  const modelOptions = useMemo(() => adapters.filter(item => item.available).flatMap(adapter => adapter.models.map(model => ({ adapter: adapter.id, id: model.id, label: `${adapter.label} · ${model.label}` }))), [adapters]);
+  const modelOptions = useMemo(() => {
+    const staticOptions = adapters.filter(item => item.available && item.id !== "opencode").flatMap(adapter => adapter.models.map(model => ({ adapter: adapter.id, id: model.id, label: `${adapter.label} · ${model.label}` })));
+    let configuredVisibleModels: string[] = [];
+    try {
+      const parsed = JSON.parse(advancedText.opencode || "{}");
+      if (Array.isArray(parsed.visibleModels)) configuredVisibleModels = parsed.visibleModels;
+    } catch { /* the save action reports malformed JSON */ }
+    const visible = new Set(configuredVisibleModels);
+    const openCodeOptions = openCodeCatalog?.providers.flatMap(provider => provider.connected ? provider.models.filter(model => visible.size === 0 || visible.has(model.id)).map(model => ({ adapter: "opencode", id: model.id, label: `${provider.name} · ${model.label}` })) : []) ?? [];
+    return [...staticOptions, ...openCodeOptions];
+  }, [adapters, openCodeCatalog, advancedText.opencode]);
   const flashSaved = () => { setSaved(true); window.setTimeout(() => setSaved(false), 1600); };
   const acceptConfig = (next: ConfigState) => {
     setConfig(next); setHarnessDrafts(Object.fromEntries(next.harnesses.map(item => [item.id, item])));
@@ -99,13 +121,35 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
     try { const parsed: unknown = JSON.parse(advancedText[id] || "{}"); if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Advanced configuration must be a JSON object"); advanced = parsed as Record<string, unknown>; }
     catch (error) { onError(error instanceof Error ? error.message : String(error)); return; }
     setBusy(true);
-    try { acceptConfig(await bridgeApi.saveHarnessConfig({ ...draft, advanced })); flashSaved(); }
+    try {
+      acceptConfig(await bridgeApi.saveHarnessConfig({ ...draft, advanced }));
+      if (id === "opencode") {
+        setOpenCodeCatalog(await bridgeApi.refreshOpenCodeCatalog());
+        setOpenCodeDiscoveryError(undefined);
+      }
+      flashSaved();
+    }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
+  };
+
+  const openCodeAdvanced = (): OpenCodeAdvancedSettings => {
+    try { return JSON.parse(advancedText.opencode || "{}"); }
+    catch { return {}; }
+  };
+  const updateOpenCodeAdvanced = (value: OpenCodeAdvancedSettings) => {
+    setAdvancedText(current => ({ ...current, opencode: JSON.stringify(value, null, 2) }));
   };
 
   const resetHarness = async (id: HarnessConfig["id"]) => {
     setBusy(true);
-    try { acceptConfig(await bridgeApi.resetHarnessConfig(id)); flashSaved(); }
+    try {
+      acceptConfig(await bridgeApi.resetHarnessConfig(id));
+      if (id === "opencode") {
+        setOpenCodeCatalog(await bridgeApi.refreshOpenCodeCatalog());
+        setOpenCodeDiscoveryError(undefined);
+      }
+      flashSaved();
+    }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
@@ -148,7 +192,19 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
             <div className="mt-5 flex flex-wrap items-center gap-2"><button type="button" disabled={busy || !agentDraft.name.trim()} onClick={() => void saveAgent()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>{agentDraft.id ? "Save agent" : "Create agent"}</button>{agentDraft.id && agentDraft.role === "orchestrator" && !agentDraft.isDefault && <button type="button" disabled={busy || !agentDraft.enabled} onClick={() => void makeDefault()} className="h-9 rounded-xl border border-border px-3 text-xs text-foreground hover:bg-foreground/[0.05] disabled:opacity-40">Make default orchestrator</button>}{agentDraft.id && <button type="button" disabled={busy} onClick={() => void removeAgent()} className="ml-auto inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-red-300 hover:bg-red-400/[0.07]"><Trash2 size={13}/>{agentDraft.isBuiltIn ? "Reset agent" : "Delete agent"}</button>}</div>
           </section>}
         </div>}
-        {section === "harnesses" && config && <div className="mx-auto max-w-4xl"><div className="mb-5"><h2 className="font-display text-lg font-semibold">Harness configuration</h2><p className="mt-1 text-xs text-muted-foreground">Defaults apply to new sessions. Advanced JSON is passed through as durable configuration for future adapter capabilities.</p></div><div className="space-y-4">{config.harnesses.map(item => { const draft = harnessDrafts[item.id] ?? item; return <section key={item.id} className="rounded-3xl border border-border/80 bg-card/45 p-5"><div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-foreground/[0.06]"><Code2 size={16}/></span><div className="flex-1"><h3 className="font-display font-semibold">{draft.label}</h3><p className="text-[10px] text-muted-foreground">{item.isOverride ? "Customized" : "Bridge defaults"}</p></div><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={draft.enabled} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, enabled: event.target.checked } }))}/>Enabled</label></div><div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Default model<select className={field} value={draft.defaultModel ?? ""} disabled={item.id === "bridge"} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, defaultModel: event.target.value || null } }))}><option value="">Automatic</option>{modelOptions.filter(option => option.adapter === item.id).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Default effort<select className={field} value={draft.effort ?? ""} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, effort: (event.target.value || null) as ReasoningEffort | null } }))}><option value="">Role default</option>{efforts.map(value => <option key={value} value={value}>{value}</option>)}</select></label></div><label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">Harness system prompt<textarea className={textarea} value={draft.systemPrompt} placeholder={`Instructions for every ${draft.label} session…`} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, systemPrompt: event.target.value } }))}/></label><label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">Advanced JSON<textarea className={cn(textarea, "min-h-24")} spellCheck={false} value={advancedText[item.id] ?? "{}"} onChange={event => setAdvancedText(current => ({ ...current, [item.id]: event.target.value }))}/></label><div className="mt-4 flex gap-2"><button type="button" disabled={busy} onClick={() => void saveHarness(item.id)} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save {draft.label}</button><button type="button" disabled={busy || !item.isOverride} onClick={() => void resetHarness(item.id)} className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-35"><RotateCcw size={13}/>Reset</button></div></section>; })}</div></div>}
+        {section === "harnesses" && config && <div className="mx-auto max-w-4xl">
+          <div className="mb-5"><h2 className="font-display text-lg font-semibold">Harness configuration</h2><p className="mt-1 text-xs text-muted-foreground">Defaults apply to new sessions. Provider credentials stay in each harness’s own credential store.</p></div>
+          <div className="space-y-4">{config.harnesses.map(item => {
+            const draft = harnessDrafts[item.id] ?? item;
+            return <section key={item.id} className="rounded-3xl border border-border/80 bg-card/45 p-5">
+              <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-foreground/[0.06]"><Code2 size={16}/></span><div className="flex-1"><h3 className="font-display font-semibold">{draft.label}</h3><p className="text-[10px] text-muted-foreground">{item.isOverride ? "Customized" : "Bridge defaults"}</p></div><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={draft.enabled} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, enabled: event.target.checked } }))}/>Enabled</label></div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Default model<select className={field} value={draft.defaultModel ?? ""} disabled={item.id === "bridge"} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, defaultModel: event.target.value || null } }))}><option value="">Automatic</option>{modelOptions.filter(option => option.adapter === item.id).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Default effort<select className={field} value={draft.effort ?? ""} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, effort: (event.target.value || null) as ReasoningEffort | null } }))}><option value="">Role default</option>{efforts.map(value => <option key={value} value={value}>{value}</option>)}</select></label></div>
+              <label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">Harness system prompt<textarea className={textarea} value={draft.systemPrompt} placeholder={`Instructions for every ${draft.label} session…`} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, systemPrompt: event.target.value } }))}/></label>
+              {item.id === "opencode" ? <OpenCodeHarnessSettings value={openCodeAdvanced()} catalog={openCodeCatalog} discoveryError={openCodeDiscoveryError} disabled={busy} onChange={value => { updateOpenCodeAdvanced(value); if (draft.defaultModel && value.visibleModels?.length && !value.visibleModels.includes(draft.defaultModel)) setHarnessDrafts(current => ({ ...current, opencode: { ...draft, defaultModel: null } })); }} onCatalog={catalog => { setOpenCodeCatalog(catalog); setOpenCodeDiscoveryError(undefined); }} onError={message => { setOpenCodeDiscoveryError(message); onError(message); }}/> : <label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">Advanced JSON<textarea className={cn(textarea, "min-h-24")} spellCheck={false} value={advancedText[item.id] ?? "{}"} onChange={event => setAdvancedText(current => ({ ...current, [item.id]: event.target.value }))}/></label>}
+              <div className="mt-4 flex gap-2"><button type="button" disabled={busy} onClick={() => void saveHarness(item.id)} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save {draft.label}</button><button type="button" disabled={busy || !item.isOverride} onClick={() => void resetHarness(item.id)} className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-35"><RotateCcw size={13}/>Reset</button></div>
+            </section>;
+          })}</div>
+        </div>}
         {section === "models" && modelSetup && <div className="mx-auto max-w-5xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Role model profiles</h2><p className="mt-1 text-xs text-muted-foreground">Provider, model, effort, fallback, learning, cost, and latency for every Bridge role. Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/></div>}
       </div>
     </div>

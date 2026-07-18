@@ -1,4 +1,4 @@
-use crate::{delegation::Effort, BridgeError};
+use crate::{delegation::Effort, opencode_adapter::OpenCodeSettings, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -178,7 +178,44 @@ fn validate_harness(config: &HarnessConfig) -> Result<(), BridgeError> {
             "advanced harness configuration must be a JSON object".into(),
         ));
     }
+    if config.id == "opencode" {
+        opencode_settings(Some(config))?;
+    }
     validate_prompt(&config.system_prompt)
+}
+
+pub fn opencode_settings(config: Option<&HarnessConfig>) -> Result<OpenCodeSettings, BridgeError> {
+    let Some(config) = config else {
+        return Ok(OpenCodeSettings::default());
+    };
+    let mut settings: OpenCodeSettings = serde_json::from_value(config.advanced.clone())
+        .map_err(|error| {
+            BridgeError::Invalid(format!(
+                "invalid OpenCode advanced configuration: {error}"
+            ))
+        })?;
+    settings.executable_path = settings
+        .executable_path
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let mut seen = std::collections::HashSet::new();
+    for model in &mut settings.visible_models {
+        *model = model.trim().to_owned();
+        let qualified = model
+            .split_once('/')
+            .is_some_and(|(provider, name)| !provider.is_empty() && !name.is_empty());
+        if !qualified {
+            return Err(BridgeError::Invalid(format!(
+                "OpenCode visible model must be provider-qualified: {model:?}"
+            )));
+        }
+        if !seen.insert(model.clone()) {
+            return Err(BridgeError::Invalid(format!(
+                "OpenCode visible model is duplicated: {model}"
+            )));
+        }
+    }
+    Ok(settings)
 }
 
 fn validate_agent(agent: &AgentDefinition) -> Result<(), BridgeError> {
@@ -532,5 +569,34 @@ mod tests {
         save_harness(&db, codex).unwrap();
         assert!(!is_harness_enabled(&db, "codex"));
         assert!(harness_config(&db, "codex").is_none());
+    }
+
+    #[test]
+    fn opencode_advanced_config_rejects_invalid_shapes_and_secret_fields() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut opencode = state(&db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .find(|item| item.id == "opencode")
+            .unwrap();
+
+        opencode.advanced = json!({
+            "executablePath": " /managed/opencode ",
+            "visibleModels": ["opencode-go/kimi-k2.5"]
+        });
+        let settings = opencode_settings(Some(&opencode)).unwrap();
+        assert_eq!(settings.executable_path.as_deref(), Some("/managed/opencode"));
+        assert_eq!(settings.visible_models, ["opencode-go/kimi-k2.5"]);
+
+        for invalid in [
+            json!({"executablePath": 42}),
+            json!({"visibleModels": ["unqualified"]}),
+            json!({"apiKey": "must-never-be-persisted"}),
+            json!({"token": "must-never-be-persisted"}),
+        ] {
+            opencode.advanced = invalid;
+            assert!(save_harness(&db, opencode.clone()).is_err());
+        }
     }
 }

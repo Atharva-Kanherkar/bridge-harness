@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentDefinition, AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
@@ -26,6 +26,16 @@ let mockConfigState: ConfigState = {
     { id: "bridge-documentation", name: "Documentation agent", description: "Produces concise project documentation.", role: "documentation", harness: "bridge", model: null, effort: "low", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
   ],
   defaultAgentId: "bridge-orchestrator",
+};
+let mockOpenCodeCatalog: OpenCodeCatalog = {
+  executablePath: "/usr/local/bin/opencode",
+  version: "1.18.3",
+  providers: [{
+    id: "opencode-go", name: "OpenCode Go", connected: true, source: "api",
+    environmentVariables: [], defaultModel: "opencode-go/kimi-k2.5",
+    authMethods: [{ kind: "api", label: "API key" }],
+    models: [{ id: "opencode-go/kimi-k2.5", providerId: "opencode-go", modelId: "kimi-k2.5", label: "Kimi K2.5", reasoning: true, toolCall: true, attachment: true, contextWindow: 262144, outputLimit: 65536, inputCost: null, outputCost: null }],
+  }],
 };
 let mockLearningState: LearningState = {
   schedule: { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "manual" },
@@ -242,6 +252,21 @@ export const bridgeApi = {
     if (isTauri()) return invoke("reset_harness_config", { id });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
     return Promise.resolve(structuredClone(mockConfigState));
+  },
+  refreshOpenCodeCatalog: (directory?: string): Promise<OpenCodeCatalog> => {
+    if (isTauri()) return invoke("refresh_opencode_catalog", { directory: directory || null });
+    return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
+    if (isTauri()) return invoke("set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null });
+    void apiKey;
+    mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
+    return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
+    if (isTauri()) return invoke("remove_opencode_provider_auth", { providerId, directory: directory || null });
+    mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: false, models: [] } : provider) };
+    return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   saveAgentConfig: (agent: AgentDefinition): Promise<ConfigState> => {
     if (isTauri()) return invoke("save_agent_config", { agent });

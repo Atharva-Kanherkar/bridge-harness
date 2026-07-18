@@ -120,6 +120,19 @@ export interface HarnessConfig {
   defaultModel: string | null; effort: ReasoningEffort | null; systemPrompt: string;
   advanced: Record<string, unknown>; isOverride: boolean;
 }
+export interface OpenCodeAuthMethod { kind: string; label: string }
+export interface OpenCodeModel {
+  id: string; providerId: string; modelId: string; label: string;
+  reasoning: boolean; toolCall: boolean; attachment: boolean;
+  contextWindow: number | null; outputLimit: number | null;
+  inputCost: number | null; outputCost: number | null;
+}
+export interface OpenCodeProvider {
+  id: string; name: string; connected: boolean; source: string | null;
+  environmentVariables: string[]; defaultModel: string | null;
+  authMethods: OpenCodeAuthMethod[]; models: OpenCodeModel[];
+}
+export interface OpenCodeCatalog { executablePath: string; version: string; providers: OpenCodeProvider[] }
 export type AgentRole = "orchestrator" | "research" | "implementation" | "verification" | "planning" | "documentation";
 export interface AgentDefinition {
   id: string; name: string; description: string; role: AgentRole; harness: "bridge" | "codex" | "claude" | "opencode";

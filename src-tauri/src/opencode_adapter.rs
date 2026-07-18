@@ -24,7 +24,8 @@ use std::{
 
 const MINIMUM_VERSION: (u64, u64, u64) = (1, 18, 3);
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct OpenCodeSettings {
     pub executable_path: Option<String>,
     pub visible_models: Vec<String>,
@@ -97,14 +98,6 @@ pub struct StartedOpenCode {
 struct ModelRef {
     provider_id: String,
     model_id: String,
-}
-
-pub fn start(request: StartRequest<'_>) -> Result<StartedOpenCode, BridgeError> {
-    start_with_settings(request, &OpenCodeSettings::default())
-}
-
-pub fn resume(request: ResumeRequest<'_>) -> Result<StartedOpenCode, BridgeError> {
-    resume_with_settings(request, &OpenCodeSettings::default())
 }
 
 pub fn start_with_settings(
@@ -507,16 +500,6 @@ impl Drop for OpenCodeRuntime {
     fn drop(&mut self) {
         self.terminate();
     }
-}
-
-pub fn supports_native_resume() -> bool {
-    binary_version()
-        .as_deref()
-        .is_some_and(is_supported_version)
-}
-
-pub fn binary_version() -> Option<String> {
-    binary::version("opencode")
 }
 
 pub fn resolve_executable(settings: &OpenCodeSettings) -> Result<PathBuf, BridgeError> {

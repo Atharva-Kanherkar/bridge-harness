@@ -86,7 +86,7 @@ struct AppState {
     telemetry_db: Mutex<Connection>,
     runtimes: Mutex<HashMap<String, RuntimeSession>>,
     adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
-    adapter_registry: adapters::AdapterRegistry,
+    adapter_registry: Arc<adapters::AdapterRegistry>,
     delegations: Mutex<DelegationState>,
     worktrees: PathBuf,
     database_path: PathBuf,
@@ -122,19 +122,24 @@ struct Health {
 
 #[tauri::command]
 async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
+    let adapters = state.adapter_registry.descriptors();
+    let opencode_available = adapters
+        .iter()
+        .find(|adapter| adapter.id == "opencode")
+        .is_some_and(|adapter| adapter.available);
     Ok(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         harnesses: HashMap::from([
             ("claude", binary::resolve("claude").is_some()),
             ("codex", binary::resolve("codex").is_some()),
-            ("opencode", binary::resolve("opencode").is_some()),
+            ("opencode", opencode_available),
             ("shell", true),
         ]),
         database: state.database_path.to_string_lossy().into(),
         telemetry_database: state.telemetry_database_path.to_string_lossy().into(),
         snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
-        adapters: state.adapter_registry.descriptors(),
+        adapters,
     })
 }
 
@@ -496,12 +501,92 @@ async fn get_config_state(state: State<'_, AppState>) -> Result<agent_config::Co
 
 #[tauri::command]
 async fn save_harness_config(config: agent_config::HarnessConfig, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::save_harness(&state.db.lock().unwrap(), config)
+    let opencode_settings = (config.id == "opencode")
+        .then(|| agent_config::opencode_settings(Some(&config)))
+        .transpose()?;
+    let next = agent_config::save_harness(&state.db.lock().unwrap(), config)?;
+    if let Some(settings) = opencode_settings {
+        let registry = state.adapter_registry.clone();
+        let directory = opencode_directory(None)?;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            registry.refresh_opencode(settings, &directory)
+        })
+        .await;
+    }
+    Ok(next)
 }
 
 #[tauri::command]
 async fn reset_harness_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::reset_harness(&state.db.lock().unwrap(), &id)
+    let next = agent_config::reset_harness(&state.db.lock().unwrap(), &id)?;
+    if id == "opencode" {
+        let registry = state.adapter_registry.clone();
+        let directory = opencode_directory(None)?;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
+        })
+        .await;
+    }
+    Ok(next)
+}
+
+fn opencode_directory(directory: Option<String>) -> Result<String, BridgeError> {
+    let path = directory
+        .map(|value| PathBuf::from(value.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)?;
+    if !path.is_dir() {
+        return Err(BridgeError::Invalid(format!(
+            "OpenCode directory does not exist: {}",
+            path.display()
+        )));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn refresh_opencode_catalog(
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+    let directory = opencode_directory(directory)?;
+    let registry = state.adapter_registry.clone();
+    let settings = registry.opencode_settings()?;
+    tauri::async_runtime::spawn_blocking(move || registry.refresh_opencode(settings, &directory))
+        .await
+        .map_err(|error| BridgeError::Adapter(format!("OpenCode discovery task failed: {error}")))?
+}
+
+#[tauri::command]
+async fn set_opencode_provider_api_key(
+    provider_id: String,
+    api_key: String,
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+    let directory = opencode_directory(directory)?;
+    let registry = state.adapter_registry.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.set_opencode_provider_api_key(&directory, &provider_id, &api_key)
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
+}
+
+#[tauri::command]
+async fn remove_opencode_provider_auth(
+    provider_id: String,
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+    let directory = opencode_directory(directory)?;
+    let registry = state.adapter_registry.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.remove_opencode_provider_auth(&directory, &provider_id)
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -521,7 +606,14 @@ async fn set_default_agent(id: String, state: State<'_, AppState>) -> Result<age
 
 #[tauri::command]
 async fn reset_all_config(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::reset_all(&state.db.lock().unwrap())
+    let next = agent_config::reset_all(&state.db.lock().unwrap())?;
+    let registry = state.adapter_registry.clone();
+    let directory = opencode_directory(None)?;
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
+    })
+    .await;
+    Ok(next)
 }
 
 #[tauri::command]
@@ -4875,8 +4967,15 @@ pub fn run() {
             session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             let _ = store::export_history_snapshot(&connection, &snapshot_dir);
-            let adapter_registry = adapters::AdapterRegistry::built_in()
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            let opencode_config = agent_config::state(&connection)?
+                .harnesses
+                .into_iter()
+                .find(|config| config.id == "opencode");
+            let opencode_settings = agent_config::opencode_settings(opencode_config.as_ref())?;
+            let adapter_registry = Arc::new(
+                adapters::AdapterRegistry::built_in_with_opencode(opencode_settings)
+                    .map_err(Box::<dyn std::error::Error>::from)?,
+            );
             let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
             start_health_server(db_path.clone(), adapter_registry.descriptors(), credential_broker.clone());
@@ -4925,6 +5024,9 @@ pub fn run() {
             get_config_state,
             save_harness_config,
             reset_harness_config,
+            refresh_opencode_catalog,
+            set_opencode_provider_api_key,
+            remove_opencode_provider_auth,
             save_agent_config,
             delete_agent_config,
             set_default_agent,

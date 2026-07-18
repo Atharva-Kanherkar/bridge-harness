@@ -288,12 +288,40 @@ impl AdapterRegistry {
         self.opencode_adapter()?.refresh(settings, directory)
     }
 
-    pub fn opencode_catalog(&self) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-        self.opencode_adapter()?.catalog()
-    }
-
     pub fn opencode_settings(&self) -> Result<opencode_adapter::OpenCodeSettings, BridgeError> {
         Ok(self.opencode_adapter()?.settings())
+    }
+
+    pub fn set_opencode_provider_api_key(
+        &self,
+        directory: &str,
+        provider_id: &str,
+        api_key: &str,
+    ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+        let adapter = self.opencode_adapter()?;
+        let catalog = opencode_adapter::set_provider_api_key(
+            &adapter.settings(),
+            directory,
+            provider_id,
+            api_key,
+        )?;
+        adapter.replace_catalog(catalog.clone());
+        Ok(catalog)
+    }
+
+    pub fn remove_opencode_provider_auth(
+        &self,
+        directory: &str,
+        provider_id: &str,
+    ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+        let adapter = self.opencode_adapter()?;
+        let catalog = opencode_adapter::remove_provider_auth(
+            &adapter.settings(),
+            directory,
+            provider_id,
+        )?;
+        adapter.replace_catalog(catalog.clone());
+        Ok(catalog)
     }
 
     fn opencode_adapter(&self) -> Result<&OpenCodeAdapter, BridgeError> {
@@ -395,20 +423,27 @@ impl OpenCodeAdapter {
         }
     }
 
-    fn catalog(&self) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-        self.catalog.read().unwrap().clone().ok_or_else(|| {
-            BridgeError::Adapter(
-                self.catalog_error
-                    .read()
-                    .unwrap()
-                    .clone()
-                    .unwrap_or_else(|| "OpenCode provider catalog is unavailable".into()),
-            )
+    fn settings(&self) -> opencode_adapter::OpenCodeSettings {
+        self.settings.read().unwrap().clone()
+    }
+
+    fn ensure_model_is_selectable(&self, model: Option<&str>) -> Result<(), BridgeError> {
+        let Some(model) = model else { return Ok(()); };
+        let selectable = self
+            .descriptor()
+            .models
+            .into_iter()
+            .any(|option| option.id == model);
+        selectable.then_some(()).ok_or_else(|| {
+            BridgeError::Invalid(format!(
+                "OpenCode model {model:?} is not exposed by a connected provider or is hidden"
+            ))
         })
     }
 
-    fn settings(&self) -> opencode_adapter::OpenCodeSettings {
-        self.settings.read().unwrap().clone()
+    fn replace_catalog(&self, catalog: opencode_adapter::OpenCodeCatalog) {
+        *self.catalog.write().unwrap() = Some(catalog);
+        *self.catalog_error.write().unwrap() = None;
     }
 }
 impl HarnessAdapter for OpenCodeAdapter {
@@ -452,6 +487,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
         let started = opencode_adapter::start_with_settings(request, &settings)?;
         Ok(StartedAdapter {
@@ -461,6 +497,7 @@ impl HarnessAdapter for OpenCodeAdapter {
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
         let started = opencode_adapter::resume_with_settings(request, &settings)?;
         Ok(StartedAdapter {
