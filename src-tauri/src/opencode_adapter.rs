@@ -182,7 +182,7 @@ fn launch(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let directory = request.cwd.to_owned();
-    let session = match resume_session_id {
+    let session_result = match resume_session_id {
         Some(session_id) => {
             let response = client
                 .get(endpoint(
@@ -193,43 +193,45 @@ fn launch(
                 .timeout(Duration::from_secs(10))
                 .send()
                 .map_err(http_error("resume OpenCode session"))?;
-            checked_json(response, "resume OpenCode session")?
+            checked_json(response, "resume OpenCode session")
         }
         None => {
-            let mut body = json!({
-                "title": "Bridge session",
-                "permission": permission_rules(request.write_mode),
-            });
-            if let Some(model) = &model {
-                body["model"] = json!({
-                    "providerID": model.provider_id,
-                    "id": model.model_id,
-                    "variant": variant,
-                });
-            }
+            let body = session_create_body(model.as_ref(), variant.as_deref(), request.write_mode);
             let response = client
                 .post(endpoint(&base_url, "/session", &directory))
                 .timeout(Duration::from_secs(10))
                 .json(&body)
                 .send()
                 .map_err(http_error("create OpenCode session"))?;
-            checked_json(response, "create OpenCode session")?
+            checked_json(response, "create OpenCode session")
         }
     };
-    let session_id = session
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| BridgeError::Adapter(format!("OpenCode returned no session id: {session}")))?
-        .to_owned();
+    let session = match session_result {
+        Ok(session) => session,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(error);
+        }
+    };
+    let session_id = session.get("id").and_then(Value::as_str).map(str::to_owned);
+    let Some(session_id) = session_id else {
+        stop_child(&mut child);
+        return Err(BridgeError::Adapter(format!(
+            "OpenCode returned no session id: {session}"
+        )));
+    };
 
     let (sender, receiver) = mpsc::channel();
-    spawn_event_stream(
+    if let Err(error) = spawn_event_stream(
         client.clone(),
         base_url.clone(),
         directory.clone(),
         session_id.clone(),
         sender,
-    );
+    ) {
+        stop_child(&mut child);
+        return Err(error);
+    }
     let startup_messages = vec![json!({
         "type": "session.created",
         "properties": { "sessionID": session_id, "info": session }
@@ -250,6 +252,33 @@ fn launch(
         reader: ChannelReader::new(receiver),
         startup_messages,
     })
+}
+
+fn session_create_body(
+    model: Option<&ModelRef>,
+    variant: Option<&str>,
+    write_mode: Option<WriteMode>,
+) -> Value {
+    let mut body = json!({
+        "title": "Bridge session",
+        "permission": permission_rules(write_mode),
+    });
+    if let Some(model) = model {
+        body["model"] = json!({
+            "providerID": model.provider_id,
+            "id": model.model_id,
+        });
+        if let Some(variant) = variant {
+            body["model"]["variant"] = json!(variant);
+        }
+    }
+    body
+}
+
+fn stop_child(child: &mut Child) {
+    let _ = crate::adapters::terminate_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn reserve_port() -> Result<u16, BridgeError> {
@@ -342,11 +371,18 @@ fn spawn_event_stream(
     directory: String,
     session_id: String,
     sender: mpsc::Sender<String>,
-) {
+) -> Result<(), BridgeError> {
+    let response = client
+        .get(endpoint(&base_url, "/event", &directory))
+        .send()
+        .map_err(http_error("connect to OpenCode event stream"))?;
+    if !response.status().is_success() {
+        return Err(BridgeError::Adapter(format!(
+            "Failed to connect to OpenCode event stream ({})",
+            response.status()
+        )));
+    }
     thread::spawn(move || {
-        let Ok(response) = client.get(endpoint(&base_url, "/event", &directory)).send() else {
-            return;
-        };
         let mut reader = std::io::BufReader::new(response);
         loop {
             let mut line = String::new();
@@ -370,6 +406,7 @@ fn spawn_event_stream(
             }
         }
     });
+    Ok(())
 }
 
 impl OpenCodeRuntime {
@@ -1052,6 +1089,18 @@ mod tests {
         assert_eq!(model.provider_id, "anthropic");
         assert_eq!(model.model_id, "claude-sonnet-4");
         assert!(parse_model("unqualified").is_none());
+    }
+
+    #[test]
+    fn session_creation_omits_an_absent_model_variant() {
+        let model = parse_model("opencode-go/kimi-k2.7-code").unwrap();
+        let automatic = session_create_body(Some(&model), None, None);
+        assert_eq!(automatic["model"]["providerID"], "opencode-go");
+        assert_eq!(automatic["model"]["id"], "kimi-k2.7-code");
+        assert!(automatic["model"].get("variant").is_none());
+
+        let configured = session_create_body(Some(&model), Some("high"), None);
+        assert_eq!(configured["model"]["variant"], "high");
     }
 
     #[test]
