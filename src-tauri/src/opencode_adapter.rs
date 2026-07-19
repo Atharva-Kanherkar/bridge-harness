@@ -1152,6 +1152,33 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires OpenCode 1.18.3+ with an authenticated OpenCode Go subscription"]
+    fn live_discovery_reads_opencode_go_from_the_structured_provider_api() {
+        let executable = std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
+            .expect("set BRIDGE_OPENCODE_LIVE_BINARY to the OpenCode executable");
+        let directory = std::env::current_dir().unwrap();
+        let catalog = discover(
+            &OpenCodeSettings {
+                executable_path: Some(executable),
+                visible_models: Vec::new(),
+            },
+            directory.to_str().unwrap(),
+        )
+        .unwrap();
+        let provider = catalog
+            .providers
+            .iter()
+            .find(|provider| provider.id == "opencode-go")
+            .expect("OpenCode did not report its Go provider");
+        assert!(provider.connected);
+        assert!(!provider.models.is_empty());
+        assert!(provider
+            .models
+            .iter()
+            .all(|model| model.id.starts_with("opencode-go/")));
+    }
+
+    #[test]
     fn worker_permissions_preserve_bridge_write_modes() {
         let has_rule = |rules: &Value, permission: &str, action: &str| {
             rules.as_array().is_some_and(|items| {

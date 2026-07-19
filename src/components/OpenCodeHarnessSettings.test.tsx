@@ -1,5 +1,9 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { bridgeApi } from "../api";
 import type { OpenCodeCatalog } from "../types";
 import { OpenCodeHarnessSettings } from "./OpenCodeHarnessSettings";
 
@@ -37,5 +41,30 @@ describe("OpenCodeHarnessSettings", () => {
     expect(html).toContain("/custom/opencode");
     expect(html).toContain("opencode-go/kimi-k2.5");
     expect(html).toContain("Disconnect");
+  });
+
+  it("submits an API key once and clears it from component state", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const updated = { ...catalog, providers: catalog.providers.map(provider => provider.id === "anthropic" ? { ...provider, connected: true } : provider) };
+    const setKey = vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockResolvedValue(updated);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<OpenCodeHarnessSettings value={{}} catalog={catalog} disabled={false} onChange={() => undefined} onCatalog={() => undefined} onError={error => { throw new Error(error); }}/>));
+
+    const input = container.querySelector<HTMLInputElement>('#opencode-key-anthropic')!;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setValue?.call(input, "disposable-provider-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const connect = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Connect"))!;
+    await act(async () => { connect.click(); await Promise.resolve(); });
+
+    expect(setKey).toHaveBeenCalledOnce();
+    expect(setKey).toHaveBeenCalledWith("anthropic", "disposable-provider-key");
+    expect(input.value).toBe("");
+    expect(container.innerHTML).not.toContain("disposable-provider-key");
+    await act(async () => root.unmount());
+    vi.restoreAllMocks();
   });
 });
