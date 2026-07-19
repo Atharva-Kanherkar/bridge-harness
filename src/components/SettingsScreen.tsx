@@ -55,13 +55,15 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
   }, [onError]);
 
   useEffect(() => {
-    if (section !== "harnesses" || openCodeCatalog || openCodeDiscoveryError) return;
+    // Fetch on mount (not only in the Harnesses section): the Agents section
+    // needs the catalog to list OpenCode models for opencode-harness agents.
+    if (openCodeCatalog || openCodeDiscoveryError) return;
     let active = true;
     bridgeApi.refreshOpenCodeCatalog()
       .then(catalog => { if (active) setOpenCodeCatalog(catalog); })
       .catch(error => { if (active) setOpenCodeDiscoveryError(error instanceof Error ? error.message : String(error)); });
     return () => { active = false; };
-  }, [section, openCodeCatalog, openCodeDiscoveryError]);
+  }, [openCodeCatalog, openCodeDiscoveryError]);
 
   useEffect(() => {
     if (!config || selectedAgentId === "") return;

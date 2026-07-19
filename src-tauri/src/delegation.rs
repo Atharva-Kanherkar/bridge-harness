@@ -747,6 +747,7 @@ pub fn normalize_harness(value: &str) -> Option<String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "claude" | "claude-code" | "claudecode" | "anthropic" => Some("claude".into()),
         "codex" | "gpt" | "openai" => Some("codex".into()),
+        "opencode" | "open-code" => Some("opencode".into()),
         _ => None,
     }
 }

@@ -384,22 +384,36 @@ impl AdapterRegistry {
 struct OpenCodeAdapter {
     streams: Mutex<HashMap<String, agent::OpenCodeStreamState>>,
     settings: RwLock<opencode_adapter::OpenCodeSettings>,
-    catalog: RwLock<Option<opencode_adapter::OpenCodeCatalog>>,
-    catalog_error: RwLock<Option<String>>,
+    catalog: Arc<RwLock<Option<opencode_adapter::OpenCodeCatalog>>>,
+    catalog_error: Arc<RwLock<Option<String>>>,
 }
 impl OpenCodeAdapter {
     fn new(settings: opencode_adapter::OpenCodeSettings) -> Self {
         let adapter = Self {
             streams: Mutex::new(HashMap::new()),
             settings: RwLock::new(settings.clone()),
-            catalog: RwLock::new(None),
-            catalog_error: RwLock::new(None),
+            catalog: Arc::new(RwLock::new(None)),
+            catalog_error: Arc::new(RwLock::new(None)),
         };
+        // Discovery spawns an OpenCode server and can take tens of seconds, and
+        // new() runs during app setup — do the initial catalog load off-thread.
+        let catalog = adapter.catalog.clone();
+        let catalog_error = adapter.catalog_error.clone();
         let directory = std::env::current_dir()
             .ok()
             .and_then(|path| path.to_str().map(str::to_owned))
             .unwrap_or_else(|| ".".into());
-        let _ = adapter.refresh(settings, &directory);
+        let _ = std::thread::Builder::new()
+            .name("opencode-discover".into())
+            .spawn(move || match opencode_adapter::discover(&settings, &directory) {
+                Ok(result) => {
+                    *catalog.write().unwrap() = Some(result);
+                    *catalog_error.write().unwrap() = None;
+                }
+                Err(error) => {
+                    *catalog_error.write().unwrap() = Some(error.to_string());
+                }
+            });
         adapter
     }
 
@@ -416,7 +430,9 @@ impl OpenCodeAdapter {
                 Ok(catalog)
             }
             Err(error) => {
-                *self.catalog.write().unwrap() = None;
+                // Keep the last known-good catalog so a transient discovery
+                // failure does not degrade a working setup; the error is
+                // surfaced alongside it.
                 *self.catalog_error.write().unwrap() = Some(error.to_string());
                 Err(error)
             }

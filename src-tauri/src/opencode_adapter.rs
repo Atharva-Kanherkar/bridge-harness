@@ -17,7 +17,10 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -85,6 +88,7 @@ pub struct OpenCodeRuntime {
     variant: Option<String>,
     instructions: Option<String>,
     current_turn: Arc<Mutex<Option<String>>>,
+    shutting_down: Arc<AtomicBool>,
     stopped: bool,
 }
 
@@ -129,6 +133,9 @@ fn launch(
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
+    if let Some(session_id) = resume_session_id {
+        validate_path_id("session id", session_id)?;
+    }
     let binary = resolve_executable(settings)?;
     ensure_supported_version(&binary)?;
     let port = reserve_port()?;
@@ -151,23 +158,13 @@ fn launch(
         .stderr(Stdio::null());
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
-    let mut headers = HeaderMap::new();
-    let authorization = format!(
-        "Basic {}",
-        BASE64.encode(format!("bridge:{server_password}"))
-    );
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&authorization).map_err(|error| {
-            BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}"))
-        })?,
-    );
-    let client = Client::builder()
-        .default_headers(headers)
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(None)
-        .build()
-        .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))?;
+    let client = match build_authenticated_client(&server_password) {
+        Ok(client) => client,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(error);
+        }
+    };
     if let Err(error) = wait_until_ready(&client, &base_url, &mut child) {
         stop_child(&mut child);
         drop_client_safely(client);
@@ -219,7 +216,13 @@ fn launch(
             "OpenCode returned no session id: {session}"
         )));
     };
+    if let Err(error) = validate_path_id("session id", &session_id) {
+        stop_child(&mut child);
+        drop_client_safely(client);
+        return Err(error);
+    }
 
+    let shutting_down = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel();
     if let Err(error) = spawn_event_stream(
         client.clone(),
@@ -227,6 +230,7 @@ fn launch(
         directory.clone(),
         session_id.clone(),
         sender,
+        shutting_down.clone(),
     ) {
         stop_child(&mut child);
         drop_client_safely(client);
@@ -247,6 +251,7 @@ fn launch(
             variant,
             instructions: request.instructions.map(str::to_owned),
             current_turn: Arc::new(Mutex::new(None)),
+            shutting_down,
             stopped: false,
         },
         reader: ChannelReader::new(receiver),
@@ -294,6 +299,26 @@ fn reserve_port() -> Result<u16, BridgeError> {
     Ok(listener.local_addr()?.port())
 }
 
+fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeError> {
+    let authorization = format!(
+        "Basic {}",
+        BASE64.encode(format!("bridge:{server_password}"))
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&authorization).map_err(|error| {
+            BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}"))
+        })?,
+    );
+    Client::builder()
+        .default_headers(headers)
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(None)
+        .build()
+        .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))
+}
+
 fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Result<(), BridgeError> {
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
@@ -304,16 +329,58 @@ fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Resul
         }
         if client
             .get(format!("{base_url}/global/health"))
+            .timeout(Duration::from_secs(2))
             .send()
             .is_ok_and(|response| response.status().is_success())
         {
-            return Ok(());
+            // The reserved port is released before the child binds it, so another
+            // local process can win the race and answer in its place. The real
+            // OpenCode child must still be alive and must reject requests that
+            // lack this instance's credentials.
+            if let Some(status) = child.try_wait()? {
+                return Err(BridgeError::Adapter(format!(
+                    "OpenCode server exited during startup with {status}"
+                )));
+            }
+            return verify_server_requires_credentials(base_url);
         }
         thread::sleep(Duration::from_millis(100));
     }
     Err(BridgeError::Adapter(
         "OpenCode server did not become ready".into(),
     ))
+}
+
+fn verify_server_requires_credentials(base_url: &str) -> Result<(), BridgeError> {
+    // Runs on a dedicated thread so the probe client (and its response) are
+    // dropped there — see drop_client_safely.
+    let health_url = format!("{base_url}/global/health");
+    let handle = thread::Builder::new()
+        .name("opencode-auth-probe".into())
+        .spawn(move || -> Result<(), BridgeError> {
+            let probe = Client::builder()
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(Duration::from_secs(2))
+                .build()
+                .map_err(|error| {
+                    BridgeError::Adapter(format!("Cannot create OpenCode probe client: {error}"))
+                })?;
+            let unauthorized = probe
+                .get(&health_url)
+                .send()
+                .is_ok_and(|response| response.status() == reqwest::StatusCode::UNAUTHORIZED);
+            unauthorized.then_some(()).ok_or_else(|| {
+                BridgeError::Adapter(
+                    "OpenCode server port appears to be claimed by another process: \
+                     its health endpoint does not require Bridge credentials"
+                        .into(),
+                )
+            })
+        })
+        .map_err(|error| BridgeError::Adapter(format!("Cannot probe OpenCode server: {error}")))?;
+    handle
+        .join()
+        .map_err(|_| BridgeError::Adapter("OpenCode credential probe panicked".into()))?
 }
 
 fn permission_rules(write_mode: Option<WriteMode>) -> Value {
@@ -379,6 +446,7 @@ fn spawn_event_stream(
     directory: String,
     session_id: String,
     sender: mpsc::Sender<String>,
+    shutting_down: Arc<AtomicBool>,
 ) -> Result<(), BridgeError> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
@@ -421,6 +489,18 @@ fn spawn_event_stream(
             if belongs_to_session && sender.send(format!("{value}\n")).is_err() {
                 break;
             }
+        }
+        // The stream ended. During shutdown that is expected; otherwise the
+        // turn would silently appear finished, so surface the disconnect.
+        if !shutting_down.load(Ordering::SeqCst) {
+            let error_event = json!({
+                "type": "session.error",
+                "properties": {
+                    "sessionID": session_id,
+                    "error": { "message": "OpenCode event stream disconnected unexpectedly" }
+                }
+            });
+            let _ = sender.send(format!("{error_event}\n"));
         }
     });
     ready_receiver
@@ -466,6 +546,7 @@ impl OpenCodeRuntime {
             return;
         }
         self.stopped = true;
+        self.shutting_down.store(true, Ordering::SeqCst);
         // Do not issue a blocking reqwest request here. Tauri may call stop from
         // an async command worker, and reqwest's blocking client owns a Tokio
         // runtime that must never be torn down from an async runtime context.
@@ -537,6 +618,7 @@ impl AdapterRuntime for OpenCodeRuntime {
         let request_id = request_id
             .as_str()
             .ok_or_else(|| BridgeError::Invalid("OpenCode approval id is invalid".into()))?;
+        validate_path_id("approval id", request_id)?;
         let reply = match decision {
             "accept" => "once",
             "acceptForSession" => "always",
@@ -646,8 +728,10 @@ pub fn is_supported_version(version: &str) -> bool {
         .filter(|part| !part.is_empty())
         .take(3)
         .filter_map(|part| part.parse::<u64>().ok());
-    let parsed = (parts.next(), parts.next(), parts.next());
-    matches!(parsed, (Some(major), Some(minor), Some(patch)) if (major, minor, patch) >= MINIMUM_VERSION)
+    let major = parts.next();
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    matches!(major, Some(major) if (major, minor, patch) >= MINIMUM_VERSION)
 }
 
 fn ensure_supported_version(executable: &Path) -> Result<String, BridgeError> {
@@ -759,6 +843,22 @@ fn validate_provider_id(provider_id: &str) -> Result<(), BridgeError> {
     })
 }
 
+/// Identifiers interpolated into OpenCode URL paths (session ids, permission
+/// request ids) must stay within a safe charset so they can neither break URL
+/// parsing nor redirect the request to a different endpoint.
+fn validate_path_id(kind: &str, value: &str) -> Result<(), BridgeError> {
+    let valid = !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    valid.then_some(()).ok_or_else(|| {
+        BridgeError::Invalid(format!(
+            "OpenCode {kind} contains unsupported characters"
+        ))
+    })
+}
+
 fn with_control_server<T>(
     executable: &Path,
     directory: &str,
@@ -784,25 +884,16 @@ fn with_control_server<T>(
         .stderr(Stdio::null());
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
-    let authorization = format!("Basic {}", BASE64.encode(format!("bridge:{password}")));
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&authorization).map_err(|error| {
-            BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}"))
-        })?,
-    );
-    let client = Client::builder()
-        .default_headers(headers)
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(None)
-        .build()
-        .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))?;
-    let result =
-        wait_until_ready(&client, &base_url, &mut child).and_then(|_| action(&client, &base_url));
-    let _ = crate::adapters::terminate_process_group(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
+    let result = match build_authenticated_client(&password) {
+        Ok(client) => {
+            let result = wait_until_ready(&client, &base_url, &mut child)
+                .and_then(|_| action(&client, &base_url));
+            drop_client_safely(client);
+            result
+        }
+        Err(error) => Err(error),
+    };
+    stop_child(&mut child);
     result
 }
 
@@ -1135,6 +1226,19 @@ mod tests {
         assert!(is_supported_version("1.18.3"));
         assert!(is_supported_version("v1.18.4"));
         assert!(!is_supported_version("unknown"));
+        assert!(is_supported_version("1.19"));
+        assert!(is_supported_version("2.0"));
+        assert!(!is_supported_version("1.18"));
+    }
+
+    #[test]
+    fn path_ids_reject_url_breaking_characters() {
+        assert!(validate_path_id("session id", "ses_01ABC-def.2").is_ok());
+        assert!(validate_path_id("session id", "").is_err());
+        assert!(validate_path_id("session id", "ses/../auth").is_err());
+        assert!(validate_path_id("session id", "ses?x=1").is_err());
+        assert!(validate_path_id("session id", "ses id").is_err());
+        assert!(validate_path_id("session id", &"a".repeat(129)).is_err());
     }
 
     #[test]
