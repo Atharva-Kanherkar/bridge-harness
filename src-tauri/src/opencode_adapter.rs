@@ -520,25 +520,40 @@ impl OpenCodeRuntime {
         body: Option<Value>,
         action: &'static str,
     ) -> Result<(), BridgeError> {
-        let mut request = self
+        let client = self
             .client
             .as_ref()
             .ok_or_else(|| BridgeError::Adapter("OpenCode runtime is stopped".into()))?
-            .request(method, endpoint(&self.base_url, path, &self.directory))
-            .timeout(Duration::from_secs(10));
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request.send().map_err(http_error(action))?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            Err(BridgeError::Adapter(format!(
-                "Failed to {action} ({status}): {body}"
-            )))
-        }
+            .clone();
+        let url = endpoint(&self.base_url, path, &self.directory);
+        // Callers include async Tauri commands. Run the blocking HTTP exchange
+        // on a dedicated thread so every reqwest temporary (request builder,
+        // response, client clone) is created and dropped off the async runtime
+        // — dropping the last blocking-client handle there panics.
+        let handle = thread::Builder::new()
+            .name("opencode-request".into())
+            .spawn(move || -> Result<(), BridgeError> {
+                let mut request = client.request(method, url).timeout(Duration::from_secs(10));
+                if let Some(body) = body {
+                    request = request.json(&body);
+                }
+                let response = request.send().map_err(http_error(action))?;
+                if response.status().is_success() {
+                    Ok(())
+                } else {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_default();
+                    Err(BridgeError::Adapter(format!(
+                        "Failed to {action} ({status}): {body}"
+                    )))
+                }
+            })
+            .map_err(|error| {
+                BridgeError::Adapter(format!("Cannot dispatch OpenCode request: {error}"))
+            })?;
+        handle
+            .join()
+            .map_err(|_| BridgeError::Adapter(format!("Failed to {action}: request panicked")))?
     }
 
     fn terminate(&mut self) {
