@@ -196,6 +196,16 @@ impl AdapterRegistry {
     pub fn built_in_with_opencode(
         opencode_settings: opencode_adapter::OpenCodeSettings,
     ) -> Result<Self, BridgeError> {
+        Self::built_in_with_opencode_notify(opencode_settings, None)
+    }
+
+    /// `on_opencode_discovered` fires once the background OpenCode catalog
+    /// discovery finishes (successfully or not), so the host can tell the
+    /// frontend to re-read adapter availability.
+    pub fn built_in_with_opencode_notify(
+        opencode_settings: opencode_adapter::OpenCodeSettings,
+        on_opencode_discovered: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Result<Self, BridgeError> {
         let mut registry = Self {
             adapters: HashMap::new(),
         };
@@ -203,7 +213,10 @@ impl AdapterRegistry {
         registry.register(Box::new(ClaudeAdapter {
             streams: Mutex::new(HashMap::new()),
         }))?;
-        registry.register(Box::new(OpenCodeAdapter::new(opencode_settings)))?;
+        registry.register(Box::new(OpenCodeAdapter::new(
+            opencode_settings,
+            on_opencode_discovered,
+        )))?;
         Ok(registry)
     }
 
@@ -388,7 +401,10 @@ struct OpenCodeAdapter {
     catalog_error: Arc<RwLock<Option<String>>>,
 }
 impl OpenCodeAdapter {
-    fn new(settings: opencode_adapter::OpenCodeSettings) -> Self {
+    fn new(
+        settings: opencode_adapter::OpenCodeSettings,
+        on_discovered: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
         let adapter = Self {
             streams: Mutex::new(HashMap::new()),
             settings: RwLock::new(settings.clone()),
@@ -405,13 +421,18 @@ impl OpenCodeAdapter {
             .unwrap_or_else(|| ".".into());
         let _ = std::thread::Builder::new()
             .name("opencode-discover".into())
-            .spawn(move || match opencode_adapter::discover(&settings, &directory) {
-                Ok(result) => {
-                    *catalog.write().unwrap() = Some(result);
-                    *catalog_error.write().unwrap() = None;
+            .spawn(move || {
+                match opencode_adapter::discover(&settings, &directory) {
+                    Ok(result) => {
+                        *catalog.write().unwrap() = Some(result);
+                        *catalog_error.write().unwrap() = None;
+                    }
+                    Err(error) => {
+                        *catalog_error.write().unwrap() = Some(error.to_string());
+                    }
                 }
-                Err(error) => {
-                    *catalog_error.write().unwrap() = Some(error.to_string());
+                if let Some(notify) = on_discovered {
+                    notify();
                 }
             });
         adapter

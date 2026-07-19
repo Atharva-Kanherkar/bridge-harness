@@ -504,5 +504,9 @@ export const bridgeApi = {
   },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return listen("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
+  },
+  onAdaptersChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (isTauri()) return listen("adapters-changed", handler);
+    return () => undefined;
   }
 };

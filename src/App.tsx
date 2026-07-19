@@ -103,7 +103,13 @@ export function App() {
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
+    let offAdapters: (() => void) | undefined;
     void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
+    // Adapter availability can change after startup (OpenCode catalog discovery
+    // runs in the background) — re-read health when the backend says so.
+    void bridgeApi.onAdaptersChanged(() => {
+      void bridgeApi.health().then(setHealth).catch(value => setError(errorMessage(value)));
+    }).then(fn => offAdapters = fn);
     const queueAgentEvent = (event: AgentEvent) => {
       agentEventQueueRef.current.push(event);
       if (agentEventTimerRef.current !== undefined) return;
@@ -127,7 +133,7 @@ export function App() {
       }
     }).then(fn => offUsage = fn);
     return () => {
-      offState?.(); offAgent?.(); offUsage?.();
+      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.();
       if (agentEventTimerRef.current !== undefined) window.clearTimeout(agentEventTimerRef.current);
       agentEventTimerRef.current = undefined;
       agentEventQueueRef.current = [];

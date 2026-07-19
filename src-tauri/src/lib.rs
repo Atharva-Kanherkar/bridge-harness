@@ -5000,9 +5000,17 @@ pub fn run() {
                 .into_iter()
                 .find(|config| config.id == "opencode");
             let opencode_settings = agent_config::opencode_settings(opencode_config.as_ref())?;
+            let discovery_handle = app.handle().clone();
             let adapter_registry = Arc::new(
-                adapters::AdapterRegistry::built_in_with_opencode(opencode_settings)
-                    .map_err(Box::<dyn std::error::Error>::from)?,
+                adapters::AdapterRegistry::built_in_with_opencode_notify(
+                    opencode_settings,
+                    Some(Box::new(move || {
+                        // OpenCode discovery finishes after the frontend's initial
+                        // health fetch; tell it to re-read adapter availability.
+                        let _ = discovery_handle.emit("adapters-changed", ());
+                    })),
+                )
+                .map_err(Box::<dyn std::error::Error>::from)?,
             );
             let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
