@@ -372,17 +372,26 @@ fn spawn_event_stream(
     session_id: String,
     sender: mpsc::Sender<String>,
 ) -> Result<(), BridgeError> {
-    let response = client
-        .get(endpoint(&base_url, "/event", &directory))
-        .send()
-        .map_err(http_error("connect to OpenCode event stream"))?;
-    if !response.status().is_success() {
-        return Err(BridgeError::Adapter(format!(
-            "Failed to connect to OpenCode event stream ({})",
-            response.status()
-        )));
-    }
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
+        let response = match client.get(endpoint(&base_url, "/event", &directory)).send() {
+            Ok(response) if response.status().is_success() => response,
+            Ok(response) => {
+                let _ = ready_sender.send(Err(BridgeError::Adapter(format!(
+                    "Failed to connect to OpenCode event stream ({})",
+                    response.status()
+                ))));
+                return;
+            }
+            Err(error) => {
+                let _ =
+                    ready_sender.send(Err(http_error("connect to OpenCode event stream")(error)));
+                return;
+            }
+        };
+        if ready_sender.send(Ok(())).is_err() {
+            return;
+        }
         let mut reader = std::io::BufReader::new(response);
         loop {
             let mut line = String::new();
@@ -406,7 +415,13 @@ fn spawn_event_stream(
             }
         }
     });
-    Ok(())
+    ready_receiver
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|error| {
+            BridgeError::Adapter(format!(
+                "Timed out connecting to OpenCode event stream: {error}"
+            ))
+        })?
 }
 
 impl OpenCodeRuntime {
@@ -1225,6 +1240,64 @@ mod tests {
             .models
             .iter()
             .all(|model| model.id.starts_with("opencode-go/")));
+    }
+
+    #[test]
+    #[ignore = "requires OpenCode 1.18.3+ with an authenticated OpenCode Go subscription"]
+    fn live_chat_streams_an_opencode_go_reply() {
+        let executable = std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
+            .expect("set BRIDGE_OPENCODE_LIVE_BINARY to the OpenCode executable");
+        let directory = std::env::current_dir().unwrap();
+        let mut started = start_with_settings(
+            StartRequest {
+                cwd: directory.to_str().unwrap(),
+                model: Some("opencode-go/kimi-k2.6"),
+                effort: None,
+                instructions: None,
+                write_mode: None,
+            },
+            &OpenCodeSettings {
+                executable_path: Some(executable),
+                visible_models: Vec::new(),
+            },
+        )
+        .unwrap();
+        let process_id = started.runtime.process_id();
+        started
+            .runtime
+            .send_turn("Reply exactly: BRIDGE_OPENCODE_CHAT_OK")
+            .unwrap();
+
+        let mut reader = started.reader;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut state = crate::agent::OpenCodeStreamState::default();
+            let mut assistant_text = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or_default() == 0 {
+                    break;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                for event in crate::agent::normalize_opencode_message_with_state(&value, &mut state)
+                {
+                    if event.kind == "message.delta" {
+                        assistant_text.push_str(event.text.as_deref().unwrap_or_default());
+                    }
+                }
+                if assistant_text.contains("BRIDGE_OPENCODE_CHAT_OK") {
+                    let _ = sender.send(());
+                    break;
+                }
+            }
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(60))
+            .expect("OpenCode Go did not stream the reply");
+        started.runtime.stop(ShutdownReason::Completed);
+        assert!(crate::adapters::process_identity(process_id).is_none());
     }
 
     #[test]
