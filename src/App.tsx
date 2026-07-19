@@ -248,15 +248,21 @@ export function App() {
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
 
   function openSession(id: string) { setView("workspace"); setSelectedSessionId(id); }
-  // New chat opens instantly (no picker up front): create a direct chat with the
-  // default model and select it. The model can be changed inside the chat.
+  // New chat opens instantly (no picker up front). Preserve the current direct
+  // chat's harness/model so switching to OpenCode also changes the next-chat
+  // default; otherwise fall back to the configured standard profile.
   async function openNewChat(initialMessage?: string) {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
     setView("workspace");
+    const currentAdapter = session?.kind === "direct"
+      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
+      : undefined;
     const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+    const preferred = currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
-    const model = profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+    const model = currentAdapter
+      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
+      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
     const draft = initialMessage?.trim() ?? "";
     if (draft) pendingWelcomeMessageRef.current = draft;
     setBusy(true); setError(undefined);

@@ -939,12 +939,19 @@ async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-        runtime.stop(adapters::ShutdownReason::Replaced);
-    }
+    let stop_session_id = session_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
+            runtime.stop(adapters::ShutdownReason::Replaced);
+        };
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
     let db = state.db.lock().unwrap();
     db.execute(

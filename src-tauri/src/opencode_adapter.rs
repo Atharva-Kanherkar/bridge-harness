@@ -466,12 +466,10 @@ impl OpenCodeRuntime {
             return;
         }
         self.stopped = true;
-        let _ = self.request(
-            reqwest::Method::POST,
-            "/instance/dispose",
-            None,
-            "dispose OpenCode server",
-        );
+        // Do not issue a blocking reqwest request here. Tauri may call stop from
+        // an async command worker, and reqwest's blocking client owns a Tokio
+        // runtime that must never be torn down from an async runtime context.
+        // Terminating the dedicated process group disposes this private server.
         let _ = crate::adapters::terminate_process_group(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
