@@ -153,8 +153,8 @@ export function RouterSettingsDialog({
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setRunning(false); }
   };
-  const registerAndCopy = async (kind: "codex" | "claude") => {
-    const registrationId = kind === "codex" ? "codex-scheduled" : "claude-desktop";
+  const registerAndCopy = async (kind: "codex" | "claude" | "opencode") => {
+    const registrationId = kind === "codex" ? "codex-scheduled" : kind === "claude" ? "claude-desktop" : "opencode-scheduled";
     setRunning(true);
     try {
       await bridgeApi.registerLearningTrigger(kind, registrationId, null, null);
@@ -210,6 +210,7 @@ export function RouterSettingsDialog({
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <article className="rounded-2xl border border-white/[0.07] p-4"><h4 className="text-xs font-medium text-neutral-300">Codex Scheduled <span className="font-normal text-neutral-600">· optional</span></h4><p className="mt-2 text-[11px] leading-relaxed text-neutral-500">Managed in Codex/ChatGPT. Bridge cannot create or enumerate schedules. Registration copies a tested narrow local wake-up task; it never grants promotion authority.</p><div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={running} onClick={() => void registerAndCopy("codex")} className="inline-flex items-center gap-1.5 text-[11px] text-violet-300 hover:text-violet-200"><Copy size={12} aria-hidden="true" />Register + copy task</button><button type="button" onClick={() => window.open("https://chatgpt.com/codex", "_blank", "noopener,noreferrer")} className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-300"><ExternalLink size={12} aria-hidden="true" />Open Codex Scheduled setup</button></div></article>
             <article className="rounded-2xl border border-white/[0.07] p-4"><h4 className="text-xs font-medium text-neutral-300">Claude Desktop schedule <span className="font-normal text-neutral-600">· optional</span></h4><p className="mt-2 text-[11px] leading-relaxed text-neutral-500">Prefer a local Desktop task for local evidence. Cloud Routines remain experimental and require a future Bridge-owned authenticated endpoint; local SQLite is never uploaded.</p><button type="button" disabled={running} onClick={() => void registerAndCopy("claude")} className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-violet-300 hover:text-violet-200"><Copy size={12} aria-hidden="true" />Register + copy local task</button></article>
+            <article className="rounded-2xl border border-white/[0.07] p-4"><h4 className="text-xs font-medium text-neutral-300">OpenCode schedule <span className="font-normal text-neutral-600">· optional</span></h4><p className="mt-2 text-[11px] leading-relaxed text-neutral-500">Register a narrow local OpenCode wake-up command. Bridge retains replay, approval, promotion, and rollback authority.</p><button type="button" disabled={running} onClick={() => void registerAndCopy("opencode")} className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-violet-300 hover:text-violet-200"><Copy size={12} aria-hidden="true" />Register + copy local task</button></article>
           </div>
         </section>
       </div>

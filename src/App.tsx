@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, Workspace } from "./types";
+import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
@@ -58,6 +58,7 @@ function StatusDot({ status }: { status: SessionStatus }) {
 function harnessLabel(harness?: string | null): string {
   if (harness === "claude") return "Claude";
   if (harness === "codex") return "Codex";
+  if (harness === "opencode") return "OpenCode";
   return harness ? harness[0].toUpperCase() + harness.slice(1) : "Agent";
 }
 
@@ -176,8 +177,8 @@ export function App() {
 
   useEffect(() => {
     const query = composer.trim();
-    if (!session || (session.harness !== "codex" && session.harness !== "claude") || query.length < 8 || query.startsWith("/")) { setSkillSuggestions([]); return; }
-    const provider = session.harness;
+    if (!session || !(["codex", "claude", "opencode"] as Harness[]).includes(session.harness) || query.length < 8 || query.startsWith("/")) { setSkillSuggestions([]); return; }
+    const provider = session.harness as SkillProvider;
     let active = true;
     const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
     return () => { active = false; window.clearTimeout(timer); };
@@ -247,15 +248,21 @@ export function App() {
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
 
   function openSession(id: string) { setView("workspace"); setSelectedSessionId(id); }
-  // New chat opens instantly (no picker up front): create a direct chat with the
-  // default model and select it. The model can be changed inside the chat.
+  // New chat opens instantly (no picker up front). Preserve the current direct
+  // chat's harness/model so switching to OpenCode also changes the next-chat
+  // default; otherwise fall back to the configured standard profile.
   async function openNewChat(initialMessage?: string) {
-    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex or Claude, then retry model setup."); return; }
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
     setView("workspace");
+    const currentAdapter = session?.kind === "direct"
+      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
+      : undefined;
     const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+    const preferred = currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
-    const model = profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+    const model = currentAdapter
+      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
+      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
     const draft = initialMessage?.trim() ?? "";
     if (draft) pendingWelcomeMessageRef.current = draft;
     setBusy(true); setError(undefined);
@@ -279,7 +286,7 @@ export function App() {
   }, [session?.id]);
   // Workspace "+": start a classic orchestrator session tied to the workspace.
   async function newWorkspaceSession(workspaceId: string) {
-    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex or Claude before starting an orchestrator."); return; }
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode before starting an orchestrator."); return; }
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createWorkspaceSession(workspaceId);
@@ -419,7 +426,7 @@ export function App() {
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
-      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex or Claude is installed and signed in.</AlertDescription></Alert>}
+      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
@@ -552,7 +559,7 @@ function PanelLoading({ label }: { label: string }) {
 
 function ChatModelControl({ adapters, harness, model, disabled, onChange, compact }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; onChange: (harness: Harness, model: string | null) => void; compact?: boolean }) {
   const [open, setOpen] = useState(false);
-  const chatAdapters = adapters.filter(adapter => adapter.id === "codex" || adapter.id === "claude");
+  const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
   const modelLabel = currentModel?.label ?? model ?? "Default";

@@ -25,6 +25,7 @@ function StatusDot({ status }: { status: SessionStatus }) {
 function harnessLabel(harness?: string | null): string {
   if (harness === "claude") return "Claude";
   if (harness === "codex") return "Codex";
+  if (harness === "opencode") return "OpenCode";
   return harness ? harness[0].toUpperCase() + harness.slice(1) : "Agent";
 }
 

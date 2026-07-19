@@ -1,4 +1,4 @@
-export type Harness = "claude" | "codex" | "shell";
+export type Harness = "claude" | "codex" | "opencode" | "shell";
 export type SessionStatus = "idle" | "starting" | "working" | "waiting" | "warm" | "checkpointing" | "ready" | "stopped" | "resuming" | "restored" | "failed" | "completed" | "cancelled";
 export type CapabilityTier = "fast" | "standard" | "strong";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -116,18 +116,31 @@ export interface ModelProfile extends ModelProfileDraft {
 }
 export interface ModelSetupState { complete: boolean; activeVersion: number | null; profiles: ModelProfile[] }
 export interface HarnessConfig {
-  id: "bridge" | "codex" | "claude"; label: string; enabled: boolean;
+  id: "bridge" | "codex" | "claude" | "opencode"; label: string; enabled: boolean;
   defaultModel: string | null; effort: ReasoningEffort | null; systemPrompt: string;
   advanced: Record<string, unknown>; isOverride: boolean;
 }
+export interface OpenCodeAuthMethod { kind: string; label: string }
+export interface OpenCodeModel {
+  id: string; providerId: string; modelId: string; label: string;
+  reasoning: boolean; toolCall: boolean; attachment: boolean;
+  contextWindow: number | null; outputLimit: number | null;
+  inputCost: number | null; outputCost: number | null;
+}
+export interface OpenCodeProvider {
+  id: string; name: string; connected: boolean; source: string | null;
+  environmentVariables: string[]; defaultModel: string | null;
+  authMethods: OpenCodeAuthMethod[]; models: OpenCodeModel[];
+}
+export interface OpenCodeCatalog { executablePath: string; version: string; providers: OpenCodeProvider[] }
 export type AgentRole = "orchestrator" | "research" | "implementation" | "verification" | "planning" | "documentation";
 export interface AgentDefinition {
-  id: string; name: string; description: string; role: AgentRole; harness: "bridge" | "codex" | "claude";
+  id: string; name: string; description: string; role: AgentRole; harness: "bridge" | "codex" | "claude" | "opencode";
   model: string | null; effort: ReasoningEffort; systemPrompt: string; enabled: boolean;
   isDefault: boolean; isBuiltIn: boolean; createdAt: string; updatedAt: string;
 }
 export interface ConfigState { harnesses: HarnessConfig[]; agents: AgentDefinition[]; defaultAgentId: string }
-export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude";
+export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude" | "opencode";
 export type LearningRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "noop";
 export interface LearningReport {
   reason: string; evidenceBoundary: number; evidenceCount: number; basePolicyVersion: number;
@@ -178,7 +191,7 @@ export interface MarketplaceActionResult {
   provider: MarketplaceProvider; pluginId: string; action: MarketplaceAction;
   success: boolean; message: string; error: string | null;
 }
-export type SkillProvider = "codex" | "claude";
+export type SkillProvider = "codex" | "claude" | "opencode";
 export type SkillAction = "install" | "rollback" | "uninstall";
 export interface SkillProviderState {
   provider: SkillProvider; installed: boolean; managed: boolean; installedRef: string | null;

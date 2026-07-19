@@ -1,6 +1,6 @@
 # Bridge
 
-Bridge is a native macOS control room for supervised coding-agent work. It connects local Git repositories to structured Codex and Claude Code sessions, isolates concurrent tasks in worktrees, and keeps durable local history so agent activity remains inspectable and recoverable.
+Bridge is a native macOS control room for supervised coding-agent work. It connects local Git repositories to structured Codex, Claude Code, and OpenCode sessions, isolates concurrent tasks in worktrees, and keeps durable local history so agent activity remains inspectable and recoverable.
 
 Bridge is built for developers who want the speed of coding agents with explicit boundaries around files, processes, approvals, delegation, and session state.
 
@@ -8,7 +8,7 @@ Bridge is built for developers who want the speed of coding agents with explicit
 
 ## Highlights
 
-- **Structured agent sessions** — Connect Codex through its `app-server` JSON-RPC protocol and Claude Code through its `stream-json` protocol. Bridge renders normalized messages, reasoning, plans, tool calls, approvals, file changes, errors, and artifacts in the desktop UI instead of embedding provider TUIs.
+- **Structured agent sessions** — Connect Codex through its `app-server` JSON-RPC protocol, Claude Code through the Agent SDK sidecar, and OpenCode through its headless server API. Bridge renders normalized messages, reasoning, plans, tool calls, approvals, file changes, errors, and artifacts in the desktop UI instead of embedding provider TUIs.
 - **Git worktree isolation** — Create a task workspace with its own branch and worktree. Independent worker sessions can receive additional isolated worktrees when their write scopes overlap.
 - **Durable conversation history** — Store immutable session entries in a local SQLite session forest. Rewind or fork the conversation branch without pretending that files, commits, or provider state were rewound.
 - **Supervised orchestration** — Run policy-authorized workers with bounded concurrency, capability tiers, budgets, retries, approvals, and typed results.
@@ -29,7 +29,7 @@ These are related but independent records. Ending a session does not automatical
 
 ### Structured adapters
 
-An **adapter** translates a provider's native process and event protocol into Bridge's provider-neutral event model. The built-in adapters are Codex and Claude Code. Each adapter reports its availability and capabilities before a session starts. If a structured adapter is unavailable or incomplete, Bridge surfaces that state rather than silently falling back to a terminal UI.
+An **adapter** translates a provider's native process and event protocol into Bridge's provider-neutral event model. The built-in adapters are Codex, Claude Code, and OpenCode. Each adapter reports its availability and capabilities before a session starts. If a structured adapter is unavailable or incomplete, Bridge surfaces that state rather than silently falling back to a terminal UI.
 
 ### Three trees
 
@@ -81,6 +81,7 @@ React 18 + TypeScript + Vite
 Rust supervisor and policy engine
    ├── Codex adapter ──► codex app-server
    ├── Claude adapter ─► Claude Code sidecar
+   ├── OpenCode adapter ► opencode headless server
    ├── Git worktree coordinator
    ├── Session forest and SQLite stores
    ├── Orchestrator, workers, and checkpoints
@@ -99,6 +100,7 @@ The frontend lives in `src/`. The native application, provider supervision, pers
 - Optional provider CLIs and credentials:
   - `codex` for Codex sessions
   - `claude` for Claude Code sessions
+  - `opencode` for OpenCode sessions
 
 Bridge resolves provider binaries from `PATH` and common local installation locations. The application can still start when a provider is missing, but that adapter will be shown as unavailable until its binary and credentials are configured.
 
@@ -131,6 +133,7 @@ When debugging provider discovery, confirm the binaries are visible to the same 
 ```sh
 command -v codex
 command -v claude
+command -v opencode
 node --version
 rustc --version
 ```

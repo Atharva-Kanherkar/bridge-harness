@@ -19,6 +19,7 @@ pub enum LearningTriggerKind {
     InApp,
     Codex,
     Claude,
+    OpenCode,
 }
 
 impl LearningTriggerKind {
@@ -28,6 +29,7 @@ impl LearningTriggerKind {
             Self::InApp => "in_app",
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -733,6 +735,7 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<LearningRun> {
         "in_app" => LearningTriggerKind::InApp,
         "codex" => LearningTriggerKind::Codex,
         "claude" => LearningTriggerKind::Claude,
+        "opencode" => LearningTriggerKind::OpenCode,
         value => {
             return Err(rusqlite::Error::FromSqlConversionFailure(
                 2,
@@ -1167,10 +1170,10 @@ pub fn register_trigger_with_expiry(
 ) -> Result<(), BridgeError> {
     if !matches!(
         kind,
-        LearningTriggerKind::Codex | LearningTriggerKind::Claude
+        LearningTriggerKind::Codex | LearningTriggerKind::Claude | LearningTriggerKind::OpenCode
     ) {
         return Err(BridgeError::Invalid(
-            "only Codex and Claude require trigger registrations".into(),
+            "only Codex, Claude, and OpenCode require trigger registrations".into(),
         ));
     }
     if registration_id.trim().is_empty() {
@@ -1193,7 +1196,7 @@ pub fn register_trigger_with_expiry(
             .map_err(|_| BridgeError::Invalid("trigger expiry must be RFC3339".into()))?;
     }
     let enabled = !db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM learning_triggers WHERE enabled=1 AND kind IN ('codex','claude'))",
+        "SELECT EXISTS(SELECT 1 FROM learning_triggers WHERE enabled=1 AND kind IN ('codex','claude','opencode'))",
         [],
         |row| row.get::<_, bool>(0),
     )? || db.query_row(
@@ -1222,12 +1225,12 @@ pub fn enable_trigger(
     kind: LearningTriggerKind,
     registration_id: &str,
 ) -> Result<(), BridgeError> {
-    if !matches!(kind, LearningTriggerKind::Codex | LearningTriggerKind::Claude) {
+    if !matches!(kind, LearningTriggerKind::Codex | LearningTriggerKind::Claude | LearningTriggerKind::OpenCode) {
         return Err(BridgeError::Invalid("only external trigger adapters can be enabled".into()));
     }
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
-        "UPDATE learning_triggers SET enabled=0,updated_at=?1 WHERE kind IN ('codex','claude')",
+        "UPDATE learning_triggers SET enabled=0,updated_at=?1 WHERE kind IN ('codex','claude','opencode')",
         params![Utc::now().to_rfc3339()],
     )?;
     let updated = transaction.execute(
@@ -1265,6 +1268,11 @@ pub fn trigger_instructions(
             .replace("{{REGISTRATION_ID}}", registration_id.trim())),
         LearningTriggerKind::Claude => Ok(format!(
             "Run `bridge learning run --database \"{}\" --trigger claude:{}` as a local Claude Desktop scheduled task. Treat it as a wake-up only. Do not upload Bridge's SQLite/WAL files or promote policy. Cloud Routine support is experimental and requires a future Bridge-owned authenticated endpoint.",
+            database_path.trim(),
+            registration_id.trim()
+        )),
+        LearningTriggerKind::OpenCode => Ok(format!(
+            "Run `bridge learning run --database \"{}\" --trigger opencode:{}` as a local OpenCode scheduled command. Treat it as a wake-up only. Do not upload Bridge's SQLite/WAL files or promote policy.",
             database_path.trim(),
             registration_id.trim()
         )),
@@ -1354,7 +1362,7 @@ pub fn run_database(
         run_external_trigger(&db, kind, &registration_id, credential_ref)
     } else if credential_ref.is_some() {
         Err(BridgeError::Invalid(
-            "credential references are accepted only for Codex or Claude triggers".into(),
+            "credential references are accepted only for Codex, Claude, or OpenCode triggers".into(),
         ))
     } else {
         let run = run_learning(&db, kind)?;
@@ -1408,6 +1416,7 @@ fn parse_trigger(
     for (prefix, kind) in [
         ("codex:", LearningTriggerKind::Codex),
         ("claude:", LearningTriggerKind::Claude),
+        ("opencode:", LearningTriggerKind::OpenCode),
     ] {
         if let Some(registration_id) = trimmed.strip_prefix(prefix) {
             if registration_id.trim().is_empty() {
@@ -1417,7 +1426,7 @@ fn parse_trigger(
         }
     }
     Err(BridgeError::Invalid(
-        "trigger must be manual, in-app, codex:<registration-id>, or claude:<registration-id>"
+        "trigger must be manual, in-app, codex:<registration-id>, claude:<registration-id>, or opencode:<registration-id>"
             .into(),
     ))
 }

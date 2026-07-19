@@ -6,6 +6,7 @@ mod claude_adapter;
 mod compaction_controller;
 mod context;
 mod codex_adapter;
+mod opencode_adapter;
 mod credential_broker;
 mod delegation;
 pub mod completion;
@@ -85,7 +86,7 @@ struct AppState {
     telemetry_db: Mutex<Connection>,
     runtimes: Mutex<HashMap<String, RuntimeSession>>,
     adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
-    adapter_registry: adapters::AdapterRegistry,
+    adapter_registry: Arc<adapters::AdapterRegistry>,
     delegations: Mutex<DelegationState>,
     worktrees: PathBuf,
     database_path: PathBuf,
@@ -121,18 +122,24 @@ struct Health {
 
 #[tauri::command]
 async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
+    let adapters = state.adapter_registry.descriptors();
+    let opencode_available = adapters
+        .iter()
+        .find(|adapter| adapter.id == "opencode")
+        .is_some_and(|adapter| adapter.available);
     Ok(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         harnesses: HashMap::from([
             ("claude", binary::resolve("claude").is_some()),
             ("codex", binary::resolve("codex").is_some()),
+            ("opencode", opencode_available),
             ("shell", true),
         ]),
         database: state.database_path.to_string_lossy().into(),
         telemetry_database: state.telemetry_database_path.to_string_lossy().into(),
         snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
-        adapters: state.adapter_registry.descriptors(),
+        adapters,
     })
 }
 
@@ -494,12 +501,92 @@ async fn get_config_state(state: State<'_, AppState>) -> Result<agent_config::Co
 
 #[tauri::command]
 async fn save_harness_config(config: agent_config::HarnessConfig, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::save_harness(&state.db.lock().unwrap(), config)
+    let opencode_settings = (config.id == "opencode")
+        .then(|| agent_config::opencode_settings(Some(&config)))
+        .transpose()?;
+    let next = agent_config::save_harness(&state.db.lock().unwrap(), config)?;
+    if let Some(settings) = opencode_settings {
+        let registry = state.adapter_registry.clone();
+        let directory = opencode_directory(None)?;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            registry.refresh_opencode(settings, &directory)
+        })
+        .await;
+    }
+    Ok(next)
 }
 
 #[tauri::command]
 async fn reset_harness_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::reset_harness(&state.db.lock().unwrap(), &id)
+    let next = agent_config::reset_harness(&state.db.lock().unwrap(), &id)?;
+    if id == "opencode" {
+        let registry = state.adapter_registry.clone();
+        let directory = opencode_directory(None)?;
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
+        })
+        .await;
+    }
+    Ok(next)
+}
+
+fn opencode_directory(directory: Option<String>) -> Result<String, BridgeError> {
+    let path = directory
+        .map(|value| PathBuf::from(value.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)?;
+    if !path.is_dir() {
+        return Err(BridgeError::Invalid(format!(
+            "OpenCode directory does not exist: {}",
+            path.display()
+        )));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn refresh_opencode_catalog(
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+    let directory = opencode_directory(directory)?;
+    let registry = state.adapter_registry.clone();
+    let settings = registry.opencode_settings()?;
+    tauri::async_runtime::spawn_blocking(move || registry.refresh_opencode(settings, &directory))
+        .await
+        .map_err(|error| BridgeError::Adapter(format!("OpenCode discovery task failed: {error}")))?
+}
+
+#[tauri::command]
+async fn set_opencode_provider_api_key(
+    provider_id: String,
+    api_key: String,
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+    let directory = opencode_directory(directory)?;
+    let registry = state.adapter_registry.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.set_opencode_provider_api_key(&directory, &provider_id, &api_key)
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
+}
+
+#[tauri::command]
+async fn remove_opencode_provider_auth(
+    provider_id: String,
+    directory: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
+    let directory = opencode_directory(directory)?;
+    let registry = state.adapter_registry.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.remove_opencode_provider_auth(&directory, &provider_id)
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -519,7 +606,14 @@ async fn set_default_agent(id: String, state: State<'_, AppState>) -> Result<age
 
 #[tauri::command]
 async fn reset_all_config(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::reset_all(&state.db.lock().unwrap())
+    let next = agent_config::reset_all(&state.db.lock().unwrap())?;
+    let registry = state.adapter_registry.clone();
+    let directory = opencode_directory(None)?;
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
+    })
+    .await;
+    Ok(next)
 }
 
 #[tauri::command]
@@ -537,7 +631,7 @@ async fn run_learning(
 ) -> Result<learning_job::LearningRun, BridgeError> {
     if matches!(
         trigger_kind,
-        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude
+        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude | learning_job::LearningTriggerKind::OpenCode
     ) {
         return Err(BridgeError::Invalid(
             "external learning triggers must use a registered narrow command".into(),
@@ -761,7 +855,7 @@ fn resolve_orchestrator_selection(
     let descriptors = registry.descriptors();
     let configured_agent = agent_config::default_orchestrator(db);
     if let Some(agent) = configured_agent.as_ref() {
-        if agent.enabled && (agent.harness == "codex" || agent.harness == "claude") {
+        if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
             let harness_config = agent_config::harness_config(db, &agent.harness);
             let preferred_model = agent.model.as_deref().filter(|value| !value.trim().is_empty())
                 .or_else(|| harness_config.as_ref().and_then(|config| config.default_model.as_deref()).filter(|value| !value.trim().is_empty()));
@@ -845,12 +939,19 @@ async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-        runtime.stop(adapters::ShutdownReason::Replaced);
-    }
+    let stop_session_id = session_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
+            runtime.stop(adapters::ShutdownReason::Replaced);
+        };
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
     let db = state.db.lock().unwrap();
     db.execute(
@@ -1396,56 +1497,77 @@ async fn start_chat(
     } else {
         format!("{}{}", if configured_prompt.is_empty() { String::new() } else { format!("{configured_prompt}\n\n") }, proxy_instructions)
     };
-    let instructions_ref = Some(orchestrator_instructions.as_str());
-    let configured_effort = configured_harness.and_then(|config| config.effort).map(|value| value.as_str().to_owned());
-    let effort_ref = effort.as_deref().filter(|value| !value.is_empty()).or(configured_effort.as_deref());
+    let configured_effort = configured_harness
+        .and_then(|config| config.effort)
+        .map(|value| value.as_str().to_owned());
+    let chosen_effort = effort
+        .filter(|value| !value.is_empty())
+        .or(configured_effort);
     let resumable = provider_id
-        .as_deref()
         .filter(|value| !value.is_empty())
         .filter(|_| state.adapter_registry.supports_native_resume(adapter_id));
-    let (mut started, mode, eligibility) = match resumable {
-        Some(provider) => match state.adapter_registry.resume(
-            adapter_id,
-            adapters::ResumeRequest {
-                provider_session_id: provider,
-                cwd: &cwd,
-                model: chosen_model.as_deref(),
-                effort: effort_ref,
-                instructions: instructions_ref,
-                write_mode: None,
-            },
-        ) {
-            Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
-            Err(_) => (
-                state.adapter_registry.start(
-                    adapter_id,
-                    adapters::StartRequest {
-                        cwd: &cwd,
-                        model: chosen_model.as_deref(),
-                        effort: effort_ref,
-                        instructions: instructions_ref,
-                        write_mode: None,
-                    },
-                )?,
-                RestorationMode::Fresh,
-                ResumeEligibility::Fresh,
-            ),
-        },
-        None => (
-            state.adapter_registry.start(
-                adapter_id,
-                adapters::StartRequest {
-                    cwd: &cwd,
-                    model: chosen_model.as_deref(),
-                    effort: effort_ref,
-                    instructions: instructions_ref,
+    let registry = state.adapter_registry.clone();
+    let launch_adapter_id = adapter_id.to_owned();
+    let launch_cwd = cwd.clone();
+    let launch_model = chosen_model.clone();
+    let (mut started, mode, eligibility) = tauri::async_runtime::spawn_blocking(move || {
+        match resumable {
+            Some(provider) => match registry.resume(
+                &launch_adapter_id,
+                adapters::ResumeRequest {
+                    provider_session_id: &provider,
+                    cwd: &launch_cwd,
+                    model: launch_model.as_deref(),
+                    effort: chosen_effort.as_deref(),
+                    instructions: Some(&orchestrator_instructions),
                     write_mode: None,
                 },
-            )?,
-            RestorationMode::Fresh,
-            ResumeEligibility::Fresh,
-        ),
-    };
+            ) {
+                Ok(started) => Ok((
+                    started,
+                    RestorationMode::Native,
+                    ResumeEligibility::Native,
+                )),
+                Err(_) => registry.start(
+                    &launch_adapter_id,
+                    adapters::StartRequest {
+                        cwd: &launch_cwd,
+                        model: launch_model.as_deref(),
+                        effort: chosen_effort.as_deref(),
+                        instructions: Some(&orchestrator_instructions),
+                        write_mode: None,
+                    },
+                )
+                .map(|started| {
+                    (
+                        started,
+                        RestorationMode::Fresh,
+                        ResumeEligibility::Fresh,
+                    )
+                }),
+            },
+            None => registry
+                .start(
+                    &launch_adapter_id,
+                    adapters::StartRequest {
+                        cwd: &launch_cwd,
+                        model: launch_model.as_deref(),
+                        effort: chosen_effort.as_deref(),
+                        instructions: Some(&orchestrator_instructions),
+                        write_mode: None,
+                    },
+                )
+                .map(|started| {
+                    (
+                        started,
+                        RestorationMode::Fresh,
+                        ResumeEligibility::Fresh,
+                    )
+                }),
+        }
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("Adapter startup task failed: {error}")))??;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();
@@ -3949,7 +4071,7 @@ fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    if adapter_id != "claude" {
+    if adapter_id == "codex" {
         return Ok(None);
     }
     let user_event = agent::NormalizedEvent {
@@ -4782,6 +4904,7 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, cred
                         "harnesses": {
                             "claude": binary::resolve("claude").is_some(),
                             "codex": binary::resolve("codex").is_some(),
+                            "opencode": binary::resolve("opencode").is_some(),
                             "shell": true
                         }
                     }).to_string();
@@ -4872,8 +4995,15 @@ pub fn run() {
             session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
             let _ = store::export_history_snapshot(&connection, &snapshot_dir);
-            let adapter_registry = adapters::AdapterRegistry::built_in()
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
+            let opencode_config = agent_config::state(&connection)?
+                .harnesses
+                .into_iter()
+                .find(|config| config.id == "opencode");
+            let opencode_settings = agent_config::opencode_settings(opencode_config.as_ref())?;
+            let adapter_registry = Arc::new(
+                adapters::AdapterRegistry::built_in_with_opencode(opencode_settings)
+                    .map_err(Box::<dyn std::error::Error>::from)?,
+            );
             let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
             start_health_server(db_path.clone(), adapter_registry.descriptors(), credential_broker.clone());
@@ -4922,6 +5052,9 @@ pub fn run() {
             get_config_state,
             save_harness_config,
             reset_harness_config,
+            refresh_opencode_catalog,
+            set_opencode_provider_api_key,
+            remove_opencode_provider_auth,
             save_agent_config,
             delete_agent_config,
             set_default_agent,

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentDefinition, AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
@@ -15,6 +15,7 @@ let mockConfigState: ConfigState = {
     { id: "bridge", label: "Bridge", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
     { id: "codex", label: "Codex", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
     { id: "claude", label: "Claude Code", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
+    { id: "opencode", label: "OpenCode", enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false },
   ],
   agents: [
     { id: "bridge-orchestrator", name: "Bridge orchestrator", description: "Plans, routes, and owns the final answer.", role: "orchestrator", harness: "bridge", model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: true, isBuiltIn: true, createdAt: "", updatedAt: "" },
@@ -25,6 +26,16 @@ let mockConfigState: ConfigState = {
     { id: "bridge-documentation", name: "Documentation agent", description: "Produces concise project documentation.", role: "documentation", harness: "bridge", model: null, effort: "low", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
   ],
   defaultAgentId: "bridge-orchestrator",
+};
+let mockOpenCodeCatalog: OpenCodeCatalog = {
+  executablePath: "/usr/local/bin/opencode",
+  version: "1.18.3",
+  providers: [{
+    id: "opencode-go", name: "OpenCode Go", connected: true, source: "api",
+    environmentVariables: [], defaultModel: "opencode-go/kimi-k2.5",
+    authMethods: [{ kind: "api", label: "API key" }],
+    models: [{ id: "opencode-go/kimi-k2.5", providerId: "opencode-go", modelId: "kimi-k2.5", label: "Kimi K2.5", reasoning: true, toolCall: true, attachment: true, contextWindow: 262144, outputLimit: 65536, inputCost: null, outputCost: null }],
+  }],
 };
 let mockLearningState: LearningState = {
   schedule: { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "manual" },
@@ -141,10 +152,11 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 }
 
 const mockHealth: Health = {
-  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, shell: true }, database: "demo",
+  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, opencode: true, shell: true }, database: "demo",
   adapters: [
     { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
-    { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" }
+    { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
+    { id: "opencode", label: "OpenCode", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", tier: "fast", defaultForTier: true }, { id: "opencode/north-mini-code-free", label: "North Mini Code", tier: "standard", defaultForTier: true }, { id: "opencode/big-pickle", label: "Big Pickle", tier: "strong", defaultForTier: true }], defaultModel: "opencode/north-mini-code-free" }
   ]
 };
 
@@ -158,9 +170,9 @@ const mockSkills: SkillCatalog = {
   community: [{
     id: "vercel-labs/agent-skills:react-best-practices", slug: "react-best-practices", name: "React Best Practices",
     description: "Review React code for performance and maintainability.", source: "vercel-labs/agent-skills", sourceUrl: "https://github.com/vercel-labs/agent-skills",
-    pinnedRef: "8b8c76004956f0e01e4f6c88ff6fb342258461f5", installs: 124000, official: true, compatibility: ["codex", "claude"], fileCount: 3,
+    pinnedRef: "8b8c76004956f0e01e4f6c88ff6fb342258461f5", installs: 124000, official: true, compatibility: ["codex", "claude", "opencode"], fileCount: 3,
     permissions: ["Read project files"], risk: "low", riskSummary: "Read-only project guidance.", categories: ["code-review", "react"],
-    providerStates: [{ provider: "codex", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }, { provider: "claude", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }],
+    providerStates: [{ provider: "codex", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }, { provider: "claude", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }, { provider: "opencode", installed: false, managed: false, installedRef: null, updateAvailable: false, rollbackAvailable: false, receiptError: null }],
   }],
   personal: [{ id: "personal:my-workflow", name: "my-workflow", description: "A skill you maintain locally.", providers: ["codex"], source: "Personal skill" }],
 };
@@ -241,6 +253,21 @@ export const bridgeApi = {
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
     return Promise.resolve(structuredClone(mockConfigState));
   },
+  refreshOpenCodeCatalog: (directory?: string): Promise<OpenCodeCatalog> => {
+    if (isTauri()) return invoke("refresh_opencode_catalog", { directory: directory || null });
+    return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
+    if (isTauri()) return invoke("set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null });
+    void apiKey;
+    mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
+    return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
+    if (isTauri()) return invoke("remove_opencode_provider_auth", { providerId, directory: directory || null });
+    mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: false, models: [] } : provider) };
+    return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
   saveAgentConfig: (agent: AgentDefinition): Promise<ConfigState> => {
     if (isTauri()) return invoke("save_agent_config", { agent });
     const value = { ...structuredClone(agent), id: agent.id || `custom-${crypto.randomUUID()}`, isDefault: false, updatedAt: new Date().toISOString() };
@@ -308,13 +335,13 @@ export const bridgeApi = {
     mockLearningState.canaryPolicyVersion = null;
     return Promise.resolve(structuredClone(mockLearningState));
   },
-  registerLearningTrigger: (kind: "codex" | "claude", registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
+  registerLearningTrigger: (kind: "codex" | "claude" | "opencode", registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
     ? invoke("register_learning_trigger", { kind, registrationId, credentialRef, expiresAt })
     : Promise.resolve(),
-  learningTriggerInstructions: (kind: "codex" | "claude", databasePath: string, registrationId: string): Promise<string> => isTauri()
+  learningTriggerInstructions: (kind: "codex" | "claude" | "opencode", databasePath: string, registrationId: string): Promise<string> => isTauri()
     ? invoke("get_learning_trigger_instructions", { kind, databasePath, registrationId })
     : Promise.resolve(`Run \`bridge learning run --database "${databasePath}" --trigger ${kind}:${registrationId}\` locally as a wake-up trigger only. Bridge owns replay, approval, promotion, and rollback.`),
-  enableLearningTrigger: (kind: "codex" | "claude", registrationId: string): Promise<void> => isTauri()
+  enableLearningTrigger: (kind: "codex" | "claude" | "opencode", registrationId: string): Promise<void> => isTauri()
     ? invoke("enable_learning_trigger", { kind, registrationId })
     : Promise.resolve(),
   routerPreferences: (workspaceId: string): Promise<RouterPreferences> => isTauri()
