@@ -1490,56 +1490,77 @@ async fn start_chat(
     } else {
         format!("{}{}", if configured_prompt.is_empty() { String::new() } else { format!("{configured_prompt}\n\n") }, proxy_instructions)
     };
-    let instructions_ref = Some(orchestrator_instructions.as_str());
-    let configured_effort = configured_harness.and_then(|config| config.effort).map(|value| value.as_str().to_owned());
-    let effort_ref = effort.as_deref().filter(|value| !value.is_empty()).or(configured_effort.as_deref());
+    let configured_effort = configured_harness
+        .and_then(|config| config.effort)
+        .map(|value| value.as_str().to_owned());
+    let chosen_effort = effort
+        .filter(|value| !value.is_empty())
+        .or(configured_effort);
     let resumable = provider_id
-        .as_deref()
         .filter(|value| !value.is_empty())
         .filter(|_| state.adapter_registry.supports_native_resume(adapter_id));
-    let (mut started, mode, eligibility) = match resumable {
-        Some(provider) => match state.adapter_registry.resume(
-            adapter_id,
-            adapters::ResumeRequest {
-                provider_session_id: provider,
-                cwd: &cwd,
-                model: chosen_model.as_deref(),
-                effort: effort_ref,
-                instructions: instructions_ref,
-                write_mode: None,
-            },
-        ) {
-            Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
-            Err(_) => (
-                state.adapter_registry.start(
-                    adapter_id,
-                    adapters::StartRequest {
-                        cwd: &cwd,
-                        model: chosen_model.as_deref(),
-                        effort: effort_ref,
-                        instructions: instructions_ref,
-                        write_mode: None,
-                    },
-                )?,
-                RestorationMode::Fresh,
-                ResumeEligibility::Fresh,
-            ),
-        },
-        None => (
-            state.adapter_registry.start(
-                adapter_id,
-                adapters::StartRequest {
-                    cwd: &cwd,
-                    model: chosen_model.as_deref(),
-                    effort: effort_ref,
-                    instructions: instructions_ref,
+    let registry = state.adapter_registry.clone();
+    let launch_adapter_id = adapter_id.to_owned();
+    let launch_cwd = cwd.clone();
+    let launch_model = chosen_model.clone();
+    let (mut started, mode, eligibility) = tauri::async_runtime::spawn_blocking(move || {
+        match resumable {
+            Some(provider) => match registry.resume(
+                &launch_adapter_id,
+                adapters::ResumeRequest {
+                    provider_session_id: &provider,
+                    cwd: &launch_cwd,
+                    model: launch_model.as_deref(),
+                    effort: chosen_effort.as_deref(),
+                    instructions: Some(&orchestrator_instructions),
                     write_mode: None,
                 },
-            )?,
-            RestorationMode::Fresh,
-            ResumeEligibility::Fresh,
-        ),
-    };
+            ) {
+                Ok(started) => Ok((
+                    started,
+                    RestorationMode::Native,
+                    ResumeEligibility::Native,
+                )),
+                Err(_) => registry.start(
+                    &launch_adapter_id,
+                    adapters::StartRequest {
+                        cwd: &launch_cwd,
+                        model: launch_model.as_deref(),
+                        effort: chosen_effort.as_deref(),
+                        instructions: Some(&orchestrator_instructions),
+                        write_mode: None,
+                    },
+                )
+                .map(|started| {
+                    (
+                        started,
+                        RestorationMode::Fresh,
+                        ResumeEligibility::Fresh,
+                    )
+                }),
+            },
+            None => registry
+                .start(
+                    &launch_adapter_id,
+                    adapters::StartRequest {
+                        cwd: &launch_cwd,
+                        model: launch_model.as_deref(),
+                        effort: chosen_effort.as_deref(),
+                        instructions: Some(&orchestrator_instructions),
+                        write_mode: None,
+                    },
+                )
+                .map(|started| {
+                    (
+                        started,
+                        RestorationMode::Fresh,
+                        ResumeEligibility::Fresh,
+                    )
+                }),
+        }
+    })
+    .await
+    .map_err(|error| BridgeError::Adapter(format!("Adapter startup task failed: {error}")))??;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();

@@ -77,7 +77,7 @@ pub struct OpenCodeModel {
 
 pub struct OpenCodeRuntime {
     child: Child,
-    client: Client,
+    client: Option<Client>,
     base_url: String,
     directory: String,
     session_id: String,
@@ -169,9 +169,8 @@ fn launch(
         .build()
         .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))?;
     if let Err(error) = wait_until_ready(&client, &base_url, &mut child) {
-        let _ = crate::adapters::terminate_process_group(child.id());
-        let _ = child.kill();
-        let _ = child.wait();
+        stop_child(&mut child);
+        drop_client_safely(client);
         return Err(error);
     }
 
@@ -183,39 +182,39 @@ fn launch(
         .map(str::to_owned);
     let directory = request.cwd.to_owned();
     let session_result = match resume_session_id {
-        Some(session_id) => {
-            let response = client
-                .get(endpoint(
-                    &base_url,
-                    &format!("/session/{session_id}"),
-                    &directory,
-                ))
-                .timeout(Duration::from_secs(10))
-                .send()
-                .map_err(http_error("resume OpenCode session"))?;
-            checked_json(response, "resume OpenCode session")
-        }
+        Some(session_id) => client
+            .get(endpoint(
+                &base_url,
+                &format!("/session/{session_id}"),
+                &directory,
+            ))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .map_err(http_error("resume OpenCode session"))
+            .and_then(|response| checked_json(response, "resume OpenCode session")),
         None => {
             let body = session_create_body(model.as_ref(), variant.as_deref(), request.write_mode);
-            let response = client
+            client
                 .post(endpoint(&base_url, "/session", &directory))
                 .timeout(Duration::from_secs(10))
                 .json(&body)
                 .send()
-                .map_err(http_error("create OpenCode session"))?;
-            checked_json(response, "create OpenCode session")
+                .map_err(http_error("create OpenCode session"))
+                .and_then(|response| checked_json(response, "create OpenCode session"))
         }
     };
     let session = match session_result {
         Ok(session) => session,
         Err(error) => {
             stop_child(&mut child);
+            drop_client_safely(client);
             return Err(error);
         }
     };
     let session_id = session.get("id").and_then(Value::as_str).map(str::to_owned);
     let Some(session_id) = session_id else {
         stop_child(&mut child);
+        drop_client_safely(client);
         return Err(BridgeError::Adapter(format!(
             "OpenCode returned no session id: {session}"
         )));
@@ -230,6 +229,7 @@ fn launch(
         sender,
     ) {
         stop_child(&mut child);
+        drop_client_safely(client);
         return Err(error);
     }
     let startup_messages = vec![json!({
@@ -239,7 +239,7 @@ fn launch(
     Ok(StartedOpenCode {
         runtime: OpenCodeRuntime {
             child,
-            client,
+            client: Some(client),
             base_url,
             directory,
             session_id,
@@ -279,6 +279,14 @@ fn stop_child(child: &mut Child) {
     let _ = crate::adapters::terminate_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn drop_client_safely(client: Client) {
+    // reqwest's blocking client owns an internal Tokio runtime and panics when
+    // its final handle is dropped from Tauri's async command context.
+    let _ = thread::Builder::new()
+        .name("opencode-client-drop".into())
+        .spawn(move || drop(client));
 }
 
 fn reserve_port() -> Result<u16, BridgeError> {
@@ -434,6 +442,8 @@ impl OpenCodeRuntime {
     ) -> Result<(), BridgeError> {
         let mut request = self
             .client
+            .as_ref()
+            .ok_or_else(|| BridgeError::Adapter("OpenCode runtime is stopped".into()))?
             .request(method, endpoint(&self.base_url, path, &self.directory))
             .timeout(Duration::from_secs(10));
         if let Some(body) = body {
@@ -465,6 +475,9 @@ impl OpenCodeRuntime {
         let _ = crate::adapters::terminate_process_group(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(client) = self.client.take() {
+            drop_client_safely(client);
+        }
     }
 }
 
@@ -1247,11 +1260,11 @@ mod tests {
     fn live_chat_streams_an_opencode_go_reply() {
         let executable = std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
             .expect("set BRIDGE_OPENCODE_LIVE_BINARY to the OpenCode executable");
-        let directory = std::env::current_dir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let mut started = start_with_settings(
             StartRequest {
-                cwd: directory.to_str().unwrap(),
-                model: Some("opencode-go/kimi-k2.6"),
+                cwd: directory.path().to_str().unwrap(),
+                model: Some("opencode-go/glm-5.2"),
                 effort: None,
                 instructions: None,
                 write_mode: None,
