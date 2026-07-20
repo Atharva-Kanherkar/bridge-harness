@@ -3,27 +3,27 @@ mod agent;
 mod agent_config;
 mod binary;
 mod claude_adapter;
-mod compaction_controller;
-mod context;
 mod codex_adapter;
-mod opencode_adapter;
+mod compaction_controller;
+pub mod completion;
+mod context;
 mod credential_broker;
 mod delegation;
-pub mod completion;
 mod git;
 mod handoff;
-pub mod learning_router;
 pub mod learning_job;
-pub mod model_profiles;
-mod model;
+pub mod learning_router;
 mod marketplace;
+mod model;
+pub mod model_profiles;
+mod opencode_adapter;
 mod orchestrator;
 mod policy;
+mod policy_coordinator;
 pub mod policy_replay;
+mod restoration;
 pub mod router_replay;
 pub mod routing_policy;
-mod policy_coordinator;
-mod restoration;
 mod secret_interception;
 mod session_forest;
 mod session_supervisor;
@@ -33,6 +33,7 @@ mod store;
 mod worker_guard;
 mod worker_lifecycle;
 mod worker_pool;
+mod worker_sandbox;
 mod worktree_coordinator;
 
 use chrono::Utc;
@@ -107,6 +108,8 @@ struct DelegationState {
     last_turn_by_session: HashMap<String, String>,
     /// Read-only worker session → tracked Git state captured before process start.
     read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
+    /// OS-level boundary and output directory retained until the worker exits.
+    read_only_sandboxes: HashMap<String, worker_sandbox::ReadOnlySandbox>,
 }
 
 #[derive(Serialize)]
@@ -149,7 +152,8 @@ async fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
 }
 
 #[tauri::command]
-async fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
+async fn marketplace_app_auth_states(
+) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
     marketplace::app_auth_states()
 }
 
@@ -161,29 +165,49 @@ fn user_home() -> PathBuf {
 }
 
 async fn live_available_capabilities(state: &AppState) -> std::collections::HashSet<String> {
-    let mut capabilities = state.adapter_registry.descriptors().into_iter().filter(|descriptor| descriptor.available).flat_map(|descriptor| descriptor.capabilities).collect::<std::collections::HashSet<_>>();
+    let mut capabilities = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.available)
+        .flat_map(|descriptor| descriptor.capabilities)
+        .collect::<std::collections::HashSet<_>>();
     let home = user_home();
     let store = state.skill_store.clone();
-    if let Ok(Ok(skills)) = tauri::async_runtime::spawn_blocking(move || skill_marketplace::available_capabilities(&home, &store)).await {
+    if let Ok(Ok(skills)) = tauri::async_runtime::spawn_blocking(move || {
+        skill_marketplace::available_capabilities(&home, &store)
+    })
+    .await
+    {
         capabilities.extend(skills);
     }
     capabilities
 }
 
 #[tauri::command]
-async fn skill_catalog(state: State<'_, AppState>) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
+async fn skill_catalog(
+    state: State<'_, AppState>,
+) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
     let home = user_home();
     let store = state.skill_store.clone();
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::catalog(&home, &store)).await
+    tauri::async_runtime::spawn_blocking(move || skill_marketplace::catalog(&home, &store))
+        .await
         .map_err(|error| BridgeError::Invalid(format!("Skill discovery task failed: {error}")))?
 }
 
 #[tauri::command]
-async fn skill_suggestions(query: String, provider: skill_marketplace::SkillProvider, state: State<'_, AppState>) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
+async fn skill_suggestions(
+    query: String,
+    provider: skill_marketplace::SkillProvider,
+    state: State<'_, AppState>,
+) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
     let home = user_home();
     let store = state.skill_store.clone();
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::suggestions(&query, provider, &home, &store)).await
-        .map_err(|error| BridgeError::Invalid(format!("Skill suggestion task failed: {error}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        skill_marketplace::suggestions(&query, provider, &home, &store)
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Skill suggestion task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -196,8 +220,18 @@ async fn preview_skill_change(
     let home = user_home();
     let store = state.skill_store.clone();
     let consents = Arc::clone(&state.skill_consents);
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::preview(&skill_id, action, &targets, &home, &store, consents.as_ref())).await
-        .map_err(|error| BridgeError::Invalid(format!("Skill preview task failed: {error}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        skill_marketplace::preview(
+            &skill_id,
+            action,
+            &targets,
+            &home,
+            &store,
+            consents.as_ref(),
+        )
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Skill preview task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -209,9 +243,11 @@ async fn execute_skill_change(
     let home = user_home();
     let store = state.skill_store.clone();
     let consents = Arc::clone(&state.skill_consents);
-    let results = tauri::async_runtime::spawn_blocking(move || skill_marketplace::execute(&confirmation_id, &home, &store, consents.as_ref()))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Skill installer task failed: {error}")))??;
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        skill_marketplace::execute(&confirmation_id, &home, &store, consents.as_ref())
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Skill installer task failed: {error}")))??;
     let _ = app.emit("state-changed", ());
     Ok(results)
 }
@@ -251,13 +287,21 @@ fn session_forest_snapshot_with_repository_state(
     let config = policy::PolicyConfig::default();
     let entries = store::session_entries(db, session_id)?;
     let head = store::session_head(db, session_id)?;
-    let selected_state = head.as_ref().and_then(|head| head.active_entry_id.as_deref())
+    let selected_state = head
+        .as_ref()
+        .and_then(|head| head.active_entry_id.as_deref())
         .and_then(|id| entries.iter().find(|entry| entry.id == id))
         .and_then(|entry| entry.payload.get("_bridgeRepoState"))
         .cloned();
-    let comparable = |value: &serde_json::Value| value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable");
+    let comparable = |value: &serde_json::Value| {
+        value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable")
+    };
     let divergence_status = match selected_state.as_ref() {
-        Some(selected) if comparable(selected) && comparable(&current_state) && selected == &current_state => "aligned",
+        Some(selected)
+            if comparable(selected) && comparable(&current_state) && selected == &current_state =>
+        {
+            "aligned"
+        }
         Some(selected) if comparable(selected) && comparable(&current_state) => "diverged",
         _ => "unknown",
     };
@@ -299,11 +343,13 @@ async fn get_session_forest(
         store::repository_path_for_session(&db, &session_id)?
     };
     let repository_state = match repository_path {
-        Some(path) => tauri::async_runtime::spawn_blocking(move || {
-            store::repository_state_for_path(&path)
-        })
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Repository refresh task failed: {error}")))?,
+        Some(path) => {
+            tauri::async_runtime::spawn_blocking(move || store::repository_state_for_path(&path))
+                .await
+                .map_err(|error| {
+                    BridgeError::Invalid(format!("Repository refresh task failed: {error}"))
+                })?
+        }
         None => serde_json::json!({"status":"unavailable"}),
     };
     let db = state.db.lock().unwrap();
@@ -315,9 +361,24 @@ fn completion_repository_stamp(
     session_id: &str,
 ) -> Result<completion::RepositoryStamp, BridgeError> {
     let state = store::repository_state_for_session(db, session_id)?;
-    let head = state.get("head").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof requires a Git repository HEAD".into()))?;
-    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof requires a deterministic dirty-tree digest".into()))?;
-    Ok(completion::RepositoryStamp { head: head.into(), dirty_digest: dirty.into() })
+    let head = state
+        .get("head")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
+        })?;
+    let dirty = state
+        .get("dirtyHash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "completion proof requires a deterministic dirty-tree digest".into(),
+            )
+        })?;
+    Ok(completion::RepositoryStamp {
+        head: head.into(),
+        dirty_digest: dirty.into(),
+    })
 }
 
 fn completion_attempt_repository(
@@ -330,9 +391,21 @@ fn completion_attempt_repository(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     let state = store::repository_state_for_path(std::path::Path::new(&repository_path));
-    let head = state.get("head").and_then(serde_json::Value::as_str).unwrap_or(&stored_head);
-    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).unwrap_or(&stored_dirty);
-    Ok((session_id, completion::RepositoryStamp { head: head.into(), dirty_digest: dirty.into() }))
+    let head = state
+        .get("head")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&stored_head);
+    let dirty = state
+        .get("dirtyHash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&stored_dirty);
+    Ok((
+        session_id,
+        completion::RepositoryStamp {
+            head: head.into(),
+            dirty_digest: dirty.into(),
+        },
+    ))
 }
 
 #[tauri::command]
@@ -348,7 +421,11 @@ async fn create_completion_plan(
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let (workspace_id, implementer_family): (String, Option<String>) = {
         let db = state.db.lock().unwrap();
-        let workspace_id = db.query_row("SELECT workspace_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
+        let workspace_id = db.query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
         let implementer_family = db.query_row(
             "SELECT s.harness FROM worker_runtime r JOIN worker_leases l ON l.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.parent_session_id=?1 AND l.role='implementation' ORDER BY r.updated_at DESC LIMIT 1",
             params![session_id],
@@ -368,16 +445,30 @@ async fn create_completion_plan(
     let available_capabilities = live_available_capabilities(&state).await;
     let change_labels = completion::labels_for_paths(&changed_paths);
     let db = state.db.lock().unwrap();
-    let plan = completion::plan_with_registered_manifests(&db, completion::PlanInput {
-        contract_id: contract.id.clone(),
-        acceptance_criteria,
-        changed_paths,
-        repository_commands,
-    }, &change_labels, &available_capabilities)?;
+    let plan = completion::plan_with_registered_manifests(
+        &db,
+        completion::PlanInput {
+            contract_id: contract.id.clone(),
+            acceptance_criteria,
+            changed_paths,
+            repository_commands,
+        },
+        &change_labels,
+        &available_capabilities,
+    )?;
     let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
     let repository = completion_repository_stamp(&db, &session_id)?;
-    completion::create_flow(&db, &contract, &plan, &session_id, &repository_path, &repository, implementer_family.as_deref())?;
-    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion plan was not persisted".into()))?;
+    completion::create_flow(
+        &db,
+        &contract,
+        &plan,
+        &session_id,
+        &repository_path,
+        &repository,
+        implementer_family.as_deref(),
+    )?;
+    let summary = completion::latest_summary(&db, &session_id)?
+        .ok_or_else(|| BridgeError::Invalid("completion plan was not persisted".into()))?;
     let _ = app.emit("state-changed", ());
     Ok(summary)
 }
@@ -394,7 +485,8 @@ async fn record_completion_check(
     completion::record_check(&db, &attempt_id, &run)?;
     completion::finalize(&db, &attempt_id, &repository)?;
     completion::reconcile_parent_readiness(&db, &session_id)?;
-    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
+    let summary = completion::latest_summary(&db, &session_id)?
+        .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
     let _ = app.emit("state-changed", ());
     Ok(summary)
 }
@@ -409,10 +501,18 @@ async fn waive_completion(
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
-    completion::waive(&db, &attempt_id, &check_ids, &reason, "local_user", &repository)?;
+    completion::waive(
+        &db,
+        &attempt_id,
+        &check_ids,
+        &reason,
+        "local_user",
+        &repository,
+    )?;
     completion::finalize(&db, &attempt_id, &repository)?;
     completion::reconcile_parent_readiness(&db, &session_id)?;
-    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
+    let summary = completion::latest_summary(&db, &session_id)?
+        .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
     let _ = app.emit("state-changed", ());
     Ok(summary)
 }
@@ -495,12 +595,17 @@ async fn reset_model_profiles(
 }
 
 #[tauri::command]
-async fn get_config_state(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn get_config_state(
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::state(&state.db.lock().unwrap())
 }
 
 #[tauri::command]
-async fn save_harness_config(config: agent_config::HarnessConfig, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn save_harness_config(
+    config: agent_config::HarnessConfig,
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     let opencode_settings = (config.id == "opencode")
         .then(|| agent_config::opencode_settings(Some(&config)))
         .transpose()?;
@@ -517,7 +622,10 @@ async fn save_harness_config(config: agent_config::HarnessConfig, state: State<'
 }
 
 #[tauri::command]
-async fn reset_harness_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn reset_harness_config(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_harness(&state.db.lock().unwrap(), &id)?;
     if id == "opencode" {
         let registry = state.adapter_registry.clone();
@@ -571,7 +679,9 @@ async fn set_opencode_provider_api_key(
         registry.set_opencode_provider_api_key(&directory, &provider_id, &api_key)
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
+    .map_err(|error| {
+        BridgeError::Adapter(format!("OpenCode authentication task failed: {error}"))
+    })?
 }
 
 #[tauri::command]
@@ -586,26 +696,39 @@ async fn remove_opencode_provider_auth(
         registry.remove_opencode_provider_auth(&directory, &provider_id)
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
+    .map_err(|error| {
+        BridgeError::Adapter(format!("OpenCode authentication task failed: {error}"))
+    })?
 }
 
 #[tauri::command]
-async fn save_agent_config(agent: agent_config::AgentDefinition, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn save_agent_config(
+    agent: agent_config::AgentDefinition,
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::save_agent(&state.db.lock().unwrap(), agent)
 }
 
 #[tauri::command]
-async fn delete_agent_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn delete_agent_config(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::delete_agent(&state.db.lock().unwrap(), &id)
 }
 
 #[tauri::command]
-async fn set_default_agent(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn set_default_agent(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::set_default(&state.db.lock().unwrap(), &id)
 }
 
 #[tauri::command]
-async fn reset_all_config(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
+async fn reset_all_config(
+    state: State<'_, AppState>,
+) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_all(&state.db.lock().unwrap())?;
     let registry = state.adapter_registry.clone();
     let directory = opencode_directory(None)?;
@@ -631,7 +754,9 @@ async fn run_learning(
 ) -> Result<learning_job::LearningRun, BridgeError> {
     if matches!(
         trigger_kind,
-        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude | learning_job::LearningTriggerKind::OpenCode
+        learning_job::LearningTriggerKind::Codex
+            | learning_job::LearningTriggerKind::Claude
+            | learning_job::LearningTriggerKind::OpenCode
     ) {
         return Err(BridgeError::Invalid(
             "external learning triggers must use a registered narrow command".into(),
@@ -801,7 +926,10 @@ fn chat_label(title: Option<&str>) -> String {
 
 /// Create a repo-less workspace. A folder/git repo can be connected later.
 #[tauri::command]
-async fn create_workspace(title: String, state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
+async fn create_workspace(
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<BridgeState, BridgeError> {
     let name = title.trim();
     if name.is_empty() {
         return Err(BridgeError::Invalid("Workspace name is required".into()));
@@ -812,7 +940,13 @@ async fn create_workspace(title: String, state: State<'_, AppState>) -> Result<B
         "INSERT INTO workspaces(id,title,status,created_at) VALUES(?1,?2,'idle',?3)",
         params![id, name, Utc::now().to_rfc3339()],
     )?;
-    store::event(&db, "supervisor", "workspace.created", &id, &format!("Created workspace {name}"))?;
+    store::event(
+        &db,
+        "supervisor",
+        "workspace.created",
+        &id,
+        &format!("Created workspace {name}"),
+    )?;
     store::state(&db)
 }
 
@@ -833,7 +967,13 @@ async fn create_chat(
         "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,NULL,?2,?3,'idle','estimated',?4,'direct',?5,?6,0)",
         params![id, adapter_id, label, model, title, cwd.to_string_lossy()],
     )?;
-    store::event(&db, "chat", "chat.created", &id, &format!("Created chat {label}"))?;
+    store::event(
+        &db,
+        "chat",
+        "chat.created",
+        &id,
+        &format!("Created chat {label}"),
+    )?;
     store::state(&db)
 }
 
@@ -857,15 +997,29 @@ fn resolve_orchestrator_selection(
     if let Some(agent) = configured_agent.as_ref() {
         if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
             let harness_config = agent_config::harness_config(db, &agent.harness);
-            let preferred_model = agent.model.as_deref().filter(|value| !value.trim().is_empty())
-                .or_else(|| harness_config.as_ref().and_then(|config| config.default_model.as_deref()).filter(|value| !value.trim().is_empty()));
+            let preferred_model = agent
+                .model
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    harness_config
+                        .as_ref()
+                        .and_then(|config| config.default_model.as_deref())
+                        .filter(|value| !value.trim().is_empty())
+                });
             if harness_config.is_some() {
-                if let Ok(resolution) = registry.resolve_model(&agent.harness, CapabilityTier::Standard, preferred_model) {
+                if let Ok(resolution) = registry.resolve_model(
+                    &agent.harness,
+                    CapabilityTier::Standard,
+                    preferred_model,
+                ) {
                     return Ok(OrchestratorSelection {
                         adapter_id: agent.harness.clone(),
                         model: resolution.actual_model,
                         tier: CapabilityTier::Standard,
-                        effort: harness_config.and_then(|config| config.effort).or(Some(agent.effort)),
+                        effort: harness_config
+                            .and_then(|config| config.effort)
+                            .or(Some(agent.effort)),
                         label: agent.name.clone(),
                     });
                 }
@@ -876,24 +1030,29 @@ fn resolve_orchestrator_selection(
         db,
         &descriptors,
         model_profiles::ProfilePurpose::StandardOrchestrator,
-    )?.filter(|profile| agent_config::is_harness_enabled(db, &profile.provider)) {
-        let resolution = registry.resolve_model(
-            &profile.provider,
-            profile.tier,
-            Some(&profile.model),
-        )?;
+    )?
+    .filter(|profile| agent_config::is_harness_enabled(db, &profile.provider))
+    {
+        let resolution =
+            registry.resolve_model(&profile.provider, profile.tier, Some(&profile.model))?;
         return Ok(OrchestratorSelection {
             adapter_id: profile.provider,
             model: resolution.actual_model,
             tier: profile.tier,
-            effort: configured_agent.as_ref()
+            effort: configured_agent
+                .as_ref()
                 .filter(|agent| !agent.is_built_in || !agent.updated_at.is_empty())
                 .map(|agent| agent.effort)
                 .or(Some(profile.effort)),
-            label: configured_agent.as_ref().map(|agent| agent.name.clone()).unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
+            label: configured_agent
+                .as_ref()
+                .map(|agent| agent.name.clone())
+                .unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
         });
     }
-    for descriptor in descriptors.iter().filter(|descriptor| descriptor.available && agent_config::is_harness_enabled(db, &descriptor.id)) {
+    for descriptor in descriptors.iter().filter(|descriptor| {
+        descriptor.available && agent_config::is_harness_enabled(db, &descriptor.id)
+    }) {
         if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
             return Ok(OrchestratorSelection {
                 adapter_id: descriptor.id.clone(),
@@ -918,17 +1077,29 @@ async fn create_workspace_session(
     let db = state.db.lock().unwrap();
     let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
     let ws_path: Option<String> = db
-        .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
-            r.get::<_, Option<String>>(0)
-        })
+        .query_row(
+            "SELECT path FROM workspaces WHERE id=?1",
+            params![workspace_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
         .ok()
         .flatten();
-    let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
+    let cwd = ws_path.unwrap_or_else(|| {
+        chat_scratch_dir(state.inner(), &id)
+            .to_string_lossy()
+            .to_string()
+    });
     db.execute(
         "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
         params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
     )?;
-    store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
+    store::event(
+        &db,
+        "supervisor",
+        "session.created",
+        &id,
+        "New agent session",
+    )?;
     store::state(&db)
 }
 
@@ -952,7 +1123,10 @@ async fn update_chat_model(
     })
     .await
     .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
-    session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
+    session_supervisor::SessionSupervisor::clear_adapter_process(
+        &state.db.lock().unwrap(),
+        &session_id,
+    )?;
     let db = state.db.lock().unwrap();
     db.execute(
         "UPDATE sessions SET harness=?2,model=?3,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND kind='direct'",
@@ -974,7 +1148,9 @@ struct SlashCommandResolve {
 /// Enumerate slash commands + skills from every signed-in provider, so the UI
 /// can offer a labeled `/` menu.
 #[tauri::command]
-async fn list_slash_commands(state: State<'_, AppState>) -> Result<Vec<slash::SlashCommand>, BridgeError> {
+async fn list_slash_commands(
+    state: State<'_, AppState>,
+) -> Result<Vec<slash::SlashCommand>, BridgeError> {
     let available: std::collections::HashSet<String> = state
         .adapter_registry
         .descriptors()
@@ -1069,10 +1245,19 @@ async fn connect_workspace_folder(
                 .to_string();
             db.execute(
                 "INSERT OR IGNORE INTO projects(id,name,path,created_at) VALUES(?1,?2,?3,?4)",
-                params![Uuid::new_v4().to_string(), name, root, Utc::now().to_rfc3339()],
+                params![
+                    Uuid::new_v4().to_string(),
+                    name,
+                    root,
+                    Utc::now().to_rfc3339()
+                ],
             )?;
             let project_id: Option<String> = db
-                .query_row("SELECT id FROM projects WHERE path=?1", params![root], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM projects WHERE path=?1",
+                    params![root],
+                    |r| r.get(0),
+                )
                 .ok();
             (root.clone(), project_id, git::current_branch(folder))
         }
@@ -1082,7 +1267,13 @@ async fn connect_workspace_folder(
         "UPDATE workspaces SET path=?2,project_id=?3,branch=?4 WHERE id=?1",
         params![workspace_id, resolved_path, project_id, branch],
     )?;
-    store::event(&db, "supervisor", "workspace.connected", &workspace_id, &format!("Connected {resolved_path}"))?;
+    store::event(
+        &db,
+        "supervisor",
+        "workspace.connected",
+        &workspace_id,
+        &format!("Connected {resolved_path}"),
+    )?;
     store::state(&db)
 }
 
@@ -1129,7 +1320,11 @@ async fn start_session(
         None
     };
     drop(db);
-    let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string());
+    let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
+        chat_scratch_dir(state.inner(), &session_id)
+            .to_string_lossy()
+            .to_string()
+    });
     std::fs::create_dir_all(&path)?;
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
@@ -1172,12 +1367,17 @@ async fn start_session(
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
-    let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
+    let configured_prompt =
+        agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
     let orchestrator_instructions = format!(
         "{}\n\n{}{}\n\n{}",
         orchestrator::briefing(),
         delegation::protocol(0),
-        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
+        if configured_prompt.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{configured_prompt}")
+        },
         state.credential_broker.instructions(&session_id),
     );
     let plan = restoration::select_plan(
@@ -1195,6 +1395,7 @@ async fn start_session(
                 effort: chosen_effort_name,
                 instructions: Some(instructions),
                 write_mode: None,
+                read_only_sandbox: None,
             },
         )
     };
@@ -1215,6 +1416,7 @@ async fn start_session(
                     effort: chosen_effort_name,
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: None,
+                    read_only_sandbox: None,
                 },
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
@@ -1341,11 +1543,9 @@ async fn start_session(
             ],
         )?;
     }
-    if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
-        &db,
-        &session_id,
-        process_id,
-    ) {
+    if let Err(error) =
+        session_supervisor::SessionSupervisor::track_adapter_process(&db, &session_id, process_id)
+    {
         drop(db);
         started.runtime.stop(adapters::ShutdownReason::Failed);
         return Err(error);
@@ -1472,20 +1672,42 @@ async fn start_chat(
                     .ok()
                     .flatten()
             });
-            workspace_path
-                .unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string())
+            workspace_path.unwrap_or_else(|| {
+                chat_scratch_dir(state.inner(), &session_id)
+                    .to_string_lossy()
+                    .to_string()
+            })
         }
     };
     std::fs::create_dir_all(&cwd)?;
     let adapter_id: &str = harness.as_str();
     if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
-        return Err(BridgeError::Invalid(format!("{adapter_id} is disabled in Settings")));
+        return Err(BridgeError::Invalid(format!(
+            "{adapter_id} is disabled in Settings"
+        )));
     }
-    let tier = if is_orchestrator { orchestrator::TIER } else { CapabilityTier::Fast };
+    let tier = if is_orchestrator {
+        orchestrator::TIER
+    } else {
+        CapabilityTier::Fast
+    };
     let configured_harness = agent_config::harness_config(&state.db.lock().unwrap(), adapter_id);
-    let chosen_model = model.as_ref().filter(|value| !value.is_empty()).cloned()
-        .or_else(|| configured_harness.as_ref().and_then(|config| config.default_model.clone()))
-        .or_else(|| state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model));
+    let chosen_model = model
+        .as_ref()
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            configured_harness
+                .as_ref()
+                .and_then(|config| config.default_model.clone())
+        })
+        .or_else(|| {
+            state
+                .adapter_registry
+                .resolve_model(adapter_id, tier, None)
+                .ok()
+                .map(|resolution| resolution.actual_model)
+        });
     let proxy_instructions = state.credential_broker.instructions(&session_id);
     let configured_prompt = if is_orchestrator {
         agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id)
@@ -1493,9 +1715,27 @@ async fn start_chat(
         agent_config::session_prompt(&state.db.lock().unwrap(), adapter_id)
     };
     let orchestrator_instructions = if is_orchestrator {
-        format!("{}\n\n{}{}\n\n{}", orchestrator::briefing(), delegation::protocol(0), if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") }, proxy_instructions)
+        format!(
+            "{}\n\n{}{}\n\n{}",
+            orchestrator::briefing(),
+            delegation::protocol(0),
+            if configured_prompt.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{configured_prompt}")
+            },
+            proxy_instructions
+        )
     } else {
-        format!("{}{}", if configured_prompt.is_empty() { String::new() } else { format!("{configured_prompt}\n\n") }, proxy_instructions)
+        format!(
+            "{}{}",
+            if configured_prompt.is_empty() {
+                String::new()
+            } else {
+                format!("{configured_prompt}\n\n")
+            },
+            proxy_instructions
+        )
     };
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
@@ -1510,8 +1750,8 @@ async fn start_chat(
     let launch_adapter_id = adapter_id.to_owned();
     let launch_cwd = cwd.clone();
     let launch_model = chosen_model.clone();
-    let (mut started, mode, eligibility) = tauri::async_runtime::spawn_blocking(move || {
-        match resumable {
+    let (mut started, mode, eligibility) =
+        tauri::async_runtime::spawn_blocking(move || match resumable {
             Some(provider) => match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
@@ -1521,30 +1761,23 @@ async fn start_chat(
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&orchestrator_instructions),
                     write_mode: None,
+                    read_only_sandbox: None,
                 },
             ) {
-                Ok(started) => Ok((
-                    started,
-                    RestorationMode::Native,
-                    ResumeEligibility::Native,
-                )),
-                Err(_) => registry.start(
-                    &launch_adapter_id,
-                    adapters::StartRequest {
-                        cwd: &launch_cwd,
-                        model: launch_model.as_deref(),
-                        effort: chosen_effort.as_deref(),
-                        instructions: Some(&orchestrator_instructions),
-                        write_mode: None,
-                    },
-                )
-                .map(|started| {
-                    (
-                        started,
-                        RestorationMode::Fresh,
-                        ResumeEligibility::Fresh,
+                Ok(started) => Ok((started, RestorationMode::Native, ResumeEligibility::Native)),
+                Err(_) => registry
+                    .start(
+                        &launch_adapter_id,
+                        adapters::StartRequest {
+                            cwd: &launch_cwd,
+                            model: launch_model.as_deref(),
+                            effort: chosen_effort.as_deref(),
+                            instructions: Some(&orchestrator_instructions),
+                            write_mode: None,
+                            read_only_sandbox: None,
+                        },
                     )
-                }),
+                    .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
             },
             None => registry
                 .start(
@@ -1555,19 +1788,13 @@ async fn start_chat(
                         effort: chosen_effort.as_deref(),
                         instructions: Some(&orchestrator_instructions),
                         write_mode: None,
+                        read_only_sandbox: None,
                     },
                 )
-                .map(|started| {
-                    (
-                        started,
-                        RestorationMode::Fresh,
-                        ResumeEligibility::Fresh,
-                    )
-                }),
-        }
-    })
-    .await
-    .map_err(|error| BridgeError::Adapter(format!("Adapter startup task failed: {error}")))??;
+                .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
+        })
+        .await
+        .map_err(|error| BridgeError::Adapter(format!("Adapter startup task failed: {error}")))??;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();
@@ -1586,7 +1813,11 @@ async fn start_chat(
                 params![session_id, started_at, thread_id, chosen_model, cwd],
             )?;
         }
-        if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(&db, &session_id, process_id) {
+        if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
+            &db,
+            &session_id,
+            process_id,
+        ) {
             drop(db);
             started.runtime.stop(adapters::ShutdownReason::Failed);
             return Err(error);
@@ -1603,7 +1834,15 @@ async fn start_chat(
             "adapter",
             "session.started",
             &session_id,
-            &format!("Started {} on {}", if is_orchestrator { "orchestrator" } else { "chat" }, chosen_model.as_deref().unwrap_or("default")),
+            &format!(
+                "Started {} on {}",
+                if is_orchestrator {
+                    "orchestrator"
+                } else {
+                    "chat"
+                },
+                chosen_model.as_deref().unwrap_or("default")
+            ),
         )?;
         if is_orchestrator {
             let context = agent::NormalizedEvent {
@@ -1615,10 +1854,21 @@ async fn start_chat(
                 text: Some(orchestrator::briefing()),
                 data: serde_json::json!({"source": "capability-policy", "requestedTier": tier, "runtimeModel": chosen_model}),
             };
-            let _ = store::session_event(&db, &session_id, &context, &serde_json::json!({"adapter": adapter_id, "hidden": true}));
+            let _ = store::session_event(
+                &db,
+                &session_id,
+                &context,
+                &serde_json::json!({"adapter": adapter_id, "hidden": true}),
+            );
         }
         for message in &started.startup_messages {
-            persist_agent_value(&db, &state.adapter_registry, adapter_id, &session_id, message)?;
+            persist_agent_value(
+                &db,
+                &state.adapter_registry,
+                adapter_id,
+                &session_id,
+                message,
+            )?;
         }
     }
     state
@@ -1626,7 +1876,13 @@ async fn start_chat(
         .lock()
         .unwrap()
         .insert(session_id.clone(), started.runtime);
-    spawn_reader_thread(app.clone(), session_id.clone(), started_at, current_turn, reader);
+    spawn_reader_thread(
+        app.clone(),
+        session_id.clone(),
+        started_at,
+        current_turn,
+        reader,
+    );
     let _ = app.emit("state-changed", ());
     store::state(&state.db.lock().unwrap())
 }
@@ -1916,12 +2172,8 @@ fn handle_agent_value(
                     match delegation::parse_delegation_requests(&text) {
                         delegation::ParseOutcome::Parsed(requests) => {
                             let item_id = normalized_event.item_id.clone().unwrap_or_default();
-                            let is_new = store::claim_delegation_receipt(
-                                &db,
-                                session_id,
-                                &item_id,
-                            )
-                            .unwrap_or(false);
+                            let is_new = store::claim_delegation_receipt(&db, session_id, &item_id)
+                                .unwrap_or(false);
                             let mut accepted_count = 0;
                             if is_new {
                                 accepted_count = requests.len();
@@ -1980,12 +2232,10 @@ fn handle_agent_value(
                 ));
                 pending_ui_events.push(event);
             }
-            let pending_compaction = compaction_controller::CompactionController::pending(
-                &db,
-                session_id,
-            )
-            .ok()
-            .flatten();
+            let pending_compaction =
+                compaction_controller::CompactionController::pending(&db, session_id)
+                    .ok()
+                    .flatten();
             if normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
                 && pending_compaction.is_some()
@@ -1994,9 +2244,7 @@ fn handle_agent_value(
                 checkpoint_turn_handled = true;
                 let output = normalized_event.text.as_deref().unwrap_or_default();
                 match compaction_controller::CompactionController::handle_output(
-                    &db,
-                    session_id,
-                    output,
+                    &db, session_id, output,
                 ) {
                     Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
                         checkpoint_prompt_after_turn = Some(prompt);
@@ -2095,9 +2343,8 @@ fn handle_agent_value(
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
     if turn_completed && !checkpoint_response_seen && !checkpoint_turn_handled {
-        let idle = store::outstanding_children(&state.db.lock().unwrap(), session_id)
-            .unwrap_or(0)
-            == 0;
+        let idle =
+            store::outstanding_children(&state.db.lock().unwrap(), session_id).unwrap_or(0) == 0;
         if idle {
             forward_turn_result(app, session_id);
         }
@@ -2373,20 +2620,23 @@ fn reserve_worker_launch_outcome(
             });
         }
         policy::RouteDecision::ResumeWorker { session_id } => {
-            let runtime = store::worker_runtime(db, session_id)?
-                .ok_or_else(|| BridgeError::Invalid(format!("warm worker {session_id} has no runtime record")))?;
+            let runtime = store::worker_runtime(db, session_id)?.ok_or_else(|| {
+                BridgeError::Invalid(format!("warm worker {session_id} has no runtime record"))
+            })?;
             let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
             let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
-            return Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
-                session_id: session_id.clone(),
-                workspace_id,
-                depth: parent_depth + 1,
-                path: worker_path,
-                branch: worker_branch,
-                actual_model: actual_model.into(),
-                outcome,
-                reuse_existing: true,
-            }));
+            return Ok(WorkerReservationOutcome::Reserved(
+                WorkerLaunchReservation {
+                    session_id: session_id.clone(),
+                    workspace_id,
+                    depth: parent_depth + 1,
+                    path: worker_path,
+                    branch: worker_branch,
+                    actual_model: actual_model.into(),
+                    outcome,
+                    reuse_existing: true,
+                },
+            ));
         }
         policy::RouteDecision::SpawnWorker(_) => {}
         policy::RouteDecision::RequireUserApproval => {
@@ -2489,16 +2739,18 @@ fn reserve_worker_launch_outcome(
         },
     )?;
     transaction.commit()?;
-    Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
-        session_id,
-        workspace_id,
-        depth,
-        path,
-        branch,
-        actual_model: actual_model.into(),
-        outcome,
-        reuse_existing: false,
-    }))
+    Ok(WorkerReservationOutcome::Reserved(
+        WorkerLaunchReservation {
+            session_id,
+            workspace_id,
+            depth,
+            path,
+            branch,
+            actual_model: actual_model.into(),
+            outcome,
+            reuse_existing: false,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -2510,18 +2762,20 @@ fn reserve_worker_launch(
     actual_model: &str,
     queue_on_block: bool,
 ) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
-    Ok(match reserve_worker_launch_outcome(
-        db,
-        parent_session_id,
-        turn_id,
-        directive,
-        actual_model,
-        queue_on_block,
-        None,
-    )? {
-        WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
-        WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
-    })
+    Ok(
+        match reserve_worker_launch_outcome(
+            db,
+            parent_session_id,
+            turn_id,
+            directive,
+            actual_model,
+            queue_on_block,
+            None,
+        )? {
+            WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
+            WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
+        },
+    )
 }
 
 fn launch_worker_outcome(
@@ -2561,7 +2815,13 @@ fn launch_worker_outcome(
     if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), &harness) {
         let db = state.db.lock().unwrap();
         let _ = learning_router::record_route_status(&db, &routed.decision.id, "harness_disabled");
-        let _ = store::event(&db, "capability", "capability.harness_disabled", parent_session_id, &format!("{harness} is disabled in Settings"));
+        let _ = store::event(
+            &db,
+            "capability",
+            "capability.harness_disabled",
+            parent_session_id,
+            &format!("{harness} is disabled in Settings"),
+        );
         drop(db);
         let _ = app.emit("state-changed", ());
         return WorkerLaunchOutcome::Failed;
@@ -2634,11 +2894,7 @@ fn launch_worker_outcome(
         }
         Err(error) => {
             let db = state.db.lock().unwrap();
-            let _ = learning_router::record_route_status(
-                &db,
-                &routed.decision.id,
-                "policy_failed",
-            );
+            let _ = learning_router::record_route_status(&db, &routed.decision.id, "policy_failed");
             let _ = store::event(
                 &db,
                 "policy",
@@ -2676,7 +2932,12 @@ fn launch_worker_outcome(
             params![reservation.session_id, serialized, Utc::now().to_rfc3339()],
         ).map(|_| ()).map_err(BridgeError::from));
     if let Err(error) = completion_input {
-        fail_reserved_worker(app, &reservation.session_id, &directive.label(), &error.to_string());
+        fail_reserved_worker(
+            app,
+            &reservation.session_id,
+            &directive.label(),
+            &error.to_string(),
+        );
         return WorkerLaunchOutcome::Failed;
     }
     if directive.role == delegation::WorkerRole::Verification {
@@ -2694,7 +2955,12 @@ fn launch_worker_outcome(
                 );
             }
             Err(error) => {
-                fail_reserved_worker(app, &reservation.session_id, &directive.label(), &format!("Could not bind verifier to the implementation revision: {error}"));
+                fail_reserved_worker(
+                    app,
+                    &reservation.session_id,
+                    &directive.label(),
+                    &format!("Could not bind verifier to the implementation revision: {error}"),
+                );
                 return WorkerLaunchOutcome::Failed;
             }
         }
@@ -2723,13 +2989,36 @@ fn launch_worker_outcome(
                     Ok(transaction) => transaction,
                     Err(_) => return WorkerLaunchOutcome::Failed,
                 };
-                let _ = transaction.execute("DELETE FROM worker_runtime WHERE session_id=?1", params![reservation.session_id]);
-                let _ = transaction.execute("DELETE FROM worker_leases WHERE session_id=?1", params![reservation.session_id]);
-                let _ = transaction.execute("DELETE FROM sessions WHERE id=?1", params![reservation.session_id]);
+                let _ = transaction.execute(
+                    "DELETE FROM worker_runtime WHERE session_id=?1",
+                    params![reservation.session_id],
+                );
+                let _ = transaction.execute(
+                    "DELETE FROM worker_leases WHERE session_id=?1",
+                    params![reservation.session_id],
+                );
+                let _ = transaction.execute(
+                    "DELETE FROM sessions WHERE id=?1",
+                    params![reservation.session_id],
+                );
                 let _ = transaction.commit();
                 let queued = queue_on_block
-                    && worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model).is_ok();
-                let _ = store::event(&db, "worktree", "worker.worktree_queued", parent_session_id, &error.to_string());
+                    && worker_pool::WorkerPool::enqueue(
+                        &db,
+                        parent_session_id,
+                        &reservation.workspace_id,
+                        turn_id,
+                        directive,
+                        &reservation.actual_model,
+                    )
+                    .is_ok();
+                let _ = store::event(
+                    &db,
+                    "worktree",
+                    "worker.worktree_queued",
+                    parent_session_id,
+                    &error.to_string(),
+                );
                 let _ = learning_router::record_route_status(
                     &db,
                     &routed.decision.id,
@@ -2765,15 +3054,25 @@ fn launch_worker_outcome(
     };
     let role = directive.role.as_str();
     let configured_prompt = agent_config::prompt_suffix(&state.db.lock().unwrap(), &harness, role);
-    let instructions = format!(
+    let mut instructions = format!(
         "{}{}\n\n{}",
         delegation::worker_briefing(directive, reservation.depth, &reservation.branch, &evidence),
-        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
-        state.credential_broker.instructions(&reservation.session_id)
+        if configured_prompt.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n{configured_prompt}")
+        },
+        state
+            .credential_broker
+            .instructions(&reservation.session_id)
     );
 
     if reservation.reuse_existing
-        && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .contains_key(&reservation.session_id)
     {
         let current = store::worker_runtime(&state.db.lock().unwrap(), &reservation.session_id)
             .ok()
@@ -2792,13 +3091,17 @@ fn launch_worker_outcome(
                 worker_lifecycle::WorkerLifecycleState::Resuming,
                 Some("compatible_hot_task"),
             )
-            .and_then(|_| session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("hot_process_reused"),
+            .and_then(|_| {
+                session_supervisor::SessionSupervisor::transition(
+                    &state.db.lock().unwrap(),
+                    &reservation.session_id,
+                    worker_lifecycle::WorkerLifecycleState::Working,
+                    Some("hot_process_reused"),
+                )
+            }),
+            _ => Err(BridgeError::Invalid(
+                "compatible hot worker is not reusable".into(),
             )),
-            _ => Err(BridgeError::Invalid("compatible hot worker is not reusable".into())),
         };
         if transition_result.is_ok()
             && worker_pool::WorkerPool::activate_reused_worker(
@@ -2839,10 +3142,17 @@ fn launch_worker_outcome(
                 }
             }
         }
-        let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "worker-pool",
+            "worker.hot_resume_failed",
+            &reservation.session_id,
+            "Could not reactivate compatible hot worker",
+        );
         return WorkerLaunchOutcome::Failed;
     }
 
+    let mut read_only_sandbox = None;
     if directive.write_mode == delegation::WriteMode::ReadOnly {
         match worker_guard::ReadOnlyBaseline::capture(&reservation.path) {
             Ok(baseline) => {
@@ -2863,6 +3173,48 @@ fn launch_worker_outcome(
                 return WorkerLaunchOutcome::Failed;
             }
         }
+        match worker_sandbox::ReadOnlySandbox::create(
+            &reservation.session_id,
+            Path::new(&reservation.path),
+            directive,
+        ) {
+            Ok(sandbox) => {
+                let output = sandbox.output_dir.display().to_string();
+                state
+                    .delegations
+                    .lock()
+                    .unwrap()
+                    .read_only_sandboxes
+                    .insert(reservation.session_id.clone(), sandbox.clone());
+                read_only_sandbox = Some(sandbox);
+                instructions.push_str(&format!("\n\nRead-only OS isolation is active. The workspace is immutable and network access is {}. Write artifacts only under BRIDGE_WORKER_OUTPUT_DIR: {output}", if directive.network_access { "authorized" } else { "denied" }));
+                let _ = store::event(
+                    &state.db.lock().unwrap(),
+                    "sandbox",
+                    "worker.read_only_isolation_prepared",
+                    &reservation.session_id,
+                    &format!(
+                        "mode=seatbelt network_allowed={} output_dir={output}",
+                        directive.network_access
+                    ),
+                );
+            }
+            Err(error) => {
+                state
+                    .delegations
+                    .lock()
+                    .unwrap()
+                    .read_only_baselines
+                    .remove(&reservation.session_id);
+                fail_reserved_worker(
+                    app,
+                    &reservation.session_id,
+                    &label,
+                    &format!("Could not establish read-only OS isolation: {error}"),
+                );
+                return WorkerLaunchOutcome::Failed;
+            }
+        }
     }
 
     let activation = if reservation.reuse_existing {
@@ -2876,60 +3228,96 @@ fn launch_worker_outcome(
         {
             return WorkerLaunchOutcome::Failed;
         }
-        let provider_id: Option<String> = state.db.lock().unwrap().query_row(
-            "SELECT provider_session_id FROM sessions WHERE id=?1",
-            params![reservation.session_id],
-            |row| row.get(0),
-        ).ok().flatten();
-        let checkpoint = restoration::checkpoint_context(
-            &state.db.lock().unwrap(),
-            &reservation.session_id,
-        ).ok().flatten();
-        let resumed = provider_id.as_deref().filter(|_| state.adapter_registry.supports_native_resume(&harness)).map(|provider_session_id| {
-            state.adapter_registry.resume(&harness, adapters::ResumeRequest {
-                provider_session_id,
-                cwd: &reservation.path,
-                model: Some(model.as_str()),
-                effort: Some(&effort),
-                instructions: Some(instructions.as_str()),
-                write_mode: Some(directive.write_mode),
+        let provider_id: Option<String> = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT provider_session_id FROM sessions WHERE id=?1",
+                params![reservation.session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        let checkpoint =
+            restoration::checkpoint_context(&state.db.lock().unwrap(), &reservation.session_id)
+                .ok()
+                .flatten();
+        let resumed = provider_id
+            .as_deref()
+            .filter(|_| state.adapter_registry.supports_native_resume(&harness))
+            .map(|provider_session_id| {
+                state.adapter_registry.resume(
+                    &harness,
+                    adapters::ResumeRequest {
+                        provider_session_id,
+                        cwd: &reservation.path,
+                        model: Some(model.as_str()),
+                        effort: Some(&effort),
+                        instructions: Some(instructions.as_str()),
+                        write_mode: Some(directive.write_mode),
+                        read_only_sandbox: read_only_sandbox.as_ref(),
+                    },
+                )
             })
-        }).transpose();
+            .transpose();
         match resumed {
             Ok(Some(started)) => Ok((started, WorkerActivation::Native)),
             Err(error) => {
-                let _ = restoration::record_resume_failed(&state.db.lock().unwrap(), &reservation.session_id, &error.to_string());
+                let _ = restoration::record_resume_failed(
+                    &state.db.lock().unwrap(),
+                    &reservation.session_id,
+                    &error.to_string(),
+                );
                 let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
-                state.adapter_registry.start(&harness, adapters::StartRequest {
-                    cwd: &reservation.path,
-                    model: Some(model.as_str()),
-                    effort: Some(&effort),
-                    instructions: Some(restored_instructions.as_str()),
-                    write_mode: Some(directive.write_mode),
-                }).map(|started| (started, WorkerActivation::CheckpointRestored))
+                state
+                    .adapter_registry
+                    .start(
+                        &harness,
+                        adapters::StartRequest {
+                            cwd: &reservation.path,
+                            model: Some(model.as_str()),
+                            effort: Some(&effort),
+                            instructions: Some(restored_instructions.as_str()),
+                            write_mode: Some(directive.write_mode),
+                            read_only_sandbox: read_only_sandbox.as_ref(),
+                        },
+                    )
+                    .map(|started| (started, WorkerActivation::CheckpointRestored))
             }
             Ok(None) => {
                 let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
-                state.adapter_registry.start(&harness, adapters::StartRequest {
-                    cwd: &reservation.path,
-                    model: Some(model.as_str()),
-                    effort: Some(&effort),
-                    instructions: Some(restored_instructions.as_str()),
-                    write_mode: Some(directive.write_mode),
-                }).map(|started| (started, WorkerActivation::CheckpointRestored))
+                state
+                    .adapter_registry
+                    .start(
+                        &harness,
+                        adapters::StartRequest {
+                            cwd: &reservation.path,
+                            model: Some(model.as_str()),
+                            effort: Some(&effort),
+                            instructions: Some(restored_instructions.as_str()),
+                            write_mode: Some(directive.write_mode),
+                            read_only_sandbox: read_only_sandbox.as_ref(),
+                        },
+                    )
+                    .map(|started| (started, WorkerActivation::CheckpointRestored))
             }
         }
     } else {
-        state.adapter_registry.start(
-            &harness,
-            adapters::StartRequest {
-                cwd: &reservation.path,
-                model: Some(model.as_str()),
-                effort: Some(&effort),
-                instructions: Some(instructions.as_str()),
-                write_mode: Some(directive.write_mode),
-            },
-        ).map(|started| (started, WorkerActivation::Fresh))
+        state
+            .adapter_registry
+            .start(
+                &harness,
+                adapters::StartRequest {
+                    cwd: &reservation.path,
+                    model: Some(model.as_str()),
+                    effort: Some(&effort),
+                    instructions: Some(instructions.as_str()),
+                    write_mode: Some(directive.write_mode),
+                    read_only_sandbox: read_only_sandbox.as_ref(),
+                },
+            )
+            .map(|started| (started, WorkerActivation::Fresh))
     };
     let (started, activation) = match activation {
         Ok(started) => started,
@@ -2940,6 +3328,15 @@ fn launch_worker_outcome(
                 .unwrap()
                 .read_only_baselines
                 .remove(&reservation.session_id);
+            if let Some(sandbox) = state
+                .delegations
+                .lock()
+                .unwrap()
+                .read_only_sandboxes
+                .remove(&reservation.session_id)
+            {
+                sandbox.cleanup();
+            }
             fail_reserved_worker(
                 app,
                 &reservation.session_id,
@@ -2963,7 +3360,12 @@ fn launch_worker_outcome(
         runtime.process_id(),
     ) {
         runtime.stop(adapters::ShutdownReason::Failed);
-        fail_reserved_worker(app, &session_id, &label, &format!("Could not track provider process: {error}"));
+        fail_reserved_worker(
+            app,
+            &session_id,
+            &label,
+            &format!("Could not track provider process: {error}"),
+        );
         return WorkerLaunchOutcome::Failed;
     }
 
@@ -2973,26 +3375,36 @@ fn launch_worker_outcome(
                 &state.db.lock().unwrap(),
                 &session_id,
                 worker_lifecycle::WorkerLifecycleState::Working,
-                Some(if activation == WorkerActivation::Native { "native_resumed" } else { "provider_started" }),
-            ).map(|_| ())
+                Some(if activation == WorkerActivation::Native {
+                    "native_resumed"
+                } else {
+                    "provider_started"
+                }),
+            )
+            .map(|_| ())
         }
-        WorkerActivation::CheckpointRestored => {
+        WorkerActivation::CheckpointRestored => session_supervisor::SessionSupervisor::transition(
+            &state.db.lock().unwrap(),
+            &session_id,
+            worker_lifecycle::WorkerLifecycleState::Restored,
+            Some("checkpoint_fallback"),
+        )
+        .and_then(|_| {
             session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Restored,
-                Some("checkpoint_fallback"),
-            ).and_then(|_| session_supervisor::SessionSupervisor::transition(
                 &state.db.lock().unwrap(),
                 &session_id,
                 worker_lifecycle::WorkerLifecycleState::Working,
                 Some("checkpoint_restored"),
-            )).map(|_| ())
-        }
+            )
+        })
+        .map(|_| ()),
     };
     if let Err(error) = transition_result {
         runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &session_id,
+        );
         let _ = store::event(
             &state.db.lock().unwrap(),
             "supervisor",
@@ -3013,13 +3425,11 @@ fn launch_worker_outcome(
     let continuation_fidelity = match activation {
         WorkerActivation::Native => ContinuationFidelity::Native,
         WorkerActivation::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
-        WorkerActivation::Fresh => handoff::assess(
-            &state.db.lock().unwrap(),
-            parent_session_id,
-            &harness,
-        )
-        .map(|assessment| handoff::fidelity_for_projection(&assessment))
-        .unwrap_or(ContinuationFidelity::ProjectedMidTurn),
+        WorkerActivation::Fresh => {
+            handoff::assess(&state.db.lock().unwrap(), parent_session_id, &harness)
+                .map(|assessment| handoff::fidelity_for_projection(&assessment))
+                .unwrap_or(ContinuationFidelity::ProjectedMidTurn)
+        }
     };
     if restoration::set_head_state(
         &state.db.lock().unwrap(),
@@ -3031,7 +3441,10 @@ fn launch_worker_outcome(
     .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &session_id,
+        );
         return WorkerLaunchOutcome::Failed;
     }
     if handoff::record_fidelity(
@@ -3042,7 +3455,10 @@ fn launch_worker_outcome(
     .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &session_id,
+        );
         return WorkerLaunchOutcome::Failed;
     }
 
@@ -3064,14 +3480,23 @@ fn launch_worker_outcome(
             params![reservation.workspace_id],
         );
         for message in &startup_messages {
-            let _ = persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
+            let _ =
+                persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
         }
         let spawn_event = agent::NormalizedEvent {
-            kind: if reservation.reuse_existing { "delegation.resumed".into() } else { "delegation.spawned".into() },
+            kind: if reservation.reuse_existing {
+                "delegation.resumed".into()
+            } else {
+                "delegation.spawned".into()
+            },
             item_id: Some(format!("spawn-{session_id}")),
             role: Some("system".into()),
             status: Some("working".into()),
-            title: Some(if reservation.reuse_existing { format!("Resumed {label}") } else { format!("Delegated to {label}") }),
+            title: Some(if reservation.reuse_existing {
+                format!("Resumed {label}")
+            } else {
+                format!("Delegated to {label}")
+            }),
             text: Some(directive.objective.clone()),
             data: serde_json::json!({
                 "childSessionId": session_id,
@@ -3088,19 +3513,30 @@ fn launch_worker_outcome(
                 "continuationFidelity": continuation_fidelity,
             }),
         };
-        if let Ok(stored) =
-            store::session_event(&db, parent_session_id, &spawn_event, &serde_json::json!({"delegation": true}))
-        {
+        if let Ok(stored) = store::session_event(
+            &db,
+            parent_session_id,
+            &spawn_event,
+            &serde_json::json!({"delegation": true}),
+        ) {
             let _ = app.emit("agent-event", stored);
         }
         let _ = store::event(
             &db,
             "delegation",
-            if reservation.reuse_existing { "worker.resumed" } else { "worker.spawned" },
+            if reservation.reuse_existing {
+                "worker.resumed"
+            } else {
+                "worker.spawned"
+            },
             parent_session_id,
             &format!(
                 "{} {label} (effort {})",
-                if reservation.reuse_existing { "Resumed" } else { "Spawned" },
+                if reservation.reuse_existing {
+                    "Resumed"
+                } else {
+                    "Spawned"
+                },
                 effort
             ),
         );
@@ -3129,15 +3565,15 @@ fn launch_worker_outcome(
         current_turn,
         reader,
     );
-    if let Err(error) = deliver_worker_objective(
-        &state.adapters,
-        &session_id,
-        &directive.objective,
-    ) {
+    if let Err(error) = deliver_worker_objective(&state.adapters, &session_id, &directive.objective)
+    {
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Failed);
         }
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &session_id,
+        );
         fail_reserved_worker(
             app,
             &session_id,
@@ -3163,13 +3599,9 @@ fn record_actual_execution_best_effort(
     effort: delegation::Effort,
     parent_session_id: &str,
 ) {
-    if let Err(error) = learning_router::record_actual_execution(
-        db,
-        decision_id,
-        harness,
-        model,
-        effort,
-    ) {
+    if let Err(error) =
+        learning_router::record_actual_execution(db, decision_id, harness, model, effort)
+    {
         let _ = learning_router::record_route_status(
             db,
             decision_id,
@@ -3207,13 +3639,7 @@ fn launch_worker(
     directive: &delegation::DelegationRequest,
     queue_on_block: bool,
 ) -> Option<String> {
-    match launch_worker_outcome(
-        app,
-        parent_session_id,
-        turn_id,
-        directive,
-        queue_on_block,
-    ) {
+    match launch_worker_outcome(app, parent_session_id, turn_id, directive, queue_on_block) {
         WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
         WorkerLaunchOutcome::Queued | WorkerLaunchOutcome::Failed => None,
     }
@@ -3242,10 +3668,7 @@ fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: 
     }
 }
 
-fn prepare_worker_failure_settlement(
-    db: &Connection,
-    session_id: &str,
-) -> Result<(), BridgeError> {
+fn prepare_worker_failure_settlement(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
     let current: String = db.query_row(
         "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
         params![session_id],
@@ -3266,7 +3689,13 @@ fn prepare_worker_failure_settlement(
 /// Frame a finished worker's final message and send it up to its parent.
 fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
     let state = app.state::<AppState>();
-    let meta: Option<(Option<String>, String, String, Option<String>, Option<String>)> = {
+    let meta: Option<(
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    )> = {
         let db = state.db.lock().unwrap();
         db.query_row(
             "SELECT parent_session_id,label,harness,model,effort FROM sessions WHERE id=?1",
@@ -3337,7 +3766,13 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
+            let _ = store::event(
+                &state.db.lock().unwrap(),
+                "supervisor",
+                "worker.settle_failed",
+                child_session_id,
+                &error.to_string(),
+            );
             return;
         }
     }
@@ -3370,11 +3805,7 @@ fn process_worker_result_output(
     raw_output: &str,
     send_same_session_repair: impl FnOnce(&str) -> bool,
 ) -> Result<Option<delegation::WorkerResult>, BridgeError> {
-    match tracker.process(
-        child_session_id,
-        raw_output,
-        send_same_session_repair,
-    ) {
+    match tracker.process(child_session_id, raw_output, send_same_session_repair) {
         delegation::WorkerOutputAction::Structured(result) => Ok(Some(result)),
         delegation::WorkerOutputAction::AwaitingRepair { reason } => {
             store::event(
@@ -3451,7 +3882,11 @@ fn settle_worker_after_result(
         let can_retry_hot = worker_pool::should_retry(
             result,
             retry_count,
-            state.adapters.lock().unwrap().contains_key(child_session_id),
+            state
+                .adapters
+                .lock()
+                .unwrap()
+                .contains_key(child_session_id),
         );
         if can_retry_hot {
             session_supervisor::SessionSupervisor::transition(
@@ -3513,16 +3948,16 @@ fn settle_worker_after_result(
             match attributes.map(|(role, tier, mode)| {
                 worker_pool::retention_action_for_attributes(&role, &tier, &mode, Utc::now())
             }) {
-                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => {
-                    (worker_lifecycle::WorkerLifecycleState::Warm, Some(until.to_rfc3339()))
-                }
+                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => (
+                    worker_lifecycle::WorkerLifecycleState::Warm,
+                    Some(until.to_rfc3339()),
+                ),
                 _ => (worker_lifecycle::WorkerLifecycleState::Completed, None),
             }
         }
-        delegation::WorkerResultStatus::Cancelled => (
-            worker_lifecycle::WorkerLifecycleState::Cancelled,
-            None,
-        ),
+        delegation::WorkerResultStatus::Cancelled => {
+            (worker_lifecycle::WorkerLifecycleState::Cancelled, None)
+        }
         delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked => {
             (worker_lifecycle::WorkerLifecycleState::Failed, None)
         }
@@ -3594,7 +4029,13 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
+            let _ = store::event(
+                &state.db.lock().unwrap(),
+                "supervisor",
+                "worker.settle_failed",
+                child_session_id,
+                &error.to_string(),
+            );
             return;
         }
     }
@@ -3622,15 +4063,28 @@ fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
             &error.to_string(),
         );
     }
+    drop(db);
+    let sandbox = state
+        .delegations
+        .lock()
+        .unwrap()
+        .read_only_sandboxes
+        .remove(child_session_id);
+    if let Some(sandbox) = sandbox {
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "sandbox",
+            "worker.read_only_isolation_cleaned",
+            child_session_id,
+            &format!("output_dir={}", sandbox.output_dir.display()),
+        );
+        sandbox.cleanup();
+    }
 }
 
 /// Deliver a framed message from a child to its parent session: send it into the
 /// parent's live turn stream and drop a marker card into the parent's transcript.
-fn report_to_parent(
-    app: &AppHandle,
-    child_session_id: &str,
-    result: &delegation::WorkerResult,
-) {
+fn report_to_parent(app: &AppHandle, child_session_id: &str, result: &delegation::WorkerResult) {
     let state = app.state::<AppState>();
     let report = {
         let db = state.db.lock().unwrap();
@@ -3645,31 +4099,38 @@ fn report_to_parent(
     let child_session_id = child_session_id.to_owned();
     let result = result.clone();
     tauri::async_runtime::spawn(async move {
-    let state = app.state::<AppState>();
-    let available_capabilities = live_available_capabilities(&state).await;
-    let completion_result = {
-        let db = state.db.lock().unwrap();
-        completion::create_from_worker_result(&db, &child_session_id, &result, &available_capabilities)
-    };
-    let completion = match completion_result {
-        Ok(summary) => summary,
-        Err(error) => {
+        let state = app.state::<AppState>();
+        let available_capabilities = live_available_capabilities(&state).await;
+        let completion_result = {
             let db = state.db.lock().unwrap();
-            let _ = store::event(
+            completion::create_from_worker_result(
                 &db,
-                "completion",
-                "completion.plan_failed",
                 &child_session_id,
-                &error.to_string(),
-            );
-            completion::record_gate_error(&db, &child_session_id, &error.to_string()).ok().flatten()
+                &result,
+                &available_capabilities,
+            )
+        };
+        let completion = match completion_result {
+            Ok(summary) => summary,
+            Err(error) => {
+                let db = state.db.lock().unwrap();
+                let _ = store::event(
+                    &db,
+                    "completion",
+                    "completion.plan_failed",
+                    &child_session_id,
+                    &error.to_string(),
+                );
+                completion::record_gate_error(&db, &child_session_id, &error.to_string())
+                    .ok()
+                    .flatten()
+            }
+        };
+        {
+            let db = state.db.lock().unwrap();
+            let _ = completion::reconcile_parent_readiness(&db, &report.parent_session_id);
         }
-    };
-    {
-        let db = state.db.lock().unwrap();
-        let _ = completion::reconcile_parent_readiness(&db, &report.parent_session_id);
-    }
-    let routing_notice = serde_json::json!({
+        let routing_notice = serde_json::json!({
         "type": "bridge-worker-evidence",
         "evidenceId": report.evidence_id,
         "status": result.status.as_str(),
@@ -3678,63 +4139,64 @@ fn report_to_parent(
         "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
     })
     .to_string();
-    let delivered = match state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(&report.parent_session_id)
-    {
-        Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
-        None => false,
-    };
-    {
-        let db = state.db.lock().unwrap();
-        let result_event = agent::NormalizedEvent {
-            kind: "delegation.result".into(),
-            item_id: Some(format!("result-{}", Uuid::new_v4())),
-            role: Some("system".into()),
-            status: Some("completed".into()),
-            title: Some("Worker result".into()),
-            text: Some(result.summary.clone()),
-            data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str()}),
-        };
-        if let Ok(stored) =
-            store::session_event(&db, &report.parent_session_id, &result_event, &serde_json::json!({"delegation": true}))
+        let delivered = match state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(&report.parent_session_id)
         {
-            let _ = app.emit("agent-event", stored);
+            Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
+            None => false,
+        };
+        {
+            let db = state.db.lock().unwrap();
+            let result_event = agent::NormalizedEvent {
+                kind: "delegation.result".into(),
+                item_id: Some(format!("result-{}", Uuid::new_v4())),
+                role: Some("system".into()),
+                status: Some("completed".into()),
+                title: Some("Worker result".into()),
+                text: Some(result.summary.clone()),
+                data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str()}),
+            };
+            if let Ok(stored) = store::session_event(
+                &db,
+                &report.parent_session_id,
+                &result_event,
+                &serde_json::json!({"delegation": true}),
+            ) {
+                let _ = app.emit("agent-event", stored);
+            }
+            if delivered {
+                let _ = db.execute(
+                    "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
+                    params![report.parent_session_id],
+                );
+            }
         }
-        if delivered {
-            let _ = db.execute(
-                "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
-                params![report.parent_session_id],
-            );
+        let workspace_id = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT workspace_id FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        let _ = app.emit("state-changed", ());
+        if let Some(workspace_id) = workspace_id {
+            dispatch_next_queued_worker(&app, &workspace_id);
         }
-    }
-    let workspace_id = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT workspace_id FROM sessions WHERE id=?1",
-            params![child_session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    let _ = app.emit("state-changed", ());
-    if let Some(workspace_id) = workspace_id {
-        dispatch_next_queued_worker(&app, &workspace_id);
-    }
     });
 }
 
 fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
     let state = app.state::<AppState>();
-    let queued = worker_pool::WorkerPool::claim_next_queued(
-        &state.db.lock().unwrap(),
-        workspace_id,
-    )
-    .ok()
-    .flatten();
+    let queued =
+        worker_pool::WorkerPool::claim_next_queued(&state.db.lock().unwrap(), workspace_id)
+            .ok()
+            .flatten();
     let Some(queued) = queued else {
         return;
     };
@@ -3743,7 +4205,13 @@ fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
         Err(error) => {
             let db = state.db.lock().unwrap();
             let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);
-            let _ = store::event(&db, "worker-pool", "worker.queue.invalid", &queued.id, &error.to_string());
+            let _ = store::event(
+                &db,
+                "worker-pool",
+                "worker.queue.invalid",
+                &queued.id,
+                &error.to_string(),
+            );
             return;
         }
     };
@@ -3764,16 +4232,13 @@ fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
 
 fn maintain_worker_pool(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let expired = worker_pool::WorkerPool::warm_workers_due(
-        &state.db.lock().unwrap(),
-        Utc::now(),
-    )
-    .unwrap_or_default();
+    let expired = worker_pool::WorkerPool::warm_workers_due(&state.db.lock().unwrap(), Utc::now())
+        .unwrap_or_default();
     for session_id in expired {
         let prompt = {
             let db = state.db.lock().unwrap();
-            let tokens = compaction_controller::active_token_estimate(&db, &session_id)
-                .unwrap_or_default();
+            let tokens =
+                compaction_controller::active_token_estimate(&db, &session_id).unwrap_or_default();
             let prompt = compaction_controller::CompactionController::begin(
                 &db,
                 &session_id,
@@ -3823,9 +4288,13 @@ fn maintain_worker_pool(app: &AppHandle) {
                     compaction_controller::CompactionController::pending(&db, session_id)
                         .ok()
                         .flatten()
-                        .and_then(|pending| chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok())
+                        .and_then(|pending| {
+                            chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok()
+                        })
                         .is_some_and(|requested| {
-                            Utc::now().signed_duration_since(requested.with_timezone(&Utc)).num_seconds()
+                            Utc::now()
+                                .signed_duration_since(requested.with_timezone(&Utc))
+                                .num_seconds()
                                 >= compaction_controller::CHECKPOINT_TIMEOUT_SECONDS
                         })
                 })
@@ -3862,9 +4331,13 @@ fn maintain_worker_pool(app: &AppHandle) {
                             pending.reason
                                 == compaction_controller::CompactionReason::BeforeShutdown
                         })
-                        .and_then(|pending| chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok())
+                        .and_then(|pending| {
+                            chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok()
+                        })
                         .is_some_and(|requested| {
-                            Utc::now().signed_duration_since(requested.with_timezone(&Utc)).num_seconds()
+                            Utc::now()
+                                .signed_duration_since(requested.with_timezone(&Utc))
+                                .num_seconds()
                                 >= compaction_controller::CHECKPOINT_TIMEOUT_SECONDS
                         })
                 })
@@ -3936,8 +4409,7 @@ fn start_history_snapshot_maintenance(app: AppHandle) {
         let state = app.state::<AppState>();
         if let Ok(db) = Connection::open_with_flags(
             &state.database_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             let _ = store::export_history_snapshot(&db, &state.snapshot_dir);
         }
@@ -4037,7 +4509,11 @@ async fn write_terminal(
 }
 
 #[tauri::command]
-async fn prepare_turn(session_id: String, text: String, state: State<'_, AppState>) -> Result<secret_interception::SanitizedTurn, BridgeError> {
+async fn prepare_turn(
+    session_id: String,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
@@ -4050,7 +4526,9 @@ async fn prepare_turn(session_id: String, text: String, state: State<'_, AppStat
         return Err(BridgeError::Invalid("Chat session does not exist".into()));
     }
     let intercepted = secret_interception::intercept(&text);
-    state.credential_broker.register(&session_id, intercepted.captured);
+    state
+        .credential_broker
+        .register(&session_id, intercepted.captured);
     Ok(intercepted.sanitized)
 }
 
@@ -4093,7 +4571,12 @@ fn persist_submitted_user_turn(
 }
 
 #[tauri::command]
-async fn send_turn(session_id: String, text: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), BridgeError> {
+async fn send_turn(
+    session_id: String,
+    text: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
@@ -4106,7 +4589,9 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     // Sanitize the user-authored text before slash expansion, adapter transport,
     // optimistic UI projection, or durable conversation history can observe it.
     let intercepted = secret_interception::intercept(&text);
-    state.credential_broker.register(&session_id, intercepted.captured);
+    state
+        .credential_broker
+        .register(&session_id, intercepted.captured);
     let sanitized_input = intercepted.sanitized;
     let available: std::collections::HashSet<String> = state
         .adapter_registry
@@ -4177,11 +4662,9 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
-    if let Err(error) = deliver_sanitized_turn(
-        runtime.as_ref(),
-        &outbound,
-        credential_context.as_deref(),
-    ) {
+    if let Err(error) =
+        deliver_sanitized_turn(runtime.as_ref(), &outbound, credential_context.as_deref())
+    {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
         return Err(error);
@@ -4200,8 +4683,7 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     } else {
         outbound.clone()
     };
-    if let Some(event) =
-        persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
+    if let Some(event) = persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
     {
         let _ = app.emit("agent-event", event);
     }
@@ -4213,10 +4695,23 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     Ok(())
 }
 
-fn record_recoverable_adapter_failure(state: &State<'_, AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
+fn record_recoverable_adapter_failure(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    error: &BridgeError,
+) -> Result<(), BridgeError> {
     let db = state.db.lock().unwrap();
-    db.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
-    store::event(&db, "adapter", "adapter.request_failed", session_id, &error.to_string())?;
+    db.execute(
+        "UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1",
+        params![session_id, Utc::now().to_rfc3339()],
+    )?;
+    store::event(
+        &db,
+        "adapter",
+        "adapter.request_failed",
+        session_id,
+        &error.to_string(),
+    )?;
     Ok(())
 }
 
@@ -4312,7 +4807,10 @@ async fn interrupt_turn(session_id: String, state: State<'_, AppState>) -> Resul
 /// command; Codex is asked on a live session and answers on its event stream.
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
-async fn refresh_account_usage(app: AppHandle, state: State<'_, AppState>) -> Result<(), BridgeError> {
+async fn refresh_account_usage(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), BridgeError> {
     // Claude: a global, read-only account query — no running session required.
     if binary::resolve("claude").is_some() {
         let app = app.clone();
@@ -4624,15 +5122,11 @@ async fn stop_session(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    let is_worker = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get::<_, bool>(0),
-        )?;
+    let is_worker = state.db.lock().unwrap().query_row(
+        "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get::<_, bool>(0),
+    )?;
     if is_worker {
         if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
             let _ = runtime.interrupt();
@@ -4651,7 +5145,9 @@ async fn stop_session(
             suggested_task: None,
         };
         if !settle_worker_after_result(&app, &session_id, &result)? {
-            return Err(BridgeError::Invalid("cancelled worker cannot be retried".into()));
+            return Err(BridgeError::Invalid(
+                "cancelled worker cannot be retried".into(),
+            ));
         }
         report_to_parent(&app, &session_id, &result);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
@@ -4794,11 +5290,12 @@ async fn refresh_workspace(
             |r| r.get(0),
         )?
     };
-    let (dirty, adds, dels) = tauri::async_runtime::spawn_blocking(move || {
-        git::stats(Path::new(&path))
-    })
-    .await
-    .map_err(|error| BridgeError::Invalid(format!("Workspace refresh task failed: {error}")))??;
+    let (dirty, adds, dels) =
+        tauri::async_runtime::spawn_blocking(move || git::stats(Path::new(&path)))
+            .await
+            .map_err(|error| {
+                BridgeError::Invalid(format!("Workspace refresh task failed: {error}"))
+            })??;
     let db = state.db.lock().unwrap();
     db.execute(
         "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
@@ -4879,37 +5376,40 @@ fn archive_workspace_records(
         "DELETE FROM sessions WHERE workspace_id=?1",
         params![workspace_id],
     )?;
-    transaction.execute(
-        "DELETE FROM workspaces WHERE id=?1",
-        params![workspace_id],
-    )?;
+    transaction.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
     remove_worktree()?;
     transaction.commit()?;
     Ok(())
 }
 
-fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, credential_broker: Arc<credential_broker::CredentialBroker>) {
+fn start_health_server(
+    database: PathBuf,
+    adapters: Vec<AdapterDescriptor>,
+    credential_broker: Arc<credential_broker::CredentialBroker>,
+) {
     thread::spawn(move || {
         let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
             return;
         };
         for request in server.incoming_requests() {
             if request.url() == "/health" {
-                let body =
-                    serde_json::json!({
-                        "ok": true,
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "database": database,
-                        "adapters": adapters,
-                        "harnesses": {
-                            "claude": binary::resolve("claude").is_some(),
-                            "codex": binary::resolve("codex").is_some(),
-                            "opencode": binary::resolve("opencode").is_some(),
-                            "shell": true
-                        }
-                    }).to_string();
+                let body = serde_json::json!({
+                    "ok": true,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "database": database,
+                    "adapters": adapters,
+                    "harnesses": {
+                        "claude": binary::resolve("claude").is_some(),
+                        "codex": binary::resolve("codex").is_some(),
+                        "opencode": binary::resolve("opencode").is_some(),
+                        "shell": true
+                    }
+                })
+                .to_string();
                 let mut response = tiny_http::Response::from_string(body).with_status_code(200);
-                if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
+                if let Ok(header) =
+                    tiny_http::Header::from_bytes("Content-Type", "application/json")
+                {
                     response.add_header(header);
                 }
                 let _ = request.respond(response);
@@ -4927,7 +5427,11 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, cred
                     .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
                     .map(|header| header.value.as_str().to_owned())
                     .unwrap_or_default();
-                let headers: Vec<(String, String)> = request.headers().iter().map(|header| (header.field.to_string(), header.value.as_str().to_owned())).collect();
+                let headers: Vec<(String, String)> = request
+                    .headers()
+                    .iter()
+                    .map(|header| (header.field.to_string(), header.value.as_str().to_owned()))
+                    .collect();
                 let broker = credential_broker.clone();
                 thread::spawn(move || {
                     let mut request = request;
@@ -4936,29 +5440,36 @@ fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, cred
                     let reference = parts.next().unwrap_or_default().to_owned();
                     let path_and_query = format!("/{}", parts.next().unwrap_or_default());
                     let mut body = Vec::new();
-                    let result = request.as_reader()
+                    let result = request
+                        .as_reader()
                         .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
                         .read_to_end(&mut body)
                         .map_err(BridgeError::Io)
-                        .and_then(|_| broker.proxy(credential_broker::ProxyRequest {
-                            session_id,
-                            reference,
-                            method,
-                            path_and_query,
-                            headers,
-                            token,
-                            body,
-                        }));
+                        .and_then(|_| {
+                            broker.proxy(credential_broker::ProxyRequest {
+                                session_id,
+                                reference,
+                                method,
+                                path_and_query,
+                                headers,
+                                token,
+                                body,
+                            })
+                        });
                     let response = match result {
                         Ok(proxied) => {
-                            let mut response = tiny_http::Response::from_data(proxied.body).with_status_code(proxied.status);
-                            if let Some(header) = proxied.content_type.and_then(|value| tiny_http::Header::from_bytes("Content-Type", value).ok()) {
+                            let mut response = tiny_http::Response::from_data(proxied.body)
+                                .with_status_code(proxied.status);
+                            if let Some(header) = proxied.content_type.and_then(|value| {
+                                tiny_http::Header::from_bytes("Content-Type", value).ok()
+                            }) {
                                 response.add_header(header);
                             }
                             response
                         }
                         Err(error) => {
-                            let body = serde_json::json!({"ok": false, "error": error.to_string()}).to_string();
+                            let body = serde_json::json!({"ok": false, "error": error.to_string()})
+                                .to_string();
                             tiny_http::Response::from_string(body).with_status_code(400)
                         }
                     };
@@ -5012,9 +5523,15 @@ pub fn run() {
                 )
                 .map_err(Box::<dyn std::error::Error>::from)?,
             );
-            let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
-            start_health_server(db_path.clone(), adapter_registry.descriptors(), credential_broker.clone());
+            let credential_broker = Arc::new(
+                credential_broker::CredentialBroker::openai()
+                    .map_err(|error| Box::<dyn std::error::Error>::from(error))?,
+            );
+            start_health_server(
+                db_path.clone(),
+                adapter_registry.descriptors(),
+                credential_broker.clone(),
+            );
             app.manage(AppState {
                 db: Mutex::new(connection),
                 telemetry_db: Mutex::new(telemetry_connection),
@@ -5168,29 +5685,57 @@ mod tests {
     }
 
     impl adapters::AdapterRuntime for RecordingRuntime {
-        fn process_id(&self) -> u32 { 0 }
-        fn provider_session_id(&self) -> &str { "recording" }
-        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "recording"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
         fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
             self.sent.lock().unwrap().push(text.into());
             Ok(())
         }
-        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
-        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(
+            &self,
+            _request_id: serde_json::Value,
+            _decision: &str,
+        ) -> Result<(), BridgeError> {
+            Ok(())
+        }
         fn stop(&mut self, _reason: adapters::ShutdownReason) {}
     }
 
     struct RejectingRuntime;
 
     impl adapters::AdapterRuntime for RejectingRuntime {
-        fn process_id(&self) -> u32 { 0 }
-        fn provider_session_id(&self) -> &str { "rejecting" }
-        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "rejecting"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
         fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
             Err(BridgeError::Invalid("delivery rejected".into()))
         }
-        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
-        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(
+            &self,
+            _request_id: serde_json::Value,
+            _decision: &str,
+        ) -> Result<(), BridgeError> {
+            Ok(())
+        }
         fn stop(&mut self, _reason: adapters::ShutdownReason) {}
     }
 
@@ -5208,6 +5753,8 @@ mod tests {
             write_mode: delegation::WriteMode::Isolated,
             capability_tier: delegation::CapabilityTier::Standard,
             effort: delegation::Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
             verification: vec!["cargo test".into()],
             output_contract: delegation::OutputContract::ImplementationResult,
             harness: Some("codex".into()),
@@ -5258,10 +5805,22 @@ mod tests {
         ] {
             assert!(agent_event_changes_bridge_state(&event(kind, None)));
         }
-        assert!(agent_event_changes_bridge_state(&event("error", Some("failed"))));
-        assert!(!agent_event_changes_bridge_state(&event("message.delta", Some("streaming"))));
-        assert!(!agent_event_changes_bridge_state(&event("tool.completed", Some("completed"))));
-        assert!(!agent_event_changes_bridge_state(&event("provider.unknown", None)));
+        assert!(agent_event_changes_bridge_state(&event(
+            "error",
+            Some("failed")
+        )));
+        assert!(!agent_event_changes_bridge_state(&event(
+            "message.delta",
+            Some("streaming")
+        )));
+        assert!(!agent_event_changes_bridge_state(&event(
+            "tool.completed",
+            Some("completed")
+        )));
+        assert!(!agent_event_changes_bridge_state(&event(
+            "provider.unknown",
+            None
+        )));
     }
 
     #[test]
@@ -5284,8 +5843,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let serialized = serde_json::to_string(&store::session_entries(&db, "secret-chat").unwrap())
-            .unwrap();
+        let serialized =
+            serde_json::to_string(&store::session_entries(&db, "secret-chat").unwrap()).unwrap();
         assert!(!serialized.contains(canary));
         assert!(serialized.contains("[secret:sec_"));
     }
@@ -5333,12 +5892,8 @@ mod tests {
             suggested_role: None,
             suggested_task: None,
         };
-        session_supervisor::SessionSupervisor::record_result(
-            &db,
-            &reservation.session_id,
-            &result,
-        )
-        .unwrap();
+        session_supervisor::SessionSupervisor::record_result(&db, &reservation.session_id, &result)
+            .unwrap();
         assert_eq!(
             db.query_row(
                 "SELECT lease_status FROM worker_leases WHERE session_id=?1",
@@ -5389,8 +5944,10 @@ mod tests {
     }
 
     fn count(db: &Connection, table: &str) -> i64 {
-        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
-            .unwrap()
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 
     #[test]
@@ -5468,13 +6025,22 @@ mod tests {
         let db = archive_fixture();
         let before_entries = store::session_entries(&db, "s").unwrap();
         let before_workspace_path: String = db
-            .query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get(0))
+            .query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let initial = session_forest_snapshot(&db, "s").unwrap();
         assert_eq!(initial.repository_divergence.status, "unknown");
         assert_eq!(initial.head.unwrap().active_entry_id.as_deref(), Some("e2"));
         assert_eq!(initial.entries.len(), 2);
-        assert_eq!(initial.leaves.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), vec!["e2"]);
+        assert_eq!(
+            initial
+                .leaves
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["e2"]
+        );
         assert_eq!(initial.worker_leases.len(), 1);
         assert_eq!(initial.usage.len(), 1);
 
@@ -5482,8 +6048,11 @@ mod tests {
         assert_eq!(rewound.head.unwrap().active_entry_id.as_deref(), Some("e1"));
         assert_eq!(store::session_entries(&db, "s").unwrap(), before_entries);
         assert_eq!(
-            db.query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get::<_, String>(0))
-                .unwrap(),
+            db.query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
             before_workspace_path
         );
         assert!(rewound.reasons.iter().any(|event| {
@@ -5502,7 +6071,11 @@ mod tests {
                 .current_dir(repository)
                 .output()
                 .unwrap();
-            assert!(output.status.success(), "git {arguments:?}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         };
         git(&["init", "--quiet"]);
         git(&["config", "user.email", "bridge@example.invalid"]);
@@ -5526,22 +6099,48 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','working','reported')", []).unwrap();
 
         let clean = session_forest::SessionForest::new(&db)
-            .append("s", session_forest::EntryKind::UserMessage, serde_json::json!({"text":"clean"}))
+            .append(
+                "s",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"clean"}),
+            )
             .unwrap();
         assert_eq!(clean.payload["_bridgeRepoState"]["status"], "clean");
-        assert_eq!(session_forest_snapshot(&db, "s").unwrap().repository_divergence.status, "aligned");
+        assert_eq!(
+            session_forest_snapshot(&db, "s")
+                .unwrap()
+                .repository_divergence
+                .status,
+            "aligned"
+        );
 
         std::fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
         let dirty = session_forest::SessionForest::new(&db)
-            .append("s", session_forest::EntryKind::AssistantMessage, serde_json::json!({"text":"dirty"}))
+            .append(
+                "s",
+                session_forest::EntryKind::AssistantMessage,
+                serde_json::json!({"text":"dirty"}),
+            )
             .unwrap();
         assert_eq!(dirty.payload["_bridgeRepoState"]["status"], "dirty");
-        assert_ne!(clean.payload["_bridgeRepoState"], dirty.payload["_bridgeRepoState"]);
-        assert_eq!(session_forest_snapshot(&db, "s").unwrap().repository_divergence.status, "aligned");
+        assert_ne!(
+            clean.payload["_bridgeRepoState"],
+            dirty.payload["_bridgeRepoState"]
+        );
+        assert_eq!(
+            session_forest_snapshot(&db, "s")
+                .unwrap()
+                .repository_divergence
+                .status,
+            "aligned"
+        );
 
         let rewound = activate_session_entry_records(&db, "s", &clean.id).unwrap();
         assert_eq!(rewound.repository_divergence.status, "diverged");
-        assert_eq!(std::fs::read_to_string(repository.join("tracked.txt")).unwrap(), "changed\n");
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "changed\n"
+        );
     }
 
     #[test]
@@ -5682,7 +6281,11 @@ mod tests {
     #[test]
     fn policy_defers_cross_harness_reservation_until_phase_boundary() {
         let db = policy_fixture();
-        db.execute("UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'", []).unwrap();
+        db.execute(
+            "UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'",
+            [],
+        )
+        .unwrap();
         let mut request = policy_request(&["src/auth/**"]);
         request.harness = Some("claude".into());
         let outcome = reserve_worker_launch_outcome(
@@ -5696,9 +6299,30 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(outcome, WorkerReservationOutcome::Queued));
-        assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
-        assert_eq!(db.query_row("SELECT queue_status FROM worker_queue", [], |row| row.get::<_,String>(0)).unwrap(), "queued");
-        assert_eq!(db.query_row("SELECT kind FROM events ORDER BY id DESC LIMIT 1", [], |row| row.get::<_,String>(0)).unwrap(), "handoff.deferred_for_phase_boundary");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT queue_status FROM worker_queue", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "queued"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "handoff.deferred_for_phase_boundary"
+        );
     }
 
     #[test]
@@ -5723,16 +6347,21 @@ mod tests {
         .unwrap()
         .is_none());
         assert_eq!(
-            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(),
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
             "waiting"
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -5761,7 +6390,10 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(
-            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(),
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
             "working"
         );
         assert_eq!(turn_id, "turn-approval");
@@ -5820,12 +6452,14 @@ mod tests {
         .unwrap()
         .is_none());
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -5861,24 +6495,10 @@ mod tests {
             )
             .unwrap();
         let request = policy_request(&["src/auth/**"]);
-        reserve_worker_launch(
-            &db,
-            "parent",
-            "turn-stale",
-            &request,
-            "gpt-5.6-terra",
-            true,
-        )
-        .unwrap();
-        reserve_worker_launch(
-            &db,
-            "parent",
-            "turn-stale",
-            &request,
-            "gpt-5.6-terra",
-            true,
-        )
-        .unwrap();
+        reserve_worker_launch(&db, "parent", "turn-stale", &request, "gpt-5.6-terra", true)
+            .unwrap();
+        reserve_worker_launch(&db, "parent", "turn-stale", &request, "gpt-5.6-terra", true)
+            .unwrap();
         let entries = store::session_entries(&db, "parent").unwrap();
         let approvals = entries
             .iter()
@@ -5903,7 +6523,8 @@ mod tests {
         )
         .is_err());
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -5989,12 +6610,15 @@ mod tests {
             .unwrap();
             assert!(index < 3);
         }
-        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra", true)
-            .unwrap()
-            .is_none());
-        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra", true)
-            .unwrap()
-            .expect("new turn should reset request counters");
+        assert!(
+            reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra", true)
+                .unwrap()
+                .is_none()
+        );
+        let next_turn =
+            reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra", true)
+                .unwrap()
+                .expect("new turn should reset request counters");
         assert!(matches!(
             next_turn.outcome.decision,
             policy::RouteDecision::SpawnWorker(_)

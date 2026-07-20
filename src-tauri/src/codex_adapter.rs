@@ -42,6 +42,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             effort: request.effort,
             instructions: request.instructions,
             write_mode: request.write_mode,
+            read_only_sandbox: request.read_only_sandbox,
         },
         Some(request.provider_session_id),
     )
@@ -57,16 +58,27 @@ fn launch(
         effort,
         instructions,
         write_mode,
+        read_only_sandbox,
     } = request;
     let binary = binary::resolve("codex")
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
-    let mut command = Command::new(binary);
+    let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
     command
         .args(["app-server", "--listen", "stdio://"])
-        .current_dir(cwd)
+        .current_dir(
+            read_only_sandbox
+                .map(|sandbox| sandbox.output_dir.as_path())
+                .unwrap_or_else(|| std::path::Path::new(cwd)),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(sandbox) = read_only_sandbox {
+        command
+            .env("HOME", &sandbox.output_dir)
+            .env("TMPDIR", &sandbox.output_dir)
+            .env("BRIDGE_WORKER_OUTPUT_DIR", &sandbox.output_dir);
+    }
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
     let stdin = child
@@ -222,13 +234,19 @@ fn schema_supports_resume(schema: &str) -> bool {
 
 impl CodexRuntime {
     fn terminate(&mut self) {
-        if self.stopped { return; }
+        if self.stopped {
+            return;
+        }
         self.stopped = true;
         let _ = crate::adapters::terminate_process_group(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(&self, text: &str, application_context: Option<&str>) -> Result<(), BridgeError> {
+    pub fn start_turn(
+        &self,
+        text: &str,
+        application_context: Option<&str>,
+    ) -> Result<(), BridgeError> {
         self.request(
             "turn/start",
             turn_start_params(&self.thread_id, text, application_context),
@@ -262,7 +280,8 @@ impl CodexRuntime {
 }
 
 fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&str>) -> Value {
-    let mut params = json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
+    let mut params =
+        json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
     if let Some(context) = application_context
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -275,7 +294,9 @@ fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&s
 }
 
 impl AdapterRuntime for CodexRuntime {
-    fn process_id(&self) -> u32 { self.child.id() }
+    fn process_id(&self) -> u32 {
+        self.child.id()
+    }
     fn provider_session_id(&self) -> &str {
         &self.thread_id
     }
@@ -310,7 +331,9 @@ impl AdapterRuntime for CodexRuntime {
 }
 
 impl Drop for CodexRuntime {
-    fn drop(&mut self) { self.terminate(); }
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 pub fn binary_version() -> Option<String> {
@@ -325,8 +348,15 @@ fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), Bri
     writer.flush()?;
     Ok(())
 }
-fn lock_writer<'a, T>(writer: &'a Mutex<T>, provider: &str) -> Result<MutexGuard<'a, T>, BridgeError> {
-    writer.lock().map_err(|_| BridgeError::Adapter(format!("{provider} stdin lock was poisoned; restart the session")))
+fn lock_writer<'a, T>(
+    writer: &'a Mutex<T>,
+    provider: &str,
+) -> Result<MutexGuard<'a, T>, BridgeError> {
+    writer.lock().map_err(|_| {
+        BridgeError::Adapter(format!(
+            "{provider} stdin lock was poisoned; restart the session"
+        ))
+    })
 }
 fn wait_for_response(
     reader: &mut BufReader<ChildStdout>,
@@ -355,8 +385,14 @@ mod tests {
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());
-        let _ = std::panic::catch_unwind(|| { let _guard = writer.lock().unwrap(); panic!("provider thread failed"); });
-        assert!(matches!(lock_writer(&writer, "Codex"), Err(BridgeError::Adapter(_))));
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = writer.lock().unwrap();
+            panic!("provider thread failed");
+        });
+        assert!(matches!(
+            lock_writer(&writer, "Codex"),
+            Err(BridgeError::Adapter(_))
+        ));
     }
 
     #[test]
@@ -435,10 +471,7 @@ mod tests {
             "verify [secret:sec_reference]",
             Some("trusted broker capability"),
         );
-        assert_eq!(
-            params["input"][0]["text"],
-            "verify [secret:sec_reference]"
-        );
+        assert_eq!(params["input"][0]["text"], "verify [secret:sec_reference]");
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["kind"],
             "application"
@@ -460,6 +493,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -527,6 +561,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CODEX_RESUME_8F31. Reply only SAVED.");
@@ -539,6 +574,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
             provider_session_id: &thread_id,
         })
         .unwrap();

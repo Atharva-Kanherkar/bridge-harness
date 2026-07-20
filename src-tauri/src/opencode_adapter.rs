@@ -122,6 +122,7 @@ pub fn resume_with_settings(
             effort: request.effort,
             instructions: request.instructions,
             write_mode: request.write_mode,
+            read_only_sandbox: request.read_only_sandbox,
         },
         Some(request.provider_session_id),
         settings,
@@ -868,9 +869,7 @@ fn validate_path_id(kind: &str, value: &str) -> Result<(), BridgeError> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
     valid.then_some(()).ok_or_else(|| {
-        BridgeError::Invalid(format!(
-            "OpenCode {kind} contains unsupported characters"
-        ))
+        BridgeError::Invalid(format!("OpenCode {kind} contains unsupported characters"))
     })
 }
 
@@ -1385,6 +1384,7 @@ mod tests {
                 effort: None,
                 instructions: None,
                 write_mode: None,
+                read_only_sandbox: None,
             },
             &OpenCodeSettings {
                 executable_path: Some(executable),

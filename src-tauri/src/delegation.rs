@@ -94,6 +94,12 @@ pub struct DelegationRequest {
     pub write_mode: WriteMode,
     pub capability_tier: CapabilityTier,
     pub effort: Effort,
+    /// A read-only worker is offline unless both this request and host policy opt in.
+    #[serde(default)]
+    pub network_access: bool,
+    /// Logical artifact paths the worker may use under its assigned output directory.
+    #[serde(default)]
+    pub writable_output_paths: Vec<String>,
     #[serde(default)]
     pub verification: Vec<String>,
     pub output_contract: OutputContract,
@@ -130,6 +136,7 @@ impl DelegationRequest {
         validate_non_empty_items("relevantFiles", &self.relevant_files)?;
         validate_non_empty_items("ownedPaths", &self.owned_paths)?;
         validate_non_empty_items("verification", &self.verification)?;
+        validate_output_paths(&self.writable_output_paths)?;
         if let Some(harness) = &self.harness {
             if normalize_harness(harness).is_none() {
                 return Err(format!("unsupported harness hint: {harness}"));
@@ -152,6 +159,20 @@ impl DelegationRequest {
             self.capability_tier.as_str()
         )
     }
+}
+
+fn validate_output_paths(paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.split('/').any(|part| part == ".." || part.is_empty())
+        {
+            return Err(format!(
+                "writableOutputPaths contains invalid relative path: {path}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn role_label(role: WorkerRole) -> &'static str {
@@ -347,6 +368,8 @@ impl LegacyDirective {
             write_mode: WriteMode::Shared,
             capability_tier: CapabilityTier::Standard,
             effort: parse_effort(effort.as_deref().unwrap_or("medium")),
+            network_access: false,
+            writable_output_paths: Vec::new(),
             verification: Vec::new(),
             output_contract: OutputContract::ImplementationResult,
             model: model.map(|model| model.trim().to_ascii_lowercase()),
@@ -800,6 +823,8 @@ mod tests {
             write_mode: WriteMode::Isolated,
             capability_tier: CapabilityTier::Standard,
             effort: Effort::High,
+            network_access: false,
+            writable_output_paths: vec![],
             verification: vec!["cargo test auth".into()],
             output_contract: OutputContract::ImplementationResult,
             harness: Some("claude".into()),

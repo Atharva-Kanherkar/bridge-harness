@@ -102,7 +102,7 @@ where
             deterministic_safety_replay: report,
             realized_outcome_replay,
         })
-            .map_err(|error| format!("cannot serialize replay report: {error}"))?
+        .map_err(|error| format!("cannot serialize replay report: {error}"))?
     );
     Ok(())
 }
@@ -116,7 +116,11 @@ fn load_realized_outcome_replay(
     )
     .map_err(|error| format!("cannot open {} for outcome replay: {error}", path.display()))?;
     let boundary: i64 = db
-        .query_row("SELECT COALESCE(MAX(rowid),0) FROM router_outcomes", [], |row| row.get(0))
+        .query_row(
+            "SELECT COALESCE(MAX(rowid),0) FROM router_outcomes",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|error| format!("cannot freeze realized-outcome boundary: {error}"))?;
     let weights: String = db
         .query_row(
@@ -329,6 +333,8 @@ mod tests {
                 write_mode: WriteMode::ReadOnly,
                 capability_tier: CapabilityTier::Fast,
                 effort: Effort::Low,
+                network_access: false,
+                writable_output_paths: vec![],
                 verification: vec![],
                 output_contract: OutputContract::VerificationResult,
                 harness: None,

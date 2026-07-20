@@ -455,10 +455,16 @@ impl UsageReport {
             context_percent: integer_alias(data, &["context_percent", "contextPercent"])
                 .or_else(|| integer_alias(usage, &["context_percent", "contextPercent"])),
             runtime_ms: integer_alias(data, &["runtime_ms", "runtimeMs", "duration_ms"]),
-            cost_microusd: decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
-                .map(|value| (value * 1_000_000.0).round() as i64),
-            cost_source: decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
-                .map(|_| "provider_reported".into()),
+            cost_microusd: decimal_alias(
+                usage,
+                &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"],
+            )
+            .map(|value| (value * 1_000_000.0).round() as i64),
+            cost_source: decimal_alias(
+                usage,
+                &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"],
+            )
+            .map(|_| "provider_reported".into()),
         };
         (report != Self::default()).then_some(report)
     }
@@ -791,6 +797,8 @@ mod tests {
             write_mode,
             capability_tier: tier,
             effort,
+            network_access: false,
+            writable_output_paths: vec![],
             verification: vec!["cargo test".into()],
             output_contract: OutputContract::ImplementationResult,
             harness: Some("codex".into()),
@@ -1280,14 +1288,7 @@ mod tests {
         let db = database();
         let input = input();
         let outcome = PolicyEngine::default().decide(&input);
-        record_decision(
-            &db,
-            "parent",
-            "turn-1",
-            &input,
-            &outcome,
-        )
-        .unwrap();
+        record_decision(&db, "parent", "turn-1", &input, &outcome).unwrap();
         let branch = SessionForest::new(&db).active_branch("parent").unwrap();
         assert_eq!(branch.len(), 1);
         assert_eq!(branch[0].kind, "delegation.approved");
