@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, BridgeState, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentDefinition, AgentEvent, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
@@ -44,6 +44,14 @@ let mockLearningState: LearningState = {
   canaryPolicyVersion: null,
 };
 let nextEventId = 20;
+let mockBrowserBridge: BrowserBridgeSnapshot = {
+  transportConnected: false, extensionId: "jocamgijenfmpopdfecjfnjdnohhoool", extensionPath: "/path/to/browser-extension",
+  nativeHostInstalled: false, nativeHostManifestPath: null, tabs: [], lease: null, status: "not_attached",
+  captureActive: false, captureError: null,
+  screenshot: null, screenshotRedactedRegions: 0, elements: [], viewport: null, promptInjectionSuspected: false,
+  tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
+  promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
+};
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
@@ -199,6 +207,40 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
 }
 
 export const bridgeApi = {
+  browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? invoke("browser_bridge_state") : Promise.resolve(structuredClone(mockBrowserBridge)),
+  installBrowserNativeHost: async (): Promise<string> => {
+    if (isTauri()) return invoke("install_browser_native_host");
+    mockBrowserBridge.nativeHostInstalled = true; mockBrowserBridge.nativeHostManifestPath = "/mock/dev.bridge.deck.browser.json";
+    return mockBrowserBridge.nativeHostManifestPath;
+  },
+  browserAction: async (request: BrowserActionRequest): Promise<string> => {
+    if (isTauri()) return invoke("browser_action", { request });
+    if (request.kind === "list_tabs") mockBrowserBridge.tabs = [{ id: 1, title: "Bridge test tab", url: "https://example.com", domain: "example.com", favIconUrl: null, attached: false }];
+    if (request.kind === "attach" && request.tabId) {
+      mockBrowserBridge.transportConnected = true; mockBrowserBridge.tabs = mockBrowserBridge.tabs.map(tab => ({ ...tab, attached: tab.id === request.tabId }));
+      mockBrowserBridge.lease = { id: crypto.randomUUID(), tabId: request.tabId, domain: "example.com", status: "active", permission: "read_only", attachedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_800_000).toISOString(), lastActivityAt: new Date().toISOString() };
+      mockBrowserBridge.status = "reading";
+    }
+    return crypto.randomUUID();
+  },
+  setBrowserPermission: async (permission: "read_only" | "interact"): Promise<void> => {
+    if (isTauri()) return invoke("set_browser_permission", { permission });
+    if (mockBrowserBridge.lease) mockBrowserBridge.lease.permission = permission;
+  },
+  resolveBrowserApproval: async (approvalId: string, allow: boolean): Promise<void> => {
+    if (isTauri()) return invoke("resolve_browser_approval", { approvalId, allow });
+    mockBrowserBridge.pendingApproval = null; mockBrowserBridge.status = allow ? "acting" : "paused";
+  },
+  takeoverBrowser: async (): Promise<void> => { if (isTauri()) return invoke("takeover_browser"); mockBrowserBridge.status = "paused"; },
+  detachBrowser: async (): Promise<string> => { if (isTauri()) return invoke("detach_browser"); mockBrowserBridge.lease = null; mockBrowserBridge.status = "not_attached"; return crypto.randomUUID(); },
+  routeBrowser: (request: BrowserRouteRequest): Promise<BrowserRouteDecision> => {
+    if (isTauri()) return invoke("route_browser", { request });
+    const route: BrowserRouteDecision["route"] = request.structuredApiAvailable ? "mcp_api" : request.needsGeoOrProxy || request.unattended || request.needsParallelism && request.remoteProviderConfigured ? "remote_browser" : request.needsUserAuth ? "attached_tab" : request.needsIsolation || request.needsParallelism ? "local_headless" : request.domControlAvailable ? "attached_tab" : "computer_use";
+    return Promise.resolve({ route, reason: "Mock routing decision", requiresUserGrant: route === "attached_tab" || route === "computer_use" });
+  },
+  browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? invoke("browser_skills") : Promise.resolve([]),
+  configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return invoke("configure_remote_browser", { config }); mockBrowserBridge.remoteProvider = config; },
+  startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? invoke("start_remote_browser", { initialUrl }) : Promise.resolve({ id: "mock-remote", initialUrl }),
   skillCatalog: (): Promise<SkillCatalog> => isTauri() ? invoke("skill_catalog") : Promise.resolve(structuredClone(mockSkills)),
   skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? invoke("skill_suggestions", { query, provider }) : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
   previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {

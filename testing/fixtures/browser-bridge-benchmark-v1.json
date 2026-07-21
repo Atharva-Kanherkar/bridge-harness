@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "description": "Deterministic smoke fixture for the comparative browser benchmark contract. Replace measurements with recorded runs in CI or release testing.",
+  "runs": [
+    { "scenario": "authenticated-form-review", "provider": "attached_tab", "success": true, "latencyMs": 4800, "inputTokens": 12000, "outputTokens": 2000, "directCostUsd": 0.06, "interventions": 0, "approvals": 1, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "authenticated-form-review", "provider": "playwright_mcp", "success": true, "latencyMs": 7100, "inputTokens": 18000, "outputTokens": 2000, "directCostUsd": 0.075, "interventions": 1, "approvals": 1, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "authenticated-form-review", "provider": "browser_use", "success": true, "latencyMs": 6500, "inputTokens": 21000, "outputTokens": 2200, "directCostUsd": 0.125, "interventions": 1, "approvals": 1, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "authenticated-form-review", "provider": "computer_use", "success": true, "latencyMs": 12800, "inputTokens": 80000, "outputTokens": 3000, "directCostUsd": 0.276, "interventions": 1, "approvals": 1, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "dashboard-extraction", "provider": "attached_tab", "success": true, "latencyMs": 3200, "inputTokens": 8200, "outputTokens": 1200, "directCostUsd": 0.0385, "interventions": 0, "approvals": 0, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "dashboard-extraction", "provider": "playwright_mcp", "success": true, "latencyMs": 3900, "inputTokens": 11000, "outputTokens": 1200, "directCostUsd": 0.0455, "interventions": 0, "approvals": 0, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "dashboard-extraction", "provider": "browser_use", "success": true, "latencyMs": 5100, "inputTokens": 15000, "outputTokens": 1400, "directCostUsd": 0.082, "interventions": 0, "approvals": 0, "duplicateSideEffects": 0, "evidenceVerified": true },
+    { "scenario": "dashboard-extraction", "provider": "computer_use", "success": true, "latencyMs": 9200, "inputTokens": 52000, "outputTokens": 1800, "directCostUsd": 0.1776, "interventions": 0, "approvals": 0, "duplicateSideEffects": 0, "evidenceVerified": true }
+  ]
+}
