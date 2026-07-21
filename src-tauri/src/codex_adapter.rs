@@ -397,22 +397,29 @@ mod tests {
 
     #[test]
     fn codex_receives_the_compiled_stable_prefix_before_variable_context() {
-        let prompt = crate::prompt_compiler::PromptCompiler::new("worker:verification")
+        let compile = |evidence: &str| crate::prompt_compiler::PromptCompiler::new("worker:verification")
             .stable_section("contract", "stable-provider-contract")
-            .variable_section("evidence", "variable-task-evidence")
+            .variable_section("evidence", evidence)
             .compile()
             .unwrap();
-        let params = thread_start_params(
-            "/tmp/work",
-            Some("runtime-model"),
-            None,
-            Some(prompt.instructions()),
-            Some(WriteMode::ReadOnly),
-        );
-        let instructions = params["developerInstructions"].as_str().unwrap();
-        assert_eq!(params["instructions"], params["developerInstructions"]);
-        assert!(instructions.starts_with("<bridge-stable-prompt"));
-        assert!(instructions.find("stable-provider-contract").unwrap() < instructions.find("variable-task-evidence").unwrap());
+        let first = compile("variable-task-evidence-one");
+        let second = compile("variable-task-evidence-two");
+        assert_eq!(first.metadata.prefix_hash, second.metadata.prefix_hash);
+        assert_eq!(first.stable_prefix, second.stable_prefix);
+        assert_ne!(first.variable_suffix, second.variable_suffix);
+        for prompt in [first, second] {
+            let params = thread_start_params(
+                "/tmp/work",
+                Some("runtime-model"),
+                None,
+                Some(prompt.instructions()),
+                Some(WriteMode::ReadOnly),
+            );
+            let instructions = params["developerInstructions"].as_str().unwrap();
+            assert_eq!(params["instructions"], params["developerInstructions"]);
+            assert!(instructions.starts_with("<bridge-stable-prompt"));
+            assert!(instructions.find("stable-provider-contract").unwrap() < instructions.find("variable-task-evidence").unwrap());
+        }
     }
 
     #[test]

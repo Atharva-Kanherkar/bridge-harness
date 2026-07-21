@@ -5466,6 +5466,41 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_prompt_records_cross_harness_compatibility_without_prompt_contents() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/cache-test','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Cache','bridge/cache','/tmp/cache-test','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child','w','claude','Child','working','reported','parent')", []).unwrap();
+        assert_eq!(cross_harness_reuse_marker(&db, "parent", "codex"), "same_harness");
+        assert_eq!(cross_harness_reuse_marker(&db, "parent", "claude"), "incompatible");
+        assert_eq!(cross_harness_reuse_marker(&db, "missing", "claude"), "not_applicable");
+
+        let prompt = prompt_compiler::PromptCompiler::new("worker:verification")
+            .stable_section("contract", "Verify the task")
+            .variable_section("restoration_context", "checkpoint evidence")
+            .compile()
+            .unwrap();
+        persist_prompt_compilation(
+            &db,
+            "child",
+            "claude",
+            Some("sonnet"),
+            "worker:verification",
+            "verification",
+            RestorationMode::CheckpointRestored,
+            cross_harness_reuse_marker(&db, "parent", "claude"),
+            &prompt,
+        ).unwrap();
+        let stored = store::latest_prompt_compilation(&db, "child").unwrap().unwrap();
+        assert_eq!(stored.restoration_mode, "checkpoint_restored");
+        assert_eq!(stored.cross_harness_reuse, "incompatible");
+        assert_eq!(stored.prefix_hash, prompt.metadata.prefix_hash);
+        assert!(!serde_json::to_string(&stored).unwrap().contains("Verify the task"));
+        assert!(!serde_json::to_string(&stored).unwrap().contains("checkpoint evidence"));
+    }
+
+    #[test]
     fn tauri_commands_never_block_the_ui_thread() {
         let source = include_str!("lib.rs");
         assert!(

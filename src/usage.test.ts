@@ -190,6 +190,15 @@ describe("buildCacheDiagnostics", () => {
     expect(diagnostic.reportedCostMicrousd).toBeUndefined();
     expect("estimatedSavingsMicrousd" in diagnostic).toBe(false);
   });
+
+  it("leaves ratios undefined for missing metrics and zero denominators", () => {
+    const [missing] = buildCacheDiagnostics([ledger({ cacheReadTokens: null, cacheWriteTokens: null, uncachedInputTokens: null })]);
+    const [zero] = buildCacheDiagnostics([ledger({ cacheReadTokens: 0, cacheWriteTokens: 0, uncachedInputTokens: 0 })]);
+    expect(missing.cacheHitRatio).toBeUndefined();
+    expect(missing.writeAmortization).toBeUndefined();
+    expect(zero.cacheHitRatio).toBeUndefined();
+    expect(zero.writeAmortization).toBeUndefined();
+  });
 });
 
 describe("windowLabel", () => {

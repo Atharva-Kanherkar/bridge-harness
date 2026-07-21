@@ -41,14 +41,15 @@ test("query options load explicit Claude plugins and credential-free connectors"
 });
 
 test("Claude receives the compiled stable prefix before variable context", () => {
-  const instructions = [
-    '<bridge-stable-prompt schema="1">stable-provider-contract</bridge-stable-prompt>',
-    '<bridge-variable-context>variable-task-evidence</bridge-variable-context>',
-  ].join("\n\n");
-  const options = buildOptions({ ...base, instructions, resume: false });
-  const appended = options.systemPrompt.append;
-  assert.ok(appended.startsWith("<bridge-stable-prompt"));
-  assert.ok(appended.indexOf("stable-provider-contract") < appended.indexOf("variable-task-evidence"));
+  const stable = '<bridge-stable-prompt schema="1">stable-provider-contract</bridge-stable-prompt>';
+  const compile = evidence => [stable, `<bridge-variable-context>${evidence}</bridge-variable-context>`].join("\n\n");
+  const first = buildOptions({ ...base, instructions: compile("variable-task-evidence-one"), resume: false }).systemPrompt.append;
+  const second = buildOptions({ ...base, instructions: compile("variable-task-evidence-two"), resume: false }).systemPrompt.append;
+  assert.notEqual(first, second);
+  for (const appended of [first, second]) {
+    assert.ok(appended.startsWith(stable));
+    assert.ok(appended.indexOf("stable-provider-contract") < appended.indexOf("variable-task-evidence"));
+  }
 });
 
 test("read-only mode denies direct write tools without dangerous bypass", () => {

@@ -2208,6 +2208,39 @@ mod tests {
     }
 
     #[test]
+    fn upgraded_and_current_databases_have_identical_cache_telemetry_columns() {
+        fn columns(db: &Connection, table: &str) -> Vec<String> {
+            let mut values = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            values.sort();
+            values
+        }
+
+        let current = open(Path::new(":memory:")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = dir.path().join("legacy.db");
+        create_legacy_fixture(&legacy_path);
+        let upgraded = open(&legacy_path).unwrap();
+        assert_eq!(columns(&current, "usage_ledger"), columns(&upgraded, "usage_ledger"));
+        assert_eq!(columns(&current, "prompt_compilations"), columns(&upgraded, "prompt_compilations"));
+        for required in [
+            "uncached_input_tokens",
+            "stable_prefix_id",
+            "stable_prefix_hash",
+            "prompt_schema_version",
+            "prefix_token_estimate",
+            "cross_harness_reuse",
+        ] {
+            assert!(columns(&upgraded, "usage_ledger").iter().any(|column| column == required));
+        }
+    }
+
+    #[test]
     fn migration_16_repairs_databases_created_by_early_migration_15() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");
