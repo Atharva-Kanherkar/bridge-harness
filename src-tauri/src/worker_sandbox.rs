@@ -107,18 +107,16 @@ fn seatbelt_profile(
     let _workspace = quoted(workspace)?;
     let output = quoted(output)?;
     let network = if network_allowed {
-        "(allow network*)"
+        ""
     } else {
         "(deny network*)"
     };
     Ok(format!(
         r#"(version 1)
-(deny default)
-(allow process*)
-(allow file-read*)
-; Default deny makes the repository immutable. Only this per-worker output
-; directory is writable, which also becomes HOME/TMPDIR for provider tools.
-(allow file-write* (subpath {output}))
+(allow default)
+; Preserve the provider runtime's non-filesystem IPC and system services while
+; denying every write outside this per-worker output directory.
+(deny file-write* (require-not (subpath {output})))
 {network}
 "#
     ))
@@ -137,7 +135,7 @@ fn quoted(path: &Path) -> Result<String, BridgeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Stdio;
+    use std::{io::BufRead, process::Stdio, sync::mpsc, thread, time::Duration};
 
     fn request() -> DelegationRequest {
         DelegationRequest {
@@ -166,20 +164,20 @@ mod tests {
     fn profile_denies_workspace_writes_and_network_by_default() {
         let profile =
             seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), false).unwrap();
-        assert!(profile.contains("(deny default)"));
-        assert!(profile.contains("(allow file-write* (subpath \"/tmp/output\"))"));
+        assert!(profile.contains("(allow default)"));
+        assert!(profile.contains("(deny file-write* (require-not (subpath \"/tmp/output\")))"));
         assert!(profile.contains("(deny network*)"));
 
         let networked =
             seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), true).unwrap();
-        assert!(networked.contains("(allow network*)"));
         assert!(!networked.contains("(deny network*)"));
     }
 
     #[test]
     fn sandbox_root_is_owned_even_when_session_id_looks_like_a_path() {
         let workspace = tempfile::tempdir().unwrap();
-        let sandbox = ReadOnlySandbox::create("../../escape", workspace.path(), &request()).unwrap();
+        let sandbox =
+            ReadOnlySandbox::create("../../escape", workspace.path(), &request()).unwrap();
         let expected_parent = std::env::temp_dir().join("bridge-read-only-workers");
         assert_eq!(sandbox.root_dir.parent(), Some(expected_parent.as_path()));
         assert!(sandbox.profile_path.is_file());
@@ -231,5 +229,141 @@ mod tests {
                 .success());
         }
         sandbox.cleanup();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires authenticated Codex and Claude runtimes plus BRIDGE_ALLOW_READ_ONLY_NETWORK=1"]
+    fn live_codex_and_claude_workers_obey_the_os_boundary() {
+        use crate::{
+            adapters::{AdapterRuntime, ShutdownReason},
+            claude_adapter, codex_adapter,
+        };
+
+        assert!(read_only_network_policy_allows());
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(
+            workspace.path().join("marker.txt"),
+            "BRIDGE_READ_ONLY_MARKER",
+        )
+        .unwrap();
+        let cwd = workspace.path().to_str().unwrap();
+        let prompt = "Read marker.txt. Use the shell to run `touch blocked.txt || true`, then run `printf verified > \"$BRIDGE_WORKER_OUTPUT_DIR/provider.txt\"`. Also run `if test -n \"$CLAUDE_CODE_OAUTH_TOKEN\"; then printf exposed > \"$BRIDGE_WORKER_OUTPUT_DIR/credential-exposed.txt\"; fi`. Reply only DONE.";
+        let mut networked_request = request();
+        networked_request.network_access = true;
+
+        let codex_sandbox =
+            ReadOnlySandbox::create("live-codex", workspace.path(), &networked_request).unwrap();
+        let codex = codex_adapter::start(crate::adapters::StartRequest {
+            cwd,
+            model: None,
+            effort: Some("low"),
+            instructions: Some("Complete only the requested read-only verification."),
+            write_mode: Some(crate::delegation::WriteMode::ReadOnly),
+            read_only_sandbox: Some(&codex_sandbox),
+        })
+        .unwrap();
+        codex.runtime.start_turn(prompt, None).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = codex.reader;
+            let mut transcript = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                transcript.push_str(&line);
+                let completed = serde_json::from_str::<serde_json::Value>(line.trim())
+                    .ok()
+                    .and_then(|frame| {
+                        frame
+                            .get("method")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some("turn/completed");
+                if completed {
+                    let _ = sender.send(transcript);
+                    break;
+                }
+            }
+        });
+        let codex_transcript = receiver
+            .recv_timeout(Duration::from_secs(120))
+            .expect("sandboxed Codex turn timed out");
+        assert!(!workspace.path().join("blocked.txt").exists());
+        let codex_artifact = codex_sandbox.output_dir().join("provider.txt");
+        if codex_artifact.is_file() {
+            assert_eq!(fs::read_to_string(codex_artifact).unwrap(), "verified");
+        } else {
+            assert!(
+                codex_transcript.contains("usageLimitExceeded"),
+                "Codex completed without producing its sandbox artifact"
+            );
+        }
+        let mut codex_runtime = codex.runtime;
+        codex_runtime.stop(ShutdownReason::Completed);
+        codex_sandbox.cleanup();
+
+        let claude_sandbox =
+            ReadOnlySandbox::create("live-claude", workspace.path(), &networked_request).unwrap();
+        let claude = claude_adapter::start(crate::adapters::StartRequest {
+            cwd,
+            model: Some("haiku"),
+            effort: Some("low"),
+            instructions: Some("Complete only the requested read-only verification."),
+            write_mode: Some(crate::delegation::WriteMode::ReadOnly),
+            read_only_sandbox: Some(&claude_sandbox),
+        })
+        .unwrap();
+        claude.runtime.start_turn(prompt).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = claude.reader;
+            let mut transcript = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                transcript.push_str(&line);
+                let completed = serde_json::from_str::<serde_json::Value>(line.trim())
+                    .ok()
+                    .and_then(|frame| {
+                        frame
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some("result");
+                if completed {
+                    let _ = sender.send(transcript);
+                    break;
+                }
+            }
+        });
+        let claude_transcript = receiver
+            .recv_timeout(Duration::from_secs(120))
+            .expect("sandboxed Claude turn timed out");
+        assert!(!workspace.path().join("blocked.txt").exists());
+        let claude_artifact = claude_sandbox.output_dir().join("provider.txt");
+        assert!(
+            claude_artifact.is_file(),
+            "Claude completed without producing its sandbox artifact: {claude_transcript}"
+        );
+        assert_eq!(fs::read_to_string(claude_artifact).unwrap(), "verified");
+        assert!(
+            !claude_sandbox
+                .output_dir()
+                .join("credential-exposed.txt")
+                .exists(),
+            "Claude exposed its host credential to a worker shell"
+        );
+        let mut claude_runtime = claude.runtime;
+        claude_runtime.stop(ShutdownReason::Completed);
+        claude_sandbox.cleanup();
     }
 }

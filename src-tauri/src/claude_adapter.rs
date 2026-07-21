@@ -106,10 +106,17 @@ fn launch(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(sandbox) = read_only_sandbox {
+        let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
-            .env("HOME", sandbox.output_dir())
+            .env("CLAUDE_CONFIG_DIR", config_dir)
+            .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
+        if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
+            if let Some(token) = claude_oauth_token()? {
+                command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+            }
+        }
     }
     // Claude Code has no per-run effort flag; the closest real knob is the
     // extended-thinking budget, which we scale by the routed effort tier.
@@ -152,6 +159,63 @@ fn launch(
         reader,
         startup_messages,
     })
+}
+
+fn prepare_isolated_claude_config(
+    sandbox: &crate::worker_sandbox::ReadOnlySandbox,
+) -> Result<PathBuf, BridgeError> {
+    let isolated_root = sandbox.output_dir().join(".claude");
+    std::fs::create_dir_all(&isolated_root)?;
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(isolated_root);
+    };
+    let source = PathBuf::from(home).join(".claude/.credentials.json");
+    if !source.is_file() {
+        return Ok(isolated_root);
+    }
+    let destination = isolated_root.join(".credentials.json");
+    if destination.exists() {
+        return Ok(isolated_root);
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(source, destination)?;
+    #[cfg(not(unix))]
+    {
+        let _ = (source, destination);
+        return Err(BridgeError::Invalid(
+            "Read-only Claude authentication projection is unsupported on this platform".into(),
+        ));
+    }
+    Ok(isolated_root)
+}
+
+#[cfg(target_os = "macos")]
+fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
+    let output = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let credentials: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        BridgeError::Invalid(format!(
+            "Claude Keychain credentials are invalid JSON: {error}"
+        ))
+    })?;
+    Ok(credentials
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
+    Ok(None)
 }
 
 /// The write-mode label passed to the sidecar, which maps it to SDK permission

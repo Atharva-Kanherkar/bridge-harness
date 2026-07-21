@@ -21,6 +21,7 @@ pub struct CodexRuntime {
     pub thread_id: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
+    sandbox_policy: Option<Value>,
     stopped: bool,
 }
 
@@ -63,6 +64,13 @@ fn launch(
     let binary = binary::resolve("codex")
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
     let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
+    let sandbox_policy = read_only_sandbox.map(|sandbox| {
+        json!({
+            "type": "workspaceWrite",
+            "writableRoots": [sandbox.output_dir().to_string_lossy()],
+            "networkAccess": sandbox.network_allowed(),
+        })
+    });
     command
         .args(["app-server", "--listen", "stdio://"])
         .current_dir(
@@ -74,6 +82,7 @@ fn launch(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(sandbox) = read_only_sandbox {
+        prepare_isolated_codex_home(sandbox)?;
         command
             .env("HOME", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
@@ -127,11 +136,43 @@ fn launch(
             thread_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
+            sandbox_policy,
             stopped: false,
         },
         reader,
         startup_messages,
     })
+}
+
+fn prepare_isolated_codex_home(
+    sandbox: &crate::worker_sandbox::ReadOnlySandbox,
+) -> Result<(), BridgeError> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(());
+    };
+    let source_root = std::path::PathBuf::from(home).join(".codex");
+    let isolated_root = sandbox.output_dir().join(".codex");
+    std::fs::create_dir_all(&isolated_root)?;
+    for filename in ["auth.json", "config.toml"] {
+        let source = source_root.join(filename);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = isolated_root.join(filename);
+        if destination.exists() {
+            continue;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &destination)?;
+        #[cfg(not(unix))]
+        {
+            let _ = (source, destination);
+            return Err(BridgeError::Invalid(
+                "Read-only Codex authentication projection is unsupported on this platform".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn sandbox_settings(write_mode: Option<WriteMode>) -> (&'static str, &'static str) {
@@ -249,7 +290,12 @@ impl CodexRuntime {
     ) -> Result<(), BridgeError> {
         self.request(
             "turn/start",
-            turn_start_params(&self.thread_id, text, application_context),
+            turn_start_params(
+                &self.thread_id,
+                text,
+                application_context,
+                self.sandbox_policy.as_ref(),
+            ),
         )
     }
     pub fn interrupt(&self) -> Result<(), BridgeError> {
@@ -279,7 +325,12 @@ impl CodexRuntime {
     }
 }
 
-fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&str>) -> Value {
+fn turn_start_params(
+    thread_id: &str,
+    text: &str,
+    application_context: Option<&str>,
+    sandbox_policy: Option<&Value>,
+) -> Value {
     let mut params =
         json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
     if let Some(context) = application_context
@@ -289,6 +340,9 @@ fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&s
         params["additionalContext"] = json!({
             "bridge.credentials": {"kind": "application", "value": context}
         });
+    }
+    if let Some(sandbox_policy) = sandbox_policy {
+        params["sandboxPolicy"] = sandbox_policy.clone();
     }
     params
 }
@@ -470,6 +524,7 @@ mod tests {
             "thread-existing",
             "verify [secret:sec_reference]",
             Some("trusted broker capability"),
+            None,
         );
         assert_eq!(params["input"][0]["text"], "verify [secret:sec_reference]");
         assert_eq!(
@@ -479,6 +534,24 @@ mod tests {
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["value"],
             "trusted broker capability"
+        );
+    }
+
+    #[test]
+    fn read_only_turn_adds_only_the_assigned_output_root() {
+        let policy = json!({
+            "type": "workspaceWrite",
+            "writableRoots": ["/tmp/bridge-output"],
+            "networkAccess": false,
+        });
+        let params = turn_start_params("thread", "verify", None, Some(&policy));
+        assert_eq!(params["sandboxPolicy"], policy);
+        assert_eq!(
+            params["sandboxPolicy"]["writableRoots"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
     }
 
