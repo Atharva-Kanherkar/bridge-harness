@@ -99,7 +99,7 @@ fn launch(
         .arg(config.to_string())
         .current_dir(
             read_only_sandbox
-                .map(|sandbox| sandbox.output_dir.as_path())
+                .map(|sandbox| sandbox.output_dir())
                 .unwrap_or_else(|| std::path::Path::new(cwd)),
         )
         .stdin(Stdio::piped())
@@ -107,9 +107,9 @@ fn launch(
         .stderr(Stdio::null());
     if let Some(sandbox) = read_only_sandbox {
         command
-            .env("HOME", &sandbox.output_dir)
-            .env("TMPDIR", &sandbox.output_dir)
-            .env("BRIDGE_WORKER_OUTPUT_DIR", &sandbox.output_dir);
+            .env("HOME", sandbox.output_dir())
+            .env("TMPDIR", sandbox.output_dir())
+            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
     }
     // Claude Code has no per-run effort flag; the closest real knob is the
     // extended-thinking budget, which we scale by the routed effort tier.

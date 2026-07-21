@@ -134,6 +134,12 @@ fn launch(
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
+    if request.read_only_sandbox.is_some() {
+        return Err(BridgeError::Invalid(
+            "OpenCode read-only workers are unsupported because its local HTTP transport cannot run inside the offline sandbox; refusing to start without isolation"
+                .into(),
+        ));
+    }
     if let Some(session_id) = resume_session_id {
         validate_path_id("session id", session_id)?;
     }

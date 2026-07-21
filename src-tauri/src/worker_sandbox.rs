@@ -12,14 +12,15 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOnlySandbox {
-    pub profile_path: PathBuf,
-    pub output_dir: PathBuf,
-    pub network_allowed: bool,
+    root_dir: PathBuf,
+    profile_path: PathBuf,
+    output_dir: PathBuf,
+    network_allowed: bool,
 }
 
 impl ReadOnlySandbox {
     pub fn create(
-        session_id: &str,
+        _session_id: &str,
         workspace: &Path,
         request: &DelegationRequest,
     ) -> Result<Self, BridgeError> {
@@ -28,7 +29,7 @@ impl ReadOnlySandbox {
         }
         let root = std::env::temp_dir()
             .join("bridge-read-only-workers")
-            .join(format!("{session_id}-{}", Uuid::new_v4()));
+            .join(Uuid::new_v4().to_string());
         let output_dir = root.join("output");
         fs::create_dir_all(&output_dir)?;
         let profile_path = root.join("seatbelt.sb");
@@ -42,16 +43,23 @@ impl ReadOnlySandbox {
         let profile = seatbelt_profile(&workspace, &output, request.network_access)?;
         fs::write(&profile_path, profile)?;
         Ok(Self {
+            root_dir: root,
             profile_path,
             output_dir,
             network_allowed: request.network_access,
         })
     }
 
+    pub fn output_dir(&self) -> &Path {
+        &self.output_dir
+    }
+
+    pub fn network_allowed(&self) -> bool {
+        self.network_allowed
+    }
+
     pub fn cleanup(&self) {
-        if let Some(root) = self.profile_path.parent() {
-            let _ = fs::remove_dir_all(root);
-        }
+        let _ = fs::remove_dir_all(&self.root_dir);
     }
 }
 
@@ -130,23 +138,9 @@ fn quoted(path: &Path) -> Result<String, BridgeError> {
 mod tests {
     use super::*;
     use std::process::Stdio;
-    #[test]
-    fn profile_denies_workspace_writes_and_network_by_default() {
-        let profile =
-            seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), false).unwrap();
-        assert!(profile.contains("(deny default)"));
-        assert!(profile.contains("(allow file-write* (subpath \"/tmp/output\"))"));
-        assert!(profile.contains("(deny network*)"));
-    }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn seatbelt_prevents_workspace_writes_but_allows_assigned_output() {
-        if !Path::new("/usr/bin/sandbox-exec").is_file() {
-            return;
-        }
-        let workspace = tempfile::tempdir().unwrap();
-        let request = DelegationRequest {
+    fn request() -> DelegationRequest {
+        DelegationRequest {
             schema_version: 1,
             role: crate::delegation::WorkerRole::Verification,
             objective: "inspect".into(),
@@ -165,15 +159,45 @@ mod tests {
             output_contract: crate::delegation::OutputContract::VerificationResult,
             harness: None,
             model: None,
-        };
-        let sandbox = ReadOnlySandbox::create("test", workspace.path(), &request).unwrap();
+        }
+    }
+
+    #[test]
+    fn profile_denies_workspace_writes_and_network_by_default() {
+        let profile =
+            seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), false).unwrap();
+        assert!(profile.contains("(deny default)"));
+        assert!(profile.contains("(allow file-write* (subpath \"/tmp/output\"))"));
+        assert!(profile.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn sandbox_root_is_owned_even_when_session_id_looks_like_a_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = ReadOnlySandbox::create("../../escape", workspace.path(), &request()).unwrap();
+        let expected_parent = std::env::temp_dir().join("bridge-read-only-workers");
+        assert_eq!(sandbox.root_dir.parent(), Some(expected_parent.as_path()));
+        assert!(sandbox.profile_path.is_file());
+        let root = sandbox.root_dir.clone();
+        sandbox.cleanup();
+        assert!(!root.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_prevents_workspace_writes_but_allows_assigned_output() {
+        if !Path::new("/usr/bin/sandbox-exec").is_file() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = ReadOnlySandbox::create("test", workspace.path(), &request()).unwrap();
         let mut output = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
         let target = workspace.path().join("blocked.txt");
         let status = output
             .arg("-c")
             .arg(format!("touch '{}'", target.display()))
-            .current_dir(&sandbox.output_dir)
-            .env("BRIDGE_WORKER_OUTPUT_DIR", &sandbox.output_dir)
+            .current_dir(sandbox.output_dir())
+            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -185,17 +209,17 @@ mod tests {
         assert!(output
             .arg("-c")
             .arg("touch \"$BRIDGE_WORKER_OUTPUT_DIR/allowed.txt\"")
-            .current_dir(&sandbox.output_dir)
-            .env("BRIDGE_WORKER_OUTPUT_DIR", &sandbox.output_dir)
+            .current_dir(sandbox.output_dir())
+            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir())
             .status()
             .unwrap()
             .success());
-        assert!(sandbox.output_dir.join("allowed.txt").exists());
+        assert!(sandbox.output_dir().join("allowed.txt").exists());
         if Path::new("/usr/bin/curl").is_file() {
             let mut network = command(Path::new("/usr/bin/curl"), Some(&sandbox)).unwrap();
             assert!(!network
                 .args(["-fsS", "--max-time", "2", "https://example.com"])
-                .current_dir(&sandbox.output_dir)
+                .current_dir(sandbox.output_dir())
                 .status()
                 .unwrap()
                 .success());

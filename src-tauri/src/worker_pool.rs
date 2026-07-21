@@ -22,6 +22,9 @@ pub struct WorkerCompatibilityKey {
     pub capability_tier: String,
     pub task_family: String,
     pub owned_paths: Vec<String>,
+    pub write_mode: String,
+    pub network_access: bool,
+    pub writable_output_paths: Vec<String>,
 }
 
 impl WorkerCompatibilityKey {
@@ -29,6 +32,8 @@ impl WorkerCompatibilityKey {
         workspace_id: &str,
         request: &DelegationRequest,
     ) -> Result<Self, BridgeError> {
+        let mut writable_output_paths = request.writable_output_paths.clone();
+        writable_output_paths.sort();
         Ok(Self {
             workspace_id: workspace_id.to_owned(),
             role: policy::role_name(request.role).to_owned(),
@@ -37,6 +42,9 @@ impl WorkerCompatibilityKey {
             task_family: task_family(request),
             owned_paths: policy::normalize_owned_paths(&request.owned_paths)
                 .map_err(BridgeError::Invalid)?,
+            write_mode: policy::write_mode_name(request.write_mode).to_owned(),
+            network_access: request.network_access,
+            writable_output_paths,
         })
     }
 
@@ -345,10 +353,23 @@ mod tests {
         assert_eq!(key.capability_tier, "standard");
         assert_eq!(key.task_family, "implementation");
         assert_eq!(key.owned_paths, vec!["src/auth.rs", "src/auth/**"]);
+        assert_eq!(key.write_mode, "shared");
+        assert!(!key.network_access);
+        assert!(key.writable_output_paths.is_empty());
         let encoded = key.encode().unwrap();
         let mut changed = key.clone();
         changed.harness = "claude".into();
         assert_ne!(encoded, changed.encode().unwrap());
+
+        let mut read_only = request();
+        read_only.write_mode = WriteMode::ReadOnly;
+        assert_ne!(
+            encoded,
+            WorkerCompatibilityKey::for_request("workspace", &read_only)
+                .unwrap()
+                .encode()
+                .unwrap()
+        );
     }
 
     #[test]

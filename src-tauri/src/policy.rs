@@ -302,6 +302,7 @@ fn compatible_worker(worker: &WorkerSnapshot, input: &PolicyInput) -> bool {
         && worker.harness == input.requested_harness
         && worker.capability_tier == input.request.capability_tier
         && worker.task_family == input.task_family
+        && worker.write_mode == input.request.write_mode
         && normalize_owned_paths(&worker.owned_paths).ok()
             == normalize_owned_paths(&input.request.owned_paths).ok()
 }
@@ -909,6 +910,26 @@ mod tests {
         case.request.write_mode = WriteMode::ReadOnly;
         case.request.owned_paths.clear();
         case.owned_path_provenance = OwnedPathProvenance::default();
+        assert!(matches!(
+            PolicyEngine::default().decide(&case).decision,
+            RouteDecision::SpawnWorker(_)
+        ));
+    }
+
+    #[test]
+    fn read_only_request_never_reuses_a_writable_worker() {
+        let mut case = input();
+        case.request.write_mode = WriteMode::ReadOnly;
+        case.request.owned_paths.clear();
+        case.owned_path_provenance = OwnedPathProvenance::default();
+        case.warm_workers = vec![worker(
+            "writer",
+            WorkerRole::Implementation,
+            CapabilityTier::Standard,
+            WriteMode::Shared,
+            &[],
+        )];
+
         assert!(matches!(
             PolicyEngine::default().decide(&case).decision,
             RouteDecision::SpawnWorker(_)

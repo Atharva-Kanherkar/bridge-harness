@@ -3291,7 +3291,8 @@ fn launch_worker_outcome(
             directive,
         ) {
             Ok(sandbox) => {
-                let output = sandbox.output_dir.display().to_string();
+                let output = sandbox.output_dir().display().to_string();
+                let network_allowed = sandbox.network_allowed();
                 state
                     .delegations
                     .lock()
@@ -3307,7 +3308,7 @@ fn launch_worker_outcome(
                     &reservation.session_id,
                     &format!(
                         "mode=seatbelt network_allowed={} output_dir={output}",
-                        directive.network_access
+                        network_allowed
                     ),
                 );
             }
@@ -4188,7 +4189,7 @@ fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
             "sandbox",
             "worker.read_only_isolation_cleaned",
             child_session_id,
-            &format!("output_dir={}", sandbox.output_dir.display()),
+            &format!("output_dir={}", sandbox.output_dir().display()),
         );
         sandbox.cleanup();
     }
