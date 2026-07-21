@@ -47,6 +47,7 @@ let nextEventId = 20;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
   transportConnected: false, extensionId: "jocamgijenfmpopdfecjfnjdnohhoool", extensionPath: "/path/to/browser-extension",
   nativeHostInstalled: false, nativeHostManifestPath: null, tabs: [], lease: null, status: "not_attached",
+  captureActive: false, captureError: null,
   screenshot: null, screenshotRedactedRegions: 0, elements: [], viewport: null, promptInjectionSuspected: false,
   tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
   promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,

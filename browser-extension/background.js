@@ -69,7 +69,13 @@ async function attach(tabId, requestedLeaseId) {
   await chrome.action.setBadgeBackgroundColor({ tabId, color: "#16a34a" });
   post("attached", { tab: await tabSummary(tab), leaseId });
   await sendSnapshot(false);
-  await startLiveCapture(tab.id).catch(error => post("capture_status", { active: false, error: error.message }));
+  try {
+    await startLiveCapture(tab.id);
+    return { captureActive: true, captureError: null };
+  } catch (error) {
+    post("capture_status", { active: false, error: error.message });
+    return { captureActive: false, captureError: error.message };
+  }
 }
 
 async function detach(reason = "manual") {
@@ -203,7 +209,7 @@ chrome.runtime.onMessage.addListener((message, _sender, reply) => {
   }
   if (message.type === "status") { reply({ connected, attached: attachedTabId != null, title: attachedTitle }); return; }
   if (message.type === "attach-active") {
-    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => attach(tab.id)).then(() => reply({ ok: true, message: "This tab is attached to Bridge." })).catch(error => reply({ ok: false, message: error.message }));
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => attach(tab.id)).then(result => reply({ ok: true, message: result.captureActive ? "Attached with live mirror enabled." : `Attached, but the live mirror could not start: ${result.captureError}` })).catch(error => reply({ ok: false, message: error.message }));
     return true;
   }
   if (message.type === "detach-active") { detach().then(() => reply({ ok: true, message: "Detached." })); return true; }

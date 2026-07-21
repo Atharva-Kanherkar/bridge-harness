@@ -63,6 +63,7 @@ export function BrowserSurface({ onClose, onError }: { onClose: () => void; onEr
       </div>
 
       {snapshot.promptInjectionSuspected && <div className="flex items-start gap-2 border-b border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-[10px] leading-4 text-amber-200"><ShieldAlert size={14} className="mt-0.5 shrink-0" /><span>Untrusted page content matches {suspiciousCount} prompt-injection pattern{suspiciousCount === 1 ? "" : "s"}. Agent input is paused; page text is never treated as policy.</span></div>}
+      {snapshot.captureError && <div className="flex items-start gap-2 border-b border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-[10px] leading-4 text-sky-100"><Camera size={14} className="mt-0.5 shrink-0" /><span><b className="font-semibold">One Chrome click is required for the live mirror.</b> Activate the attached tab, click the Bridge extension icon, then choose <b className="font-semibold">Attach this tab</b>. Chrome only grants tab capture after that click.</span></div>}
       {snapshot.screenshotRedactedRegions > 0 && <div className="border-b border-white/[0.05] px-3 py-1 text-[9px] text-neutral-500">{snapshot.screenshotRedactedRegions} sensitive region{snapshot.screenshotRedactedRegions === 1 ? "" : "s"} redacted before persistence</div>}
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -108,7 +109,7 @@ function TabPicker({ snapshot, busy, onRefresh, onAttach }: { snapshot: BrowserB
 }
 
 function PageMirror({ snapshot, busy, onPoint }: { snapshot: BrowserBridgeSnapshot; busy: boolean; onPoint: (x: number, y: number) => void }) {
-  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-neutral-600" /><p className="mt-2 text-[10px] text-neutral-500">Capture a screenshot to mirror the visible tab. Screenshots are created only on request and sensitive fields are redacted first.</p></div></div>;
+  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-neutral-600" /><p className="mt-2 max-w-sm text-[10px] leading-5 text-neutral-500">{snapshot.captureError ? "Open the attached Chrome tab, click the Bridge extension icon, and choose Attach this tab to grant the live mirror." : snapshot.captureActive ? "Waiting for the first redacted mirror frame…" : "Attaching the live mirror…"}</p></div></div>;
   return <button type="button" disabled={busy || snapshot.lease?.permission !== "interact"} className="relative block w-full cursor-crosshair disabled:cursor-default" onClick={event => {
     const rect = event.currentTarget.getBoundingClientRect();
     const width = snapshot.viewport?.width ?? rect.width; const height = snapshot.viewport?.height ?? rect.height;

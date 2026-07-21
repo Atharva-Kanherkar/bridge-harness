@@ -108,6 +108,8 @@ pub struct BrowserBridgeSnapshot {
     pub tabs: Vec<BrowserTab>,
     pub lease: Option<TabLease>,
     pub status: String,
+    pub capture_active: bool,
+    pub capture_error: Option<String>,
     pub screenshot: Option<String>,
     pub screenshot_redacted_regions: usize,
     pub elements: Vec<Value>,
@@ -193,6 +195,8 @@ struct Inner {
     tabs: Vec<BrowserTab>,
     lease: Option<TabLease>,
     status: String,
+    capture_active: bool,
+    capture_error: Option<String>,
     screenshot: Option<String>,
     screenshot_redacted_regions: usize,
     elements: Vec<Value>,
@@ -389,6 +393,8 @@ impl BrowserBridgeSupervisor {
             tabs: inner.tabs.clone(),
             lease: inner.lease.clone(),
             status: inner.status.clone(),
+            capture_active: inner.capture_active,
+            capture_error: inner.capture_error.clone(),
             screenshot: inner.screenshot.clone(),
             screenshot_redacted_regions: inner.screenshot_redacted_regions,
             elements: inner.elements.clone(),
@@ -853,6 +859,8 @@ impl BrowserBridgeSupervisor {
                         last_activity_at: now.to_rfc3339(),
                     });
                     inner.status = "reading".into();
+                    inner.capture_active = false;
+                    inner.capture_error = None;
                     drop(inner);
                     self.audit(
                         "tab.attached",
@@ -866,6 +874,8 @@ impl BrowserBridgeSupervisor {
             "detached" => {
                 inner.lease = None;
                 inner.status = "not_attached".into();
+                inner.capture_active = false;
+                inner.capture_error = None;
                 inner.screenshot = None;
                 inner.tabs.iter_mut().for_each(|tab| tab.attached = false);
             }
@@ -978,6 +988,8 @@ impl BrowserBridgeSupervisor {
                 }
             }
             "frame" => {
+                inner.capture_active = true;
+                inner.capture_error = None;
                 inner.screenshot = payload
                     .get("dataUrl")
                     .and_then(Value::as_str)
@@ -986,6 +998,11 @@ impl BrowserBridgeSupervisor {
                     .get("redactedRegions")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
+            }
+            "capture_status" => {
+                let (active, error) = capture_status(&payload);
+                inner.capture_active = active;
+                inner.capture_error = error;
             }
             "debug_event" => {
                 push_bounded(&mut inner.debug_events, payload, DEBUG_LIMIT);
@@ -1229,6 +1246,19 @@ fn approval_effect(kind: &str, domain: &str) -> String {
     }
 }
 
+fn capture_status(payload: &Value) -> (bool, Option<String>) {
+    let active = payload
+        .get("active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned);
+    (active, error)
+}
+
 fn validate_remote_endpoint(endpoint: &str) -> Result<(), BridgeError> {
     let url = reqwest::Url::parse(endpoint)
         .map_err(|_| BridgeError::Invalid("Remote browser endpoint must be a valid URL".into()))?;
@@ -1322,5 +1352,14 @@ mod tests {
         let skills = bundled_skills();
         assert_eq!(skills.len(), 3);
         assert!(skills.iter().all(|skill| !skill.steps.is_empty()));
+    }
+
+    #[test]
+    fn capture_failure_is_preserved_for_the_browser_surface() {
+        assert_eq!(
+            capture_status(&json!({"active": false, "error": "activeTab permission required"})),
+            (false, Some("activeTab permission required".into()))
+        );
+        assert_eq!(capture_status(&json!({"active": true})), (true, None));
     }
 }

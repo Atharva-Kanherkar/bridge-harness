@@ -239,6 +239,7 @@ export interface RemoteBrowserConfig { endpoint: string; bearerTokenEnv: string;
 export interface BrowserBridgeSnapshot {
   transportConnected: boolean; extensionId: string; extensionPath: string; nativeHostInstalled: boolean;
   nativeHostManifestPath: string | null; tabs: BrowserTab[]; lease: BrowserLease | null; status: string;
+  captureActive: boolean; captureError: string | null;
   screenshot: string | null; screenshotRedactedRegions: number; elements: BrowserElement[];
   viewport: { width?: number; height?: number; scrollX?: number; scrollY?: number } | null;
   promptInjectionSuspected: boolean; promptInjectionSignals: string[]; tokenAccounting: BrowserTokenAccounting; pendingApproval: BrowserApproval | null;
