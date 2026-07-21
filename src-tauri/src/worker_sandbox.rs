@@ -180,6 +180,7 @@ mod tests {
         assert!(sandbox.profile_path.is_file());
         let root = sandbox.root_dir.clone();
         sandbox.cleanup();
+        sandbox.cleanup();
         assert!(!root.exists());
     }
 

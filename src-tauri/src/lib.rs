@@ -3473,6 +3473,7 @@ fn launch_worker_outcome(
         runtime.process_id(),
     ) {
         runtime.stop(adapters::ShutdownReason::Failed);
+        verify_read_only_worker(app, &session_id);
         fail_reserved_worker(
             app,
             &session_id,
@@ -3525,6 +3526,7 @@ fn launch_worker_outcome(
             &session_id,
             &error.to_string(),
         );
+        verify_read_only_worker(app, &session_id);
         return WorkerLaunchOutcome::Failed;
     }
     let (restoration_mode, resume_eligibility) = match activation {
@@ -3558,6 +3560,7 @@ fn launch_worker_outcome(
             &state.db.lock().unwrap(),
             &session_id,
         );
+        verify_read_only_worker(app, &session_id);
         return WorkerLaunchOutcome::Failed;
     }
     if handoff::record_fidelity(
@@ -3572,6 +3575,7 @@ fn launch_worker_outcome(
             &state.db.lock().unwrap(),
             &session_id,
         );
+        verify_read_only_worker(app, &session_id);
         return WorkerLaunchOutcome::Failed;
     }
 
@@ -3664,6 +3668,12 @@ fn launch_worker_outcome(
         )
         .is_err()
     {
+        runtime.stop(adapters::ShutdownReason::Failed);
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &session_id,
+        );
+        verify_read_only_worker(app, &session_id);
         return WorkerLaunchOutcome::Failed;
     }
     state
@@ -3693,6 +3703,7 @@ fn launch_worker_outcome(
             &label,
             &format!("Could not deliver worker objective: {error}"),
         );
+        verify_read_only_worker(app, &session_id);
         return WorkerLaunchOutcome::Failed;
     }
     let _ = app.emit("state-changed", ());
@@ -4163,20 +4174,18 @@ fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
         .unwrap()
         .read_only_baselines
         .remove(child_session_id);
-    let Some(baseline) = baseline else {
-        return;
-    };
-    let db = state.db.lock().unwrap();
-    if let Err(error) = worker_guard::verify_and_record(&db, child_session_id, &baseline) {
-        let _ = store::event(
-            &db,
-            "sandbox",
-            "worker.read_only_verification_failed",
-            child_session_id,
-            &error.to_string(),
-        );
+    if let Some(baseline) = baseline {
+        let db = state.db.lock().unwrap();
+        if let Err(error) = worker_guard::verify_and_record(&db, child_session_id, &baseline) {
+            let _ = store::event(
+                &db,
+                "sandbox",
+                "worker.read_only_verification_failed",
+                child_session_id,
+                &error.to_string(),
+            );
+        }
     }
-    drop(db);
     let sandbox = state
         .delegations
         .lock()
