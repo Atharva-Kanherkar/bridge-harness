@@ -24,6 +24,7 @@ pub mod policy_replay;
 pub mod router_replay;
 pub mod routing_policy;
 mod policy_coordinator;
+mod prompt_compiler;
 mod restoration;
 mod secret_interception;
 mod session_forest;
@@ -76,6 +77,52 @@ impl Serialize for BridgeError {
     {
         serializer.serialize_str(&self.to_string())
     }
+}
+
+fn compile_orchestrator_prompt(
+    configured_prompt: &str,
+    credential_context: &str,
+    checkpoint_context: Option<&str>,
+) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
+    let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
+        .stable_section("bridge_role", orchestrator::briefing())
+        .stable_section("delegation_protocol", delegation::protocol(0))
+        .project_rule("configured_project_rules", configured_prompt)
+        .variable_section("session_capabilities", credential_context);
+    if let Some(context) = checkpoint_context {
+        compiler = compiler.variable_section("restoration_context", context);
+    }
+    compiler.compile()
+}
+
+fn compile_session_prompt(
+    configured_prompt: &str,
+    credential_context: &str,
+) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
+    prompt_compiler::PromptCompiler::new("session")
+        .project_rule("configured_project_rules", configured_prompt)
+        .variable_section("session_capabilities", credential_context)
+        .compile()
+}
+
+fn compile_worker_prompt(
+    directive: &delegation::DelegationRequest,
+    depth: i64,
+    branch: &str,
+    evidence: &[delegation::WorkerEvidence],
+    configured_prompt: &str,
+    credential_context: &str,
+    checkpoint_context: Option<&str>,
+) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
+    let mut compiler = prompt_compiler::PromptCompiler::new(format!("worker:{}", directive.role.as_str()))
+        .stable_section("worker_contract", delegation::worker_contract(directive.role, depth))
+        .project_rule("configured_project_rules", configured_prompt)
+        .variable_section("task_context", delegation::worker_task_context(directive, branch, evidence))
+        .variable_section("session_capabilities", credential_context);
+    if let Some(context) = checkpoint_context {
+        compiler = compiler.variable_section("restoration_context", context);
+    }
+    compiler.compile()
 }
 
 struct RuntimeSession {
@@ -1254,13 +1301,9 @@ async fn start_session(
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
     let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
-    let orchestrator_instructions = format!(
-        "{}\n\n{}{}\n\n{}",
-        orchestrator::briefing(),
-        delegation::protocol(0),
-        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
-        state.credential_broker.instructions(&session_id),
-    );
+    let credential_context = state.credential_broker.instructions(&session_id);
+    let orchestrator_prompt = compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
+    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
     let plan = restoration::select_plan(
         false,
         stored_provider_id.as_deref(),
@@ -1279,9 +1322,10 @@ async fn start_session(
             },
         )
     };
-    let checkpoint_instructions = checkpoint_context
-        .as_ref()
-        .map(|context| format!("{orchestrator_instructions}\n\n{context}"));
+    let checkpoint_instructions = checkpoint_context.as_deref().map(|context| {
+        compile_orchestrator_prompt(&configured_prompt, &credential_context, Some(context))
+            .map(|prompt| prompt.instructions().to_owned())
+    }).transpose()?;
     let (mut started, restoration_mode, resume_eligibility) = match plan {
         restoration::RestorationPlan::Native => {
             let provider_id = stored_provider_id
@@ -1573,11 +1617,12 @@ async fn start_chat(
     } else {
         agent_config::session_prompt(&state.db.lock().unwrap(), adapter_id)
     };
-    let orchestrator_instructions = if is_orchestrator {
-        format!("{}\n\n{}{}\n\n{}", orchestrator::briefing(), delegation::protocol(0), if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") }, proxy_instructions)
+    let compiled_prompt = if is_orchestrator {
+        compile_orchestrator_prompt(&configured_prompt, &proxy_instructions, None)?
     } else {
-        format!("{}{}", if configured_prompt.is_empty() { String::new() } else { format!("{configured_prompt}\n\n") }, proxy_instructions)
+        compile_session_prompt(&configured_prompt, &proxy_instructions)?
     };
+    let runtime_instructions = compiled_prompt.instructions().to_owned();
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
@@ -1600,7 +1645,7 @@ async fn start_chat(
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
-                    instructions: Some(&orchestrator_instructions),
+                    instructions: Some(&runtime_instructions),
                     write_mode: None,
                 },
             ) {
@@ -1615,7 +1660,7 @@ async fn start_chat(
                         cwd: &launch_cwd,
                         model: launch_model.as_deref(),
                         effort: chosen_effort.as_deref(),
-                        instructions: Some(&orchestrator_instructions),
+                        instructions: Some(&runtime_instructions),
                         write_mode: None,
                     },
                 )
@@ -1634,7 +1679,7 @@ async fn start_chat(
                         cwd: &launch_cwd,
                         model: launch_model.as_deref(),
                         effort: chosen_effort.as_deref(),
-                        instructions: Some(&orchestrator_instructions),
+                        instructions: Some(&runtime_instructions),
                         write_mode: None,
                     },
                 )
@@ -2846,12 +2891,23 @@ fn launch_worker_outcome(
     };
     let role = directive.role.as_str();
     let configured_prompt = agent_config::prompt_suffix(&state.db.lock().unwrap(), &harness, role);
-    let instructions = format!(
-        "{}{}\n\n{}",
-        delegation::worker_briefing(directive, reservation.depth, &reservation.branch, &evidence),
-        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
-        state.credential_broker.instructions(&reservation.session_id)
-    );
+    let credential_context = state.credential_broker.instructions(&reservation.session_id);
+    let compiled_prompt = match compile_worker_prompt(
+        directive,
+        reservation.depth,
+        &reservation.branch,
+        &evidence,
+        &configured_prompt,
+        &credential_context,
+        None,
+    ) {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            fail_reserved_worker(app, &reservation.session_id, &label, &format!("Could not compile worker prompt: {error}"));
+            return WorkerLaunchOutcome::Failed;
+        }
+    };
+    let instructions = compiled_prompt.instructions().to_owned();
 
     if reservation.reuse_existing
         && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
@@ -2946,6 +3002,18 @@ fn launch_worker_outcome(
         }
     }
 
+    let compile_restored_prompt = |checkpoint: Option<String>| {
+        let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
+        compile_worker_prompt(
+            directive,
+            reservation.depth,
+            &reservation.branch,
+            &evidence,
+            &configured_prompt,
+            &credential_context,
+            Some(&restoration_context),
+        ).map(|prompt| prompt.instructions().to_owned())
+    };
     let activation = if reservation.reuse_existing {
         if session_supervisor::SessionSupervisor::transition(
             &state.db.lock().unwrap(),
@@ -2980,24 +3048,22 @@ fn launch_worker_outcome(
             Ok(Some(started)) => Ok((started, WorkerActivation::Native)),
             Err(error) => {
                 let _ = restoration::record_resume_failed(&state.db.lock().unwrap(), &reservation.session_id, &error.to_string());
-                let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
-                state.adapter_registry.start(&harness, adapters::StartRequest {
+                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&harness, adapters::StartRequest {
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
                     instructions: Some(restored_instructions.as_str()),
                     write_mode: Some(directive.write_mode),
-                }).map(|started| (started, WorkerActivation::CheckpointRestored))
+                })).map(|started| (started, WorkerActivation::CheckpointRestored))
             }
             Ok(None) => {
-                let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
-                state.adapter_registry.start(&harness, adapters::StartRequest {
+                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&harness, adapters::StartRequest {
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
                     instructions: Some(restored_instructions.as_str()),
                     write_mode: Some(directive.write_mode),
-                }).map(|started| (started, WorkerActivation::CheckpointRestored))
+                })).map(|started| (started, WorkerActivation::CheckpointRestored))
             }
         }
     } else {

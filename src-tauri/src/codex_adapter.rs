@@ -396,6 +396,26 @@ mod tests {
     }
 
     #[test]
+    fn codex_receives_the_compiled_stable_prefix_before_variable_context() {
+        let prompt = crate::prompt_compiler::PromptCompiler::new("worker:verification")
+            .stable_section("contract", "stable-provider-contract")
+            .variable_section("evidence", "variable-task-evidence")
+            .compile()
+            .unwrap();
+        let params = thread_start_params(
+            "/tmp/work",
+            Some("runtime-model"),
+            None,
+            Some(prompt.instructions()),
+            Some(WriteMode::ReadOnly),
+        );
+        let instructions = params["developerInstructions"].as_str().unwrap();
+        assert_eq!(params["instructions"], params["developerInstructions"]);
+        assert!(instructions.starts_with("<bridge-stable-prompt"));
+        assert!(instructions.find("stable-provider-contract").unwrap() < instructions.find("variable-task-evidence").unwrap());
+    }
+
+    #[test]
     fn native_resume_capability_is_discovered_from_protocol_schema() {
         assert!(schema_supports_resume(
             r#"{"method":"thread/resume","params":{"$ref":"ThreadResumeParams"}}"#
