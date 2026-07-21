@@ -208,6 +208,55 @@ export interface CapabilitySuggestion {
   id: string; name: string; command: string; relevance: string; source: string; providers: SkillProvider[];
   permissions: string[]; risk: string; installed: boolean;
 }
+
+export interface BrowserTab {
+  id: number; title: string; url: string; domain: string | null; favIconUrl: string | null; attached: boolean;
+}
+export interface BrowserLease {
+  id: string; tabId: number; domain: string; status: string; permission: "read_only" | "interact";
+  attachedAt: string; expiresAt: string; lastActivityAt: string;
+}
+export interface BrowserAuditEvent {
+  id: string; kind: string; summary: string; commandId: string | null; domain: string | null; createdAt: string; data: Record<string, unknown>;
+}
+export interface BrowserElement {
+  id: string; role: string; name: string; tag: string; value: string | null; disabled: boolean;
+  sensitiveKind: string | null; contentBoundary: "untrusted_web_content"; promptInjectionSuspected: boolean;
+  bounds: { x: number; y: number; width: number; height: number };
+}
+export interface BrowserTokenAccounting {
+  snapshots: number; fullSnapshots: number; deltaSnapshots: number; serializedBytes: number;
+  estimatedInputTokens: number; screenshotCount: number;
+}
+export interface BrowserApproval {
+  id: string; commandId: string; action: string; effect: string; domain: string; createdAt: string;
+}
+export interface BrowserSiteMetric {
+  domain: string; actions: number; successes: number; failures: number; totalLatencyMs: number;
+  inputTokens: number; screenshots: number; interventions: number; approvals: number; duplicateSideEffects: number;
+}
+export interface RemoteBrowserConfig { endpoint: string; bearerTokenEnv: string; enabled: boolean }
+export interface BrowserBridgeSnapshot {
+  transportConnected: boolean; extensionId: string; extensionPath: string; nativeHostInstalled: boolean;
+  nativeHostManifestPath: string | null; tabs: BrowserTab[]; lease: BrowserLease | null; status: string;
+  screenshot: string | null; screenshotRedactedRegions: number; elements: BrowserElement[];
+  viewport: { width?: number; height?: number; scrollX?: number; scrollY?: number } | null;
+  promptInjectionSuspected: boolean; promptInjectionSignals: string[]; tokenAccounting: BrowserTokenAccounting; pendingApproval: BrowserApproval | null;
+  audit: BrowserAuditEvent[]; debugEvents: Record<string, unknown>[]; siteMetrics: BrowserSiteMetric[];
+  remoteProvider: RemoteBrowserConfig | null;
+}
+export interface BrowserActionRequest {
+  kind: string; elementId?: string; text?: string; url?: string; x?: number; y?: number;
+  tabId?: number; sensitiveKind?: string; expectedDomain?: string;
+  actor?: "agent" | "user";
+}
+export interface BrowserRouteRequest {
+  structuredApiAvailable: boolean; needsUserAuth: boolean; needsIsolation: boolean; needsParallelism: boolean;
+  needsGeoOrProxy: boolean; unattended: boolean; domControlAvailable: boolean; remoteProviderConfigured: boolean;
+  taskClass: string | null;
+}
+export interface BrowserRouteDecision { route: "mcp_api" | "attached_tab" | "local_headless" | "remote_browser" | "computer_use"; reason: string; requiresUserGrant: boolean }
+export interface BrowserSkill { id: string; name: string; domains: string[]; description: string; steps: Record<string, unknown>[] }
 export interface SkillPreview {
   confirmationId: string; expiresAt: string; action: SkillAction; skill: CommunitySkill;
   targets: SkillProvider[]; changes: string[]; installer: string;

@@ -2,6 +2,7 @@ mod adapters;
 mod agent;
 mod agent_config;
 mod binary;
+mod browser_bridge;
 mod claude_adapter;
 mod compaction_controller;
 mod context;
@@ -40,6 +41,7 @@ use model::*;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::Value;
 use std::{
     collections::HashMap,
     io::{BufRead, Read, Write},
@@ -95,6 +97,7 @@ struct AppState {
     skill_store: PathBuf,
     skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
     credential_broker: Arc<credential_broker::CredentialBroker>,
+    browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
 }
 
 /// Bookkeeping for the multi-agent delegation tree.
@@ -141,6 +144,84 @@ async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
         snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
         adapters,
     })
+}
+
+#[tauri::command]
+async fn browser_bridge_state(state: State<'_, AppState>) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
+    Ok(state.browser_bridge.snapshot())
+}
+
+#[tauri::command]
+async fn install_browser_native_host(state: State<'_, AppState>) -> Result<String, BridgeError> {
+    let supervisor = Arc::clone(&state.browser_bridge);
+    tauri::async_runtime::spawn_blocking(move || {
+        let executable = std::env::var_os("BRIDGE_BROWSER_HOST")
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().and_then(find_browser_host)))
+            .ok_or_else(|| BridgeError::Invalid("Could not locate bridge-browser-host".into()))?;
+        if !executable.exists() {
+            return Err(BridgeError::Invalid(format!("Native host executable is missing at {}. Build the bridge-browser-host binary first.", executable.display())));
+        }
+        supervisor.install_native_host(&executable).map(|path| path.to_string_lossy().into_owned())
+    }).await.map_err(|error| BridgeError::Invalid(format!("Native host registration task failed: {error}")))?
+}
+
+fn find_browser_host(directory: &Path) -> Option<PathBuf> {
+    let direct = directory.join("bridge-browser-host");
+    if direct.exists() { return Some(direct); }
+    std::fs::read_dir(directory).ok()?.filter_map(Result::ok).map(|entry| entry.path())
+        .find(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("bridge-browser-host-")))
+}
+
+#[tauri::command]
+async fn browser_action(request: browser_bridge::BrowserActionRequest, state: State<'_, AppState>) -> Result<String, BridgeError> {
+    state.browser_bridge.issue(request)
+}
+
+#[tauri::command]
+async fn set_browser_permission(permission: String, state: State<'_, AppState>) -> Result<(), BridgeError> {
+    state.browser_bridge.set_permission(&permission)
+}
+
+#[tauri::command]
+async fn resolve_browser_approval(approval_id: String, allow: bool, state: State<'_, AppState>) -> Result<(), BridgeError> {
+    state.browser_bridge.resolve_approval(&approval_id, allow)
+}
+
+#[tauri::command]
+async fn takeover_browser(state: State<'_, AppState>) -> Result<(), BridgeError> {
+    state.browser_bridge.takeover()
+}
+
+#[tauri::command]
+async fn detach_browser(state: State<'_, AppState>) -> Result<String, BridgeError> {
+    state.browser_bridge.detach()
+}
+
+#[tauri::command]
+async fn route_browser(request: browser_bridge::BrowserRouteRequest) -> browser_bridge::BrowserRouteDecision {
+    browser_bridge::route_browser(request)
+}
+
+#[tauri::command]
+async fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
+    browser_bridge::bundled_skills()
+}
+
+#[tauri::command]
+async fn configure_remote_browser(config: Option<browser_bridge::RemoteBrowserConfig>, state: State<'_, AppState>) -> Result<(), BridgeError> {
+    let supervisor = Arc::clone(&state.browser_bridge);
+    tauri::async_runtime::spawn_blocking(move || supervisor.configure_remote(config))
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Remote browser configuration task failed: {error}")))?
+}
+
+#[tauri::command]
+async fn start_remote_browser(initial_url: String, state: State<'_, AppState>) -> Result<Value, BridgeError> {
+    let supervisor = Arc::clone(&state.browser_bridge);
+    tauri::async_runtime::spawn_blocking(move || supervisor.start_remote_session(&initial_url))
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Remote browser task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -5014,6 +5095,13 @@ pub fn run() {
             );
             let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
                 .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
+            let bundled_extension = app.path().resource_dir()?.join("browser-extension");
+            let extension_path = if bundled_extension.exists() {
+                bundled_extension
+            } else {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
+            };
+            let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(extension_path, data.join("browser-site-metrics.json"));
             start_health_server(db_path.clone(), adapter_registry.descriptors(), credential_broker.clone());
             app.manage(AppState {
                 db: Mutex::new(connection),
@@ -5029,6 +5117,7 @@ pub fn run() {
                 skill_store: data.join("skills"),
                 skill_consents: Arc::new(Mutex::new(HashMap::new())),
                 credential_broker,
+                browser_bridge,
             });
             start_worker_maintenance(app.handle().clone());
             start_learning_maintenance(app.handle().clone());
@@ -5037,6 +5126,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            browser_bridge_state,
+            install_browser_native_host,
+            browser_action,
+            set_browser_permission,
+            resolve_browser_approval,
+            takeover_browser,
+            detach_browser,
+            route_browser,
+            browser_skills,
+            configure_remote_browser,
+            start_remote_browser,
             marketplace_catalog,
             marketplace_app_auth_states,
             marketplace_action,

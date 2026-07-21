@@ -1,0 +1,7 @@
+:root { color-scheme: dark; font: 13px system-ui, sans-serif; }
+body { width: 260px; margin: 0; color: #eee; background: #151517; }
+main { padding: 16px; }
+strong { font-size: 14px; }
+p { min-height: 34px; color: #aaa; line-height: 1.4; }
+button { width: 100%; border: 0; border-radius: 9px; padding: 9px 12px; color: #111; background: #f4f4f5; font-weight: 650; cursor: pointer; }
+button.secondary { margin-top: 8px; color: #ddd; background: #29292c; }

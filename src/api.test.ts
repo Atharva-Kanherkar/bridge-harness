@@ -31,6 +31,15 @@ describe("SQLite-shaped mock observability", () => {
     expect((await bridgeApi.routerPreferences("demo-1")).excludedModels).toEqual(["opus"]);
   });
 
+  it("routes browser task classes through the documented exception order", async () => {
+    const base = { structuredApiAvailable: false, needsUserAuth: false, needsIsolation: false, needsParallelism: false, needsGeoOrProxy: false, unattended: false, domControlAvailable: true, remoteProviderConfigured: false, taskClass: null };
+    expect((await bridgeApi.routeBrowser({ ...base, structuredApiAvailable: true, needsUserAuth: true })).route).toBe("mcp_api");
+    expect((await bridgeApi.routeBrowser({ ...base, needsUserAuth: true })).route).toBe("attached_tab");
+    expect((await bridgeApi.routeBrowser({ ...base, needsUserAuth: true, unattended: true })).route).toBe("remote_browser");
+    expect((await bridgeApi.routeBrowser({ ...base, needsIsolation: true })).route).toBe("local_headless");
+    expect((await bridgeApi.routeBrowser({ ...base, domControlAvailable: false })).route).toBe("computer_use");
+  });
+
   it("persists catalog-derived model setup as immutable versions", async () => {
     const recommended = await bridgeApi.recommendedModelProfiles();
     expect(recommended).toHaveLength(9);

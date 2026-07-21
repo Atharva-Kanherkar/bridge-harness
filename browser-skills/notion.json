@@ -1,0 +1,12 @@
+{
+  "id": "notion-edit-and-publish",
+  "name": "Notion edit and publish",
+  "domains": ["notion.so", "notion.site"],
+  "description": "Edit a Notion page through stable semantic roles and gate publishing or deletion.",
+  "steps": [
+    { "action": "snapshot", "select": ["textbox", "button", "link"] },
+    { "action": "fill", "match": { "role": "textbox" }, "fromInput": true },
+    { "action": "approval", "before": ["publish", "share", "delete"] },
+    { "action": "verify", "evidence": ["title", "statusText", "screenshot"] }
+  ]
+}
