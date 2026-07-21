@@ -32,22 +32,28 @@ impl ReadOnlySandbox {
             .join(Uuid::new_v4().to_string());
         let output_dir = root.join("output");
         fs::create_dir_all(&output_dir)?;
-        let profile_path = root.join("seatbelt.sb");
-        let workspace = workspace.canonicalize().map_err(|error| {
-            BridgeError::Invalid(format!(
-                "Cannot isolate missing workspace {}: {error}",
-                workspace.display()
-            ))
-        })?;
-        let output = output_dir.canonicalize()?;
-        let profile = seatbelt_profile(&workspace, &output, request.network_access)?;
-        fs::write(&profile_path, profile)?;
-        Ok(Self {
-            root_dir: root,
-            profile_path,
-            output_dir,
-            network_allowed: request.network_access,
-        })
+        let result = (|| {
+            let profile_path = root.join("seatbelt.sb");
+            let workspace = workspace.canonicalize().map_err(|error| {
+                BridgeError::Invalid(format!(
+                    "Cannot isolate missing workspace {}: {error}",
+                    workspace.display()
+                ))
+            })?;
+            let output = output_dir.canonicalize()?;
+            let profile = seatbelt_profile(&workspace, &output, request.network_access)?;
+            fs::write(&profile_path, profile)?;
+            Ok(Self {
+                root_dir: root.clone(),
+                profile_path,
+                output_dir,
+                network_allowed: request.network_access,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(root);
+        }
+        result
     }
 
     pub fn output_dir(&self) -> &Path {

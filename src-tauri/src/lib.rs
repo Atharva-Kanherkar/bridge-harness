@@ -3339,6 +3339,7 @@ fn launch_worker_outcome(
         )
         .is_err()
         {
+            verify_read_only_worker(app, &reservation.session_id);
             return WorkerLaunchOutcome::Failed;
         }
         let provider_id: Option<String> = state
@@ -3884,10 +3885,9 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         let _ = app.emit("state-changed", ());
         return;
     };
-    verify_read_only_worker(app, child_session_id);
     let _ = (label, harness, model, effort);
     match settle_worker_after_result(app, child_session_id, &result) {
-        Ok(true) => {}
+        Ok(true) => verify_read_only_worker(app, child_session_id),
         Ok(false) => return,
         Err(error) => {
             let _ = store::event(
@@ -5275,6 +5275,7 @@ async fn stop_session(
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::UserCancelled);
         }
+        verify_read_only_worker(&app, &session_id);
         let db = state.db.lock().unwrap();
         session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
         let workspace_id: String = db.query_row(
