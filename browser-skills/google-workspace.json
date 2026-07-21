@@ -1,0 +1,12 @@
+{
+  "id": "google-workspace-compose",
+  "name": "Google Workspace compose and review",
+  "domains": ["mail.google.com", "docs.google.com", "drive.google.com"],
+  "description": "Draft inside the user's authenticated Workspace tab while keeping Send and sharing changes behind approval.",
+  "steps": [
+    { "action": "snapshot", "redact": ["credential", "payment"] },
+    { "action": "fill", "match": { "role": "textbox" }, "fromInput": true },
+    { "action": "approval", "before": ["send", "publish", "share", "delete"] },
+    { "action": "verify", "evidence": ["statusText", "screenshot"] }
+  ]
+}

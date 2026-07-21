@@ -10,6 +10,10 @@ describe("UsageWidget", () => {
     expect(html).toContain("Claude");
     expect(html).toContain("Limit unknown");
     expect(html).not.toContain("0% used");
+    expect(html).toContain("pointer-events-none");
+    expect(html).not.toContain("group-hover:");
+    expect(html).toContain("Close usage health details");
+    expect(html).toContain("Hide usage widget");
   });
 
   it("labels reported meters and explains context pressure", () => {

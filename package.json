@@ -9,6 +9,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "prepare:browser-host": "sh scripts/prepare-browser-host.sh release",
+    "prepare:browser-host:dev": "sh scripts/prepare-browser-host.sh debug",
+    "prepare:safari-extension": "sh scripts/prepare-safari-extension.sh",
     "check": "tsc -b --pretty false && cargo check --manifest-path src-tauri/Cargo.toml",
     "test": "npm test --prefix sidecar/claude-agent && vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri"

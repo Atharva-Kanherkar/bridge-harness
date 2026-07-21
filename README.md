@@ -1,5 +1,7 @@
 # Bridge
 
+Bridge includes a supervised [authenticated browser bridge](docs/authenticated-browser-bridge.md) for using a user-approved logged-in Chrome or Safari tab without copying browser credentials.
+
 Bridge is a native macOS control room for supervised coding-agent work. It connects local Git repositories to structured Codex, Claude Code, and OpenCode sessions, isolates concurrent tasks in worktrees, and keeps durable local history so agent activity remains inspectable and recoverable.
 
 Bridge is built for developers who want the speed of coding agents with explicit boundaries around files, processes, approvals, delegation, and session state.

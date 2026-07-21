@@ -7,6 +7,7 @@ import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Mo
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
+import { BrowserSurface } from "./components/BrowserSurface";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
@@ -83,6 +84,7 @@ export function App() {
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
   const [error, setError] = useState<string>();
   const [clock, setClock] = useState(Date.now());
   const [forest, setForest] = useState<SessionForestSnapshot>();
@@ -94,6 +96,7 @@ export function App() {
   const forestKeyRef = useRef("");
   const agentEventQueueRef = useRef<AgentEvent[]>([]);
   const agentEventTimerRef = useRef<number | undefined>(undefined);
+  const browserSessionRef = useRef<string>();
 
   const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
   useEffect(() => {
@@ -145,6 +148,11 @@ export function App() {
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, []);
   useEffect(() => { document.documentElement.classList.add("dark"); }, []);
+  useEffect(() => {
+    const previous = browserSessionRef.current;
+    browserSessionRef.current = selectedSessionId;
+    if (previous && previous !== selectedSessionId) void bridgeApi.browserBridgeState().then(browser => browser.lease ? bridgeApi.detachBrowser() : undefined).catch(() => undefined);
+  }, [selectedSessionId]);
 
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
@@ -332,7 +340,11 @@ export function App() {
   }
   async function endChat() {
     if (!session) return; setBusy(true); setError(undefined);
-    try { setState(await bridgeApi.stopSession(session.id)); }
+    try {
+      const browser = await bridgeApi.browserBridgeState();
+      if (browser.lease) await bridgeApi.detachBrowser().catch(() => undefined);
+      setState(await bridgeApi.stopSession(session.id));
+    }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -443,6 +455,7 @@ export function App() {
             </div>}
           </div>
           <div className="ml-auto flex items-center gap-[7px]">
+            <Button type="button" variant={browserOpen ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setBrowserOpen(value => !value)}><Monitor size={13} aria-hidden="true" /> Browser</Button>
             {!isDirectChat && workspace && <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setModal("router")} aria-label="Learning router settings"><Settings2 size={14} aria-hidden="true" /></Button>}
             {sessionConnected && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => void endChat()}>{busy ? <LoaderCircle className="animate-spin" size={14} aria-hidden="true" /> : <Square size={13} aria-hidden="true" />} End</Button>}
           </div>
@@ -520,6 +533,7 @@ export function App() {
             {hasRepo && workspace && activeTab === "changes" && <ChangesPanel workspace={workspace}/>}
             {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
           </div>
+          {browserOpen && <BrowserSurface onClose={() => setBrowserOpen(false)} onError={setError} />}
         </section>
       </> : <Welcome
         adapters={adapters}
