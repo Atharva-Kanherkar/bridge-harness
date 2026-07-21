@@ -48,6 +48,7 @@ function UsageBar({ used }: { used: number }) {
 
 export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, history = [], contextPercent, contextSource = "measured" }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const pressure = contextPressure(contextPercent);
   const projections = PROVIDERS.map(provider => {
@@ -71,8 +72,10 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
     };
   }, [open]);
 
+  if (dismissed) return null;
+
   return <div ref={rootRef} className="relative">
-    <button type="button" className="flex h-9 cursor-pointer items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.045] px-3 text-neutral-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-xl backdrop-saturate-[1.8] transition-all hover:border-white/[0.14] hover:bg-white/[0.075]" aria-label={open ? "Close usage health details" : "Open usage health details"} aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
+    <button type="button" className="flex h-9 cursor-pointer items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.045] py-0 pl-3 pr-9 text-neutral-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-xl backdrop-saturate-[1.8] transition-all hover:border-white/[0.14] hover:bg-white/[0.075]" aria-label={open ? "Close usage health details" : "Open usage health details"} aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
       <Gauge size={12} className="text-neutral-500" aria-hidden="true" />
       {PROVIDERS.map((provider, index) => {
         const snapshot = usage[provider.id];
@@ -88,6 +91,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
       <span className="text-[9px] text-neutral-500">Ctx {pressure.percent == null ? "unknown" : `${Math.round(pressure.percent)}% · ${contextSource}`}</span>
       {projections.length > 0 && <AlertTriangle size={12} className="text-amber-300" aria-label="Projected usage exhaustion" />}
     </button>
+    <button type="button" onClick={() => { setOpen(false); setDismissed(true); }} className="absolute right-1.5 top-1/2 z-10 grid size-6 -translate-y-1/2 place-items-center rounded-full text-neutral-600 transition-colors hover:bg-white/[0.09] hover:text-neutral-200" aria-label="Hide usage widget"><X size={12} aria-hidden="true" /></button>
 
     <div id="usage-health-panel" role="dialog" aria-label="Usage health details" className={`absolute right-0 top-full z-50 pt-2 transition-all duration-150 ${open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0"}`}>
       <div className="u-glass-popover max-h-[min(640px,80vh)] w-[390px] overflow-y-auto rounded-2xl p-4">
