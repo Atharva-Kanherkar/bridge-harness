@@ -351,12 +351,42 @@ pub struct UsageLedgerRow {
     pub output_tokens: Option<i64>,
     pub cache_read_tokens: Option<i64>,
     pub cache_write_tokens: Option<i64>,
+    pub uncached_input_tokens: Option<i64>,
     pub context_percent: Option<i64>,
     pub capability_units: i64,
     pub runtime_ms: Option<i64>,
     pub cost_microusd: Option<i64>,
     pub cost_source: Option<String>,
+    pub stable_prefix_id: Option<String>,
+    pub stable_prefix_hash: Option<String>,
+    pub prompt_schema_version: Option<i64>,
+    pub prefix_token_estimate: Option<i64>,
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub role: Option<String>,
+    pub task_family: Option<String>,
+    pub restoration_mode: Option<String>,
+    pub cross_harness_reuse: Option<String>,
     pub source: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCompilationRecord {
+    pub id: i64,
+    pub session_id: String,
+    pub prefix_id: String,
+    pub prefix_hash: String,
+    pub schema_version: i64,
+    pub prefix_bytes: i64,
+    pub prefix_token_estimate: i64,
+    pub harness: String,
+    pub model: Option<String>,
+    pub role: String,
+    pub task_family: String,
+    pub restoration_mode: String,
+    pub cross_harness_reuse: String,
     pub created_at: String,
 }
 

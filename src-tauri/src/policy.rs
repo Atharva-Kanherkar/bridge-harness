@@ -431,6 +431,7 @@ pub struct UsageReport {
     pub output_tokens: Option<i64>,
     pub cache_read_tokens: Option<i64>,
     pub cache_write_tokens: Option<i64>,
+    pub uncached_input_tokens: Option<i64>,
     pub context_percent: Option<i64>,
     pub runtime_ms: Option<i64>,
     pub cost_microusd: Option<i64>,
@@ -452,6 +453,10 @@ impl UsageReport {
                 ],
             ),
             cache_write_tokens: integer_alias(usage, &["cache_write_tokens", "cacheWriteTokens"]),
+            uncached_input_tokens: integer_alias(
+                usage,
+                &["uncached_input_tokens", "uncachedInputTokens"],
+            ),
             context_percent: integer_alias(data, &["context_percent", "contextPercent"])
                 .or_else(|| integer_alias(usage, &["context_percent", "contextPercent"])),
             runtime_ms: integer_alias(data, &["runtime_ms", "runtimeMs", "duration_ms"]),
@@ -479,11 +484,22 @@ impl UsageReport {
             output_tokens: self.output_tokens,
             cache_read_tokens: self.cache_read_tokens,
             cache_write_tokens: self.cache_write_tokens,
+            uncached_input_tokens: self.uncached_input_tokens,
             context_percent: self.context_percent,
             capability_units: 0,
             runtime_ms: self.runtime_ms,
             cost_microusd: self.cost_microusd,
             cost_source: self.cost_source.clone(),
+            stable_prefix_id: None,
+            stable_prefix_hash: None,
+            prompt_schema_version: None,
+            prefix_token_estimate: None,
+            harness: None,
+            model: None,
+            role: None,
+            task_family: None,
+            restoration_mode: None,
+            cross_harness_reuse: None,
             source: source.into(),
             created_at: Utc::now().to_rfc3339(),
         }
@@ -529,10 +545,31 @@ pub fn record_provider_usage(
     let Some(report) = UsageReport::from_normalized(data) else {
         return Ok(false);
     };
-    store::append_usage_ledger(
-        db,
-        &report.ledger_row(workspace_id, session_id, turn_id, source),
-    )?;
+    let mut row = report.ledger_row(workspace_id, session_id, turn_id, source);
+    row.uncached_input_tokens = report.uncached_input_tokens.or_else(|| {
+        report.input_tokens.map(|input| {
+            if source == "provider.claude" {
+                input.max(0)
+            } else {
+                input.saturating_sub(report.cache_read_tokens.unwrap_or(0))
+                    .saturating_sub(report.cache_write_tokens.unwrap_or(0))
+                    .max(0)
+            }
+        })
+    });
+    if let Some(prompt) = store::latest_prompt_compilation(db, session_id)? {
+        row.stable_prefix_id = Some(prompt.prefix_id);
+        row.stable_prefix_hash = Some(prompt.prefix_hash);
+        row.prompt_schema_version = Some(prompt.schema_version);
+        row.prefix_token_estimate = Some(prompt.prefix_token_estimate);
+        row.harness = Some(prompt.harness);
+        row.model = prompt.model;
+        row.role = Some(prompt.role);
+        row.task_family = Some(prompt.task_family);
+        row.restoration_mode = Some(prompt.restoration_mode);
+        row.cross_harness_reuse = Some(prompt.cross_harness_reuse);
+    }
+    store::append_usage_ledger(db, &row)?;
     Ok(true)
 }
 
@@ -699,11 +736,22 @@ pub fn record_spawn_usage(
             output_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            uncached_input_tokens: None,
             context_percent: None,
             capability_units: outcome.capability_units,
             runtime_ms: None,
             cost_microusd: None,
             cost_source: None,
+            stable_prefix_id: None,
+            stable_prefix_hash: None,
+            prompt_schema_version: None,
+            prefix_token_estimate: None,
+            harness: None,
+            model: None,
+            role: None,
+            task_family: None,
+            restoration_mode: None,
+            cross_harness_reuse: None,
             source: source.into(),
             created_at: Utc::now().to_rfc3339(),
         },
@@ -1215,6 +1263,22 @@ mod tests {
     #[test]
     fn provider_usage_is_recorded_with_parent_turn_id() {
         let db = database();
+        store::record_prompt_compilation(&db, &crate::model::PromptCompilationRecord {
+            id: 0,
+            session_id: "parent".into(),
+            prefix_id: "bridge-prompt-v1-deadbeef".into(),
+            prefix_hash: "deadbeef".into(),
+            schema_version: 1,
+            prefix_bytes: 400,
+            prefix_token_estimate: 100,
+            harness: "claude".into(),
+            model: Some("sonnet".into()),
+            role: "orchestrator".into(),
+            task_family: "orchestration".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+        }).unwrap();
         assert!(record_provider_usage(
             &db,
             "w",
@@ -1222,7 +1286,7 @@ mod tests {
             Some("turn-usage"),
             "provider.claude",
             &json!({
-                "usage": {"input_tokens": 7, "output_tokens": 3},
+                "usage": {"input_tokens": 7, "output_tokens": 3, "cache_read_tokens": 2, "cache_write_tokens": 1},
                 "duration_ms": 42
             }),
         )
@@ -1231,8 +1295,24 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].turn_id.as_deref(), Some("turn-usage"));
         assert_eq!(rows[0].input_tokens, Some(7));
+        assert_eq!(rows[0].uncached_input_tokens, Some(7));
         assert_eq!(rows[0].runtime_ms, Some(42));
         assert_eq!(rows[0].source, "provider.claude");
+        assert_eq!(rows[0].stable_prefix_id.as_deref(), Some("bridge-prompt-v1-deadbeef"));
+        assert_eq!(rows[0].prefix_token_estimate, Some(100));
+        assert_eq!(rows[0].harness.as_deref(), Some("claude"));
+        assert_eq!(rows[0].restoration_mode.as_deref(), Some("fresh"));
+
+        assert!(record_provider_usage(
+            &db,
+            "w",
+            "parent",
+            Some("turn-codex"),
+            "provider.codex",
+            &json!({"usage":{"input_tokens":10,"cache_read_tokens":4,"cache_write_tokens":1}}),
+        ).unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows[1].uncached_input_tokens, Some(5));
     }
 
     fn database() -> Connection {

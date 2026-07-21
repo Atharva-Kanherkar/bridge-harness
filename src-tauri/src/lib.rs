@@ -125,6 +125,55 @@ fn compile_worker_prompt(
     compiler.compile()
 }
 
+fn persist_prompt_compilation(
+    db: &Connection,
+    session_id: &str,
+    harness: &str,
+    model: Option<&str>,
+    role: &str,
+    task_family: &str,
+    restoration_mode: RestorationMode,
+    cross_harness_reuse: &str,
+    prompt: &prompt_compiler::CompiledPrompt,
+) -> Result<(), BridgeError> {
+    store::record_prompt_compilation(
+        db,
+        &PromptCompilationRecord {
+            id: 0,
+            session_id: session_id.into(),
+            prefix_id: prompt.metadata.prefix_id.clone(),
+            prefix_hash: prompt.metadata.prefix_hash.clone(),
+            schema_version: i64::from(prompt.metadata.schema_version),
+            prefix_bytes: prompt.metadata.prefix_bytes as i64,
+            prefix_token_estimate: prompt.metadata.prefix_token_estimate as i64,
+            harness: harness.into(),
+            model: model.map(str::to_owned),
+            role: role.into(),
+            task_family: task_family.into(),
+            restoration_mode: restoration_mode.as_str().into(),
+            cross_harness_reuse: cross_harness_reuse.into(),
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )?;
+    Ok(())
+}
+
+fn cross_harness_reuse_marker(
+    db: &Connection,
+    parent_session_id: &str,
+    child_harness: &str,
+) -> &'static str {
+    match db.query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![parent_session_id],
+        |row| row.get::<_, String>(0),
+    ).ok().as_deref() {
+        Some(parent) if parent == child_harness => "same_harness",
+        Some(_) => "incompatible",
+        None => "not_applicable",
+    }
+}
+
 struct RuntimeSession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -1259,6 +1308,10 @@ async fn start_session(
     drop(db);
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string());
     std::fs::create_dir_all(&path)?;
+    let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
+    let credential_context = state.credential_broker.instructions(&session_id);
+    let orchestrator_prompt = compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
+    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let current_model: Option<String> = state
@@ -1272,7 +1325,15 @@ async fn start_session(
             )
             .ok()
             .flatten();
-        if current_model.as_deref() == chosen_model.as_deref() {
+        let hot_prompt_compatible = store::latest_prompt_compilation(
+            &state.db.lock().unwrap(),
+            &session_id,
+        )?.is_some_and(|previous| {
+            previous.harness == adapter_id
+                && previous.prefix_hash == orchestrator_prompt.metadata.prefix_hash
+                && previous.schema_version == i64::from(orchestrator_prompt.metadata.schema_version)
+        });
+        if current_model.as_deref() == chosen_model.as_deref() && hot_prompt_compatible {
             let db = state.db.lock().unwrap();
             restoration::set_head_state(
                 &db,
@@ -1286,6 +1347,17 @@ async fn start_session(
                 stored_provider_id.as_deref(),
             )?;
             handoff::record_fidelity(&db, &session_id, ContinuationFidelity::Native)?;
+            persist_prompt_compilation(
+                &db,
+                &session_id,
+                adapter_id,
+                chosen_model.as_deref(),
+                "orchestrator",
+                "orchestration",
+                RestorationMode::Hot,
+                "not_applicable",
+                &orchestrator_prompt,
+            )?;
             return store::state(&db);
         }
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
@@ -1300,10 +1372,6 @@ async fn start_session(
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
-    let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
-    let credential_context = state.credential_broker.instructions(&session_id);
-    let orchestrator_prompt = compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
-    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
     let plan = restoration::select_plan(
         false,
         stored_provider_id.as_deref(),
@@ -1465,6 +1533,22 @@ async fn start_session(
                 Uuid::new_v4().simple().to_string()
             ],
         )?;
+    }
+    if let Err(error) = persist_prompt_compilation(
+        &db,
+        &session_id,
+        adapter_id,
+        chosen_model.as_deref(),
+        "orchestrator",
+        "orchestration",
+        restoration_mode,
+        "not_applicable",
+        &orchestrator_prompt,
+    ) {
+        let _ = db.execute("UPDATE sessions SET status='failed' WHERE id=?1", params![session_id]);
+        drop(db);
+        started.runtime.stop(adapters::ShutdownReason::Failed);
+        return Err(error);
     }
     if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
         &db,
@@ -1711,6 +1795,22 @@ async fn start_chat(
                 "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd],
             )?;
+        }
+        if let Err(error) = persist_prompt_compilation(
+            &db,
+            &session_id,
+            adapter_id,
+            chosen_model.as_deref(),
+            if is_orchestrator { "orchestrator" } else { "session" },
+            if is_orchestrator { "orchestration" } else { "direct" },
+            mode,
+            "not_applicable",
+            &compiled_prompt,
+        ) {
+            let _ = db.execute("UPDATE sessions SET status='failed' WHERE id=?1", params![session_id]);
+            drop(db);
+            started.runtime.stop(adapters::ShutdownReason::Failed);
+            return Err(error);
         }
         if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(&db, &session_id, process_id) {
             drop(db);
@@ -2908,9 +3008,18 @@ fn launch_worker_outcome(
         }
     };
     let instructions = compiled_prompt.instructions().to_owned();
+    let hot_prompt_compatible = store::latest_prompt_compilation(
+        &state.db.lock().unwrap(),
+        &reservation.session_id,
+    ).ok().flatten().is_some_and(|previous| {
+        previous.harness == harness
+            && previous.prefix_hash == compiled_prompt.metadata.prefix_hash
+            && previous.schema_version == i64::from(compiled_prompt.metadata.schema_version)
+    });
 
     if reservation.reuse_existing
         && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
+        && hot_prompt_compatible
     {
         let current = store::worker_runtime(&state.db.lock().unwrap(), &reservation.session_id)
             .ok()
@@ -2964,6 +3073,25 @@ fn launch_worker_outcome(
                 &reservation.session_id,
                 ContinuationFidelity::Native,
             );
+            let prompt_recorded = {
+                let db = state.db.lock().unwrap();
+                let marker = cross_harness_reuse_marker(&db, parent_session_id, &harness);
+                persist_prompt_compilation(
+                    &db,
+                    &reservation.session_id,
+                    &harness,
+                    Some(&model),
+                    &format!("worker:{}", directive.role.as_str()),
+                    directive.role.as_str(),
+                    RestorationMode::Hot,
+                    marker,
+                    &compiled_prompt,
+                )
+            };
+            if let Err(error) = prompt_recorded {
+                fail_reserved_worker(app, &reservation.session_id, &label, &format!("Could not persist hot prompt compilation: {error}"));
+                return WorkerLaunchOutcome::Failed;
+            }
             if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
                 if runtime.send_turn(&instructions).is_ok() {
                     let _ = learning_router::record_route_status(
@@ -2978,6 +3106,26 @@ fn launch_worker_outcome(
         }
         let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
         return WorkerLaunchOutcome::Failed;
+    }
+
+    if reservation.reuse_existing
+        && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
+        && !hot_prompt_compatible
+    {
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+            runtime.stop(adapters::ShutdownReason::Replaced);
+        }
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &reservation.session_id,
+        );
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "prompt-cache",
+            "worker.prompt_prefix_changed",
+            &reservation.session_id,
+            "Restarting worker because the stable prompt prefix changed",
+        );
     }
 
     if directive.write_mode == delegation::WriteMode::ReadOnly {
@@ -3206,6 +3354,24 @@ fn launch_worker_outcome(
                 effort,
             ],
         );
+        let cross_harness_reuse = cross_harness_reuse_marker(&db, parent_session_id, &harness);
+        if let Err(error) = persist_prompt_compilation(
+            &db,
+            &session_id,
+            &harness,
+            Some(&model),
+            &format!("worker:{}", directive.role.as_str()),
+            directive.role.as_str(),
+            restoration_mode,
+            cross_harness_reuse,
+            &compiled_prompt,
+        ) {
+            drop(db);
+            runtime.stop(adapters::ShutdownReason::Failed);
+            let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
+            fail_reserved_worker(app, &session_id, &label, &format!("Could not persist prompt compilation: {error}"));
+            return WorkerLaunchOutcome::Failed;
+        }
         let _ = db.execute(
             "UPDATE workspaces SET status='working' WHERE id=?1",
             params![reservation.workspace_id],
