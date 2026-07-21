@@ -169,6 +169,11 @@ mod tests {
         assert!(profile.contains("(deny default)"));
         assert!(profile.contains("(allow file-write* (subpath \"/tmp/output\"))"));
         assert!(profile.contains("(deny network*)"));
+
+        let networked =
+            seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), true).unwrap();
+        assert!(networked.contains("(allow network*)"));
+        assert!(!networked.contains("(deny network*)"));
     }
 
     #[test]

@@ -134,12 +134,7 @@ fn launch(
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    if request.read_only_sandbox.is_some() {
-        return Err(BridgeError::Invalid(
-            "OpenCode read-only workers are unsupported because its local HTTP transport cannot run inside the offline sandbox; refusing to start without isolation"
-                .into(),
-        ));
-    }
+    ensure_read_only_transport_supported(request.read_only_sandbox.is_some())?;
     if let Some(session_id) = resume_session_id {
         validate_path_id("session id", session_id)?;
     }
@@ -264,6 +259,17 @@ fn launch(
         reader: ChannelReader::new(receiver),
         startup_messages,
     })
+}
+
+fn ensure_read_only_transport_supported(enabled: bool) -> Result<(), BridgeError> {
+    if enabled {
+        Err(BridgeError::Invalid(
+            "OpenCode read-only workers are unsupported because its local HTTP transport cannot run inside the offline sandbox; refusing to start without isolation"
+                .into(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn session_create_body(
@@ -1259,6 +1265,13 @@ mod tests {
         assert!(validate_path_id("session id", "ses?x=1").is_err());
         assert!(validate_path_id("session id", "ses id").is_err());
         assert!(validate_path_id("session id", &"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn read_only_transport_fails_closed_before_launch() {
+        let error = ensure_read_only_transport_supported(true).unwrap_err();
+        assert!(error.to_string().contains("refusing to start without isolation"));
+        assert!(ensure_read_only_transport_supported(false).is_ok());
     }
 
     #[test]

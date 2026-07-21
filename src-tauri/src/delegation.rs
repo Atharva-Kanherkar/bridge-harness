@@ -877,6 +877,18 @@ mod tests {
     }
 
     #[test]
+    fn writable_output_paths_are_relative_and_cannot_escape() {
+        let mut value = request();
+        value.writable_output_paths = vec!["reports/result.json".into()];
+        assert!(value.validate().is_ok());
+
+        for invalid in ["", "/tmp/result", "../result", "reports/../result", "reports//result"] {
+            value.writable_output_paths = vec![invalid.into()];
+            assert!(value.validate().is_err(), "accepted invalid output path: {invalid}");
+        }
+    }
+
+    #[test]
     fn typed_worker_result_round_trips_every_status() {
         let statuses = [
             WorkerResultStatus::Completed,
