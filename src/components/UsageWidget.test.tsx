@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { UsageWidget } from "./UsageWidget";
-import type { UsageHistoryEntry, UsageSnapshot } from "../usage";
+import type { CacheDiagnostic, UsageHistoryEntry, UsageSnapshot } from "../usage";
 
 describe("UsageWidget", () => {
   it("keeps both providers visible and states unknown limits without fabrication", () => {
@@ -44,5 +44,24 @@ describe("UsageWidget", () => {
     expect(html).toContain("gpt-5");
     expect(html).toContain("completed");
     expect(html).toContain("Estimated from 3 samples");
+  });
+
+  it("renders cache ratios, prefix provenance, and unknown provider cost without fake savings", () => {
+    const cache: CacheDiagnostic = {
+      key: "codex-cache", harness: "codex", model: "gpt-5", role: "worker:implementation",
+      taskFamily: "implementation", restorationMode: "fresh", stablePrefixId: "bridge-prompt-v1-deadbeef",
+      stablePrefixHash: "deadbeef", promptSchemaVersion: 1, prefixTokenEstimate: 100,
+      cacheReadTokens: 120, cacheWriteTokens: 20, uncachedInputTokens: 160,
+      cacheHitRatio: 0.4, writeAmortization: 6, observations: 2,
+      crossHarnessReuse: ["same_harness"], costSources: [], costCoverage: "unknown",
+    };
+    const html = renderToStaticMarkup(<UsageWidget usage={{}} cacheDiagnostics={[cache]} />);
+    expect(html).toContain("Prompt cache");
+    expect(html).toContain("Hit 40%");
+    expect(html).toContain("write amortization 6.0×");
+    expect(html).toContain("bridge-prompt-v1-deadbeef");
+    expect(html).toContain("schema v1");
+    expect(html).toContain("Cost unknown — provider did not report it");
+    expect(html.toLowerCase()).not.toContain("savings");
   });
 });

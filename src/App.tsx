@@ -17,7 +17,7 @@ import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
-import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
+import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
 import { forestSnapshotKey } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
@@ -166,6 +166,7 @@ export function App() {
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
+  const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
   const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
   const latestContextSource = session?.contextPercent != null ? session.metricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
@@ -422,7 +423,7 @@ export function App() {
     <SpaceBackground paused={turnActive} />
 
     <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
-      <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
+      <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>
 
     <BridgeSidebar
