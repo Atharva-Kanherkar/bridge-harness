@@ -207,7 +207,6 @@ struct Inner {
     pending_approval: Option<BrowserApproval>,
     pending_approval_command: Option<QueuedCommand>,
     inflight: HashMap<String, QueuedCommand>,
-    completed: HashMap<String, bool>,
     audit: VecDeque<BrowserAuditEvent>,
     debug_events: VecDeque<Value>,
     site_metrics: HashMap<String, SiteMetric>,
@@ -367,15 +366,7 @@ impl BrowserBridgeSupervisor {
 
     pub fn snapshot(&self) -> BrowserBridgeSnapshot {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(lease) = inner.lease.as_mut() {
-            if lease.status == "active"
-                && DateTime::parse_from_rfc3339(&lease.expires_at)
-                    .is_ok_and(|expires| expires < Utc::now())
-            {
-                lease.status = "expired".into();
-                inner.status = "paused".into();
-            }
-        }
+        expire_lease_if_needed(&mut inner, Utc::now());
         let mut metrics = inner.site_metrics.values().cloned().collect::<Vec<_>>();
         metrics.sort_by(|a, b| a.domain.cmp(&b.domain));
         BrowserBridgeSnapshot {
@@ -480,6 +471,7 @@ impl BrowserBridgeSupervisor {
                 "browser",
             );
         }
+        expire_lease_if_needed(&mut inner, Utc::now());
         let lease = inner.lease.clone().ok_or_else(|| {
             BridgeError::Invalid("Attach a tab before issuing browser actions".into())
         })?;
@@ -500,6 +492,15 @@ impl BrowserBridgeSupervisor {
                     .into(),
             ));
         }
+        let user_focus_handoff = user_action && request.kind == "focus";
+        if lease.permission == "read_only"
+            && requires_interact_permission(&request.kind)
+            && !user_focus_handoff
+        {
+            return Err(BridgeError::Invalid(
+                "This lease is read-only; grant Interact before changing the page".into(),
+            ));
+        }
         if request.kind == "navigate" {
             let destination = request
                 .url
@@ -511,16 +512,6 @@ impl BrowserBridgeSupervisor {
                     "Navigation across the granted domain requires a new tab grant".into(),
                 ));
             }
-        }
-        if lease.permission == "read_only"
-            && matches!(
-                request.kind.as_str(),
-                "click" | "type" | "scroll" | "navigate"
-            )
-        {
-            return Err(BridgeError::Invalid(
-                "This lease is read-only; grant Interact before changing the page".into(),
-            ));
         }
         let command_id = Uuid::new_v4().to_string();
         let target_name = inner
@@ -1030,9 +1021,8 @@ impl BrowserBridgeSupervisor {
                         site.failures += 1
                     }
                     if replayed && sensitive_action(&command.kind, &command.action).is_some() {
-                        site.duplicate_side_effects += 0;
+                        site.duplicate_side_effects += 1;
                     }
-                    inner.completed.insert(id.clone(), ok);
                     inner.status = if ok {
                         "reading".into()
                     } else {
@@ -1178,6 +1168,28 @@ fn metric<'a>(inner: &'a mut Inner, domain: &str) -> &'a mut SiteMetric {
         })
 }
 
+fn expire_lease_if_needed(inner: &mut Inner, now: DateTime<Utc>) {
+    let expired = inner.lease.as_ref().is_some_and(|lease| {
+        lease.status != "expired"
+            && DateTime::parse_from_rfc3339(&lease.expires_at)
+                .map(|expires_at| expires_at <= now)
+                .unwrap_or(true)
+    });
+    if expired {
+        if let Some(lease) = inner.lease.as_mut() {
+            lease.status = "expired".into();
+        }
+        inner.status = "paused".into();
+    }
+}
+
+fn requires_interact_permission(kind: &str) -> bool {
+    matches!(
+        kind,
+        "click" | "click_at" | "type" | "scroll" | "navigate" | "focus"
+    )
+}
+
 fn push_bounded<T>(queue: &mut VecDeque<T>, value: T, limit: usize) {
     queue.push_back(value);
     while queue.len() > limit {
@@ -1292,6 +1304,53 @@ fn is_local_ip(ip: std::net::IpAddr) -> bool {
 mod tests {
     use super::*;
 
+    fn test_supervisor(
+        permission: &str,
+        expires_at: DateTime<Utc>,
+    ) -> (BrowserBridgeSupervisor, PathBuf) {
+        let root = std::env::temp_dir().join(format!("bridge-browser-test-{}", Uuid::new_v4()));
+        let metrics_path = root.join("browser-site-metrics.json");
+        let supervisor = BrowserBridgeSupervisor {
+            inner: Mutex::new(Inner {
+                lease: Some(TabLease {
+                    id: "lease".into(),
+                    tab_id: 1,
+                    domain: "example.com".into(),
+                    status: "active".into(),
+                    permission: permission.into(),
+                    attached_at: Utc::now().to_rfc3339(),
+                    expires_at: expires_at.to_rfc3339(),
+                    last_activity_at: Utc::now().to_rfc3339(),
+                }),
+                status: "reading".into(),
+                ..Inner::default()
+            }),
+            outbound: Mutex::new(None),
+            next_connection: AtomicU64::new(1),
+            extension_path: root.join("browser-extension"),
+            socket_path: root.join("browser.sock"),
+            metrics_path: metrics_path.clone(),
+            remote_config_path: root.join("browser-remote-config.json"),
+            audit_path: root.join("browser-audit.json"),
+        };
+        (supervisor, root)
+    }
+
+    fn action(kind: &str) -> BrowserActionRequest {
+        BrowserActionRequest {
+            kind: kind.into(),
+            element_id: None,
+            text: None,
+            url: None,
+            x: None,
+            y: None,
+            tab_id: None,
+            sensitive_kind: None,
+            expected_domain: Some("example.com".into()),
+            actor: None,
+        }
+    }
+
     fn request() -> BrowserRouteRequest {
         BrowserRouteRequest {
             structured_api_available: false,
@@ -1361,5 +1420,96 @@ mod tests {
             (false, Some("activeTab permission required".into()))
         );
         assert_eq!(capture_status(&json!({"active": true})), (true, None));
+    }
+
+    #[test]
+    fn read_only_leases_reject_every_page_mutating_action() {
+        let (supervisor, root) = test_supervisor("read_only", Utc::now() + Duration::minutes(1));
+        for kind in ["click", "click_at", "type", "scroll", "navigate", "focus"] {
+            let error = supervisor.issue(action(kind)).unwrap_err().to_string();
+            assert!(
+                error.contains("read-only"),
+                "{kind} unexpectedly bypassed the lease"
+            );
+        }
+        let mut handoff = action("focus");
+        handoff.actor = Some("user".into());
+        let error = supervisor.issue(handoff).unwrap_err().to_string();
+        assert!(error.contains("not connected"));
+        assert!(supervisor.inner.lock().unwrap().inflight.is_empty());
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_expires_leases_without_waiting_for_a_snapshot_poll() {
+        let (supervisor, root) = test_supervisor("interact", Utc::now() - Duration::seconds(1));
+        let error = supervisor
+            .issue(action("screenshot"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expired"));
+        assert_eq!(supervisor.snapshot().lease.unwrap().status, "expired");
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn issue_rejects_a_domain_mismatch_before_dispatch() {
+        let (supervisor, root) = test_supervisor("interact", Utc::now() + Duration::minutes(1));
+        let mut request = action("screenshot");
+        request.expected_domain = Some("other.example".into());
+        let error = supervisor.issue(request).unwrap_err().to_string();
+        assert!(error.contains("domain changed"));
+        assert!(supervisor.inner.lock().unwrap().inflight.is_empty());
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn denied_approval_clears_the_queued_sensitive_action() {
+        let (supervisor, root) = test_supervisor("interact", Utc::now() + Duration::minutes(1));
+        let mut request = action("click");
+        request.sensitive_kind = Some("delete".into());
+        let command_id = supervisor.issue(request).unwrap();
+        let approval = supervisor.snapshot().pending_approval.unwrap();
+        assert_eq!(approval.command_id, command_id);
+        supervisor.resolve_approval(&approval.id, false).unwrap();
+        let snapshot = supervisor.snapshot();
+        assert!(snapshot.pending_approval.is_none());
+        assert_eq!(snapshot.status, "paused");
+        assert!(supervisor
+            .inner
+            .lock()
+            .unwrap()
+            .pending_approval_command
+            .is_none());
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replayed_sensitive_results_increment_duplicate_side_effect_metrics() {
+        let (supervisor, root) = test_supervisor("interact", Utc::now() + Duration::minutes(1));
+        supervisor.inner.lock().unwrap().inflight.insert(
+            "replayed".into(),
+            QueuedCommand {
+                id: "replayed".into(),
+                action: json!({"kind": "click", "targetName": "Delete account"}),
+                kind: "delete".into(),
+                domain: "example.com".into(),
+                started_at: Utc::now(),
+            },
+        );
+        supervisor.handle_extension_event(json!({
+            "type": "command_result",
+            "payload": {"id": "replayed", "ok": true, "replayed": true}
+        }));
+        assert_eq!(
+            supervisor.snapshot().site_metrics[0].duplicate_side_effects,
+            1
+        );
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
     }
 }
