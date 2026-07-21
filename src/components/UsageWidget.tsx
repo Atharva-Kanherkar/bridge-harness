@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Gauge } from "lucide-react";
+import { AlertTriangle, Gauge, X } from "lucide-react";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
@@ -95,6 +95,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
           <Gauge size={13} className="text-neutral-500" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-neutral-100">Usage health</h2>
           <span className="ml-auto text-[9px] text-neutral-600">No invented limits</span>
+          <button type="button" onClick={() => setOpen(false)} className="grid size-6 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-white/[0.07] hover:text-neutral-200" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
         </div>
 
         <div className="grid gap-3">

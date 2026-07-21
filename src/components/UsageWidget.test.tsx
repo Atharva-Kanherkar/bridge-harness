@@ -12,6 +12,7 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("0% used");
     expect(html).toContain("pointer-events-none");
     expect(html).not.toContain("group-hover:");
+    expect(html).toContain("Close usage health details");
   });
 
   it("labels reported meters and explains context pressure", () => {
