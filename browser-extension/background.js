@@ -247,8 +247,13 @@ async function executeCommand(message) {
   const cached = (await completedCommands())[id];
   if (cached) { post("command_result", { id, ...cached, replayed: true }); return; }
   let result;
+  const authorizeLease = () => {
+    if (attachedTabId == null) throw new Error("No attached tab");
+    if (message.expectedLeaseId !== leaseId || message.expectedTabId !== attachedTabId) throw new Error("The authorized tab lease changed before this action ran");
+  };
   const authorizePageAction = () => {
-    if (attachedTabId == null || !snapshotReady) throw new Error("The attached page is not ready");
+    authorizeLease();
+    if (!snapshotReady) throw new Error("The attached page is not ready");
     if (message.expectedLeaseId !== leaseId || message.expectedTabId !== attachedTabId || message.expectedSnapshotGeneration !== snapshotGeneration) throw new Error("The authorized page changed before this action ran");
   };
   if (action.kind === "list_tabs") result = await listTabs();
@@ -261,14 +266,14 @@ async function executeCommand(message) {
   }
   else if (action.kind === "debugger") result = await enableDebugger();
   else if (action.kind === "focus") {
-    authorizePageAction();
+    authorizeLease();
     const expectedTabId = attachedTabId;
     const tab = await chrome.tabs.get(attachedTabId);
-    authorizePageAction();
+    authorizeLease();
     await chrome.windows.update(tab.windowId, { focused: true });
-    authorizePageAction();
+    authorizeLease();
     await chrome.tabs.update(expectedTabId, { active: true });
-    authorizePageAction();
+    authorizeLease();
     result = { focused: true };
   } else if (["click", "click_at", "type", "scroll", "navigate", "snapshot"].includes(action.kind)) {
     authorizePageAction();

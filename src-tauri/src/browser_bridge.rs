@@ -1266,8 +1266,9 @@ impl BrowserBridgeSupervisor {
                 .lease
                 .as_ref()
                 .ok_or_else(|| BridgeError::Invalid("The attached tab lease ended".into()))?;
+            let requires_ready_page = command.kind != "focus";
             if !inner.transport_connected
-                || !inner.page_ready
+                || (requires_ready_page && !inner.page_ready)
                 || lease.id != expected_lease_id
                 || Some(lease.tab_id) != command.tab_id
                 || lease.domain != command.domain
@@ -2791,6 +2792,27 @@ mod tests {
         let command = receiver.recv_timeout(StdDuration::from_secs(1)).unwrap();
         assert_eq!(command["id"], command_id);
         assert_eq!(command["action"]["approvalGranted"], true);
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn user_can_focus_the_leased_tab_while_page_metadata_is_refreshing() {
+        let (supervisor, root) = test_supervisor("read_only", Utc::now() + Duration::minutes(1));
+        let (sender, receiver) = mpsc::channel();
+        *supervisor.outbound.lock().unwrap() = Some((1, sender));
+        {
+            let mut inner = supervisor.inner.lock().unwrap();
+            inner.transport_connected = true;
+            inner.page_ready = false;
+            inner.lease.as_mut().unwrap().status = "paused".into();
+        }
+        let mut request = action("focus");
+        request.actor = Some("user".into());
+        let command_id = supervisor.issue(request).unwrap();
+        let command = receiver.recv_timeout(StdDuration::from_secs(1)).unwrap();
+        assert_eq!(command["id"], command_id);
+        assert_eq!(command["action"]["kind"], "focus");
         drop(supervisor);
         let _ = fs::remove_dir_all(root);
     }
