@@ -246,6 +246,7 @@ export interface BrowserBridgeSnapshot {
   audit: BrowserAuditEvent[]; debugEvents: Record<string, unknown>[]; siteMetrics: BrowserSiteMetric[];
   remoteProvider: RemoteBrowserConfig | null;
 }
+export interface BrowserFrame { revision: number; leaseId: string; dataUrl: string; redactedRegions: number }
 export interface BrowserActionRequest {
   kind: string; elementId?: string; text?: string; url?: string; x?: number; y?: number;
   tabId?: number; sensitiveKind?: string; expectedDomain?: string;

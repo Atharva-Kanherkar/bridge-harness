@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentDefinition, AgentEvent, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
 import type { AccountUsagePayload } from "./usage";
+import type { BrowserFrame } from "./types";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -208,6 +209,9 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
 
 export const bridgeApi = {
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? invoke("browser_bridge_state") : Promise.resolve(structuredClone(mockBrowserBridge)),
+  browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => isTauri()
+    ? invoke("browser_frame", { afterRevision })
+    : Promise.resolve(mockBrowserBridge.screenshot && mockBrowserBridge.lease && afterRevision < 1 ? { revision: 1, leaseId: mockBrowserBridge.lease.id, dataUrl: mockBrowserBridge.screenshot, redactedRegions: mockBrowserBridge.screenshotRedactedRegions } : null),
   installBrowserNativeHost: async (): Promise<string> => {
     if (isTauri()) return invoke("install_browser_native_host");
     mockBrowserBridge.nativeHostInstalled = true; mockBrowserBridge.nativeHostManifestPath = "/mock/dev.bridge.deck.browser.json";

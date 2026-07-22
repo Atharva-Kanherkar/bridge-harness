@@ -148,7 +148,12 @@ async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
 
 #[tauri::command]
 async fn browser_bridge_state(state: State<'_, AppState>) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
-    Ok(state.browser_bridge.snapshot())
+    Ok(state.browser_bridge.state_snapshot())
+}
+
+#[tauri::command]
+async fn browser_frame(after_revision: u64, state: State<'_, AppState>) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
+    Ok(state.browser_bridge.frame(after_revision))
 }
 
 #[tauri::command]
@@ -4220,6 +4225,7 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
         }
         slash::SlashDispatch::Clear => {
             state.credential_broker.clear_session(&session_id);
+            state.browser_bridge.revoke_session(&session_id);
             if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
                 runtime.stop(adapters::ShutdownReason::UserStopped);
             }
@@ -4258,10 +4264,18 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
+    let browser_context = state.browser_bridge.capability_context(&session_id, runtime.process_id());
+    let application_context = [credential_context.as_deref(), browser_context.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if let Err(error) = deliver_sanitized_turn(
         runtime.as_ref(),
         &outbound,
-        credential_context.as_deref(),
+        (!application_context.is_empty()).then_some(application_context.as_str()),
     ) {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
@@ -4705,6 +4719,7 @@ async fn stop_session(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
+    state.browser_bridge.revoke_session(&session_id);
     let is_worker = state
         .db
         .lock()
@@ -5127,6 +5142,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             health,
             browser_bridge_state,
+            browser_frame,
             install_browser_native_host,
             browser_action,
             set_browser_permission,

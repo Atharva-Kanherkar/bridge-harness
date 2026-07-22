@@ -375,6 +375,13 @@ impl AdapterRuntime for ClaudeRuntime {
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text)
     }
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        application_context: &str,
+    ) -> Result<(), BridgeError> {
+        self.start_turn(&turn_with_application_context(text, application_context))
+    }
     fn interrupt(&self) -> Result<(), BridgeError> {
         ClaudeRuntime::interrupt(self)
     }
@@ -384,6 +391,19 @@ impl AdapterRuntime for ClaudeRuntime {
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
     }
+}
+
+fn turn_with_application_context(text: &str, application_context: &str) -> String {
+    let context = application_context.trim();
+    if context.is_empty() {
+        return text.to_owned();
+    }
+    // The streaming Claude SDK accepts user messages but has no per-turn
+    // system field. Keep Bridge-owned context out of the local transcript
+    // while clearly separating it from untrusted user/page content.
+    format!(
+        "{text}\n\n<bridge_application_context trusted=\"true\">\n{context}\n</bridge_application_context>"
+    )
 }
 
 impl Drop for ClaudeRuntime {
@@ -482,6 +502,17 @@ mod tests {
         });
         assert_eq!(value["type"], "user");
         assert!(!value.to_string().contains("\\u001b"));
+    }
+
+    #[test]
+    fn application_context_is_provider_visible_but_separate_from_visible_turn() {
+        let value = turn_with_application_context(
+            "Can you see the tab?",
+            "Bridge authenticated-browser capability: AVAILABLE",
+        );
+        assert!(value.starts_with("Can you see the tab?\n\n<bridge_application_context"));
+        assert!(value.contains("trusted=\"true\""));
+        assert!(value.contains("authenticated-browser capability: AVAILABLE"));
     }
 
     #[test]

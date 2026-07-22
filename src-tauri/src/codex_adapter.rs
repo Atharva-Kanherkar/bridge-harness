@@ -268,7 +268,7 @@ fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&s
         .filter(|value| !value.is_empty())
     {
         params["additionalContext"] = json!({
-            "bridge.credentials": {"kind": "application", "value": context}
+            "bridge.application": {"kind": "application", "value": context}
         });
     }
     params
@@ -440,11 +440,11 @@ mod tests {
             "verify [secret:sec_reference]"
         );
         assert_eq!(
-            params["additionalContext"]["bridge.credentials"]["kind"],
+            params["additionalContext"]["bridge.application"]["kind"],
             "application"
         );
         assert_eq!(
-            params["additionalContext"]["bridge.credentials"]["value"],
+            params["additionalContext"]["bridge.application"]["value"],
             "trusted broker capability"
         );
     }

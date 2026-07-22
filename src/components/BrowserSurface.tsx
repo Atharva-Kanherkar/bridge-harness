@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Camera, ChevronRight, Chrome, ExternalLink, Eye, Hand, LoaderCircle, MousePointer2, Plug, RefreshCw, ScrollText, ShieldAlert, TerminalSquare, Unplug } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
@@ -21,9 +21,29 @@ export function BrowserSurface({ onClose, onError }: { onClose: () => void; onEr
   const [remoteEndpoint, setRemoteEndpoint] = useState("");
   const [remoteTokenEnv, setRemoteTokenEnv] = useState("BRIDGE_REMOTE_BROWSER_TOKEN");
   const [remoteUrl, setRemoteUrl] = useState("https://example.com");
+  const frameRevision = useRef(0);
+  const hasSnapshot = useRef(false);
 
-  const refresh = async () => setSnapshot(await bridgeApi.browserBridgeState());
+  const refresh = async () => {
+    const next = await bridgeApi.browserBridgeState();
+    hasSnapshot.current = true;
+    setSnapshot(current => {
+      const sameLease = Boolean(next.lease && current?.lease?.id === next.lease.id);
+      return {
+        ...next,
+        screenshot: sameLease ? (current?.screenshot ?? next.screenshot) : next.screenshot,
+        screenshotRedactedRegions: sameLease ? (current?.screenshotRedactedRegions ?? next.screenshotRedactedRegions) : next.screenshotRedactedRegions,
+      };
+    });
+  };
   useEffect(() => startSerialPoll(refresh, 700), []);
+  useEffect(() => startSerialPoll(async () => {
+    if (!hasSnapshot.current) return;
+    const frame = await bridgeApi.browserFrame(frameRevision.current);
+    if (!frame) return;
+    frameRevision.current = frame.revision;
+    setSnapshot(current => current?.lease?.id === frame.leaseId ? { ...current, screenshot: frame.dataUrl, screenshotRedactedRegions: frame.redactedRegions, captureActive: true } : current);
+  }, 80), []);
   useEffect(() => {
     if (!snapshot?.remoteProvider) return;
     setRemoteEndpoint(snapshot.remoteProvider.endpoint); setRemoteTokenEnv(snapshot.remoteProvider.bearerTokenEnv);
