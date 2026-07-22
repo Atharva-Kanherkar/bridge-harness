@@ -1266,7 +1266,7 @@ impl BrowserBridgeSupervisor {
                 .lease
                 .as_ref()
                 .ok_or_else(|| BridgeError::Invalid("The attached tab lease ended".into()))?;
-            let requires_ready_page = command.kind != "focus";
+            let requires_ready_page = !matches!(command.kind.as_str(), "focus" | "snapshot" | "screenshot");
             if !inner.transport_connected
                 || (requires_ready_page && !inner.page_ready)
                 || lease.id != expected_lease_id
@@ -2797,7 +2797,7 @@ mod tests {
     }
 
     #[test]
-    fn user_can_focus_the_leased_tab_while_page_metadata_is_refreshing() {
+    fn user_recovery_commands_work_while_page_metadata_is_refreshing() {
         let (supervisor, root) = test_supervisor("read_only", Utc::now() + Duration::minutes(1));
         let (sender, receiver) = mpsc::channel();
         *supervisor.outbound.lock().unwrap() = Some((1, sender));
@@ -2807,12 +2807,14 @@ mod tests {
             inner.page_ready = false;
             inner.lease.as_mut().unwrap().status = "paused".into();
         }
-        let mut request = action("focus");
-        request.actor = Some("user".into());
-        let command_id = supervisor.issue(request).unwrap();
-        let command = receiver.recv_timeout(StdDuration::from_secs(1)).unwrap();
-        assert_eq!(command["id"], command_id);
-        assert_eq!(command["action"]["kind"], "focus");
+        for kind in ["focus", "snapshot", "screenshot"] {
+            let mut request = action(kind);
+            request.actor = Some("user".into());
+            let command_id = supervisor.issue(request).unwrap();
+            let command = receiver.recv_timeout(StdDuration::from_secs(1)).unwrap();
+            assert_eq!(command["id"], command_id);
+            assert_eq!(command["action"]["kind"], kind);
+        }
         drop(supervisor);
         let _ = fs::remove_dir_all(root);
     }

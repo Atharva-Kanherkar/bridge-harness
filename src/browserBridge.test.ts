@@ -81,6 +81,8 @@ describe("authenticated browser bridge artifacts", () => {
     expect(background).toContain("message.redactionEpoch === acknowledgedRedactionEpoch");
     expect(background).toContain("snapshotMaxTimer = setTimeout");
     expect(background).toContain("expectedSnapshotGeneration !== snapshotGeneration");
+    expect(background).toContain('action.kind === "snapshot"');
+    expect(background).toContain("result = await sendSnapshot(Boolean(action.delta))");
     expect(surface).toContain("bridgeApi.browserFrame(frameRevision.current)");
   });
 

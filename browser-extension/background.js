@@ -260,9 +260,13 @@ async function executeCommand(message) {
   else if (action.kind === "attach") result = await attach(action.tabId, action.leaseId);
   else if (action.kind === "detach") result = await detach(action.reason);
   else if (action.kind === "screenshot") {
-    authorizePageAction();
+    authorizeLease();
     const captured = await screenshot(id, !action.includeDataUrl);
     result = action.includeDataUrl ? captured : { redactedRegions: captured.redactedRegions };
+  }
+  else if (action.kind === "snapshot") {
+    authorizeLease();
+    result = await sendSnapshot(Boolean(action.delta));
   }
   else if (action.kind === "debugger") result = await enableDebugger();
   else if (action.kind === "focus") {
@@ -275,7 +279,7 @@ async function executeCommand(message) {
     await chrome.tabs.update(expectedTabId, { active: true });
     authorizeLease();
     result = { focused: true };
-  } else if (["click", "click_at", "type", "scroll", "navigate", "snapshot"].includes(action.kind)) {
+  } else if (["click", "click_at", "type", "scroll", "navigate"].includes(action.kind)) {
     authorizePageAction();
     const expectedTabId = attachedTabId;
     const response = await chrome.tabs.sendMessage(expectedTabId, { type: "bridge-page-action", action, expectedPageGeneration: action.kind === "snapshot" ? undefined : message.expectedPageGeneration });
