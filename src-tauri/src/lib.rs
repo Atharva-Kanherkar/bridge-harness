@@ -34,6 +34,7 @@ mod store;
 mod worker_guard;
 mod worker_lifecycle;
 mod worker_pool;
+mod workspace_files;
 mod worktree_coordinator;
 
 use chrono::Utc;
@@ -2137,7 +2138,17 @@ fn handle_agent_value(
                     .get(session_id)
                     .cloned()
             });
-        let normalized = state.adapter_registry.normalize(&adapter_id, value);
+        // The exact composer text is persisted locally at submission time.
+        // Provider echoes may include hidden user-role file context, so do not
+        // duplicate them into the visible conversation.
+        let normalized = state
+            .adapter_registry
+            .normalize(&adapter_id, value)
+            .into_iter()
+            .filter(|event| {
+                event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
+            })
+            .collect::<Vec<_>>();
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
             match event.kind.as_str() {
@@ -4412,6 +4423,25 @@ async fn prepare_turn(session_id: String, text: String, state: State<'_, AppStat
     Ok(intercepted.sanitized)
 }
 
+/// Resolve a session's workspace root (`s.cwd` falling back to the connected
+/// workspace's `path`). Returns `None` for chats with no folder — e.g. direct
+/// chats — or when the recorded path no longer exists on disk.
+fn session_workspace_root(state: &State<'_, AppState>, session_id: &str) -> Option<PathBuf> {
+    let path: Option<String> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(s.cwd, w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            params![session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    let candidate = PathBuf::from(path?);
+    candidate.is_dir().then_some(candidate)
+}
+
 fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
@@ -4429,9 +4459,6 @@ fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    if adapter_id == "codex" {
-        return Ok(None);
-    }
     let user_event = agent::NormalizedEvent {
         kind: "message.completed".into(),
         item_id: Some(format!("user-{}", Uuid::new_v4())),
@@ -4530,6 +4557,20 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
         slash::SlashDispatch::Forward { text } => text,
     };
 
+    // Read any @file mentions before locking the adapter map so the referenced
+    // file contents ride along as trusted application context, not user text.
+    let file_context = if let Some(root) = session_workspace_root(&state, &session_id) {
+        let mention_text = outbound.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            workspace_files::mention_context(&root, &mention_text)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace file read failed: {error}")))?
+    } else {
+        None
+    };
+    let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
+
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
@@ -4537,7 +4578,7 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
     if let Err(error) = deliver_sanitized_turn(
         runtime.as_ref(),
-        &outbound,
+        &provider_text,
         credential_context.as_deref(),
     ) {
         drop(adapters);
@@ -4571,7 +4612,28 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     Ok(())
 }
 
-fn record_recoverable_adapter_failure(state: &State<'_, AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
+/// List the current chat's workspace files for the composer's `@file`
+/// autocomplete. Returns an empty list for chats with no connected folder.
+#[tauri::command]
+async fn list_workspace_files(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, BridgeError> {
+    match session_workspace_root(&state, &session_id) {
+        Some(root) => tauri::async_runtime::spawn_blocking(move || {
+            workspace_files::list_files(&root)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace file listing failed: {error}")))?,
+        None => Ok(Vec::new()),
+    }
+}
+
+fn record_recoverable_adapter_failure(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    error: &BridgeError,
+) -> Result<(), BridgeError> {
     let db = state.db.lock().unwrap();
     db.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
     store::event(&db, "adapter", "adapter.request_failed", session_id, &error.to_string())?;
@@ -5469,6 +5531,7 @@ pub fn run() {
             resize_terminal,
             prepare_turn,
             send_turn,
+            list_workspace_files,
             compact_session,
             interrupt_turn,
             refresh_account_usage,
