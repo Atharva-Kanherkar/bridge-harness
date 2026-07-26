@@ -1013,8 +1013,21 @@ async fn create_workspace_session(
     store::state(&db)
 }
 
-/// Change a direct chat's harness/model. Stops any running adapter so the next
-/// message starts a fresh provider session with the new model.
+fn persist_chat_model_selection(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    model: &str,
+    tier: CapabilityTier,
+) -> Result<usize, BridgeError> {
+    Ok(db.execute(
+        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator')",
+        params![session_id, adapter_id, model, tier.as_str()],
+    )?)
+}
+
+/// Change a root chat's provider/model. Stops any running adapter so the next
+/// message starts a fresh provider session with the explicit user selection.
 #[tauri::command]
 async fn update_chat_model(
     session_id: String,
@@ -1024,9 +1037,74 @@ async fn update_chat_model(
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
+    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
+        return Err(BridgeError::Invalid(format!(
+            "{} is disabled in Settings",
+            harness.label()
+        )));
+    }
+    let (kind, previous_harness, previous_model, active_turn_id, parent_session_id): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = state.db.lock().unwrap().query_row(
+        "SELECT kind,harness,model,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    if parent_session_id.is_some() || !matches!(kind.as_str(), "direct" | "orchestrator") {
+        return Err(BridgeError::Invalid(
+            "Only root chats and orchestrators can change models".into(),
+        ));
+    }
+    if active_turn_id.is_some() {
+        return Err(BridgeError::Invalid(
+            "Wait for the current response before switching models".into(),
+        ));
+    }
+    let descriptor = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.id == adapter_id)
+        .ok_or_else(|| BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}")))?;
+    if !descriptor.available {
+        return Err(BridgeError::Invalid(
+            descriptor
+                .unavailable_reason
+                .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
+        ));
+    }
+    let default_tier = if kind == "orchestrator" {
+        CapabilityTier::Standard
+    } else {
+        CapabilityTier::Fast
+    };
+    let selected = if let Some(requested) = model.as_deref().filter(|value| !value.trim().is_empty()) {
+        descriptor
+            .models
+            .iter()
+            .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+            .cloned()
+            .ok_or_else(|| BridgeError::Invalid(format!("{} does not offer model {requested}", descriptor.label)))?
+    } else {
+        descriptor
+            .models
+            .iter()
+            .find(|option| option.tier == default_tier && option.default_for_tier)
+            .or_else(|| descriptor.models.iter().find(|option| option.tier == default_tier))
+            .cloned()
+            .ok_or_else(|| BridgeError::Invalid(format!("{} has no {} model", descriptor.label, default_tier.as_str())))?
+    };
+    if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str()) {
+        return store::state(&state.db.lock().unwrap());
+    }
     let stop_session_id = session_id.clone();
+    let shutdown_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
+        let state = shutdown_app.state::<AppState>();
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         };
@@ -1035,10 +1113,50 @@ async fn update_chat_model(
     .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
     let db = state.db.lock().unwrap();
-    db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND kind='direct'",
-        params![session_id, adapter_id, model],
+    if persist_chat_model_selection(&db, &session_id, adapter_id, &selected.id, selected.tier)? != 1 {
+        return Err(BridgeError::Invalid(
+            "The chat could not be updated because it is no longer a root chat".into(),
+        ));
+    }
+    restoration::set_head_state(
+        &db,
+        &session_id,
+        RestorationMode::Fresh,
+        ResumeEligibility::Fresh,
+        None,
     )?;
+    let subject = if kind == "orchestrator" { "Orchestrator" } else { "Chat" };
+    let detail = format!(
+        "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session.",
+        previous_harness,
+        previous_model.as_deref().unwrap_or("automatic"),
+        adapter_id,
+        selected.id,
+    );
+    store::event(&db, "chat", "session.model_changed", &session_id, &detail)?;
+    let event = store::session_event(
+        &db,
+        &session_id,
+        &agent::NormalizedEvent {
+            kind: "session.model_changed".into(),
+            item_id: Some(format!("model-change-{}", Uuid::new_v4())),
+            role: Some("system".into()),
+            status: Some("ready".into()),
+            title: Some(format!("{subject} model changed")),
+            text: Some(detail),
+            data: serde_json::json!({
+                "previousHarness": previous_harness,
+                "previousModel": previous_model,
+                "harness": adapter_id,
+                "model": selected.id,
+                "modelLabel": selected.label,
+                "tier": selected.tier,
+                "freshProviderSession": true,
+            }),
+        },
+        &serde_json::json!({"source": "user-selection"}),
+    )?;
+    let _ = app.emit("agent-event", event);
     store::state(&db)
 }
 
@@ -1170,14 +1288,62 @@ async fn connect_workspace_folder(
 #[tauri::command]
 async fn start_session(
     workspace_id: String,
-    _harness: Option<Harness>,
-    _model: Option<String>,
+    harness: Option<Harness>,
+    model: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    // The persisted Standard orchestrator profile owns the default provider,
-    // model, tier, and effort. Resolution still happens against live inventory.
-    let selection = {
+    // An explicit chat choice wins. Without one, the persisted Standard
+    // orchestrator profile remains the default.
+    let selection = if let Some(harness) = harness {
+        let adapter_id = store::harness_name(&harness).to_owned();
+        let db = state.db.lock().unwrap();
+        if !agent_config::is_harness_enabled(&db, &adapter_id) {
+            return Err(BridgeError::Invalid(format!(
+                "{} is disabled in Settings",
+                harness.label()
+            )));
+        }
+        let descriptor = state
+            .adapter_registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == adapter_id)
+            .ok_or_else(|| BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}")))?;
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(
+                descriptor
+                    .unavailable_reason
+                    .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
+            ));
+        }
+        let selected = if let Some(requested) = model.as_deref().filter(|value| !value.trim().is_empty()) {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+                .cloned()
+                .ok_or_else(|| BridgeError::Invalid(format!("{} does not offer model {requested}", descriptor.label)))?
+        } else {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
+                .or_else(|| descriptor.models.iter().find(|option| option.tier == CapabilityTier::Standard))
+                .cloned()
+                .ok_or_else(|| BridgeError::Invalid(format!("{} has no standard model", descriptor.label)))?
+        };
+        OrchestratorSelection {
+            adapter_id,
+            model: selected.id,
+            tier: selected.tier,
+            effort: agent_config::harness_config(&db, store::harness_name(&harness))
+                .and_then(|config| config.effort),
+            label: agent_config::default_orchestrator(&db)
+                .map(|agent| agent.name)
+                .unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
+        }
+    } else {
         let db = state.db.lock().unwrap();
         resolve_orchestrator_selection(&db, &state.adapter_registry)?
     };
@@ -5231,6 +5397,35 @@ mod tests {
         assert_eq!(selected.model, expected_model);
         assert_eq!(selected.effort, Some(delegation::Effort::High));
         assert_eq!(selected.tier, CapabilityTier::Standard);
+    }
+
+    #[test]
+    fn user_model_selection_updates_an_orchestrator_session() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,kind,depth) VALUES('orchestrator',NULL,'codex','Orchestrator','ready','reported','old-model','standard','orchestrator',0)",
+            [],
+        )
+        .unwrap();
+
+        let changed = persist_chat_model_selection(
+            &db,
+            "orchestrator",
+            "claude",
+            "opus",
+            CapabilityTier::Strong,
+        )
+        .unwrap();
+        let actual: (String, String, String, String, Option<String>) = db
+            .query_row(
+                "SELECT harness,model,requested_tier,status,provider_session_id FROM sessions WHERE id='orchestrator'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+
+        assert_eq!(changed, 1);
+        assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
     }
 
     #[test]

@@ -313,8 +313,10 @@ export function App() {
   }
   async function changeChatModel(harness: Harness, model: string | null) {
     if (!session) return;
+    setBusy(true); setError(undefined);
     try { setState(await bridgeApi.updateChatModel(session.id, harness, model)); }
     catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
   }
   async function submitNewWorkspace() {
     const name = title.trim(); if (!name) return;
@@ -450,7 +452,7 @@ export function App() {
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
             {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-neutral-500 font-mono text-[10px]">
-              <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}
+              <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}<span>·</span>{harnessLabel(session.harness)}<span>·</span>{modelDisplayName(adapters, session.harness, session.model)}
               {hasRepo && workspace && <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>}
             </div>}
           </div>
@@ -523,9 +525,9 @@ export function App() {
                     working={!!session?.activeTurnId}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
                     onPlusClick={() => { setComposer(""); setSlashDismissed(false); }}
-                    trailing={isDirectChat
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy} onChange={(harness, model) => void changeChatModel(harness, model)} compact />
-                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}</span>}
+                    trailing={session.kind === "direct" || session.kind === "orchestrator"
+                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
+                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                   />
                 </div>
               </div>
@@ -577,22 +579,30 @@ function PanelLoading({ label }: { label: string }) {
 }
 
 
-function ChatModelControl({ adapters, harness, model, disabled, onChange, compact }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; onChange: (harness: Harness, model: string | null) => void; compact?: boolean }) {
+function modelDisplayName(adapters: import("./types").AdapterDescriptor[], harness: Harness, model?: string | null): string {
+  const adapter = adapters.find(item => item.id === harness);
+  return adapter?.models.find(option => option.id === model)?.label ?? model ?? "Automatic";
+}
+
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat" }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; disabledReason?: string; onChange: (harness: Harness, model: string | null) => void; compact?: boolean; roleLabel?: string }) {
   const [open, setOpen] = useState(false);
   const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
   const modelLabel = currentModel?.label ?? model ?? "Default";
-  const tierLabel = currentModel?.tier === "strong" ? "High" : currentModel?.tier === "standard" ? "Balanced" : "Fast";
-  const compactLabel = compact ? tierLabel : `${harnessLabel(harness)} · ${modelLabel}`;
+  const compactLabel = `${harnessLabel(harness)} · ${modelLabel}`;
   return <div className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-neutral-400 hover:bg-white/[0.08]" : "h-[28px] max-w-[220px] px-2 text-[11.5px] text-neutral-300 hover:bg-white/[0.06]"}`} title={disabled ? "End the chat to switch models" : "Choose model"}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex max-w-[220px] items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-neutral-400 hover:bg-white/[0.08]" : "h-[28px] px-2 text-[11.5px] text-neutral-300 hover:bg-white/[0.06]"}`} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : `Choose ${roleLabel.toLowerCase()} model`} aria-label={`${roleLabel} model: ${harnessLabel(harness)} ${modelLabel}`}>
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
       <ChevronDown size={compact ? 14 : 12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
       <div className="u-glass-popover absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl max-h-[340px] overflow-y-auto">
+        <div className="border-b border-border/60 px-3 pb-2 pt-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/65">{roleLabel} runtime</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground/55">Switching starts a fresh provider session. The chat stays visible, but provider reasoning state resets.</p>
+        </div>
         {chatAdapters.map((adapter, index) => <div key={adapter.id} className={index > 0 ? "mt-1 pt-1 border-t border-border/60" : ""}>
           <div className="px-3 py-1.5 text-[9px] font-semibold tracking-[0.12em] uppercase text-muted-foreground/50 flex items-center gap-2">
             <span>{adapter.label}</span>

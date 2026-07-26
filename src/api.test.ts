@@ -40,6 +40,15 @@ describe("SQLite-shaped mock observability", () => {
     expect((await bridgeApi.routeBrowser({ ...base, domControlAvailable: false })).route).toBe("computer_use");
   });
 
+  it("applies model changes to orchestrator chats and rejects active-turn switches", async () => {
+    const created = await bridgeApi.createWorkspaceSession("demo-1");
+    const orchestrator = [...created.sessions].reverse().find(session => session.workspaceId === "demo-1" && session.kind === "orchestrator")!;
+    const changed = await bridgeApi.updateChatModel(orchestrator.id, "claude", "opus");
+    expect(changed.sessions.find(session => session.id === orchestrator.id)).toMatchObject({ harness: "claude", model: "opus", status: "idle", providerSessionId: null, restorationMode: "fresh" });
+
+    await expect(bridgeApi.updateChatModel("session-1", "claude", "opus")).rejects.toThrow("current response");
+  });
+
   it("persists catalog-derived model setup as immutable versions", async () => {
     const recommended = await bridgeApi.recommendedModelProfiles();
     expect(recommended).toHaveLength(9);

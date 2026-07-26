@@ -472,7 +472,9 @@ export const bridgeApi = {
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null): Promise<BridgeState> => {
     if (isTauri()) return invoke("update_chat_model", { sessionId, harness, model });
-    const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; }
+    const session = mockState.sessions.find(item => item.id === sessionId);
+    if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
+    if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
     emitState(); return snapshot();
   },
   listSlashCommands: async (): Promise<SlashCommand[]> => {
