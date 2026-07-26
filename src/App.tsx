@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -192,22 +193,25 @@ export function App() {
   const slashListRef = useRef<HTMLDivElement>(null);
   // @file mention: match a token being typed at the end of the composer, at the
   // start or after whitespace (so email-style name@host fragments are ignored).
-  const mentionQuery = /(?:^|\s)@([^\s]*)$/.exec(composer)?.[1];
+  const mentionQuery = fileMentionQuery(composer);
+  const workspaceFileOptions = useMemo(() => workspaceFiles.map(path => {
+    const lowerPath = path.toLowerCase();
+    return { path, lowerPath, lowerBase: lowerPath.split("/").pop() ?? lowerPath };
+  }), [workspaceFiles]);
   const fileMatches = useMemo(() => {
     if (mentionQuery == null) return [];
     const query = mentionQuery.toLowerCase();
-    return workspaceFiles
-      .filter(file => !query || file.toLowerCase().includes(query))
+    return workspaceFileOptions
+      .filter(file => !query || file.lowerPath.includes(query))
       .sort((a, b) => {
-        const aBase = a.split("/").pop()!.toLowerCase();
-        const bBase = b.split("/").pop()!.toLowerCase();
-        const aPrefix = query ? Number(aBase.startsWith(query) || a.toLowerCase().startsWith(query)) : 0;
-        const bPrefix = query ? Number(bBase.startsWith(query) || b.toLowerCase().startsWith(query)) : 0;
+        const aPrefix = query ? Number(a.lowerBase.startsWith(query) || a.lowerPath.startsWith(query)) : 0;
+        const bPrefix = query ? Number(b.lowerBase.startsWith(query) || b.lowerPath.startsWith(query)) : 0;
         if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        return a.length - b.length || a.localeCompare(b);
+        return a.path.length - b.path.length || a.path.localeCompare(b.path);
       })
-      .slice(0, 50);
-  }, [mentionQuery, workspaceFiles]);
+      .slice(0, 50)
+      .map(file => file.path);
+  }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
 
@@ -236,6 +240,7 @@ export function App() {
   // Load the connected workspace's file list for @mention autocomplete.
   useEffect(() => {
     if (!session?.id || !hasRepo) { setWorkspaceFiles([]); return; }
+    setWorkspaceFiles([]);
     let active = true;
     void bridgeApi.listWorkspaceFiles(session.id)
       .then(files => { if (active) setWorkspaceFiles(files); })
@@ -460,11 +465,12 @@ export function App() {
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
   function applyFileMention(path: string) {
-    setComposer(current => current.replace(/(^|\s)@([^\s]*)$/, (_match, lead) => `${lead}@${path} `));
+    setComposer(current => insertFileMention(current, path));
     setMentionIndex(0);
     setMentionDismissed(true);
   }
   function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.nativeEvent.isComposing) return;
     if (mentionOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setMentionIndex(index => Math.min(index + 1, fileMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
@@ -568,13 +574,13 @@ export function App() {
                 </div>}
                 <div className="relative mx-auto max-w-2xl">
                   {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
-                  {mentionOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                  {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
                       <span>Reference a file</span>
                       <span className="normal-case tracking-normal text-neutral-700">{fileMatches.length}</span>
                     </div>
                     <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === mentionIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
+                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/30 ${index === mentionIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
                         <FileText size={13} className="shrink-0 text-neutral-500" aria-hidden="true" />
                         <span className="flex-1 min-w-0 text-[12px] whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-neutral-500">{dir}</span><span className="text-neutral-100">{base}</span></span>
                       </button>; })}
@@ -599,6 +605,10 @@ export function App() {
                     onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
+                    autocomplete={mentionOpen ? {
+                      controls: "file-mention-listbox",
+                      activeDescendant: `file-mention-option-${mentionIndex}`,
+                    } : undefined}
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}

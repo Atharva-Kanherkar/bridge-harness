@@ -2138,7 +2138,17 @@ fn handle_agent_value(
                     .get(session_id)
                     .cloned()
             });
-        let normalized = state.adapter_registry.normalize(&adapter_id, value);
+        // The exact composer text is persisted locally at submission time.
+        // Provider echoes may include hidden user-role file context, so do not
+        // duplicate them into the visible conversation.
+        let normalized = state
+            .adapter_registry
+            .normalize(&adapter_id, value)
+            .into_iter()
+            .filter(|event| {
+                event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
+            })
+            .collect::<Vec<_>>();
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
             match event.kind.as_str() {
@@ -4449,9 +4459,6 @@ fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    if adapter_id == "codex" {
-        return Ok(None);
-    }
     let user_event = agent::NormalizedEvent {
         kind: "message.completed".into(),
         item_id: Some(format!("user-{}", Uuid::new_v4())),
@@ -4552,18 +4559,28 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
 
     // Read any @file mentions before locking the adapter map so the referenced
     // file contents ride along as trusted application context, not user text.
-    let file_context = session_workspace_root(&state, &session_id)
-        .and_then(|root| workspace_files::mention_context(&root, &outbound));
+    let file_context = if let Some(root) = session_workspace_root(&state, &session_id) {
+        let mention_text = outbound.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            workspace_files::mention_context(&root, &mention_text)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace file read failed: {error}")))?
+    } else {
+        None
+    };
+    let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
 
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
-    let application_context = workspace_files::merge_context(credential_context, file_context);
-    if let Err(error) =
-        deliver_sanitized_turn(runtime.as_ref(), &outbound, application_context.as_deref())
-    {
+    if let Err(error) = deliver_sanitized_turn(
+        runtime.as_ref(),
+        &provider_text,
+        credential_context.as_deref(),
+    ) {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
         return Err(error);
@@ -4603,21 +4620,13 @@ async fn list_workspace_files(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, BridgeError> {
     match session_workspace_root(&state, &session_id) {
-        Some(root) => workspace_files::list_files(&root),
+        Some(root) => tauri::async_runtime::spawn_blocking(move || {
+            workspace_files::list_files(&root)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace file listing failed: {error}")))?,
         None => Ok(Vec::new()),
     }
-}
-
-/// Read a single workspace file's contents (bounded) for an `@mention` preview.
-#[tauri::command]
-async fn read_workspace_file(
-    session_id: String,
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<String, BridgeError> {
-    let root = session_workspace_root(&state, &session_id)
-        .ok_or_else(|| BridgeError::Invalid("This chat has no connected workspace".into()))?;
-    workspace_files::read_file(&root, &path)
 }
 
 fn record_recoverable_adapter_failure(
@@ -5523,7 +5532,6 @@ pub fn run() {
             prepare_turn,
             send_turn,
             list_workspace_files,
-            read_workspace_file,
             compact_session,
             interrupt_turn,
             refresh_account_usage,

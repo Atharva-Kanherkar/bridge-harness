@@ -491,9 +491,6 @@ export const bridgeApi = {
   listWorkspaceFiles: (sessionId: string): Promise<string[]> => isTauri()
     ? invoke("list_workspace_files", { sessionId })
     : Promise.resolve(["src/App.tsx", "src/api.ts", "src/types.ts", "src-tauri/src/lib.rs", "README.md"]),
-  readWorkspaceFile: (sessionId: string, path: string): Promise<string> => isTauri()
-    ? invoke("read_workspace_file", { sessionId, path })
-    : Promise.resolve(`// ${path}\n(mock file contents)\n`),
   connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
     if (isTauri()) return invoke("connect_workspace_folder", { workspaceId, path });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
