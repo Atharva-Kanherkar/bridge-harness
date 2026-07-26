@@ -929,6 +929,42 @@ struct OrchestratorSelection {
     label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrchestratorWorktree {
+    path: PathBuf,
+    branch: String,
+}
+
+fn prepare_orchestrator_worktree(
+    namespace_root: &Path,
+    workspace_title: &str,
+    workspace_path: &Path,
+    session_id: &str,
+) -> Result<OrchestratorWorktree, BridgeError> {
+    git::validate_repo(workspace_path).map_err(|_| {
+        BridgeError::Invalid(
+            "Connect a Git repository before creating an isolated worktree".into(),
+        )
+    })?;
+    let workspace_slug = {
+        let value = git::slug(workspace_title);
+        if value.is_empty() {
+            "workspace".to_owned()
+        } else {
+            value
+        }
+    };
+    let session_slug = git::slug(session_id);
+    let short_session = session_slug.chars().take(8).collect::<String>();
+    let branch = format!("bridge/{workspace_slug}-{short_session}");
+    let path = namespace_root
+        .join("orchestrators")
+        .join(&workspace_slug)
+        .join(session_id);
+    git::create_worktree(workspace_path, &path, &branch)?;
+    Ok(OrchestratorWorktree { path, branch })
+}
+
 fn resolve_orchestrator_selection(
     db: &Connection,
     registry: &adapters::AdapterRegistry,
@@ -993,24 +1029,99 @@ fn resolve_orchestrator_selection(
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
+    create_worktree: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
-    let ws_path: Option<String> = db
-        .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
-            r.get::<_, Option<String>>(0)
-        })
-        .ok()
-        .flatten();
-    let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
-    db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-        params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
-    )?;
-    store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
-    store::state(&db)
+    let (selection, workspace_title, workspace_path, project_id) = {
+        let db = state.db.lock().unwrap();
+        let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
+        let (title, path, project_id): (String, Option<String>, Option<String>) = db.query_row(
+            "SELECT title,path,project_id FROM workspaces WHERE id=?1",
+            params![workspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        (selection, title, path, project_id)
+    };
+    let isolated = create_worktree.unwrap_or(false);
+    if isolated && project_id.is_none() {
+        return Err(BridgeError::Invalid(
+            "Connect a Git repository before creating an isolated worktree".into(),
+        ));
+    }
+    let worktree = if isolated {
+        let source = workspace_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                BridgeError::Invalid(
+                    "Connect a Git repository before creating an isolated worktree".into(),
+                )
+            })?
+            .to_owned();
+        let namespace = state.worktrees.clone();
+        let title = workspace_title.clone();
+        let session_id = id.clone();
+        Some(
+            tauri::async_runtime::spawn_blocking(move || {
+                prepare_orchestrator_worktree(
+                    &namespace,
+                    &title,
+                    Path::new(&source),
+                    &session_id,
+                )
+            })
+            .await
+            .map_err(|error| {
+                BridgeError::Invalid(format!("Worktree creation task failed: {error}"))
+            })??,
+        )
+    } else {
+        None
+    };
+    let cwd = worktree
+        .as_ref()
+        .map(|value| value.path.to_string_lossy().into_owned())
+        .or_else(|| workspace_path.clone())
+        .unwrap_or_else(|| {
+            chat_scratch_dir(state.inner(), &id)
+                .to_string_lossy()
+                .to_string()
+        });
+    let persisted = (|| -> Result<BridgeState, BridgeError> {
+        let db = state.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
+            params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
+        )?;
+        store::event(&transaction, "supervisor", "session.created", &id, "New agent session")?;
+        if let Some(created) = &worktree {
+            store::event(
+                &transaction,
+                "worktree",
+                "session.worktree_created",
+                &id,
+                &format!(
+                    "Created isolated worktree {} on branch {}",
+                    created.path.display(),
+                    created.branch
+                ),
+            )?;
+        }
+        let next = store::state(&transaction)?;
+        transaction.commit()?;
+        Ok(next)
+    })();
+    if persisted.is_err() {
+        if let Some(created) = &worktree {
+            let _ = git::remove_worktree(
+                Path::new(workspace_path.as_deref().unwrap_or("")),
+                &created.path,
+            );
+        }
+    }
+    persisted
 }
 
 fn persist_chat_model_selection(
@@ -5373,6 +5484,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {
@@ -5426,6 +5538,43 @@ mod tests {
 
         assert_eq!(changed, 1);
         assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
+    }
+
+    #[test]
+    fn orchestrator_worktree_is_created_from_the_connected_repository_head() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("repository");
+        std::fs::create_dir(&repo).unwrap();
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "bridge-test@example.invalid"]);
+        run_git(&["config", "user.name", "Bridge Test"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "fixture", "-q"]);
+
+        let created = prepare_orchestrator_worktree(
+            &fixture.path().join("managed-worktrees"),
+            "Payments / API",
+            &repo,
+            "12345678-abcd",
+        )
+        .unwrap();
+
+        assert_eq!(created.branch, "bridge/payments-api-12345678");
+        assert_eq!(std::fs::read_to_string(created.path.join("README.md")).unwrap(), "base\n");
+        assert_eq!(git::current_branch(&created.path).as_deref(), Some(created.branch.as_str()));
     }
 
     #[test]

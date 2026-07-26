@@ -41,8 +41,9 @@ describe("SQLite-shaped mock observability", () => {
   });
 
   it("applies model changes to orchestrator chats and rejects active-turn switches", async () => {
-    const created = await bridgeApi.createWorkspaceSession("demo-1");
+    const created = await bridgeApi.createWorkspaceSession("demo-1", true);
     const orchestrator = [...created.sessions].reverse().find(session => session.workspaceId === "demo-1" && session.kind === "orchestrator")!;
+    expect(orchestrator.cwd).toMatch(/^\/tmp\/bridge\/worktrees\//);
     const changed = await bridgeApi.updateChatModel(orchestrator.id, "claude", "opus");
     expect(changed.sessions.find(session => session.id === orchestrator.id)).toMatchObject({ harness: "claude", model: "opus", status: "idle", providerSessionId: null, restorationMode: "fresh" });
 

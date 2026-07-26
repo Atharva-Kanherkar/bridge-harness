@@ -10,6 +10,7 @@ import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
+import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
@@ -76,7 +77,8 @@ export function App() {
   const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
-  const [modal, setModal] = useState<"chat" | "workspace" | "router" | null>(null);
+  const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | null>(null);
+  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
@@ -143,10 +145,6 @@ export function App() {
     };
   }, [reload]);
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setModal(null); };
-    window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, []);
   useEffect(() => { document.documentElement.classList.add("dark"); }, []);
   useEffect(() => {
     const previous = browserSessionRef.current;
@@ -161,6 +159,7 @@ export function App() {
   const session = topSessions.find(s => s.id === selectedSessionId);
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
+  const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
   const isDirectChat = session?.kind === "direct";
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
@@ -298,16 +297,23 @@ export function App() {
     pendingWelcomeMessageRef.current = null;
     void sendPrompt(draft);
   }, [session?.id]);
-  // Workspace "+": start a classic orchestrator session tied to the workspace.
-  async function newWorkspaceSession(workspaceId: string) {
+  // Workspace "+": ask whether this orchestrator should get an isolated worktree.
+  function requestWorkspaceSession(workspaceId: string) {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode before starting an orchestrator."); return; }
+    setPendingWorkspaceId(workspaceId);
+    setModal("orchestrator");
+  }
+  async function newWorkspaceSession(createWorktree: boolean) {
+    if (!pendingWorkspaceId) return;
+    const workspaceId = pendingWorkspaceId;
     setBusy(true); setError(undefined);
     try {
-      const next = await bridgeApi.createWorkspaceSession(workspaceId);
+      const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
       const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
       setState(next);
       setExpanded(current => new Set(current).add(workspaceId));
       if (created) setSelectedSessionId(created.id);
+      setModal(null); setPendingWorkspaceId(undefined);
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -442,7 +448,7 @@ export function App() {
       onOpenSession={openSession}
       onToggleWorkspace={toggleExpanded}
       onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
-      onNewWorkspaceSession={workspaceId => void newWorkspaceSession(workspaceId)}
+      onNewWorkspaceSession={requestWorkspaceSession}
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
@@ -453,7 +459,9 @@ export function App() {
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
             {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-neutral-500 font-mono text-[10px]">
               <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}<span>·</span>{harnessLabel(session.harness)}<span>·</span>{modelDisplayName(adapters, session.harness, session.model)}
-              {hasRepo && workspace && <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>}
+              {hasRepo && workspace && (usesIsolatedWorktree
+                ? <><span>·</span><GitBranch size={12} aria-hidden="true" />isolated worktree</>
+                : <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>)}
             </div>}
           </div>
           <div className="ml-auto flex items-center gap-[7px]">
@@ -569,6 +577,15 @@ export function App() {
       onTitleChange={setTitle}
       onClose={() => setModal(null)}
       onSubmit={() => void submitNewWorkspace()}
+    />
+    <OrchestratorCreateDialog
+      open={modal === "orchestrator"}
+      workspaceTitle={state.workspaces.find(item => item.id === pendingWorkspaceId)?.title ?? "workspace"}
+      canCreateWorktree={!!state.workspaces.find(item => item.id === pendingWorkspaceId)?.projectId}
+      busy={busy}
+      onCreateWorktree={() => void newWorkspaceSession(true)}
+      onUseCurrentFolder={() => void newWorkspaceSession(false)}
+      onClose={() => void newWorkspaceSession(false)}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
   </div>;

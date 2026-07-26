@@ -465,10 +465,13 @@ export const bridgeApi = {
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", title, kind: "direct", cwd: null }); emitState(); return snapshot();
   },
-  createWorkspaceSession: async (workspaceId: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("create_workspace_session", { workspaceId });
+  createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
+    if (isTauri()) return invoke("create_workspace_session", { workspaceId, createWorktree });
     const id = crypto.randomUUID();
-    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", title: null, kind: "orchestrator", cwd: null }); emitState(); return snapshot();
+    const workspace = mockState.workspaces.find(item => item.id === workspaceId);
+    if (createWorktree && !workspace?.projectId) throw new Error("Connect a Git repository before creating an isolated worktree");
+    const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
+    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", title: null, kind: "orchestrator", cwd }); emitState(); return snapshot();
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null): Promise<BridgeState> => {
     if (isTauri()) return invoke("update_chat_model", { sessionId, harness, model });
