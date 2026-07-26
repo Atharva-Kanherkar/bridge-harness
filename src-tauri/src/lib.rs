@@ -34,6 +34,7 @@ mod worker_guard;
 mod worker_lifecycle;
 mod worker_pool;
 mod worker_sandbox;
+mod workspace_files;
 mod worktree_coordinator;
 
 use chrono::Utc;
@@ -4532,6 +4533,25 @@ async fn prepare_turn(
     Ok(intercepted.sanitized)
 }
 
+/// Resolve a session's workspace root (`s.cwd` falling back to the connected
+/// workspace's `path`). Returns `None` for chats with no folder — e.g. direct
+/// chats — or when the recorded path no longer exists on disk.
+fn session_workspace_root(state: &State<'_, AppState>, session_id: &str) -> Option<PathBuf> {
+    let path: Option<String> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(s.cwd, w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            params![session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    let candidate = PathBuf::from(path?);
+    candidate.is_dir().then_some(candidate)
+}
+
 fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
@@ -4657,13 +4677,19 @@ async fn send_turn(
         slash::SlashDispatch::Forward { text } => text,
     };
 
+    // Read any @file mentions before locking the adapter map so the referenced
+    // file contents ride along as trusted application context, not user text.
+    let file_context = session_workspace_root(&state, &session_id)
+        .and_then(|root| workspace_files::mention_context(&root, &outbound));
+
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
     let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
+    let application_context = workspace_files::merge_context(credential_context, file_context);
     if let Err(error) =
-        deliver_sanitized_turn(runtime.as_ref(), &outbound, credential_context.as_deref())
+        deliver_sanitized_turn(runtime.as_ref(), &outbound, application_context.as_deref())
     {
         drop(adapters);
         record_recoverable_adapter_failure(&state, &session_id, &error)?;
@@ -4693,6 +4719,31 @@ async fn send_turn(
     );
     let _ = app.emit("state-changed", ());
     Ok(())
+}
+
+/// List the current chat's workspace files for the composer's `@file`
+/// autocomplete. Returns an empty list for chats with no connected folder.
+#[tauri::command]
+async fn list_workspace_files(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, BridgeError> {
+    match session_workspace_root(&state, &session_id) {
+        Some(root) => workspace_files::list_files(&root),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Read a single workspace file's contents (bounded) for an `@mention` preview.
+#[tauri::command]
+async fn read_workspace_file(
+    session_id: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<String, BridgeError> {
+    let root = session_workspace_root(&state, &session_id)
+        .ok_or_else(|| BridgeError::Invalid("This chat has no connected workspace".into()))?;
+    workspace_files::read_file(&root, &path)
 }
 
 fn record_recoverable_adapter_failure(
@@ -5609,6 +5660,8 @@ pub fn run() {
             resize_terminal,
             prepare_turn,
             send_turn,
+            list_workspace_files,
+            read_workspace_file,
             compact_session,
             interrupt_turn,
             refresh_account_usage,
