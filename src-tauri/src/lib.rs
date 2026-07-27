@@ -121,6 +121,10 @@ struct DelegationState {
     /// Last observed provider turn per session, retained until the next turn
     /// so late usage events keep the originating user-request budget key.
     last_turn_by_session: HashMap<String, String>,
+    /// Per-session count of automatic corrective turns sent after a rejected
+    /// `bridge-delegate` request, so a persistently malformed orchestrator turn
+    /// cannot drive an unbounded correction loop.
+    invalid_request_corrections: HashMap<String, u32>,
     /// Read-only worker session → tracked Git state captured before process start.
     read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
 }
@@ -2120,6 +2124,7 @@ fn handle_agent_value(
     }
     let state = app.state::<AppState>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
+    let mut pending_invalid_delegations: Vec<String> = Vec::new();
     let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
@@ -2346,9 +2351,13 @@ fn handle_agent_value(
                                 session_id,
                                 &reason,
                             );
+                            // Deferred: feed the reason back to the orchestrator
+                            // (after the lock) so it re-emits a valid request
+                            // instead of silently going idle with no result.
+                            pending_invalid_delegations.push(reason.clone());
                             let stripped = delegation::strip_directives(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
-                                format!("_Invalid delegation request: {reason}_")
+                                format!("_Delegation request rejected: {reason}. Correcting and retrying…_")
                             } else {
                                 stripped
                             });
@@ -2483,6 +2492,88 @@ fn handle_agent_value(
 
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(app, session_id, turn_id, directive, true);
+    }
+    if !pending_directives.is_empty() {
+        // A valid request cleared the backlog; reset the correction budget.
+        state
+            .delegations
+            .lock()
+            .unwrap()
+            .invalid_request_corrections
+            .remove(session_id);
+    }
+    // A rejected `bridge-delegate` request never launched a worker. Surface it
+    // as a distinct row and feed the reason back so the orchestrator re-emits a
+    // valid request, rather than going idle with no result the user can see.
+    for reason in &pending_invalid_delegations {
+        const MAX_INVALID_REQUEST_CORRECTIONS: u32 = 3;
+        let attempts = {
+            let mut delegations = state.delegations.lock().unwrap();
+            let counter = delegations
+                .invalid_request_corrections
+                .entry(session_id.to_owned())
+                .or_insert(0);
+            *counter += 1;
+            *counter
+        };
+        let will_retry = attempts <= MAX_INVALID_REQUEST_CORRECTIONS;
+        {
+            let db = state.db.lock().unwrap();
+            let rejection = agent::NormalizedEvent {
+                kind: "delegation.rejected".into(),
+                item_id: Some(format!("rejected-{}", Uuid::new_v4())),
+                role: Some("system".into()),
+                status: Some("failed".into()),
+                title: Some("Delegation rejected".into()),
+                text: Some(reason.clone()),
+                data: serde_json::json!({
+                    "reason": reason,
+                    "willRetry": will_retry,
+                    "attempt": attempts,
+                }),
+            };
+            if let Ok(stored) = store::session_event(
+                &db,
+                session_id,
+                &rejection,
+                &serde_json::json!({"delegation": true}),
+            ) {
+                let _ = app.emit("agent-event", stored);
+            }
+        }
+        if will_retry {
+            let prompt = delegation::invalid_request_feedback(reason);
+            let delivered = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .is_some_and(|runtime| runtime.send_turn(&prompt).is_ok());
+            let db = state.db.lock().unwrap();
+            if delivered {
+                let _ = db.execute(
+                    "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
+                    params![session_id],
+                );
+            } else {
+                let _ = store::event(
+                    &db,
+                    "delegation",
+                    "delegation.correction.undeliverable",
+                    session_id,
+                    reason,
+                );
+            }
+        } else {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "delegation.correction.exhausted",
+                session_id,
+                reason,
+            );
+        }
     }
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).

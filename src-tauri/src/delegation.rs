@@ -589,6 +589,26 @@ pub fn worker_result_repair_prompt(reason: &str) -> String {
     )
 }
 
+/// Feedback injected back into the orchestrator when a `bridge-delegate`
+/// request is rejected before any worker starts. Without this the request is
+/// silently dropped and the orchestrator goes idle, which reads to the user as
+/// "the subagent returned no results". The message names the failing reason and
+/// the exact accepted vocabulary so the orchestrator can re-emit a valid request.
+pub fn invalid_request_feedback(reason: &str) -> String {
+    format!(
+        r#"Your last `bridge-delegate` request was rejected before any worker started: {reason}. No worker ran, so there is no result coming.
+
+Re-emit exactly one corrected `bridge-delegate` JSON object. Accepted values:
+- role: research | implementation | verification | planning | documentation
+- capabilityTier: fast | standard | strong
+- effort: low | medium | high | xhigh
+- writeMode: readOnly (research/verification/planning/documentation) | isolated (implementation) | shared | full — there is no `none`
+- outputContract: research-result | implementation-result | verification-result | decision-result | documentation-result (match the role)
+
+Fix only the invalid field, keep the rest of the request, add no extra keys, and do not restate this guidance to the user."#
+    )
+}
+
 pub fn strip_directives(text: &str) -> String {
     strip_machine_blocks(text, is_delegation_tag)
 }
@@ -1061,6 +1081,25 @@ mod tests {
             parse_delegation_requests("ordinary prose"),
             ParseOutcome::Absent
         );
+    }
+
+    #[test]
+    fn invalid_write_mode_none_is_rejected_and_feedback_names_valid_values() {
+        // Regression: `writeMode:"none"` is a natural but invalid choice for a
+        // read-only role. It must be rejected (so no worker starts on a bad
+        // request) and the corrective feedback must name the accepted values.
+        let request = r#"```bridge-delegate
+{"schemaVersion":1,"role":"research","objective":"x","acceptanceCriteria":["y"],"writeMode":"none","capabilityTier":"standard","effort":"medium","outputContract":"research-result"}
+```"#;
+        let ParseOutcome::Invalid { reason, .. } = parse_delegation_requests(request) else {
+            panic!("writeMode:none was not rejected");
+        };
+        assert!(reason.contains("readOnly"), "reason should list valid variants: {reason}");
+        let feedback = invalid_request_feedback(&reason);
+        assert!(feedback.contains(&reason));
+        assert!(feedback.contains("readOnly"));
+        assert!(feedback.contains("there is no `none`"));
+        assert!(feedback.contains("No worker ran"));
     }
 
     #[test]
