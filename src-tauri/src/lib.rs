@@ -105,10 +105,13 @@ struct AppState {
     worker_activity: Mutex<HashMap<String, std::time::Instant>>,
 }
 
-/// A worker in `working` that produces no output for this long is treated as
-/// stalled: its process is stopped and a synthetic failure result is reported
-/// so the orchestrator unblocks instead of waiting indefinitely.
-const WORKER_STALL_TIMEOUT_SECONDS: u64 = 120;
+/// A worker actively `working` that produces *no* adapter output at all for this
+/// long is treated as hung. The window is deliberately generous: healthy agents
+/// stream reasoning/tool frames far more often, so total silence this long is a
+/// strong stall signal, while a legitimate long build/test is very unlikely to
+/// emit nothing for ten minutes. Death is still caught immediately on EOF; this
+/// only covers the alive-but-silent case.
+const WORKER_STALL_TIMEOUT_SECONDS: u64 = 600;
 
 /// Bookkeeping for the multi-agent delegation tree.
 #[derive(Default)]
@@ -3198,6 +3201,9 @@ fn launch_worker_outcome(
             )
             .is_ok()
         {
+            // Reused warm workers keep their previous heartbeat; reset it so the
+            // stall watchdog measures from the start of this task, not the last.
+            reset_worker_heartbeat(&state, &reservation.session_id);
             let provider_session_id = state
                 .adapters
                 .lock()
@@ -3945,12 +3951,26 @@ fn settle_worker_after_result(
 /// If a worker process exits before ever reporting, tell its parent so the
 /// parent is not left waiting on a child that will never answer.
 /// Refresh a session's liveness heartbeat for the stall watchdog.
-fn record_worker_activity(app: &AppHandle, session_id: &str) {
-    app.state::<AppState>()
+fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
+    state
         .worker_activity
         .lock()
         .unwrap()
         .insert(session_id.to_string(), std::time::Instant::now());
+}
+
+fn record_worker_activity(app: &AppHandle, session_id: &str) {
+    reset_worker_heartbeat(&app.state::<AppState>(), session_id);
+}
+
+/// Seconds since a session last produced output, if it is being tracked.
+fn worker_silence_secs(state: &AppState, session_id: &str) -> Option<u64> {
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|seen| seen.elapsed().as_secs())
 }
 
 /// Return an unreported worker's label (with a parent) or None. Shared guard for
@@ -4024,17 +4044,30 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
     report_synthetic_worker_failure(app, child_session_id, &result);
 }
 
-/// Stall watchdog action: a live worker went silent past the timeout. Stop the
-/// hung process (so it can neither keep spending nor later double-report), then
-/// report a distinct failure so both the UI and orchestrator learn it stalled.
+/// Stall watchdog action: a worker that has been silent past the timeout.
+///
+/// Ordering matters for a clean signal:
+///   1. Re-check silence under the lock — output may have arrived between the
+///      watchdog's snapshot and now, in which case the worker is not stalled.
+///   2. Remove the adapter from the live map *without stopping it yet*, so the
+///      failure settles as terminal (no retry into a hung process) and the
+///      still-running reader thread produces no premature EOF result.
+///   3. Report the distinct stall failure (claims `result_status=reported`).
+///   4. Only then stop the retained process; its EOF now finds the worker
+///      already reported and is a no-op, so the UI shows STALLED, not the
+///      generic "ended without reporting".
 fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
     let state = app.state::<AppState>();
+    // (1) Confirm the worker is still silent — closes the snapshot→act race.
+    match worker_silence_secs(&state, child_session_id) {
+        Some(silent) if silent >= WORKER_STALL_TIMEOUT_SECONDS => {}
+        _ => return,
+    }
     let Some(label) = unreported_worker_meta(app, child_session_id) else {
         return;
     };
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
-        runtime.stop(adapters::ShutdownReason::Failed);
-    }
+    // (2) Detach the live runtime but keep it alive until the result is claimed.
+    let runtime = state.adapters.lock().unwrap().remove(child_session_id);
     let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
         &state.db.lock().unwrap(),
         child_session_id,
@@ -4055,14 +4088,21 @@ fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
         tests: vec![],
         decisions: vec![],
         risks: vec![
-            "Worker went silent past the stall timeout; partial work may be incomplete".into(),
+            "Worker went silent past the stall timeout and was stopped mid-task; it may have left \
+             uncommitted filesystem changes that are not reflected in files_changed"
+                .into(),
         ],
-        remaining_work: vec!["Retry or delegate the task differently".into()],
+        remaining_work: vec!["Inspect the worktree for partial changes, then retry or re-delegate".into()],
         suggested_next_action: delegation::SuggestedNextAction::Finish,
         suggested_role: None,
         suggested_task: None,
     };
+    // (3) Claim the result before the process can die and race us.
     report_synthetic_worker_failure(app, child_session_id, &result);
+    // (4) Now stop the hung process; its EOF handler will find it reported.
+    if let Some(mut runtime) = runtime {
+        runtime.stop(adapters::ShutdownReason::Failed);
+    }
 }
 
 fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
@@ -4367,42 +4407,47 @@ fn maintain_worker_pool(app: &AppHandle) {
         dispatch_next_queued_worker(app, &workspace_id);
     }
 
-    // Stall watchdog: a worker that is actively `working` and unreported but has
-    // produced no output for WORKER_STALL_TIMEOUT_SECONDS while its process is
-    // still alive is treated as dead-in-place. A process that has exited is
+    // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
+    // the common case (no silent sessions) touches neither the adapter map nor
+    // the DB. Only sessions already silent past the timeout are confirmed — via
+    // a primary-key lookup on worker_runtime, never a table scan — to be an
+    // alive, unreported, actively-`working` worker. A process that has exited is
     // handled by the reader-thread EOF path; `waiting` (awaiting human approval),
-    // `warm`, and `checkpointing` are intentionally idle and excluded.
-    let stall_candidates = {
-        let db = state.db.lock().unwrap();
-        let mut statement = match db.prepare(
-            "SELECT session_id FROM worker_runtime WHERE lifecycle_state='working' AND result_status='pending' ORDER BY session_id",
-        ) {
-            Ok(statement) => statement,
-            Err(_) => return,
-        };
-        let result = match statement.query_map([], |row| row.get::<_, String>(0)) {
-            Ok(rows) => rows.filter_map(Result::ok).collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
-        };
-        result
-    };
-    let silent = {
+    // `warm`, and `checkpointing` are intentionally idle and excluded. Each
+    // candidate is re-checked for silence inside the handler before it acts, so
+    // output arriving after this snapshot cannot be replaced by a synthetic
+    // failure.
+    let silent_ids: Vec<String> = {
         let activity = state.worker_activity.lock().unwrap();
-        stall_candidates
-            .into_iter()
-            .filter(|session_id| {
-                activity
-                    .get(session_id)
-                    .is_some_and(|seen| seen.elapsed().as_secs() >= WORKER_STALL_TIMEOUT_SECONDS)
-            })
-            .collect::<Vec<_>>()
+        activity
+            .iter()
+            .filter(|(_, seen)| seen.elapsed().as_secs() >= WORKER_STALL_TIMEOUT_SECONDS)
+            .map(|(session_id, _)| session_id.clone())
+            .collect()
     };
-    let stalled = {
+    if silent_ids.is_empty() {
+        return;
+    }
+    let alive: Vec<String> = {
         let adapters = state.adapters.lock().unwrap();
-        silent
+        silent_ids
             .into_iter()
             .filter(|session_id| adapters.contains_key(session_id))
-            .collect::<Vec<_>>()
+            .collect()
+    };
+    let stalled: Vec<String> = {
+        let db = state.db.lock().unwrap();
+        alive
+            .into_iter()
+            .filter(|session_id| {
+                db.query_row(
+                    "SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state='working' AND result_status='pending'",
+                    params![session_id],
+                    |_| Ok(()),
+                )
+                .is_ok()
+            })
+            .collect()
     };
     for session_id in stalled {
         notify_parent_on_worker_stalled(app, &session_id);
