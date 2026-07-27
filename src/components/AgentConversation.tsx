@@ -465,6 +465,16 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
 }
 
 function DelegationRow({ item }: { item: ConversationItem }) {
+  const isRejected = "willRetry" in item.data;
+  if (isRejected) {
+    const reason = String(item.data.reason ?? item.text ?? "");
+    const willRetry = item.data.willRetry === true;
+    return <div className="my-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" role="alert">
+      <div className="flex items-center gap-1.5 font-medium"><AlertTriangle size={13} aria-hidden="true" /> Delegation rejected — no worker started</div>
+      {reason && <p className="mt-1 font-mono text-[11px] leading-relaxed text-warning/90">{reason}</p>}
+      <p className="mt-1 text-warning/70">{willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
+    </div>;
+  }
   const isResult = "delivered" in item.data;
   const model = String(item.data.modelLabel ?? item.data.model ?? "");
   const effort = item.data.effort ? String(item.data.effort) : "";

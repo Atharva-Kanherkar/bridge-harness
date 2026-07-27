@@ -42,6 +42,19 @@ Emit exactly one fenced `bridge-delegate` JSON object after a short sentence nam
 
 Valid roles are `research`, `implementation`, `verification`, `planning`, and `documentation`. Valid capability tiers are `fast`, `standard`, and `strong`.
 
+## Required fields and their exact values
+Every field is validated before any worker starts. Emit them exactly; do not invent values, omit required fields, or add extra keys. If a request is rejected, Bridge feeds the exact reason back to you and no worker runs — correct that one field and re-emit.
+
+- `role`: `research` · `implementation` · `verification` · `planning` · `documentation`
+- `capabilityTier`: `fast` · `standard` · `strong`
+- `effort`: `low` · `medium` · `high` · `xhigh`
+- `writeMode` (how the worker may touch files — pick by role, there is no `none`):
+  - `readOnly` — worker writes nothing. Use for `research`, `verification`, `planning`, and `documentation` that only reports back.
+  - `isolated` — worker gets its own worktree. Default for `implementation`.
+  - `shared` — worker writes into the parent's worktree. Use only when changes must land in place alongside the parent.
+  - `full` — unrestricted writes. Rare; only when a task genuinely spans the whole checkout.
+- `outputContract` must match the role: `research`→`research-result`, `implementation`→`implementation-result`, `verification`→`verification-result`, `planning`→`decision-result`, `documentation`→`documentation-result`.
+
 ## Typed worker results
 Workers return typed `bridge-worker-result` envelopes. Review the structured summary, changed files, tests, findings, decisions, and follow-up suggestion. Relay a concise synthesis to the user. Never request, expose, or forward a raw worker transcript. If a result is `needs_delegation`, decide the follow-up yourself and issue a new sibling request.
 
@@ -80,6 +93,13 @@ mod tests {
             "flat topology",
             "trivial one-shot local actions",
             "raw worker transcript",
+            "readOnly",
+            "isolated",
+            "shared",
+            "full",
+            "research-result",
+            "implementation-result",
+            "there is no `none`",
             "structured MCP/API",
             "attached authenticated tab",
             "local headless browser",
