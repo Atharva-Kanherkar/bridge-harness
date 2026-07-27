@@ -99,7 +99,19 @@ struct AppState {
     skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
     credential_broker: Arc<credential_broker::CredentialBroker>,
     browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
+    /// Last time each session produced adapter output, used by the worker
+    /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
+    /// only — process death is already handled by the reader-thread EOF path.
+    worker_activity: Mutex<HashMap<String, std::time::Instant>>,
 }
+
+/// A worker actively `working` that produces *no* adapter output at all for this
+/// long is treated as hung. The window is deliberately generous: healthy agents
+/// stream reasoning/tool frames far more often, so total silence this long is a
+/// strong stall signal, while a legitimate long build/test is very unlikely to
+/// emit nothing for ten minutes. Death is still caught immediately on EOF; this
+/// only covers the alive-but-silent case.
+const WORKER_STALL_TIMEOUT_SECONDS: u64 = 600;
 
 /// Bookkeeping for the multi-agent delegation tree.
 #[derive(Default)]
@@ -2000,17 +2012,28 @@ fn spawn_reader_thread(
     mut reader: Box<dyn BufRead + Send>,
 ) {
     thread::spawn(move || {
+        // Seed a heartbeat so a worker that never emits a single line still has
+        // a baseline the stall watchdog can measure from.
+        record_worker_activity(&app, &session_id);
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    // Every line proves liveness — refresh the heartbeat before
+                    // normalization so tool-run and reasoning frames all count.
+                    record_worker_activity(&app, &session_id);
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
                         handle_agent_value(&app, &session_id, &current_turn, &value);
                     }
                 }
             }
         }
+        app.state::<AppState>()
+            .worker_activity
+            .lock()
+            .unwrap()
+            .remove(&session_id);
         let state = app.state::<AppState>();
         let is_current_launch = state
             .db
@@ -3178,6 +3201,9 @@ fn launch_worker_outcome(
             )
             .is_ok()
         {
+            // Reused warm workers keep their previous heartbeat; reset it so the
+            // stall watchdog measures from the start of this task, not the last.
+            reset_worker_heartbeat(&state, &reservation.session_id);
             let provider_session_id = state
                 .adapters
                 .lock()
@@ -3924,26 +3950,82 @@ fn settle_worker_after_result(
 
 /// If a worker process exits before ever reporting, tell its parent so the
 /// parent is not left waiting on a child that will never answer.
-fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
+/// Refresh a session's liveness heartbeat for the stall watchdog.
+fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), std::time::Instant::now());
+}
+
+fn record_worker_activity(app: &AppHandle, session_id: &str) {
+    reset_worker_heartbeat(&app.state::<AppState>(), session_id);
+}
+
+/// Seconds since a session last produced output, if it is being tracked.
+fn worker_silence_secs(state: &AppState, session_id: &str) -> Option<u64> {
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|seen| seen.elapsed().as_secs())
+}
+
+/// Return an unreported worker's label (with a parent) or None. Shared guard for
+/// the process-exit and stall failure paths; `record_result` is idempotent on
+/// `result_status="reported"`, so a later real EOF won't double-report.
+fn unreported_worker_meta(app: &AppHandle, child_session_id: &str) -> Option<String> {
     let state = app.state::<AppState>();
-    verify_read_only_worker(app, child_session_id);
-    let already = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
+    let reported = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
         .ok()
         .flatten()
         .is_some_and(|runtime| runtime.result_status == "reported");
-    if already {
-        return;
+    if reported {
+        return None;
     }
-    let meta: Option<(Option<String>, String)> = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
+    let (parent, label): (Option<String>, String) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
             "SELECT parent_session_id,label FROM sessions WHERE id=?1",
             params![child_session_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok()
-    };
-    let Some((Some(_parent), label)) = meta else {
+        .ok()?;
+    parent.map(|_| label)
+}
+
+/// Route a synthesized failure result through the same settle + report seam the
+/// happy path uses, releasing the parent's outstanding-child count and emitting
+/// a `delegation.result` to the UI.
+fn report_synthetic_worker_failure(
+    app: &AppHandle,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) {
+    match settle_worker_after_result(app, child_session_id, result) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            let _ = store::event(
+                &app.state::<AppState>().db.lock().unwrap(),
+                "supervisor",
+                "worker.settle_failed",
+                child_session_id,
+                &error.to_string(),
+            );
+            return;
+        }
+    }
+    report_to_parent(app, child_session_id, result);
+}
+
+fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
+    verify_read_only_worker(app, child_session_id);
+    let Some(label) = unreported_worker_meta(app, child_session_id) else {
         return;
     };
     let result = delegation::WorkerResult {
@@ -3959,15 +4041,68 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
         suggested_role: None,
         suggested_task: None,
     };
-    match settle_worker_after_result(app, child_session_id, &result) {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(error) => {
-            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
-            return;
-        }
+    report_synthetic_worker_failure(app, child_session_id, &result);
+}
+
+/// Stall watchdog action: a worker that has been silent past the timeout.
+///
+/// Ordering matters for a clean signal:
+///   1. Re-check silence under the lock — output may have arrived between the
+///      watchdog's snapshot and now, in which case the worker is not stalled.
+///   2. Remove the adapter from the live map *without stopping it yet*, so the
+///      failure settles as terminal (no retry into a hung process) and the
+///      still-running reader thread produces no premature EOF result.
+///   3. Report the distinct stall failure (claims `result_status=reported`).
+///   4. Only then stop the retained process; its EOF now finds the worker
+///      already reported and is a no-op, so the UI shows STALLED, not the
+///      generic "ended without reporting".
+fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
+    let state = app.state::<AppState>();
+    // (1) Confirm the worker is still silent — closes the snapshot→act race.
+    match worker_silence_secs(&state, child_session_id) {
+        Some(silent) if silent >= WORKER_STALL_TIMEOUT_SECONDS => {}
+        _ => return,
     }
-    report_to_parent(app, child_session_id, &result);
+    let Some(label) = unreported_worker_meta(app, child_session_id) else {
+        return;
+    };
+    // (2) Detach the live runtime but keep it alive until the result is claimed.
+    let runtime = state.adapters.lock().unwrap().remove(child_session_id);
+    let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+        &state.db.lock().unwrap(),
+        child_session_id,
+    );
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .remove(child_session_id);
+    verify_read_only_worker(app, child_session_id);
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Failed,
+        summary: format!(
+            "{label} stopped responding (no output for {WORKER_STALL_TIMEOUT_SECONDS}s) and was stopped"
+        ),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec![
+            "Worker went silent past the stall timeout and was stopped mid-task; it may have left \
+             uncommitted filesystem changes that are not reflected in files_changed"
+                .into(),
+        ],
+        remaining_work: vec!["Inspect the worktree for partial changes, then retry or re-delegate".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    // (3) Claim the result before the process can die and race us.
+    report_synthetic_worker_failure(app, child_session_id, &result);
+    // (4) Now stop the hung process; its EOF handler will find it reported.
+    if let Some(mut runtime) = runtime {
+        runtime.stop(adapters::ShutdownReason::Failed);
+    }
 }
 
 fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
@@ -4270,6 +4405,52 @@ fn maintain_worker_pool(app: &AppHandle) {
     };
     for workspace_id in workspaces {
         dispatch_next_queued_worker(app, &workspace_id);
+    }
+
+    // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
+    // the common case (no silent sessions) touches neither the adapter map nor
+    // the DB. Only sessions already silent past the timeout are confirmed — via
+    // a primary-key lookup on worker_runtime, never a table scan — to be an
+    // alive, unreported, actively-`working` worker. A process that has exited is
+    // handled by the reader-thread EOF path; `waiting` (awaiting human approval),
+    // `warm`, and `checkpointing` are intentionally idle and excluded. Each
+    // candidate is re-checked for silence inside the handler before it acts, so
+    // output arriving after this snapshot cannot be replaced by a synthetic
+    // failure.
+    let silent_ids: Vec<String> = {
+        let activity = state.worker_activity.lock().unwrap();
+        activity
+            .iter()
+            .filter(|(_, seen)| seen.elapsed().as_secs() >= WORKER_STALL_TIMEOUT_SECONDS)
+            .map(|(session_id, _)| session_id.clone())
+            .collect()
+    };
+    if silent_ids.is_empty() {
+        return;
+    }
+    let alive: Vec<String> = {
+        let adapters = state.adapters.lock().unwrap();
+        silent_ids
+            .into_iter()
+            .filter(|session_id| adapters.contains_key(session_id))
+            .collect()
+    };
+    let stalled: Vec<String> = {
+        let db = state.db.lock().unwrap();
+        alive
+            .into_iter()
+            .filter(|session_id| {
+                db.query_row(
+                    "SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state='working' AND result_status='pending'",
+                    params![session_id],
+                    |_| Ok(()),
+                )
+                .is_ok()
+            })
+            .collect()
+    };
+    for session_id in stalled {
+        notify_parent_on_worker_stalled(app, &session_id);
     }
 }
 
@@ -5457,6 +5638,7 @@ pub fn run() {
                 skill_consents: Arc::new(Mutex::new(HashMap::new())),
                 credential_broker,
                 browser_bridge,
+                worker_activity: Mutex::new(HashMap::new()),
             });
             start_worker_maintenance(app.handle().clone());
             start_learning_maintenance(app.handle().clone());

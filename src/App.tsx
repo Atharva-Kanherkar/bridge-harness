@@ -8,6 +8,7 @@ import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Mo
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
+import { WorkerObservabilityPanel } from "./components/WorkerObservabilityPanel";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
@@ -167,6 +168,7 @@ export function App() {
   const isDirectChat = session?.kind === "direct";
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
+  const childWorkers = useMemo(() => session ? state.sessions.filter(s => s.parentSessionId === session.id) : [], [state.sessions, session?.id]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
   const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
@@ -547,6 +549,7 @@ export function App() {
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
+              {childWorkers.length > 0 && <WorkerObservabilityPanel workers={childWorkers} runtimes={forest?.workerRuntimes ?? []} reasons={forest?.reasons ?? []} />}
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
