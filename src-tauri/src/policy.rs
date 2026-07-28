@@ -450,9 +450,13 @@ impl UsageReport {
                     "cache_read_tokens",
                     "cacheReadTokens",
                     "cached_input_tokens",
+                    "cache_read_input_tokens",
                 ],
             ),
-            cache_write_tokens: integer_alias(usage, &["cache_write_tokens", "cacheWriteTokens"]),
+            cache_write_tokens: integer_alias(
+                usage,
+                &["cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens"],
+            ),
             uncached_input_tokens: integer_alias(
                 usage,
                 &["uncached_input_tokens", "uncachedInputTokens"],
@@ -460,9 +464,11 @@ impl UsageReport {
             context_percent: integer_alias(data, &["context_percent", "contextPercent"])
                 .or_else(|| integer_alias(usage, &["context_percent", "contextPercent"])),
             runtime_ms: integer_alias(data, &["runtime_ms", "runtimeMs", "duration_ms"]),
-            cost_microusd: decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
+            cost_microusd: decimal_alias(data, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
+                .or_else(|| decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"]))
                 .map(|value| (value * 1_000_000.0).round() as i64),
-            cost_source: decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
+            cost_source: decimal_alias(data, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
+                .or_else(|| decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"]))
                 .map(|_| "provider_reported".into()),
         };
         (report != Self::default()).then_some(report)
@@ -557,7 +563,11 @@ pub fn record_provider_usage(
             }
         })
     });
-    if let Some(prompt) = store::latest_prompt_compilation(db, session_id)? {
+    let prompt = match turn_id {
+        Some(turn_id) => store::prompt_compilation_for_turn(db, session_id, turn_id)?,
+        None => store::latest_prompt_compilation(db, session_id)?,
+    };
+    if let Some(prompt) = prompt {
         row.stable_prefix_id = Some(prompt.prefix_id);
         row.stable_prefix_hash = Some(prompt.prefix_hash);
         row.prompt_schema_version = Some(prompt.schema_version);
@@ -1237,20 +1247,24 @@ mod tests {
         assert_eq!(nested_codex.output_tokens, Some(6));
         assert_eq!(nested_codex.cache_read_tokens, Some(4));
 
-        let claude = UsageReport::from_normalized(&json!({
+        let claude_events = crate::agent::normalize_claude_message(&json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "done",
             "usage": {
                 "input_tokens": 11,
                 "output_tokens": 5,
-                "cached_input_tokens": 2,
-                "cache_write_tokens": 1,
-                "cost_usd": 0.012345
+                "cache_read_input_tokens": 2,
+                "cache_creation_input_tokens": 1
             },
-            "duration_ms": 100
-        }))
+            "total_cost_usd": 0.012345
+        }));
+        let claude_data = &claude_events.iter().find(|event| event.kind == "usage.updated").unwrap().data;
+        let claude = UsageReport::from_normalized(claude_data)
         .unwrap();
         assert_eq!(claude.output_tokens, Some(5));
+        assert_eq!(claude.cache_read_tokens, Some(2));
         assert_eq!(claude.cache_write_tokens, Some(1));
-        assert_eq!(claude.runtime_ms, Some(100));
         assert_eq!(claude.cost_microusd, Some(12_345));
 
         let unknown_cost = UsageReport::from_normalized(&json!({
@@ -1263,9 +1277,10 @@ mod tests {
     #[test]
     fn provider_usage_is_recorded_with_parent_turn_id() {
         let db = database();
-        store::record_prompt_compilation(&db, &crate::model::PromptCompilationRecord {
+        let first_compilation = crate::model::PromptCompilationRecord {
             id: 0,
             session_id: "parent".into(),
+            turn_id: None,
             prefix_id: "bridge-prompt-v1-deadbeef".into(),
             prefix_hash: "deadbeef".into(),
             schema_version: 1,
@@ -1278,7 +1293,9 @@ mod tests {
             restoration_mode: "fresh".into(),
             cross_harness_reuse: "not_applicable".into(),
             created_at: "now".into(),
-        }).unwrap();
+        };
+        store::record_prompt_compilation(&db, &first_compilation).unwrap();
+        assert!(store::bind_latest_prompt_compilation_to_turn(&db, "parent", "turn-usage").unwrap());
         assert!(record_provider_usage(
             &db,
             "w",
@@ -1303,6 +1320,25 @@ mod tests {
         assert_eq!(rows[0].harness.as_deref(), Some("claude"));
         assert_eq!(rows[0].restoration_mode.as_deref(), Some("fresh"));
 
+        let mut next_compilation = first_compilation;
+        next_compilation.prefix_id = "bridge-prompt-v1-next".into();
+        next_compilation.prefix_hash = "next".into();
+        next_compilation.model = Some("opus".into());
+        next_compilation.restoration_mode = "hot".into();
+        store::record_prompt_compilation(&db, &next_compilation).unwrap();
+        assert!(record_provider_usage(
+            &db,
+            "w",
+            "parent",
+            Some("turn-usage"),
+            "provider.claude",
+            &json!({"usage":{"input_tokens":2,"cache_read_input_tokens":1}}),
+        ).unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows[1].stable_prefix_id.as_deref(), Some("bridge-prompt-v1-deadbeef"));
+        assert_eq!(rows[1].model.as_deref(), Some("sonnet"));
+        assert_eq!(rows[1].restoration_mode.as_deref(), Some("fresh"));
+
         assert!(record_provider_usage(
             &db,
             "w",
@@ -1312,7 +1348,7 @@ mod tests {
             &json!({"usage":{"input_tokens":10,"cache_read_tokens":4,"cache_write_tokens":1}}),
         ).unwrap());
         let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
-        assert_eq!(rows[1].uncached_input_tokens, Some(5));
+        assert_eq!(rows[2].uncached_input_tokens, Some(5));
     }
 
     fn database() -> Connection {

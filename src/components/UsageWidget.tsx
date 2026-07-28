@@ -121,7 +121,10 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
             <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-neutral-500">Prompt cache</h3>
             <span className="text-[9px] text-neutral-600">Provider-reported tokens</span>
           </div>
-          {cacheDiagnostics.length ? <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div> : <p className="rounded-xl border border-dashed border-white/[0.08] px-3 py-4 text-center text-[10px] text-neutral-600">No prompt-cache telemetry reported yet.</p>}
+          {cacheDiagnostics.length ? <>
+            <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div>
+            {cacheDiagnostics.length > 6 && <p className="mt-2 text-[9px] text-neutral-600">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
+          </> : <p className="rounded-xl border border-dashed border-white/[0.08] px-3 py-4 text-center text-[10px] text-neutral-600">No prompt-cache telemetry reported yet.</p>}
         </section>
 
         <section className="mt-4" aria-label="Usage history">
@@ -155,15 +158,20 @@ function CacheRow({ diagnostic }: { diagnostic: CacheDiagnostic }) {
       <span>write amortization {amortization}</span>
     </div>
     <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[8.5px] text-neutral-600">
-      <span>{diagnostic.role}</span>
-      <span>{diagnostic.taskFamily}</span>
-      <span>{diagnostic.restorationMode}</span>
-      {diagnostic.crossHarnessReuse.map(marker => <span key={marker}>{marker}</span>)}
+      <span>Role: {humanizeMetric(diagnostic.role)}</span>
+      <span>Task: {humanizeMetric(diagnostic.taskFamily)}</span>
+      <span>Restore: {humanizeMetric(diagnostic.restorationMode)}</span>
+      {diagnostic.crossHarnessReuse.map(marker => <span key={marker}>Reuse: {humanizeMetric(marker)}</span>)}
       {diagnostic.stablePrefixId && <span className="max-w-full truncate font-mono" title={`${diagnostic.stablePrefixId} · ${diagnostic.stablePrefixHash ?? "hash unknown"}`}>{diagnostic.stablePrefixId}</span>}
       {diagnostic.promptSchemaVersion != null && <span>schema v{diagnostic.promptSchemaVersion}</span>}
     </div>
     <div className="mt-1 text-[8.5px] text-neutral-600">{cost}</div>
   </div>;
+}
+
+function humanizeMetric(value: string): string {
+  const words = value.replaceAll("_", " ").replaceAll(":", " · ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function ProviderDetail({ provider, snapshot, samples }: { provider: { id: UsageProvider; label: string }; snapshot?: UsageSnapshot; samples: UsageRateSample[] }) {

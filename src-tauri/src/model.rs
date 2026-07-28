@@ -376,6 +376,7 @@ pub struct UsageLedgerRow {
 pub struct PromptCompilationRecord {
     pub id: i64,
     pub session_id: String,
+    pub turn_id: Option<String>,
     pub prefix_id: String,
     pub prefix_hash: String,
     pub schema_version: i64,

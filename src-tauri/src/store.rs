@@ -285,6 +285,7 @@ fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<
         "CREATE TABLE IF NOT EXISTS prompt_compilations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            turn_id TEXT,
             prefix_id TEXT NOT NULL,
             prefix_hash TEXT NOT NULL,
             schema_version INTEGER NOT NULL,
@@ -302,6 +303,11 @@ fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<
             ON prompt_compilations(session_id,id DESC);
         CREATE INDEX IF NOT EXISTS idx_prompt_compilations_prefix
             ON prompt_compilations(harness,prefix_hash,id DESC);"
+    )?;
+    add_column_if_missing(transaction, "prompt_compilations", "turn_id", "TEXT")?;
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_compilations_turn
+            ON prompt_compilations(session_id,turn_id,id DESC);"
     )?;
     Ok(())
 }
@@ -1779,9 +1785,9 @@ pub fn record_prompt_compilation(
     record: &PromptCompilationRecord,
 ) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO prompt_compilations(session_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-        params![record.session_id,record.prefix_id,record.prefix_hash,record.schema_version,record.prefix_bytes,record.prefix_token_estimate,record.harness,record.model,record.role,record.task_family,record.restoration_mode,record.cross_harness_reuse,record.created_at],
+        "INSERT INTO prompt_compilations(session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![record.session_id,record.turn_id,record.prefix_id,record.prefix_hash,record.schema_version,record.prefix_bytes,record.prefix_token_estimate,record.harness,record.model,record.role,record.task_family,record.restoration_mode,record.cross_harness_reuse,record.created_at],
     )?;
     Ok(db.last_insert_rowid())
 }
@@ -1791,11 +1797,31 @@ pub fn latest_prompt_compilation(
     session_id: &str,
 ) -> Result<Option<PromptCompilationRecord>, BridgeError> {
     Ok(db.query_row(
-        "SELECT id,session_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
+        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
          FROM prompt_compilations WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
         params![session_id],
-        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, prefix_id:row.get(2)?, prefix_hash:row.get(3)?, schema_version:row.get(4)?, prefix_bytes:row.get(5)?, prefix_token_estimate:row.get(6)?, harness:row.get(7)?, model:row.get(8)?, role:row.get(9)?, task_family:row.get(10)?, restoration_mode:row.get(11)?, cross_harness_reuse:row.get(12)?, created_at:row.get(13)? }),
+        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)? }),
     ).optional()?)
+}
+
+pub fn bind_latest_prompt_compilation_to_turn(db: &Connection, session_id: &str, turn_id: &str) -> Result<bool, BridgeError> {
+    Ok(db.execute(
+        "UPDATE prompt_compilations SET turn_id=?2 WHERE id=(SELECT id FROM prompt_compilations WHERE session_id=?1 AND turn_id IS NULL ORDER BY id DESC LIMIT 1)",
+        params![session_id, turn_id],
+    )? == 1)
+}
+
+pub fn prompt_compilation_for_turn(db: &Connection, session_id: &str, turn_id: &str) -> Result<Option<PromptCompilationRecord>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
+         FROM prompt_compilations WHERE session_id=?1 AND turn_id=?2 ORDER BY id DESC LIMIT 1",
+        params![session_id, turn_id],
+        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)? }),
+    ).optional()?)
+}
+
+pub fn delete_prompt_compilation(db: &Connection, id: i64) -> Result<bool, BridgeError> {
+    Ok(db.execute("DELETE FROM prompt_compilations WHERE id=?1", params![id])? == 1)
 }
 
 fn query_with_params<T, P, F>(
@@ -2568,6 +2594,7 @@ mod tests {
         let compilation = PromptCompilationRecord {
             id: 0,
             session_id: "s".into(),
+            turn_id: None,
             prefix_id: "prefix-1".into(),
             prefix_hash: "hash-1".into(),
             schema_version: 1,
@@ -2586,6 +2613,15 @@ mod tests {
         assert_eq!(stored_compilation.id, compilation_id);
         assert_eq!(stored_compilation.prefix_hash, "hash-1");
         assert_eq!(stored_compilation.prefix_token_estimate, 100);
+        assert!(bind_latest_prompt_compilation_to_turn(&db, "s", "turn-1").unwrap());
+        assert_eq!(prompt_compilation_for_turn(&db, "s", "turn-1").unwrap().unwrap().id, compilation_id);
+        let mut replacement = compilation.clone();
+        replacement.prefix_id = "prefix-unsent".into();
+        replacement.prefix_hash = "hash-unsent".into();
+        let replacement_id = record_prompt_compilation(&db, &replacement).unwrap();
+        assert!(delete_prompt_compilation(&db, replacement_id).unwrap());
+        assert!(!delete_prompt_compilation(&db, replacement_id).unwrap());
+        assert_eq!(latest_prompt_compilation(&db, "s").unwrap().unwrap().id, compilation_id);
 
         let usage = UsageLedgerRow {
             id: 0,

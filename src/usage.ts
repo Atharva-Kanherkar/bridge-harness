@@ -73,6 +73,8 @@ export interface UsageHistoryEntry {
 
 export type CacheCostCoverage = "reported" | "partial" | "unknown";
 
+export const MAX_CACHE_DIAGNOSTIC_ROWS = 1_000;
+
 export interface CacheDiagnostic {
   key: string;
   harness: string;
@@ -287,7 +289,7 @@ export function buildUsageHistory(rows: UsageLedgerRow[], sessions: Session[]): 
 export function buildCacheDiagnostics(rows: UsageLedgerRow[]): CacheDiagnostic[] {
   type Accumulator = CacheDiagnostic & { costObservations: number };
   const groups = new Map<string, Accumulator>();
-  for (const row of rows) {
+  for (const row of rows.slice(-MAX_CACHE_DIAGNOSTIC_ROWS)) {
     if (!row.source.startsWith("provider.")) continue;
     const hasCacheSignal = row.cacheReadTokens != null || row.cacheWriteTokens != null || row.uncachedInputTokens != null;
     if (!hasCacheSignal && !row.stablePrefixId) continue;

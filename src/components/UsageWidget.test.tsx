@@ -61,7 +61,22 @@ describe("UsageWidget", () => {
     expect(html).toContain("write amortization 6.0×");
     expect(html).toContain("bridge-prompt-v1-deadbeef");
     expect(html).toContain("schema v1");
+    expect(html).toContain("Role: Worker · implementation");
+    expect(html).toContain("Restore: Fresh");
+    expect(html).toContain("Reuse: Same harness");
     expect(html).toContain("Cost unknown — provider did not report it");
     expect(html.toLowerCase()).not.toContain("savings");
+  });
+
+  it("discloses when additional prompt groups are hidden", () => {
+    const cache = (index: number): CacheDiagnostic => ({
+      key: `cache-${index}`, harness: "codex", model: `gpt-${index}`, role: "worker:implementation",
+      taskFamily: "implementation", restorationMode: "checkpoint_restored",
+      cacheReadTokens: 1, cacheWriteTokens: 0, uncachedInputTokens: 1,
+      observations: 1, crossHarnessReuse: [], costSources: [], costCoverage: "unknown",
+    });
+    const html = renderToStaticMarkup(<UsageWidget usage={{}} cacheDiagnostics={Array.from({ length: 7 }, (_, index) => cache(index))} />);
+    expect(html).toContain("Showing 6 of 7 recent prompt groups.");
+    expect(html).toContain("Restore: Checkpoint restored");
   });
 });

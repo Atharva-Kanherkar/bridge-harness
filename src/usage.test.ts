@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "./types";
 import type { Session, UsageLedgerRow } from "./types";
-import { buildCacheDiagnostics, buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, projectUsageExhaustion, windowLabel } from "./usage";
+import { buildCacheDiagnostics, buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, MAX_CACHE_DIAGNOSTIC_ROWS, projectUsageExhaustion, windowLabel } from "./usage";
 
 function event(kind: string, data: Record<string, unknown>, sequence = 1): AgentEvent {
   return { id: sequence, sessionId: "s1", sequence, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data, providerMeta: {}, createdAt: new Date().toISOString() };
@@ -198,6 +198,16 @@ describe("buildCacheDiagnostics", () => {
     expect(missing.writeAmortization).toBeUndefined();
     expect(zero.cacheHitRatio).toBeUndefined();
     expect(zero.writeAmortization).toBeUndefined();
+  });
+
+  it("bounds aggregation to the most recent provider rows", () => {
+    const rows = Array.from({ length: MAX_CACHE_DIAGNOSTIC_ROWS + 1 }, (_, index) => ledger({
+      id: index + 1,
+      cacheReadTokens: index === 0 ? 10_000 : 1,
+    }));
+    const [diagnostic] = buildCacheDiagnostics(rows);
+    expect(diagnostic.observations).toBe(MAX_CACHE_DIAGNOSTIC_ROWS);
+    expect(diagnostic.cacheReadTokens).toBe(MAX_CACHE_DIAGNOSTIC_ROWS);
   });
 });
 

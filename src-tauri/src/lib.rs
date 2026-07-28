@@ -136,12 +136,13 @@ fn persist_prompt_compilation(
     restoration_mode: RestorationMode,
     cross_harness_reuse: &str,
     prompt: &prompt_compiler::CompiledPrompt,
-) -> Result<(), BridgeError> {
+) -> Result<i64, BridgeError> {
     store::record_prompt_compilation(
         db,
         &PromptCompilationRecord {
             id: 0,
             session_id: session_id.into(),
+            turn_id: None,
             prefix_id: prompt.metadata.prefix_id.clone(),
             prefix_hash: prompt.metadata.prefix_hash.clone(),
             schema_version: i64::from(prompt.metadata.schema_version),
@@ -155,8 +156,7 @@ fn persist_prompt_compilation(
             cross_harness_reuse: cross_harness_reuse.into(),
             created_at: Utc::now().to_rfc3339(),
         },
-    )?;
-    Ok(())
+    )
 }
 
 fn cross_harness_reuse_marker(
@@ -2297,7 +2297,7 @@ fn handle_agent_value(
         };
         // Direct chats are single-agent: no worker delegation and no auto-compaction.
         let is_direct = session_kind == "direct";
-        let observed_turn_id = current_turn
+        let mut observed_turn_id = current_turn
             .lock()
             .unwrap()
             .clone()
@@ -2334,6 +2334,12 @@ fn handle_agent_value(
                         .map(str::to_owned);
                     *current_turn.lock().unwrap() = turn_id.clone();
                     if let Some(turn_id) = &turn_id {
+                        observed_turn_id = Some(turn_id.clone());
+                        let _ = store::bind_latest_prompt_compilation_to_turn(
+                            &db,
+                            session_id,
+                            turn_id,
+                        );
                         state
                             .delegations
                             .lock()
@@ -3415,6 +3421,7 @@ fn launch_worker_outcome(
         &reservation.session_id,
     ).ok().flatten().is_some_and(|previous| {
         previous.harness == harness
+            && previous.model.as_deref() == Some(model.as_str())
             && previous.prefix_hash == compiled_prompt.metadata.prefix_hash
             && previous.schema_version == i64::from(compiled_prompt.metadata.schema_version)
     });
@@ -3448,15 +3455,15 @@ fn launch_worker_outcome(
             )),
             _ => Err(BridgeError::Invalid("compatible hot worker is not reusable".into())),
         };
-        if transition_result.is_ok()
-            && worker_pool::WorkerPool::activate_reused_worker(
+        let activation_result = transition_result.and_then(|_| {
+            worker_pool::WorkerPool::activate_reused_worker(
                 &state.db.lock().unwrap(),
                 &reservation.session_id,
                 &reservation.workspace_id,
                 directive,
             )
-            .is_ok()
-        {
+        });
+        if activation_result.is_ok() {
             // Reused warm workers keep their previous heartbeat; reset it so the
             // stall watchdog measures from the start of this task, not the last.
             reset_worker_heartbeat(&state, &reservation.session_id);
@@ -3478,7 +3485,7 @@ fn launch_worker_outcome(
                 &reservation.session_id,
                 ContinuationFidelity::Native,
             );
-            let prompt_recorded = {
+            let prompt_record_id = {
                 let db = state.db.lock().unwrap();
                 let marker = cross_harness_reuse_marker(&db, parent_session_id, &harness);
                 persist_prompt_compilation(
@@ -3493,23 +3500,57 @@ fn launch_worker_outcome(
                     &compiled_prompt,
                 )
             };
-            if let Err(error) = prompt_recorded {
-                fail_reserved_worker(app, &reservation.session_id, &label, &format!("Could not persist hot prompt compilation: {error}"));
+            let prompt_record_id = match prompt_record_id {
+                Ok(id) => id,
+                Err(error) => {
+                    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+                        runtime.stop(adapters::ShutdownReason::Failed);
+                    }
+                    let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+                        &state.db.lock().unwrap(),
+                        &reservation.session_id,
+                    );
+                    fail_reserved_worker(app, &reservation.session_id, &label, &format!("Could not persist hot prompt compilation: {error}"));
+                    return WorkerLaunchOutcome::Failed;
+                }
+            };
+            let delivery = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(&reservation.session_id)
+                .ok_or_else(|| BridgeError::Invalid("Hot worker runtime disappeared before prompt delivery".into()))
+                .and_then(|runtime| runtime.send_turn(&instructions));
+            if let Err(error) = delivery {
+                if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+                    runtime.stop(adapters::ShutdownReason::Failed);
+                }
+                let db = state.db.lock().unwrap();
+                let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &reservation.session_id);
+                let _ = store::delete_prompt_compilation(&db, prompt_record_id);
+                drop(db);
+                fail_reserved_worker(app, &reservation.session_id, &label, &format!("Could not deliver hot worker prompt: {error}"));
+                let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, &error.to_string());
                 return WorkerLaunchOutcome::Failed;
             }
-            if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
-                if runtime.send_turn(&instructions).is_ok() {
-                    let _ = learning_router::record_route_status(
-                        &state.db.lock().unwrap(),
-                        &routed.decision.id,
-                        "launched",
-                    );
-                    let _ = app.emit("state-changed", ());
-                    return WorkerLaunchOutcome::Launched(reservation.session_id);
-                }
-            }
+            let _ = learning_router::record_route_status(
+                &state.db.lock().unwrap(),
+                &routed.decision.id,
+                "launched",
+            );
+            let _ = app.emit("state-changed", ());
+            return WorkerLaunchOutcome::Launched(reservation.session_id);
         }
-        let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
+        let error = activation_result.unwrap_err();
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+            runtime.stop(adapters::ShutdownReason::Failed);
+        }
+        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+            &state.db.lock().unwrap(),
+            &reservation.session_id,
+        );
+        fail_reserved_worker(app, &reservation.session_id, &label, &format!("Could not reactivate compatible hot worker: {error}"));
+        let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, &error.to_string());
         return WorkerLaunchOutcome::Failed;
     }
 
