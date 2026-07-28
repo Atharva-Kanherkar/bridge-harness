@@ -174,7 +174,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "plan.updated" || event.kind.startsWith("plan.")) {
       items.set("current-plan", { key:"current-plan", type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
-    if (event.kind === "delegation.spawned" || event.kind === "delegation.result") {
+    if (event.kind === "delegation.spawned" || event.kind === "delegation.result" || event.kind === "delegation.rejected") {
       items.set(itemKey, { key:itemKey, type:"delegation", eventId:event.id, role:"system", status:event.status ?? undefined, title:event.title ?? undefined, text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
     if (event.kind === "approval.requested") {

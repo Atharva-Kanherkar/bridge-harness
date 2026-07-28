@@ -35,6 +35,7 @@ mod store;
 mod worker_guard;
 mod worker_lifecycle;
 mod worker_pool;
+mod workspace_files;
 mod worktree_coordinator;
 
 use chrono::Utc;
@@ -194,7 +195,19 @@ struct AppState {
     skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
     credential_broker: Arc<credential_broker::CredentialBroker>,
     browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
+    /// Last time each session produced adapter output, used by the worker
+    /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
+    /// only — process death is already handled by the reader-thread EOF path.
+    worker_activity: Mutex<HashMap<String, std::time::Instant>>,
 }
+
+/// A worker actively `working` that produces *no* adapter output at all for this
+/// long is treated as hung. The window is deliberately generous: healthy agents
+/// stream reasoning/tool frames far more often, so total silence this long is a
+/// strong stall signal, while a legitimate long build/test is very unlikely to
+/// emit nothing for ten minutes. Death is still caught immediately on EOF; this
+/// only covers the alive-but-silent case.
+const WORKER_STALL_TIMEOUT_SECONDS: u64 = 600;
 
 /// Bookkeeping for the multi-agent delegation tree.
 #[derive(Default)]
@@ -204,6 +217,10 @@ struct DelegationState {
     /// Last observed provider turn per session, retained until the next turn
     /// so late usage events keep the originating user-request budget key.
     last_turn_by_session: HashMap<String, String>,
+    /// Per-session count of automatic corrective turns sent after a rejected
+    /// `bridge-delegate` request, so a persistently malformed orchestrator turn
+    /// cannot drive an unbounded correction loop.
+    invalid_request_corrections: HashMap<String, u32>,
     /// Read-only worker session → tracked Git state captured before process start.
     read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
 }
@@ -1025,6 +1042,42 @@ struct OrchestratorSelection {
     label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrchestratorWorktree {
+    path: PathBuf,
+    branch: String,
+}
+
+fn prepare_orchestrator_worktree(
+    namespace_root: &Path,
+    workspace_title: &str,
+    workspace_path: &Path,
+    session_id: &str,
+) -> Result<OrchestratorWorktree, BridgeError> {
+    git::validate_repo(workspace_path).map_err(|_| {
+        BridgeError::Invalid(
+            "Connect a Git repository before creating an isolated worktree".into(),
+        )
+    })?;
+    let workspace_slug = {
+        let value = git::slug(workspace_title);
+        if value.is_empty() {
+            "workspace".to_owned()
+        } else {
+            value
+        }
+    };
+    let session_slug = git::slug(session_id);
+    let short_session = session_slug.chars().take(8).collect::<String>();
+    let branch = format!("bridge/{workspace_slug}-{short_session}");
+    let path = namespace_root
+        .join("orchestrators")
+        .join(&workspace_slug)
+        .join(session_id);
+    git::create_worktree(workspace_path, &path, &branch)?;
+    Ok(OrchestratorWorktree { path, branch })
+}
+
 fn resolve_orchestrator_selection(
     db: &Connection,
     registry: &adapters::AdapterRegistry,
@@ -1089,28 +1142,116 @@ fn resolve_orchestrator_selection(
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
+    create_worktree: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
-    let ws_path: Option<String> = db
-        .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
-            r.get::<_, Option<String>>(0)
-        })
-        .ok()
-        .flatten();
-    let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
-    db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-        params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
-    )?;
-    store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
-    store::state(&db)
+    let (selection, workspace_title, workspace_path, project_id) = {
+        let db = state.db.lock().unwrap();
+        let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
+        let (title, path, project_id): (String, Option<String>, Option<String>) = db.query_row(
+            "SELECT title,path,project_id FROM workspaces WHERE id=?1",
+            params![workspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        (selection, title, path, project_id)
+    };
+    let isolated = create_worktree.unwrap_or(false);
+    if isolated && project_id.is_none() {
+        return Err(BridgeError::Invalid(
+            "Connect a Git repository before creating an isolated worktree".into(),
+        ));
+    }
+    let worktree = if isolated {
+        let source = workspace_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                BridgeError::Invalid(
+                    "Connect a Git repository before creating an isolated worktree".into(),
+                )
+            })?
+            .to_owned();
+        let namespace = state.worktrees.clone();
+        let title = workspace_title.clone();
+        let session_id = id.clone();
+        Some(
+            tauri::async_runtime::spawn_blocking(move || {
+                prepare_orchestrator_worktree(
+                    &namespace,
+                    &title,
+                    Path::new(&source),
+                    &session_id,
+                )
+            })
+            .await
+            .map_err(|error| {
+                BridgeError::Invalid(format!("Worktree creation task failed: {error}"))
+            })??,
+        )
+    } else {
+        None
+    };
+    let cwd = worktree
+        .as_ref()
+        .map(|value| value.path.to_string_lossy().into_owned())
+        .or_else(|| workspace_path.clone())
+        .unwrap_or_else(|| {
+            chat_scratch_dir(state.inner(), &id)
+                .to_string_lossy()
+                .to_string()
+        });
+    let persisted = (|| -> Result<BridgeState, BridgeError> {
+        let db = state.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
+            params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
+        )?;
+        store::event(&transaction, "supervisor", "session.created", &id, "New agent session")?;
+        if let Some(created) = &worktree {
+            store::event(
+                &transaction,
+                "worktree",
+                "session.worktree_created",
+                &id,
+                &format!(
+                    "Created isolated worktree {} on branch {}",
+                    created.path.display(),
+                    created.branch
+                ),
+            )?;
+        }
+        let next = store::state(&transaction)?;
+        transaction.commit()?;
+        Ok(next)
+    })();
+    if persisted.is_err() {
+        if let Some(created) = &worktree {
+            let _ = git::remove_worktree(
+                Path::new(workspace_path.as_deref().unwrap_or("")),
+                &created.path,
+            );
+        }
+    }
+    persisted
 }
 
-/// Change a direct chat's harness/model. Stops any running adapter so the next
-/// message starts a fresh provider session with the new model.
+fn persist_chat_model_selection(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    model: &str,
+    tier: CapabilityTier,
+) -> Result<usize, BridgeError> {
+    Ok(db.execute(
+        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator')",
+        params![session_id, adapter_id, model, tier.as_str()],
+    )?)
+}
+
+/// Change a root chat's provider/model. Stops any running adapter so the next
+/// message starts a fresh provider session with the explicit user selection.
 #[tauri::command]
 async fn update_chat_model(
     session_id: String,
@@ -1120,9 +1261,74 @@ async fn update_chat_model(
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
+    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
+        return Err(BridgeError::Invalid(format!(
+            "{} is disabled in Settings",
+            harness.label()
+        )));
+    }
+    let (kind, previous_harness, previous_model, active_turn_id, parent_session_id): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = state.db.lock().unwrap().query_row(
+        "SELECT kind,harness,model,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    if parent_session_id.is_some() || !matches!(kind.as_str(), "direct" | "orchestrator") {
+        return Err(BridgeError::Invalid(
+            "Only root chats and orchestrators can change models".into(),
+        ));
+    }
+    if active_turn_id.is_some() {
+        return Err(BridgeError::Invalid(
+            "Wait for the current response before switching models".into(),
+        ));
+    }
+    let descriptor = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.id == adapter_id)
+        .ok_or_else(|| BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}")))?;
+    if !descriptor.available {
+        return Err(BridgeError::Invalid(
+            descriptor
+                .unavailable_reason
+                .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
+        ));
+    }
+    let default_tier = if kind == "orchestrator" {
+        CapabilityTier::Standard
+    } else {
+        CapabilityTier::Fast
+    };
+    let selected = if let Some(requested) = model.as_deref().filter(|value| !value.trim().is_empty()) {
+        descriptor
+            .models
+            .iter()
+            .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+            .cloned()
+            .ok_or_else(|| BridgeError::Invalid(format!("{} does not offer model {requested}", descriptor.label)))?
+    } else {
+        descriptor
+            .models
+            .iter()
+            .find(|option| option.tier == default_tier && option.default_for_tier)
+            .or_else(|| descriptor.models.iter().find(|option| option.tier == default_tier))
+            .cloned()
+            .ok_or_else(|| BridgeError::Invalid(format!("{} has no {} model", descriptor.label, default_tier.as_str())))?
+    };
+    if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str()) {
+        return store::state(&state.db.lock().unwrap());
+    }
     let stop_session_id = session_id.clone();
+    let shutdown_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
+        let state = shutdown_app.state::<AppState>();
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         };
@@ -1131,10 +1337,50 @@ async fn update_chat_model(
     .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
     session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
     let db = state.db.lock().unwrap();
-    db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND kind='direct'",
-        params![session_id, adapter_id, model],
+    if persist_chat_model_selection(&db, &session_id, adapter_id, &selected.id, selected.tier)? != 1 {
+        return Err(BridgeError::Invalid(
+            "The chat could not be updated because it is no longer a root chat".into(),
+        ));
+    }
+    restoration::set_head_state(
+        &db,
+        &session_id,
+        RestorationMode::Fresh,
+        ResumeEligibility::Fresh,
+        None,
     )?;
+    let subject = if kind == "orchestrator" { "Orchestrator" } else { "Chat" };
+    let detail = format!(
+        "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session.",
+        previous_harness,
+        previous_model.as_deref().unwrap_or("automatic"),
+        adapter_id,
+        selected.id,
+    );
+    store::event(&db, "chat", "session.model_changed", &session_id, &detail)?;
+    let event = store::session_event(
+        &db,
+        &session_id,
+        &agent::NormalizedEvent {
+            kind: "session.model_changed".into(),
+            item_id: Some(format!("model-change-{}", Uuid::new_v4())),
+            role: Some("system".into()),
+            status: Some("ready".into()),
+            title: Some(format!("{subject} model changed")),
+            text: Some(detail),
+            data: serde_json::json!({
+                "previousHarness": previous_harness,
+                "previousModel": previous_model,
+                "harness": adapter_id,
+                "model": selected.id,
+                "modelLabel": selected.label,
+                "tier": selected.tier,
+                "freshProviderSession": true,
+            }),
+        },
+        &serde_json::json!({"source": "user-selection"}),
+    )?;
+    let _ = app.emit("agent-event", event);
     store::state(&db)
 }
 
@@ -1266,14 +1512,62 @@ async fn connect_workspace_folder(
 #[tauri::command]
 async fn start_session(
     workspace_id: String,
-    _harness: Option<Harness>,
-    _model: Option<String>,
+    harness: Option<Harness>,
+    model: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BridgeState, BridgeError> {
-    // The persisted Standard orchestrator profile owns the default provider,
-    // model, tier, and effort. Resolution still happens against live inventory.
-    let selection = {
+    // An explicit chat choice wins. Without one, the persisted Standard
+    // orchestrator profile remains the default.
+    let selection = if let Some(harness) = harness {
+        let adapter_id = store::harness_name(&harness).to_owned();
+        let db = state.db.lock().unwrap();
+        if !agent_config::is_harness_enabled(&db, &adapter_id) {
+            return Err(BridgeError::Invalid(format!(
+                "{} is disabled in Settings",
+                harness.label()
+            )));
+        }
+        let descriptor = state
+            .adapter_registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == adapter_id)
+            .ok_or_else(|| BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}")))?;
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(
+                descriptor
+                    .unavailable_reason
+                    .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
+            ));
+        }
+        let selected = if let Some(requested) = model.as_deref().filter(|value| !value.trim().is_empty()) {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+                .cloned()
+                .ok_or_else(|| BridgeError::Invalid(format!("{} does not offer model {requested}", descriptor.label)))?
+        } else {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
+                .or_else(|| descriptor.models.iter().find(|option| option.tier == CapabilityTier::Standard))
+                .cloned()
+                .ok_or_else(|| BridgeError::Invalid(format!("{} has no standard model", descriptor.label)))?
+        };
+        OrchestratorSelection {
+            adapter_id,
+            model: selected.id,
+            tier: selected.tier,
+            effort: agent_config::harness_config(&db, store::harness_name(&harness))
+                .and_then(|config| config.effort),
+            label: agent_config::default_orchestrator(&db)
+                .map(|agent| agent.name)
+                .unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
+        }
+    } else {
         let db = state.db.lock().unwrap();
         resolve_orchestrator_selection(&db, &state.adapter_registry)?
     };
@@ -1867,17 +2161,28 @@ fn spawn_reader_thread(
     mut reader: Box<dyn BufRead + Send>,
 ) {
     thread::spawn(move || {
+        // Seed a heartbeat so a worker that never emits a single line still has
+        // a baseline the stall watchdog can measure from.
+        record_worker_activity(&app, &session_id);
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    // Every line proves liveness — refresh the heartbeat before
+                    // normalization so tool-run and reasoning frames all count.
+                    record_worker_activity(&app, &session_id);
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
                         handle_agent_value(&app, &session_id, &current_turn, &value);
                     }
                 }
             }
         }
+        app.state::<AppState>()
+            .worker_activity
+            .lock()
+            .unwrap()
+            .remove(&session_id);
         let state = app.state::<AppState>();
         let is_current_launch = state
             .db
@@ -1964,6 +2269,7 @@ fn handle_agent_value(
     }
     let state = app.state::<AppState>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
+    let mut pending_invalid_delegations: Vec<String> = Vec::new();
     let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
@@ -2005,7 +2311,17 @@ fn handle_agent_value(
                     .get(session_id)
                     .cloned()
             });
-        let normalized = state.adapter_registry.normalize(&adapter_id, value);
+        // The exact composer text is persisted locally at submission time.
+        // Provider echoes may include hidden user-role file context, so do not
+        // duplicate them into the visible conversation.
+        let normalized = state
+            .adapter_registry
+            .normalize(&adapter_id, value)
+            .into_iter()
+            .filter(|event| {
+                event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
+            })
+            .collect::<Vec<_>>();
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
             match event.kind.as_str() {
@@ -2180,9 +2496,13 @@ fn handle_agent_value(
                                 session_id,
                                 &reason,
                             );
+                            // Deferred: feed the reason back to the orchestrator
+                            // (after the lock) so it re-emits a valid request
+                            // instead of silently going idle with no result.
+                            pending_invalid_delegations.push(reason.clone());
                             let stripped = delegation::strip_directives(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
-                                format!("_Invalid delegation request: {reason}_")
+                                format!("_Delegation request rejected: {reason}. Correcting and retrying…_")
                             } else {
                                 stripped
                             });
@@ -2317,6 +2637,88 @@ fn handle_agent_value(
 
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(app, session_id, turn_id, directive, true);
+    }
+    if !pending_directives.is_empty() {
+        // A valid request cleared the backlog; reset the correction budget.
+        state
+            .delegations
+            .lock()
+            .unwrap()
+            .invalid_request_corrections
+            .remove(session_id);
+    }
+    // A rejected `bridge-delegate` request never launched a worker. Surface it
+    // as a distinct row and feed the reason back so the orchestrator re-emits a
+    // valid request, rather than going idle with no result the user can see.
+    for reason in &pending_invalid_delegations {
+        const MAX_INVALID_REQUEST_CORRECTIONS: u32 = 3;
+        let attempts = {
+            let mut delegations = state.delegations.lock().unwrap();
+            let counter = delegations
+                .invalid_request_corrections
+                .entry(session_id.to_owned())
+                .or_insert(0);
+            *counter += 1;
+            *counter
+        };
+        let will_retry = attempts <= MAX_INVALID_REQUEST_CORRECTIONS;
+        {
+            let db = state.db.lock().unwrap();
+            let rejection = agent::NormalizedEvent {
+                kind: "delegation.rejected".into(),
+                item_id: Some(format!("rejected-{}", Uuid::new_v4())),
+                role: Some("system".into()),
+                status: Some("failed".into()),
+                title: Some("Delegation rejected".into()),
+                text: Some(reason.clone()),
+                data: serde_json::json!({
+                    "reason": reason,
+                    "willRetry": will_retry,
+                    "attempt": attempts,
+                }),
+            };
+            if let Ok(stored) = store::session_event(
+                &db,
+                session_id,
+                &rejection,
+                &serde_json::json!({"delegation": true}),
+            ) {
+                let _ = app.emit("agent-event", stored);
+            }
+        }
+        if will_retry {
+            let prompt = delegation::invalid_request_feedback(reason);
+            let delivered = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .is_some_and(|runtime| runtime.send_turn(&prompt).is_ok());
+            let db = state.db.lock().unwrap();
+            if delivered {
+                let _ = db.execute(
+                    "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
+                    params![session_id],
+                );
+            } else {
+                let _ = store::event(
+                    &db,
+                    "delegation",
+                    "delegation.correction.undeliverable",
+                    session_id,
+                    reason,
+                );
+            }
+        } else {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "delegation.correction.exhausted",
+                session_id,
+                reason,
+            );
+        }
     }
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
@@ -3055,6 +3457,9 @@ fn launch_worker_outcome(
             )
             .is_ok()
         {
+            // Reused warm workers keep their previous heartbeat; reset it so the
+            // stall watchdog measures from the start of this task, not the last.
+            reset_worker_heartbeat(&state, &reservation.session_id);
             let provider_session_id = state
                 .adapters
                 .lock()
@@ -3868,26 +4273,82 @@ fn settle_worker_after_result(
 
 /// If a worker process exits before ever reporting, tell its parent so the
 /// parent is not left waiting on a child that will never answer.
-fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
+/// Refresh a session's liveness heartbeat for the stall watchdog.
+fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), std::time::Instant::now());
+}
+
+fn record_worker_activity(app: &AppHandle, session_id: &str) {
+    reset_worker_heartbeat(&app.state::<AppState>(), session_id);
+}
+
+/// Seconds since a session last produced output, if it is being tracked.
+fn worker_silence_secs(state: &AppState, session_id: &str) -> Option<u64> {
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|seen| seen.elapsed().as_secs())
+}
+
+/// Return an unreported worker's label (with a parent) or None. Shared guard for
+/// the process-exit and stall failure paths; `record_result` is idempotent on
+/// `result_status="reported"`, so a later real EOF won't double-report.
+fn unreported_worker_meta(app: &AppHandle, child_session_id: &str) -> Option<String> {
     let state = app.state::<AppState>();
-    verify_read_only_worker(app, child_session_id);
-    let already = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
+    let reported = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
         .ok()
         .flatten()
         .is_some_and(|runtime| runtime.result_status == "reported");
-    if already {
-        return;
+    if reported {
+        return None;
     }
-    let meta: Option<(Option<String>, String)> = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
+    let (parent, label): (Option<String>, String) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
             "SELECT parent_session_id,label FROM sessions WHERE id=?1",
             params![child_session_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok()
-    };
-    let Some((Some(_parent), label)) = meta else {
+        .ok()?;
+    parent.map(|_| label)
+}
+
+/// Route a synthesized failure result through the same settle + report seam the
+/// happy path uses, releasing the parent's outstanding-child count and emitting
+/// a `delegation.result` to the UI.
+fn report_synthetic_worker_failure(
+    app: &AppHandle,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) {
+    match settle_worker_after_result(app, child_session_id, result) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            let _ = store::event(
+                &app.state::<AppState>().db.lock().unwrap(),
+                "supervisor",
+                "worker.settle_failed",
+                child_session_id,
+                &error.to_string(),
+            );
+            return;
+        }
+    }
+    report_to_parent(app, child_session_id, result);
+}
+
+fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
+    verify_read_only_worker(app, child_session_id);
+    let Some(label) = unreported_worker_meta(app, child_session_id) else {
         return;
     };
     let result = delegation::WorkerResult {
@@ -3903,15 +4364,68 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
         suggested_role: None,
         suggested_task: None,
     };
-    match settle_worker_after_result(app, child_session_id, &result) {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(error) => {
-            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
-            return;
-        }
+    report_synthetic_worker_failure(app, child_session_id, &result);
+}
+
+/// Stall watchdog action: a worker that has been silent past the timeout.
+///
+/// Ordering matters for a clean signal:
+///   1. Re-check silence under the lock — output may have arrived between the
+///      watchdog's snapshot and now, in which case the worker is not stalled.
+///   2. Remove the adapter from the live map *without stopping it yet*, so the
+///      failure settles as terminal (no retry into a hung process) and the
+///      still-running reader thread produces no premature EOF result.
+///   3. Report the distinct stall failure (claims `result_status=reported`).
+///   4. Only then stop the retained process; its EOF now finds the worker
+///      already reported and is a no-op, so the UI shows STALLED, not the
+///      generic "ended without reporting".
+fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
+    let state = app.state::<AppState>();
+    // (1) Confirm the worker is still silent — closes the snapshot→act race.
+    match worker_silence_secs(&state, child_session_id) {
+        Some(silent) if silent >= WORKER_STALL_TIMEOUT_SECONDS => {}
+        _ => return,
     }
-    report_to_parent(app, child_session_id, &result);
+    let Some(label) = unreported_worker_meta(app, child_session_id) else {
+        return;
+    };
+    // (2) Detach the live runtime but keep it alive until the result is claimed.
+    let runtime = state.adapters.lock().unwrap().remove(child_session_id);
+    let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+        &state.db.lock().unwrap(),
+        child_session_id,
+    );
+    state
+        .worker_activity
+        .lock()
+        .unwrap()
+        .remove(child_session_id);
+    verify_read_only_worker(app, child_session_id);
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Failed,
+        summary: format!(
+            "{label} stopped responding (no output for {WORKER_STALL_TIMEOUT_SECONDS}s) and was stopped"
+        ),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec![
+            "Worker went silent past the stall timeout and was stopped mid-task; it may have left \
+             uncommitted filesystem changes that are not reflected in files_changed"
+                .into(),
+        ],
+        remaining_work: vec!["Inspect the worktree for partial changes, then retry or re-delegate".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    // (3) Claim the result before the process can die and race us.
+    report_synthetic_worker_failure(app, child_session_id, &result);
+    // (4) Now stop the hung process; its EOF handler will find it reported.
+    if let Some(mut runtime) = runtime {
+        runtime.stop(adapters::ShutdownReason::Failed);
+    }
 }
 
 fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
@@ -4215,6 +4729,52 @@ fn maintain_worker_pool(app: &AppHandle) {
     for workspace_id in workspaces {
         dispatch_next_queued_worker(app, &workspace_id);
     }
+
+    // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
+    // the common case (no silent sessions) touches neither the adapter map nor
+    // the DB. Only sessions already silent past the timeout are confirmed — via
+    // a primary-key lookup on worker_runtime, never a table scan — to be an
+    // alive, unreported, actively-`working` worker. A process that has exited is
+    // handled by the reader-thread EOF path; `waiting` (awaiting human approval),
+    // `warm`, and `checkpointing` are intentionally idle and excluded. Each
+    // candidate is re-checked for silence inside the handler before it acts, so
+    // output arriving after this snapshot cannot be replaced by a synthetic
+    // failure.
+    let silent_ids: Vec<String> = {
+        let activity = state.worker_activity.lock().unwrap();
+        activity
+            .iter()
+            .filter(|(_, seen)| seen.elapsed().as_secs() >= WORKER_STALL_TIMEOUT_SECONDS)
+            .map(|(session_id, _)| session_id.clone())
+            .collect()
+    };
+    if silent_ids.is_empty() {
+        return;
+    }
+    let alive: Vec<String> = {
+        let adapters = state.adapters.lock().unwrap();
+        silent_ids
+            .into_iter()
+            .filter(|session_id| adapters.contains_key(session_id))
+            .collect()
+    };
+    let stalled: Vec<String> = {
+        let db = state.db.lock().unwrap();
+        alive
+            .into_iter()
+            .filter(|session_id| {
+                db.query_row(
+                    "SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state='working' AND result_status='pending'",
+                    params![session_id],
+                    |_| Ok(()),
+                )
+                .is_ok()
+            })
+            .collect()
+    };
+    for session_id in stalled {
+        notify_parent_on_worker_stalled(app, &session_id);
+    }
 }
 
 fn start_worker_maintenance(app: AppHandle) {
@@ -4367,6 +4927,25 @@ async fn prepare_turn(session_id: String, text: String, state: State<'_, AppStat
     Ok(intercepted.sanitized)
 }
 
+/// Resolve a session's workspace root (`s.cwd` falling back to the connected
+/// workspace's `path`). Returns `None` for chats with no folder — e.g. direct
+/// chats — or when the recorded path no longer exists on disk.
+fn session_workspace_root(state: &State<'_, AppState>, session_id: &str) -> Option<PathBuf> {
+    let path: Option<String> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(s.cwd, w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+            params![session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    let candidate = PathBuf::from(path?);
+    candidate.is_dir().then_some(candidate)
+}
+
 fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
@@ -4384,9 +4963,6 @@ fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    if adapter_id == "codex" {
-        return Ok(None);
-    }
     let user_event = agent::NormalizedEvent {
         kind: "message.completed".into(),
         item_id: Some(format!("user-{}", Uuid::new_v4())),
@@ -4485,6 +5061,20 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
         slash::SlashDispatch::Forward { text } => text,
     };
 
+    // Read any @file mentions before locking the adapter map so the referenced
+    // file contents ride along as trusted application context, not user text.
+    let file_context = if let Some(root) = session_workspace_root(&state, &session_id) {
+        let mention_text = outbound.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            workspace_files::mention_context(&root, &mention_text)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace file read failed: {error}")))?
+    } else {
+        None
+    };
+    let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
+
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
@@ -4492,7 +5082,7 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
     if let Err(error) = deliver_sanitized_turn(
         runtime.as_ref(),
-        &outbound,
+        &provider_text,
         credential_context.as_deref(),
     ) {
         drop(adapters);
@@ -4526,7 +5116,28 @@ async fn send_turn(session_id: String, text: String, app: AppHandle, state: Stat
     Ok(())
 }
 
-fn record_recoverable_adapter_failure(state: &State<'_, AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
+/// List the current chat's workspace files for the composer's `@file`
+/// autocomplete. Returns an empty list for chats with no connected folder.
+#[tauri::command]
+async fn list_workspace_files(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, BridgeError> {
+    match session_workspace_root(&state, &session_id) {
+        Some(root) => tauri::async_runtime::spawn_blocking(move || {
+            workspace_files::list_files(&root)
+        })
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace file listing failed: {error}")))?,
+        None => Ok(Vec::new()),
+    }
+}
+
+fn record_recoverable_adapter_failure(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    error: &BridgeError,
+) -> Result<(), BridgeError> {
     let db = state.db.lock().unwrap();
     db.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
     store::event(&db, "adapter", "adapter.request_failed", session_id, &error.to_string())?;
@@ -5350,6 +5961,7 @@ pub fn run() {
                 skill_consents: Arc::new(Mutex::new(HashMap::new())),
                 credential_broker,
                 browser_bridge,
+                worker_activity: Mutex::new(HashMap::new()),
             });
             start_worker_maintenance(app.handle().clone());
             start_learning_maintenance(app.handle().clone());
@@ -5424,6 +6036,7 @@ pub fn run() {
             resize_terminal,
             prepare_turn,
             send_turn,
+            list_workspace_files,
             compact_session,
             interrupt_turn,
             refresh_account_usage,
@@ -5439,6 +6052,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {
@@ -5498,6 +6112,72 @@ mod tests {
         assert_eq!(stored.prefix_hash, prompt.metadata.prefix_hash);
         assert!(!serde_json::to_string(&stored).unwrap().contains("Verify the task"));
         assert!(!serde_json::to_string(&stored).unwrap().contains("checkpoint evidence"));
+    }
+
+    #[test]
+    fn user_model_selection_updates_an_orchestrator_session() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,kind,depth) VALUES('orchestrator',NULL,'codex','Orchestrator','ready','reported','old-model','standard','orchestrator',0)",
+            [],
+        )
+        .unwrap();
+
+        let changed = persist_chat_model_selection(
+            &db,
+            "orchestrator",
+            "claude",
+            "opus",
+            CapabilityTier::Strong,
+        )
+        .unwrap();
+        let actual: (String, String, String, String, Option<String>) = db
+            .query_row(
+                "SELECT harness,model,requested_tier,status,provider_session_id FROM sessions WHERE id='orchestrator'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+
+        assert_eq!(changed, 1);
+        assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
+    }
+
+    #[test]
+    fn orchestrator_worktree_is_created_from_the_connected_repository_head() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("repository");
+        std::fs::create_dir(&repo).unwrap();
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "bridge-test@example.invalid"]);
+        run_git(&["config", "user.name", "Bridge Test"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "fixture", "-q"]);
+
+        let created = prepare_orchestrator_worktree(
+            &fixture.path().join("managed-worktrees"),
+            "Payments / API",
+            &repo,
+            "12345678-abcd",
+        )
+        .unwrap();
+
+        assert_eq!(created.branch, "bridge/payments-api-12345678");
+        assert_eq!(std::fs::read_to_string(created.path.join("README.md")).unwrap(), "base\n");
+        assert_eq!(git::current_branch(&created.path).as_deref(), Some(created.branch.as_str()));
     }
 
     #[test]

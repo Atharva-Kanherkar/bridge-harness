@@ -465,14 +465,19 @@ export const bridgeApi = {
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", title, kind: "direct", cwd: null }); emitState(); return snapshot();
   },
-  createWorkspaceSession: async (workspaceId: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("create_workspace_session", { workspaceId });
+  createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
+    if (isTauri()) return invoke("create_workspace_session", { workspaceId, createWorktree });
     const id = crypto.randomUUID();
-    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", title: null, kind: "orchestrator", cwd: null }); emitState(); return snapshot();
+    const workspace = mockState.workspaces.find(item => item.id === workspaceId);
+    if (createWorktree && !workspace?.projectId) throw new Error("Connect a Git repository before creating an isolated worktree");
+    const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
+    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", title: null, kind: "orchestrator", cwd }); emitState(); return snapshot();
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null): Promise<BridgeState> => {
     if (isTauri()) return invoke("update_chat_model", { sessionId, harness, model });
-    const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; }
+    const session = mockState.sessions.find(item => item.id === sessionId);
+    if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
+    if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
     emitState(); return snapshot();
   },
   listSlashCommands: async (): Promise<SlashCommand[]> => {
@@ -483,6 +488,9 @@ export const bridgeApi = {
     if (isTauri()) return invoke("resolve_slash_command", { sessionId, text });
     return null;
   },
+  listWorkspaceFiles: (sessionId: string): Promise<string[]> => isTauri()
+    ? invoke("list_workspace_files", { sessionId })
+    : Promise.resolve(["src/App.tsx", "src/api.ts", "src/types.ts", "src-tauri/src/lib.rs", "README.md"]),
   connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
     if (isTauri()) return invoke("connect_workspace_folder", { workspaceId, path });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }

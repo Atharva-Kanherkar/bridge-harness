@@ -63,6 +63,16 @@ describe("AgentConversation", () => {
     expect(html).toContain("Allow once");
     expect(html).not.toContain("Allow for session");
   });
+  it("surfaces a rejected delegation as a distinct row instead of silently dropping it", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", title: "Delegation rejected", text: "unknown variant `none`", data: { reason: "unknown variant `none`", willRetry: true, attempt: 1 } })
+    ]}/>);
+    expect(html).toContain("Delegation rejected");
+    expect(html).toContain("no worker started");
+    expect(html).toContain("unknown variant");
+    expect(html).toContain("correct and re-emit");
+    expect(html).toContain('role="alert"');
+  });
   it("surfaces conversation and file-state divergence", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);
     expect(html).toContain("This branch&#x27;s context predates the current file state.");
