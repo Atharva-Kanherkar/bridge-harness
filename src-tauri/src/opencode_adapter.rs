@@ -122,6 +122,7 @@ pub fn resume_with_settings(
             effort: request.effort,
             instructions: request.instructions,
             write_mode: request.write_mode,
+            read_only_sandbox: request.read_only_sandbox,
         },
         Some(request.provider_session_id),
         settings,
@@ -133,6 +134,7 @@ fn launch(
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
+    ensure_read_only_transport_supported(request.read_only_sandbox.is_some())?;
     if let Some(session_id) = resume_session_id {
         validate_path_id("session id", session_id)?;
     }
@@ -257,6 +259,17 @@ fn launch(
         reader: ChannelReader::new(receiver),
         startup_messages,
     })
+}
+
+fn ensure_read_only_transport_supported(enabled: bool) -> Result<(), BridgeError> {
+    if enabled {
+        Err(BridgeError::Invalid(
+            "OpenCode read-only workers are unsupported because its local HTTP transport cannot run inside the offline sandbox; refusing to start without isolation"
+                .into(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn session_create_body(
@@ -868,9 +881,7 @@ fn validate_path_id(kind: &str, value: &str) -> Result<(), BridgeError> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
     valid.then_some(()).ok_or_else(|| {
-        BridgeError::Invalid(format!(
-            "OpenCode {kind} contains unsupported characters"
-        ))
+        BridgeError::Invalid(format!("OpenCode {kind} contains unsupported characters"))
     })
 }
 
@@ -1257,6 +1268,13 @@ mod tests {
     }
 
     #[test]
+    fn read_only_transport_fails_closed_before_launch() {
+        let error = ensure_read_only_transport_supported(true).unwrap_err();
+        assert!(error.to_string().contains("refusing to start without isolation"));
+        assert!(ensure_read_only_transport_supported(false).is_ok());
+    }
+
+    #[test]
     #[cfg(unix)]
     fn resolves_custom_managed_and_system_executables_in_order() {
         use std::os::unix::fs::PermissionsExt;
@@ -1385,6 +1403,7 @@ mod tests {
                 effort: None,
                 instructions: None,
                 write_mode: None,
+                read_only_sandbox: None,
             },
             &OpenCodeSettings {
                 executable_path: Some(executable),

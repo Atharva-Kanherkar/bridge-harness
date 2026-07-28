@@ -52,13 +52,7 @@ impl PolicyCoordinator {
             child_worktrees_available,
         };
         let outcome = policy::PolicyEngine::default().decide(&input);
-        policy::record_decision(
-            db,
-            parent_session_id,
-            turn_id,
-            &input,
-            &outcome,
-        )?;
+        policy::record_decision(db, parent_session_id, turn_id, &input, &outcome)?;
         Ok(WorkerRouteContext {
             workspace_id,
             parent_depth,
@@ -385,6 +379,8 @@ mod tests {
             write_mode: WriteMode::Isolated,
             capability_tier: CapabilityTier::Standard,
             effort: Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
             verification: vec!["cargo test".into()],
             output_contract: OutputContract::ImplementationResult,
             harness: Some("codex".into()),

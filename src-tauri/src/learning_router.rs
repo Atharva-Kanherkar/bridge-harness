@@ -6,7 +6,9 @@
 //! before a workspace explicitly enables autonomous selection.
 
 use crate::{
-    delegation::{DelegationRequest, Effort, TestStatus, WorkerResult, WorkerResultStatus, WorkerRole},
+    delegation::{
+        DelegationRequest, Effort, TestStatus, WorkerResult, WorkerResultStatus, WorkerRole,
+    },
     model::{AdapterDescriptor, CapabilityTier},
     policy::{self, PolicyConfig, RestorationKind},
     BridgeError,
@@ -234,16 +236,19 @@ fn task_fingerprint(request: &DelegationRequest) -> String {
 
 fn repository_revision(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
     let state = crate::store::repository_state_for_session(db, session_id)?;
-    Ok(state.get("head").and_then(serde_json::Value::as_str).map(|head| {
-        format!(
-            "{}:{}",
-            head,
-            state
-                .get("dirtyHash")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-        )
-    }))
+    Ok(state
+        .get("head")
+        .and_then(serde_json::Value::as_str)
+        .map(|head| {
+            format!(
+                "{}:{}",
+                head,
+                state
+                    .get("dirtyHash")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+            )
+        }))
 }
 
 fn active_policy(
@@ -436,10 +441,8 @@ pub fn evaluate(input: EvaluationInput) -> Vec<CandidateEvaluation> {
             } else {
                 0
             };
-            let expected_cost_score = cost_score
-                + latency_score
-                + quality_score
-                + i64::from(prediction.retry_risk_bps);
+            let expected_cost_score =
+                cost_score + latency_score + quality_score + i64::from(prediction.retry_risk_bps);
             CandidateEvaluation {
                 candidate,
                 exclusions: exclusions.into_iter().collect(),
@@ -604,8 +607,14 @@ pub fn route(
     };
     if let Some(implementer_family) = implementer_family.as_deref() {
         for evaluation in &mut evaluations {
-            if evaluation.candidate.harness.eq_ignore_ascii_case(implementer_family) {
-                evaluation.exclusions.push(CandidateExclusion::SameAsImplementer);
+            if evaluation
+                .candidate
+                .harness
+                .eq_ignore_ascii_case(implementer_family)
+            {
+                evaluation
+                    .exclusions
+                    .push(CandidateExclusion::SameAsImplementer);
                 evaluation.exclusions.sort();
                 evaluation.exclusions.dedup();
             }
@@ -643,18 +652,27 @@ pub fn route(
     };
     let manual_override = request.harness.is_some() || request.model.is_some();
     let independent_verification = implementer_family.is_some();
-    let eligible_manual_baseline = baseline.as_deref().filter(|key| candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible));
-    let executed = if independent_verification && manual_override && eligible_manual_baseline.is_some() {
-        baseline.clone()
-    } else if independent_verification {
-        recommendation.clone()
-    } else if manual_override || profile_locked || preferences.mode != RouterMode::Autonomous {
-        baseline.clone()
-    } else {
-        recommendation.clone()
-    };
-    let explanation = if independent_verification && manual_override && eligible_manual_baseline.is_some() {
-        format!("Manual different-family verifier {} retained", baseline.as_deref().unwrap_or("unknown"))
+    let eligible_manual_baseline = baseline.as_deref().filter(|key| {
+        candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
+    });
+    let executed =
+        if independent_verification && manual_override && eligible_manual_baseline.is_some() {
+            baseline.clone()
+        } else if independent_verification {
+            recommendation.clone()
+        } else if manual_override || profile_locked || preferences.mode != RouterMode::Autonomous {
+            baseline.clone()
+        } else {
+            recommendation.clone()
+        };
+    let explanation = if independent_verification
+        && manual_override
+        && eligible_manual_baseline.is_some()
+    {
+        format!(
+            "Manual different-family verifier {} retained",
+            baseline.as_deref().unwrap_or("unknown")
+        )
     } else if independent_verification {
         recommendation.as_ref().map(|candidate| format!("Independent verification requires a different harness family; selected {candidate}"))
             .unwrap_or_else(|| "No different-family verifier satisfies the deterministic route constraints".into())
@@ -689,7 +707,9 @@ pub fn route(
         task_family: policy::role_name(request.role).into(),
         task_fingerprint: fingerprint,
         repository_revision: repository_revision(db, parent_session_id)?,
-        profile_version: resolved_profile.as_ref().map(|profile| profile.profile_version),
+        profile_version: resolved_profile
+            .as_ref()
+            .map(|profile| profile.profile_version),
         profile_purpose: resolved_profile
             .as_ref()
             .map(|profile| profile.purpose.as_str().to_owned()),
@@ -997,8 +1017,14 @@ pub fn record_worker_outcome(
         | WorkerResultStatus::Blocked
         | WorkerResultStatus::NeedsDelegation => "unknown",
     };
-    let has_failed_test = result.tests.iter().any(|test| test.status == TestStatus::Failed);
-    let has_passed_test = result.tests.iter().any(|test| test.status == TestStatus::Passed);
+    let has_failed_test = result
+        .tests
+        .iter()
+        .any(|test| test.status == TestStatus::Failed);
+    let has_passed_test = result
+        .tests
+        .iter()
+        .any(|test| test.status == TestStatus::Passed);
     let acceptance_state = if has_failed_test || result.status == WorkerResultStatus::Failed {
         "rejected"
     } else if succeeded && has_passed_test {
@@ -1008,7 +1034,10 @@ pub fn record_worker_outcome(
     };
     let confidence_bps = if has_failed_test || has_passed_test {
         9_500
-    } else if matches!(result.status, WorkerResultStatus::Completed | WorkerResultStatus::Failed) {
+    } else if matches!(
+        result.status,
+        WorkerResultStatus::Completed | WorkerResultStatus::Failed
+    ) {
         7_000
     } else {
         4_000
@@ -1256,6 +1285,8 @@ mod tests {
             write_mode: WriteMode::ReadOnly,
             capability_tier: CapabilityTier::Standard,
             effort: Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
             verification: vec!["cargo test".into()],
             output_contract: OutputContract::ImplementationResult,
             harness: None,
@@ -1406,16 +1437,35 @@ mod tests {
         let db = routing_db();
         db.execute(
             "UPDATE routing_policies SET weights=?1 WHERE version=1",
-            params![json!({"preferredCandidates":{"implementation":"claude:claude-standard"}}).to_string()],
-        ).unwrap();
-        save_preferences(&db, "w", &RouterPreferences {
-            excluded_harnesses: vec!["claude".into()],
-            ..RouterPreferences::default()
-        }).unwrap();
+            params![
+                json!({"preferredCandidates":{"implementation":"claude:claude-standard"}})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        save_preferences(
+            &db,
+            "w",
+            &RouterPreferences {
+                excluded_harnesses: vec!["claude".into()],
+                ..RouterPreferences::default()
+            },
+        )
+        .unwrap();
         let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
-        assert_eq!(routed.decision.recommended_candidate.as_deref(), Some("codex:codex-standard"));
-        let claude = routed.decision.candidates.iter().find(|candidate| candidate.candidate.harness == "claude").unwrap();
-        assert!(claude.exclusions.contains(&CandidateExclusion::UserExcludedHarness));
+        assert_eq!(
+            routed.decision.recommended_candidate.as_deref(),
+            Some("codex:codex-standard")
+        );
+        let claude = routed
+            .decision
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate.harness == "claude")
+            .unwrap();
+        assert!(claude
+            .exclusions
+            .contains(&CandidateExclusion::UserExcludedHarness));
     }
 
     #[test]
@@ -1424,7 +1474,10 @@ mod tests {
         let assigned = (0..10_000)
             .filter(|index| canary_bucket(&format!("task-{index}")) < 20)
             .count();
-        assert!((1_800..=2_200).contains(&assigned), "unexpected canary sample {assigned}");
+        assert!(
+            (1_800..=2_200).contains(&assigned),
+            "unexpected canary sample {assigned}"
+        );
     }
 
     #[test]
@@ -1437,14 +1490,27 @@ mod tests {
         verification.role = WorkerRole::Verification;
         let routed = route(&db, "parent", "turn", &verification, &descriptors()).unwrap();
         assert_eq!(routed.request.runtime_harness(), "claude");
-        assert_eq!(routed.decision.executed_candidate.as_deref(), Some("claude:claude-standard"));
-        let codex = routed.decision.candidates.iter().find(|candidate| candidate.candidate.harness == "codex").unwrap();
-        assert!(codex.exclusions.contains(&CandidateExclusion::SameAsImplementer));
+        assert_eq!(
+            routed.decision.executed_candidate.as_deref(),
+            Some("claude:claude-standard")
+        );
+        let codex = routed
+            .decision
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate.harness == "codex")
+            .unwrap();
+        assert!(codex
+            .exclusions
+            .contains(&CandidateExclusion::SameAsImplementer));
         let mut pinned = verification;
         pinned.harness = Some("claude".into());
         pinned.model = Some("claude-standard".into());
         let routed = route(&db, "parent", "turn-2", &pinned, &descriptors()).unwrap();
-        assert_eq!(routed.decision.executed_candidate.as_deref(), Some("claude:claude-standard"));
+        assert_eq!(
+            routed.decision.executed_candidate.as_deref(),
+            Some("claude:claude-standard")
+        );
     }
 
     #[test]
@@ -1538,7 +1604,14 @@ mod tests {
             "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')",
             params![serde_json::to_string(&request()).unwrap()],
         ).unwrap();
-        record_actual_execution(&db, &routed.decision.id, "codex", "codex-standard", Effort::Medium).unwrap();
+        record_actual_execution(
+            &db,
+            &routed.decision.id,
+            "codex",
+            "codex-standard",
+            Effort::Medium,
+        )
+        .unwrap();
         bind_worker(&db, &routed.decision.id, "child").unwrap();
         record_worker_outcome(
             &db,
@@ -1565,7 +1638,18 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
             )
             .unwrap();
-        assert_eq!(outcome, (true, 3_000, 1, Some(12_345), Some(120), "success".into(), "unknown".into()));
+        assert_eq!(
+            outcome,
+            (
+                true,
+                3_000,
+                1,
+                Some(12_345),
+                Some(120),
+                "success".into(),
+                "unknown".into()
+            )
+        );
         let evaluation: (String, i64, String) = db.query_row(
             "SELECT evaluator_kind,confidence_bps,bounded_metrics FROM routing_evaluations WHERE decision_id=?1",
             params![routed.decision.id],
@@ -1574,7 +1658,15 @@ mod tests {
         assert_eq!(evaluation.0, "deterministic");
         assert_eq!(evaluation.1, 7_000);
         assert!(!evaluation.2.contains("done"));
-        assert_eq!(db.query_row("SELECT actual_model FROM router_decisions LIMIT 1", [], |row| row.get::<_, String>(0)).unwrap(), "codex-standard");
+        assert_eq!(
+            db.query_row(
+                "SELECT actual_model FROM router_decisions LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "codex-standard"
+        );
         assert_eq!(
             load_histories(&db, "implementation").unwrap()["codex:codex-standard"].samples,
             1

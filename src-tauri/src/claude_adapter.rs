@@ -43,6 +43,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
             effort: request.effort,
             instructions: request.instructions,
             write_mode: request.write_mode,
+            read_only_sandbox: request.read_only_sandbox,
         },
         Some(request.provider_session_id),
     )
@@ -58,6 +59,7 @@ fn launch(
         effort,
         instructions,
         write_mode,
+        read_only_sandbox,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
     // long-lived streaming query serves every turn on a single session (fixing
@@ -91,14 +93,31 @@ fn launch(
         "plugins": sdk_configuration.plugins,
         "mcpServers": sdk_configuration.mcp_servers,
     });
-    let mut command = Command::new(node);
+    let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
     command
         .arg(&sidecar)
         .arg(config.to_string())
-        .current_dir(cwd)
+        .current_dir(
+            read_only_sandbox
+                .map(|sandbox| sandbox.output_dir())
+                .unwrap_or_else(|| std::path::Path::new(cwd)),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(sandbox) = read_only_sandbox {
+        let config_dir = prepare_isolated_claude_config(sandbox)?;
+        command
+            .env("CLAUDE_CONFIG_DIR", config_dir)
+            .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
+            .env("TMPDIR", sandbox.output_dir())
+            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
+        if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
+            if let Some(token) = claude_oauth_token()? {
+                command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+            }
+        }
+    }
     // Claude Code has no per-run effort flag; the closest real knob is the
     // extended-thinking budget, which we scale by the routed effort tier.
     if let Some(budget) = thinking_budget(effort) {
@@ -106,7 +125,9 @@ fn launch(
     }
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn().map_err(|e| {
-        BridgeError::Invalid(format!("Failed to launch the Claude Agent SDK sidecar via node: {e}"))
+        BridgeError::Invalid(format!(
+            "Failed to launch the Claude Agent SDK sidecar via node: {e}"
+        ))
     })?;
     let stdin = child
         .stdin
@@ -140,6 +161,63 @@ fn launch(
     })
 }
 
+fn prepare_isolated_claude_config(
+    sandbox: &crate::worker_sandbox::ReadOnlySandbox,
+) -> Result<PathBuf, BridgeError> {
+    let isolated_root = sandbox.output_dir().join(".claude");
+    std::fs::create_dir_all(&isolated_root)?;
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(isolated_root);
+    };
+    let source = PathBuf::from(home).join(".claude/.credentials.json");
+    if !source.is_file() {
+        return Ok(isolated_root);
+    }
+    let destination = isolated_root.join(".credentials.json");
+    if destination.exists() {
+        return Ok(isolated_root);
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(source, destination)?;
+    #[cfg(not(unix))]
+    {
+        let _ = (source, destination);
+        return Err(BridgeError::Invalid(
+            "Read-only Claude authentication projection is unsupported on this platform".into(),
+        ));
+    }
+    Ok(isolated_root)
+}
+
+#[cfg(target_os = "macos")]
+fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
+    let output = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let credentials: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        BridgeError::Invalid(format!(
+            "Claude Keychain credentials are invalid JSON: {error}"
+        ))
+    })?;
+    Ok(credentials
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
+    Ok(None)
+}
+
 /// The write-mode label passed to the sidecar, which maps it to SDK permission
 /// options (see `permissionOptions` in sidecar/claude-agent/index.mjs).
 fn write_mode_label(mode: WriteMode) -> &'static str {
@@ -168,9 +246,8 @@ fn sidecar_entry() -> Result<PathBuf, BridgeError> {
             candidates.push(dir.join("../Resources/sidecar/claude-agent/index.mjs"));
         }
     }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sidecar/claude-agent/index.mjs"),
-    );
+    candidates
+        .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sidecar/claude-agent/index.mjs"));
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
@@ -218,7 +295,11 @@ fn read_usage_once(cwd: &str) -> Option<Value> {
     let parsed = parse_json_object(&stdout)?;
     let text = parsed.get("result").and_then(Value::as_str)?;
     let rate_limits = parse_usage_text(text);
-    if rate_limits.as_object().map(|map| map.is_empty()).unwrap_or(true) {
+    if rate_limits
+        .as_object()
+        .map(|map| map.is_empty())
+        .unwrap_or(true)
+    {
         return None;
     }
     Some(json!({ "rateLimits": rate_limits }))
@@ -311,7 +392,9 @@ pub fn supports_native_resume() -> bool {
 
 impl ClaudeRuntime {
     fn terminate(&mut self) {
-        if self.stopped { return; }
+        if self.stopped {
+            return;
+        }
         self.stopped = true;
         let _ = crate::adapters::terminate_process_group(self.child.id());
         let _ = self.child.kill();
@@ -365,7 +448,9 @@ impl ClaudeRuntime {
 }
 
 impl AdapterRuntime for ClaudeRuntime {
-    fn process_id(&self) -> u32 { self.child.id() }
+    fn process_id(&self) -> u32 {
+        self.child.id()
+    }
     fn provider_session_id(&self) -> &str {
         &self.session_id
     }
@@ -387,7 +472,9 @@ impl AdapterRuntime for ClaudeRuntime {
 }
 
 impl Drop for ClaudeRuntime {
-    fn drop(&mut self) { self.terminate(); }
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 pub fn binary_version() -> Option<String> {
@@ -420,8 +507,15 @@ fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), Bri
     writer.flush()?;
     Ok(())
 }
-fn lock_writer<'a, T>(writer: &'a Mutex<T>, provider: &str) -> Result<MutexGuard<'a, T>, BridgeError> {
-    writer.lock().map_err(|_| BridgeError::Adapter(format!("{provider} stdin lock was poisoned; restart the session")))
+fn lock_writer<'a, T>(
+    writer: &'a Mutex<T>,
+    provider: &str,
+) -> Result<MutexGuard<'a, T>, BridgeError> {
+    writer.lock().map_err(|_| {
+        BridgeError::Adapter(format!(
+            "{provider} stdin lock was poisoned; restart the session"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -430,8 +524,14 @@ mod tests {
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());
-        let _ = std::panic::catch_unwind(|| { let _guard = writer.lock().unwrap(); panic!("provider thread failed"); });
-        assert!(matches!(lock_writer(&writer, "Claude"), Err(BridgeError::Adapter(_))));
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = writer.lock().unwrap();
+            panic!("provider thread failed");
+        });
+        assert!(matches!(
+            lock_writer(&writer, "Claude"),
+            Err(BridgeError::Adapter(_))
+        ));
     }
 
     #[test]
@@ -505,6 +605,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -572,6 +673,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CLAUDE_RESUME_5A72. Reply only SAVED.");
@@ -584,6 +686,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
             provider_session_id: &session_id,
         })
         .unwrap();

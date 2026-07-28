@@ -1,7 +1,9 @@
 use crate::{
-    agent, binary, claude_adapter, codex_adapter, opencode_adapter,
+    agent, binary, claude_adapter, codex_adapter,
     delegation::WriteMode,
     model::{AdapterDescriptor, CapabilityTier, ModelOption},
+    opencode_adapter,
+    worker_sandbox::ReadOnlySandbox,
     BridgeError,
 };
 use serde_json::Value;
@@ -65,12 +67,15 @@ fn process_group_is_running(pid: u32) -> bool {
         .args(["-ax", "-o", "pgid=", "-o", "stat="])
         .stderr(Stdio::null())
         .output();
-    let Ok(output) = output else { return false; };
-    output.status.success() && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-        let mut fields = line.split_whitespace();
-        fields.next().and_then(|value| value.parse::<u32>().ok()) == Some(pid)
-            && fields.next().is_some_and(|state| !state.starts_with('Z'))
-    })
+    let Ok(output) = output else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next().and_then(|value| value.parse::<u32>().ok()) == Some(pid)
+                && fields.next().is_some_and(|state| !state.starts_with('Z'))
+        })
 }
 
 #[cfg(unix)]
@@ -87,12 +92,16 @@ pub fn terminate_process_group(pid: u32) -> bool {
     let alive = || process_group_is_running(pid);
     let _ = signal("-TERM");
     for _ in 0..20 {
-        if !alive() { return true; }
+        if !alive() {
+            return true;
+        }
         thread::sleep(Duration::from_millis(25));
     }
     let _ = signal("-KILL");
     for _ in 0..20 {
-        if !alive() { return true; }
+        if !alive() {
+            return true;
+        }
         thread::sleep(Duration::from_millis(25));
     }
     !alive()
@@ -138,6 +147,7 @@ pub struct StartRequest<'a> {
     pub effort: Option<&'a str>,
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
+    pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -148,6 +158,7 @@ pub struct ResumeRequest<'a> {
     pub effort: Option<&'a str>,
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
+    pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
 }
 
 pub struct StartedAdapter {
@@ -328,11 +339,8 @@ impl AdapterRegistry {
         provider_id: &str,
     ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
         let adapter = self.opencode_adapter()?;
-        let catalog = opencode_adapter::remove_provider_auth(
-            &adapter.settings(),
-            directory,
-            provider_id,
-        )?;
+        let catalog =
+            opencode_adapter::remove_provider_auth(&adapter.settings(), directory, provider_id)?;
         adapter.replace_catalog(catalog.clone());
         Ok(catalog)
     }
@@ -465,7 +473,9 @@ impl OpenCodeAdapter {
     }
 
     fn ensure_model_is_selectable(&self, model: Option<&str>) -> Result<(), BridgeError> {
-        let Some(model) = model else { return Ok(()); };
+        let Some(model) = model else {
+            return Ok(());
+        };
         let selectable = self
             .descriptor()
             .models
@@ -492,7 +502,10 @@ impl HarnessAdapter for OpenCodeAdapter {
         let models = catalog
             .as_ref()
             .map(|catalog| {
-                opencode_adapter::model_options(catalog, &self.settings.read().unwrap().visible_models)
+                opencode_adapter::model_options(
+                    catalog,
+                    &self.settings.read().unwrap().visible_models,
+                )
             })
             .unwrap_or_default();
         let default_model = models
@@ -512,8 +525,17 @@ impl HarnessAdapter for OpenCodeAdapter {
             available,
             version: catalog.as_ref().map(|catalog| catalog.version.clone()),
             capabilities: [
-                "messages", "streaming", "reasoning", "plans", "tools", "commands",
-                "file_changes", "approvals", "usage", "history", "interrupt",
+                "messages",
+                "streaming",
+                "reasoning",
+                "plans",
+                "tools",
+                "commands",
+                "file_changes",
+                "approvals",
+                "usage",
+                "history",
+                "interrupt",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -547,8 +569,11 @@ impl HarnessAdapter for OpenCodeAdapter {
         self.catalog.read().unwrap().is_some()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
-        let session_key = value.pointer("/properties/sessionID")
-            .and_then(Value::as_str).unwrap_or("default").to_owned();
+        let session_key = value
+            .pointer("/properties/sessionID")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_owned();
         let mut streams = self.streams.lock().unwrap();
         let state = streams.entry(session_key).or_default();
         agent::normalize_opencode_message_with_state(value, state)

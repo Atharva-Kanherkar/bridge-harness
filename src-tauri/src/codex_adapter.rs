@@ -21,6 +21,7 @@ pub struct CodexRuntime {
     pub thread_id: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
+    sandbox_policy: Option<Value>,
     stopped: bool,
 }
 
@@ -42,6 +43,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             effort: request.effort,
             instructions: request.instructions,
             write_mode: request.write_mode,
+            read_only_sandbox: request.read_only_sandbox,
         },
         Some(request.provider_session_id),
     )
@@ -57,16 +59,35 @@ fn launch(
         effort,
         instructions,
         write_mode,
+        read_only_sandbox,
     } = request;
     let binary = binary::resolve("codex")
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
-    let mut command = Command::new(binary);
+    let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
+    let sandbox_policy = read_only_sandbox.map(|sandbox| {
+        json!({
+            "type": "workspaceWrite",
+            "writableRoots": [sandbox.output_dir().to_string_lossy()],
+            "networkAccess": sandbox.network_allowed(),
+        })
+    });
     command
         .args(["app-server", "--listen", "stdio://"])
-        .current_dir(cwd)
+        .current_dir(
+            read_only_sandbox
+                .map(|sandbox| sandbox.output_dir())
+                .unwrap_or_else(|| std::path::Path::new(cwd)),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(sandbox) = read_only_sandbox {
+        prepare_isolated_codex_home(sandbox)?;
+        command
+            .env("HOME", sandbox.output_dir())
+            .env("TMPDIR", sandbox.output_dir())
+            .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
+    }
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
     let stdin = child
@@ -115,11 +136,43 @@ fn launch(
             thread_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
+            sandbox_policy,
             stopped: false,
         },
         reader,
         startup_messages,
     })
+}
+
+fn prepare_isolated_codex_home(
+    sandbox: &crate::worker_sandbox::ReadOnlySandbox,
+) -> Result<(), BridgeError> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(());
+    };
+    let source_root = std::path::PathBuf::from(home).join(".codex");
+    let isolated_root = sandbox.output_dir().join(".codex");
+    std::fs::create_dir_all(&isolated_root)?;
+    for filename in ["auth.json", "config.toml"] {
+        let source = source_root.join(filename);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = isolated_root.join(filename);
+        if destination.exists() {
+            continue;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &destination)?;
+        #[cfg(not(unix))]
+        {
+            let _ = (source, destination);
+            return Err(BridgeError::Invalid(
+                "Read-only Codex authentication projection is unsupported on this platform".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn sandbox_settings(write_mode: Option<WriteMode>) -> (&'static str, &'static str) {
@@ -222,16 +275,27 @@ fn schema_supports_resume(schema: &str) -> bool {
 
 impl CodexRuntime {
     fn terminate(&mut self) {
-        if self.stopped { return; }
+        if self.stopped {
+            return;
+        }
         self.stopped = true;
         let _ = crate::adapters::terminate_process_group(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(&self, text: &str, application_context: Option<&str>) -> Result<(), BridgeError> {
+    pub fn start_turn(
+        &self,
+        text: &str,
+        application_context: Option<&str>,
+    ) -> Result<(), BridgeError> {
         self.request(
             "turn/start",
-            turn_start_params(&self.thread_id, text, application_context),
+            turn_start_params(
+                &self.thread_id,
+                text,
+                application_context,
+                self.sandbox_policy.as_ref(),
+            ),
         )
     }
     pub fn interrupt(&self) -> Result<(), BridgeError> {
@@ -261,8 +325,14 @@ impl CodexRuntime {
     }
 }
 
-fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&str>) -> Value {
-    let mut params = json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
+fn turn_start_params(
+    thread_id: &str,
+    text: &str,
+    application_context: Option<&str>,
+    sandbox_policy: Option<&Value>,
+) -> Value {
+    let mut params =
+        json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
     if let Some(context) = application_context
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -271,11 +341,16 @@ fn turn_start_params(thread_id: &str, text: &str, application_context: Option<&s
             "bridge.credentials": {"kind": "application", "value": context}
         });
     }
+    if let Some(sandbox_policy) = sandbox_policy {
+        params["sandboxPolicy"] = sandbox_policy.clone();
+    }
     params
 }
 
 impl AdapterRuntime for CodexRuntime {
-    fn process_id(&self) -> u32 { self.child.id() }
+    fn process_id(&self) -> u32 {
+        self.child.id()
+    }
     fn provider_session_id(&self) -> &str {
         &self.thread_id
     }
@@ -310,7 +385,9 @@ impl AdapterRuntime for CodexRuntime {
 }
 
 impl Drop for CodexRuntime {
-    fn drop(&mut self) { self.terminate(); }
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 pub fn binary_version() -> Option<String> {
@@ -325,8 +402,15 @@ fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), Bri
     writer.flush()?;
     Ok(())
 }
-fn lock_writer<'a, T>(writer: &'a Mutex<T>, provider: &str) -> Result<MutexGuard<'a, T>, BridgeError> {
-    writer.lock().map_err(|_| BridgeError::Adapter(format!("{provider} stdin lock was poisoned; restart the session")))
+fn lock_writer<'a, T>(
+    writer: &'a Mutex<T>,
+    provider: &str,
+) -> Result<MutexGuard<'a, T>, BridgeError> {
+    writer.lock().map_err(|_| {
+        BridgeError::Adapter(format!(
+            "{provider} stdin lock was poisoned; restart the session"
+        ))
+    })
 }
 fn wait_for_response(
     reader: &mut BufReader<ChildStdout>,
@@ -355,8 +439,14 @@ mod tests {
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());
-        let _ = std::panic::catch_unwind(|| { let _guard = writer.lock().unwrap(); panic!("provider thread failed"); });
-        assert!(matches!(lock_writer(&writer, "Codex"), Err(BridgeError::Adapter(_))));
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = writer.lock().unwrap();
+            panic!("provider thread failed");
+        });
+        assert!(matches!(
+            lock_writer(&writer, "Codex"),
+            Err(BridgeError::Adapter(_))
+        ));
     }
 
     #[test]
@@ -461,11 +551,9 @@ mod tests {
             "thread-existing",
             "verify [secret:sec_reference]",
             Some("trusted broker capability"),
+            None,
         );
-        assert_eq!(
-            params["input"][0]["text"],
-            "verify [secret:sec_reference]"
-        );
+        assert_eq!(params["input"][0]["text"], "verify [secret:sec_reference]");
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["kind"],
             "application"
@@ -473,6 +561,24 @@ mod tests {
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["value"],
             "trusted broker capability"
+        );
+    }
+
+    #[test]
+    fn read_only_turn_adds_only_the_assigned_output_root() {
+        let policy = json!({
+            "type": "workspaceWrite",
+            "writableRoots": ["/tmp/bridge-output"],
+            "networkAccess": false,
+        });
+        let params = turn_start_params("thread", "verify", None, Some(&policy));
+        assert_eq!(params["sandboxPolicy"], policy);
+        assert_eq!(
+            params["sandboxPolicy"]["writableRoots"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
     }
 
@@ -487,6 +593,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -554,6 +661,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CODEX_RESUME_8F31. Reply only SAVED.");
@@ -566,6 +674,7 @@ mod tests {
             effort: None,
             instructions: None,
             write_mode: None,
+            read_only_sandbox: None,
             provider_session_id: &thread_id,
         })
         .unwrap();
