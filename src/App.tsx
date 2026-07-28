@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -7,9 +8,11 @@ import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Mo
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
+import { WorkerObservabilityPanel } from "./components/WorkerObservabilityPanel";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
+import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
@@ -17,7 +20,7 @@ import { formatElapsed, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
-import { buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
+import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
 import { forestSnapshotKey } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
@@ -76,12 +79,16 @@ export function App() {
   const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
-  const [modal, setModal] = useState<"chat" | "workspace" | "router" | null>(null);
+  const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | null>(null);
+  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
+  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -143,10 +150,6 @@ export function App() {
     };
   }, [reload]);
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setModal(null); };
-    window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, []);
   useEffect(() => { document.documentElement.classList.add("dark"); }, []);
   useEffect(() => {
     const previous = browserSessionRef.current;
@@ -161,11 +164,14 @@ export function App() {
   const session = topSessions.find(s => s.id === selectedSessionId);
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
+  const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
   const isDirectChat = session?.kind === "direct";
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
+  const childWorkers = useMemo(() => session ? state.sessions.filter(s => s.parentSessionId === session.id) : [], [state.sessions, session?.id]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
+  const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
   const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
   const latestContextSource = session?.contextPercent != null ? session.metricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
@@ -188,6 +194,29 @@ export function App() {
   }, [slashQuery, slashCommands, session?.harness]);
   const slashOpen = slashQuery != null && slashMatches.length > 0 && !slashDismissed;
   const slashListRef = useRef<HTMLDivElement>(null);
+  // @file mention: match a token being typed at the end of the composer, at the
+  // start or after whitespace (so email-style name@host fragments are ignored).
+  const mentionQuery = fileMentionQuery(composer);
+  const workspaceFileOptions = useMemo(() => workspaceFiles.map(path => {
+    const lowerPath = path.toLowerCase();
+    return { path, lowerPath, lowerBase: lowerPath.split("/").pop() ?? lowerPath };
+  }), [workspaceFiles]);
+  const fileMatches = useMemo(() => {
+    if (mentionQuery == null) return [];
+    const query = mentionQuery.toLowerCase();
+    return workspaceFileOptions
+      .filter(file => !query || file.lowerPath.includes(query))
+      .sort((a, b) => {
+        const aPrefix = query ? Number(a.lowerBase.startsWith(query) || a.lowerPath.startsWith(query)) : 0;
+        const bPrefix = query ? Number(b.lowerBase.startsWith(query) || b.lowerPath.startsWith(query)) : 0;
+        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
+        return a.path.length - b.path.length || a.path.localeCompare(b.path);
+      })
+      .slice(0, 50)
+      .map(file => file.path);
+  }, [mentionQuery, workspaceFileOptions]);
+  const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
+  const mentionListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const query = composer.trim();
@@ -210,6 +239,30 @@ export function App() {
     const active = root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`);
     active?.scrollIntoView({ block: "nearest" });
   }, [slashOpen, slashIndex]);
+
+  // Load the connected workspace's file list for @mention autocomplete.
+  useEffect(() => {
+    if (!session?.id || !hasRepo) { setWorkspaceFiles([]); return; }
+    setWorkspaceFiles([]);
+    let active = true;
+    void bridgeApi.listWorkspaceFiles(session.id)
+      .then(files => { if (active) setWorkspaceFiles(files); })
+      .catch(() => { if (active) setWorkspaceFiles([]); });
+    return () => { active = false; };
+  }, [session?.id, hasRepo]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    setMentionIndex(index => Math.min(index, Math.max(0, fileMatches.length - 1)));
+  }, [mentionOpen, fileMatches.length]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    const root = mentionListRef.current;
+    if (!root) return;
+    const active = root.querySelector<HTMLElement>(`[data-mention-index="${mentionIndex}"]`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [mentionOpen, mentionIndex]);
 
   useEffect(() => {
     forestKeyRef.current = "";
@@ -298,23 +351,32 @@ export function App() {
     pendingWelcomeMessageRef.current = null;
     void sendPrompt(draft);
   }, [session?.id]);
-  // Workspace "+": start a classic orchestrator session tied to the workspace.
-  async function newWorkspaceSession(workspaceId: string) {
+  // Workspace "+": ask whether this orchestrator should get an isolated worktree.
+  function requestWorkspaceSession(workspaceId: string) {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode before starting an orchestrator."); return; }
+    setPendingWorkspaceId(workspaceId);
+    setModal("orchestrator");
+  }
+  async function newWorkspaceSession(createWorktree: boolean) {
+    if (!pendingWorkspaceId) return;
+    const workspaceId = pendingWorkspaceId;
     setBusy(true); setError(undefined);
     try {
-      const next = await bridgeApi.createWorkspaceSession(workspaceId);
+      const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
       const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
       setState(next);
       setExpanded(current => new Set(current).add(workspaceId));
       if (created) setSelectedSessionId(created.id);
+      setModal(null); setPendingWorkspaceId(undefined);
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
   async function changeChatModel(harness: Harness, model: string | null) {
     if (!session) return;
+    setBusy(true); setError(undefined);
     try { setState(await bridgeApi.updateChatModel(session.id, harness, model)); }
     catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
   }
   async function submitNewWorkspace() {
     const name = title.trim(); if (!name) return;
@@ -403,7 +465,21 @@ export function App() {
     setSlashIndex(0);
     setSlashDismissed(true);
   }
+  // Replace the @token being typed at the end of the composer with the picked
+  // path, preserving any leading whitespace the mention started after.
+  function applyFileMention(path: string) {
+    setComposer(current => insertFileMention(current, path));
+    setMentionIndex(0);
+    setMentionDismissed(true);
+  }
   function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.nativeEvent.isComposing) return;
+    if (mentionOpen) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setMentionIndex(index => Math.min(index + 1, fileMatches.length - 1)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
+      if (e.key === "Escape") { e.preventDefault(); setMentionDismissed(true); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyFileMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
+    }
     if (slashOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
@@ -422,7 +498,7 @@ export function App() {
     <SpaceBackground paused={turnActive} />
 
     <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
-      <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
+      <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>
 
     <BridgeSidebar
@@ -440,7 +516,7 @@ export function App() {
       onOpenSession={openSession}
       onToggleWorkspace={toggleExpanded}
       onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
-      onNewWorkspaceSession={workspaceId => void newWorkspaceSession(workspaceId)}
+      onNewWorkspaceSession={requestWorkspaceSession}
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
@@ -450,8 +526,10 @@ export function App() {
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
             {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-neutral-500 font-mono text-[10px]">
-              <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}
-              {hasRepo && workspace && <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>}
+              <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}<span>·</span>{harnessLabel(session.harness)}<span>·</span>{modelDisplayName(adapters, session.harness, session.model)}
+              {hasRepo && workspace && (usesIsolatedWorktree
+                ? <><span>·</span><GitBranch size={12} aria-hidden="true" />isolated worktree</>
+                : <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>)}
             </div>}
           </div>
           <div className="ml-auto flex items-center gap-[7px]">
@@ -472,6 +550,7 @@ export function App() {
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
+              {childWorkers.length > 0 && <WorkerObservabilityPanel workers={childWorkers} runtimes={forest?.workerRuntimes ?? []} reasons={forest?.reasons ?? []} />}
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
@@ -498,7 +577,19 @@ export function App() {
                   </div>
                 </div>}
                 <div className="relative mx-auto max-w-2xl">
-                  {!slashOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                  {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                  {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
+                      <span>Reference a file</span>
+                      <span className="normal-case tracking-normal text-neutral-700">{fileMatches.length}</span>
+                    </div>
+                    <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
+                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/30 ${index === mentionIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
+                        <FileText size={13} className="shrink-0 text-neutral-500" aria-hidden="true" />
+                        <span className="flex-1 min-w-0 text-[12px] whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-neutral-500">{dir}</span><span className="text-neutral-100">{base}</span></span>
+                      </button>; })}
+                    </div>
+                  </div>}
                   {slashOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
                       <span>Commands & skills</span>
@@ -515,17 +606,21 @@ export function App() {
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); }}
+                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
+                    autocomplete={mentionOpen ? {
+                      controls: "file-mention-listbox",
+                      activeDescendant: `file-mention-option-${mentionIndex}`,
+                    } : undefined}
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
                     onPlusClick={() => { setComposer(""); setSlashDismissed(false); }}
-                    trailing={isDirectChat
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy} onChange={(harness, model) => void changeChatModel(harness, model)} compact />
-                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}</span>}
+                    trailing={session.kind === "direct" || session.kind === "orchestrator"
+                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
+                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                   />
                 </div>
               </div>
@@ -568,6 +663,15 @@ export function App() {
       onClose={() => setModal(null)}
       onSubmit={() => void submitNewWorkspace()}
     />
+    <OrchestratorCreateDialog
+      open={modal === "orchestrator"}
+      workspaceTitle={state.workspaces.find(item => item.id === pendingWorkspaceId)?.title ?? "workspace"}
+      canCreateWorktree={!!state.workspaces.find(item => item.id === pendingWorkspaceId)?.projectId}
+      busy={busy}
+      onCreateWorktree={() => void newWorkspaceSession(true)}
+      onUseCurrentFolder={() => void newWorkspaceSession(false)}
+      onClose={() => void newWorkspaceSession(false)}
+    />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
   </div>;
 }
@@ -577,22 +681,30 @@ function PanelLoading({ label }: { label: string }) {
 }
 
 
-function ChatModelControl({ adapters, harness, model, disabled, onChange, compact }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; onChange: (harness: Harness, model: string | null) => void; compact?: boolean }) {
+function modelDisplayName(adapters: import("./types").AdapterDescriptor[], harness: Harness, model?: string | null): string {
+  const adapter = adapters.find(item => item.id === harness);
+  return adapter?.models.find(option => option.id === model)?.label ?? model ?? "Automatic";
+}
+
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat" }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; disabledReason?: string; onChange: (harness: Harness, model: string | null) => void; compact?: boolean; roleLabel?: string }) {
   const [open, setOpen] = useState(false);
   const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
   const modelLabel = currentModel?.label ?? model ?? "Default";
-  const tierLabel = currentModel?.tier === "strong" ? "High" : currentModel?.tier === "standard" ? "Balanced" : "Fast";
-  const compactLabel = compact ? tierLabel : `${harnessLabel(harness)} · ${modelLabel}`;
+  const compactLabel = `${harnessLabel(harness)} · ${modelLabel}`;
   return <div className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-neutral-400 hover:bg-white/[0.08]" : "h-[28px] max-w-[220px] px-2 text-[11.5px] text-neutral-300 hover:bg-white/[0.06]"}`} title={disabled ? "End the chat to switch models" : "Choose model"}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex max-w-[220px] items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-neutral-400 hover:bg-white/[0.08]" : "h-[28px] px-2 text-[11.5px] text-neutral-300 hover:bg-white/[0.06]"}`} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : `Choose ${roleLabel.toLowerCase()} model`} aria-label={`${roleLabel} model: ${harnessLabel(harness)} ${modelLabel}`}>
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
       <ChevronDown size={compact ? 14 : 12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
       <div className="u-glass-popover absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl max-h-[340px] overflow-y-auto">
+        <div className="border-b border-border/60 px-3 pb-2 pt-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/65">{roleLabel} runtime</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground/55">Switching starts a fresh provider session. The chat stays visible, but provider reasoning state resets.</p>
+        </div>
         {chatAdapters.map((adapter, index) => <div key={adapter.id} className={index > 0 ? "mt-1 pt-1 border-t border-border/60" : ""}>
           <div className="px-3 py-1.5 text-[9px] font-semibold tracking-[0.12em] uppercase text-muted-foreground/50 flex items-center gap-2">
             <span>{adapter.label}</span>

@@ -16,6 +16,7 @@ export type ComposerPillProps = {
   trailing?: ReactNode;
   className?: string;
   layout?: "hero" | "dock";
+  autocomplete?: { controls: string; activeDescendant?: string };
 };
 
 export function ComposerPill({
@@ -31,6 +32,7 @@ export function ComposerPill({
   trailing,
   className,
   layout = "dock",
+  autocomplete,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isHero = layout === "hero";
@@ -65,6 +67,11 @@ export function ComposerPill({
           rows={1}
           placeholder={placeholder}
           disabled={disabled || working}
+          role={autocomplete ? "combobox" : undefined}
+          aria-autocomplete={autocomplete ? "list" : undefined}
+          aria-expanded={autocomplete ? true : undefined}
+          aria-controls={autocomplete?.controls}
+          aria-activedescendant={autocomplete?.activeDescendant}
           onChange={event => onChange(event.target.value)}
           onKeyDown={event => {
             onKeyDown?.(event);

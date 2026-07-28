@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "./types";
 import type { Session, UsageLedgerRow } from "./types";
-import { buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, projectUsageExhaustion, windowLabel } from "./usage";
+import { buildCacheDiagnostics, buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, MAX_CACHE_DIAGNOSTIC_ROWS, projectUsageExhaustion, windowLabel } from "./usage";
 
 function event(kind: string, data: Record<string, unknown>, sequence = 1): AgentEvent {
   return { id: sequence, sessionId: "s1", sequence, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data, providerMeta: {}, createdAt: new Date().toISOString() };
+}
+
+function ledger(overrides: Partial<UsageLedgerRow> = {}): UsageLedgerRow {
+  return {
+    id: 1, workspaceId: "w", sessionId: "s1", turnId: "turn-1", inputTokens: 0, outputTokens: 0,
+    cacheReadTokens: 0, cacheWriteTokens: 0, uncachedInputTokens: 0, contextPercent: null,
+    capabilityUnits: 0, runtimeMs: 1, costMicrousd: null, costSource: null,
+    stablePrefixId: "prefix-1", stablePrefixHash: "hash-1", promptSchemaVersion: 1,
+    prefixTokenEstimate: 100, harness: "codex", model: "gpt-5", role: "worker:implementation",
+    taskFamily: "implementation", restorationMode: "fresh", crossHarnessReuse: "same_harness",
+    source: "provider.codex", createdAt: "2026-07-16T10:00:00Z", ...overrides,
+  };
 }
 
 describe("extractUsageSnapshot", () => {
@@ -142,13 +154,60 @@ describe("projectUsageExhaustion", () => {
 describe("buildUsageHistory", () => {
   it("ties newest-first records to work units, harnesses, models, outcomes, and sources", () => {
     const session: Session = { id: "s1", workspaceId: "w", harness: "codex", label: "Worker", status: "completed", startedAt: null, endedAt: null, contextPercent: 72, usagePercent: null, metricSource: "reported", model: "gpt-5", restorationMode: "fresh" };
-    const row = (id: number, source: string, createdAt: string): UsageLedgerRow => ({ id, workspaceId: "w", sessionId: "s1", turnId: `turn-${id}`, inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null, contextPercent: 72, capabilityUnits: 0, runtimeMs: 1, costMicrousd: null, costSource: null, source, createdAt });
+    const row = (id: number, source: string, createdAt: string): UsageLedgerRow => ({ id, workspaceId: "w", sessionId: "s1", turnId: `turn-${id}`, inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null, uncachedInputTokens: 10, contextPercent: 72, capabilityUnits: 0, runtimeMs: 1, costMicrousd: null, costSource: null, stablePrefixId: null, stablePrefixHash: null, promptSchemaVersion: null, prefixTokenEstimate: null, harness: null, model: null, role: null, taskFamily: null, restorationMode: null, crossHarnessReuse: null, source, createdAt });
     const history = buildUsageHistory([
       row(1, "provider.codex", "2026-07-16T10:00:00Z"),
       row(2, "policy.spawn.strong", "2026-07-16T11:00:00Z"),
     ], [session]);
     expect(history[0]).toMatchObject({ workUnit: "turn-2", harness: "codex", model: "gpt-5", outcome: "completed", source: "measured", totalTokens: 15 });
     expect(history[1].source).toBe("reported");
+  });
+});
+
+describe("buildCacheDiagnostics", () => {
+  it("groups cache tokens by prompt and routing dimensions with truthful ratios", () => {
+    const diagnostics = buildCacheDiagnostics([
+      ledger({ id: 1, cacheReadTokens: 80, cacheWriteTokens: 20, uncachedInputTokens: 100, costMicrousd: 1_000, costSource: "provider_reported" }),
+      ledger({ id: 2, cacheReadTokens: 40, cacheWriteTokens: 0, uncachedInputTokens: 60, costMicrousd: null, costSource: null }),
+      ledger({ id: 3, restorationMode: "native", cacheReadTokens: 10, cacheWriteTokens: 0, uncachedInputTokens: 10 }),
+      ledger({ id: 4, source: "policy.spawn.standard", cacheReadTokens: 999 }),
+    ]);
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics[0]).toMatchObject({
+      harness: "codex", model: "gpt-5", role: "worker:implementation", taskFamily: "implementation",
+      restorationMode: "fresh", stablePrefixId: "prefix-1", promptSchemaVersion: 1,
+      cacheReadTokens: 120, cacheWriteTokens: 20, uncachedInputTokens: 160,
+      observations: 2, writeAmortization: 6, costCoverage: "partial", reportedCostMicrousd: 1_000,
+      costSources: ["provider_reported"], crossHarnessReuse: ["same_harness"],
+    });
+    expect(diagnostics[0].cacheHitRatio).toBeCloseTo(0.4);
+    expect(diagnostics[1].restorationMode).toBe("native");
+  });
+
+  it("keeps cost unknown and never invents savings without provider pricing", () => {
+    const [diagnostic] = buildCacheDiagnostics([ledger({ costMicrousd: null, costSource: null })]);
+    expect(diagnostic.costCoverage).toBe("unknown");
+    expect(diagnostic.reportedCostMicrousd).toBeUndefined();
+    expect("estimatedSavingsMicrousd" in diagnostic).toBe(false);
+  });
+
+  it("leaves ratios undefined for missing metrics and zero denominators", () => {
+    const [missing] = buildCacheDiagnostics([ledger({ cacheReadTokens: null, cacheWriteTokens: null, uncachedInputTokens: null })]);
+    const [zero] = buildCacheDiagnostics([ledger({ cacheReadTokens: 0, cacheWriteTokens: 0, uncachedInputTokens: 0 })]);
+    expect(missing.cacheHitRatio).toBeUndefined();
+    expect(missing.writeAmortization).toBeUndefined();
+    expect(zero.cacheHitRatio).toBeUndefined();
+    expect(zero.writeAmortization).toBeUndefined();
+  });
+
+  it("bounds aggregation to the most recent provider rows", () => {
+    const rows = Array.from({ length: MAX_CACHE_DIAGNOSTIC_ROWS + 1 }, (_, index) => ledger({
+      id: index + 1,
+      cacheReadTokens: index === 0 ? 10_000 : 1,
+    }));
+    const [diagnostic] = buildCacheDiagnostics(rows);
+    expect(diagnostic.observations).toBe(MAX_CACHE_DIAGNOSTIC_ROWS);
+    expect(diagnostic.cacheReadTokens).toBe(MAX_CACHE_DIAGNOSTIC_ROWS);
   });
 });
 
