@@ -59,8 +59,12 @@ export interface QueuedWorkerRequest {
 export interface UsageLedgerRow {
   id: number; workspaceId: string; sessionId: string | null; turnId: string | null;
   inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null;
-  cacheWriteTokens: number | null; contextPercent: number | null; capabilityUnits: number;
-  runtimeMs: number | null; costMicrousd: number | null; costSource: string | null; source: string; createdAt: string;
+  cacheWriteTokens: number | null; uncachedInputTokens: number | null; contextPercent: number | null; capabilityUnits: number;
+  runtimeMs: number | null; costMicrousd: number | null; costSource: string | null;
+  stablePrefixId: string | null; stablePrefixHash: string | null; promptSchemaVersion: number | null;
+  prefixTokenEstimate: number | null; harness: string | null; model: string | null; role: string | null;
+  taskFamily: string | null; restorationMode: string | null; crossHarnessReuse: string | null;
+  source: string; createdAt: string;
 }
 export interface PolicyLimits {
   maxWorkersPerTurn: number; maxStrongWorkersPerTurn: number; maxCapabilityUnitsPerTurn: number;

@@ -671,9 +671,25 @@ pub struct WorkerEvidence {
     pub result: WorkerResult,
 }
 
-pub fn worker_briefing(
+pub fn worker_contract(role: WorkerRole, depth: i64) -> String {
+    format!(
+        r#"You are a Bridge {role:?} worker assigned one focused objective.
+
+Complete only the supplied objective. Do not directly delegate. If blocked on another specialist, return `needs_delegation` to the parent.
+
+End with exactly one fenced `bridge-worker-result` JSON object matching schemaVersion 1:
+
+```bridge-worker-result
+{{"schemaVersion":1,"status":"completed","summary":"What changed or was found","filesChanged":[],"tests":[{{"command":"command run","status":"passed"}}],"decisions":[],"risks":[],"remainingWork":[],"suggestedNextAction":"finish"}}
+```
+
+{}"#,
+        protocol(depth)
+    )
+}
+
+pub fn worker_task_context(
     request: &DelegationRequest,
-    depth: i64,
     branch: &str,
     evidence: &[WorkerEvidence],
 ) -> String {
@@ -701,7 +717,7 @@ pub fn worker_briefing(
             .join("\n")
     };
     format!(
-        r#"You are a Bridge {role:?} worker assigned one focused objective on branch `{branch}`.
+        r#"Branch: `{branch}`.
 
 ## Objective
 {objective}
@@ -727,23 +743,24 @@ pub fn worker_briefing(
 Write mode: {write_mode:?}. Capability tier: {tier:?}. Effort: {effort}.
 
 ## Verification
-{verification}
-
-Complete only this objective. Do not directly delegate. If blocked on another specialist, return `needs_delegation` to the parent.
-
-End with exactly one fenced `bridge-worker-result` JSON object matching schemaVersion 1:
-
-```bridge-worker-result
-{{"schemaVersion":1,"status":"completed","summary":"What changed or was found","filesChanged":[],"tests":[{{"command":"command run","status":"passed"}}],"decisions":[],"risks":[],"remainingWork":[],"suggestedNextAction":"finish"}}
-```
-
-{protocol}"#,
-        role = request.role,
+{verification}"#,
         objective = request.objective,
         write_mode = request.write_mode,
         tier = request.capability_tier,
         effort = request.effort.as_str(),
-        protocol = protocol(depth),
+    )
+}
+
+pub fn worker_briefing(
+    request: &DelegationRequest,
+    depth: i64,
+    branch: &str,
+    evidence: &[WorkerEvidence],
+) -> String {
+    format!(
+        "{}\n\n{}",
+        worker_contract(request.role, depth),
+        worker_task_context(request, branch, evidence)
     )
 }
 

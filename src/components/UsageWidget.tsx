@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Gauge, X } from "lucide-react";
-import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
+import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
@@ -12,6 +12,7 @@ export interface UsageWidgetProps {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
   samples?: Partial<Record<UsageProvider, UsageRateSample[]>>;
   history?: UsageHistoryEntry[];
+  cacheDiagnostics?: CacheDiagnostic[];
   contextPercent?: number;
   contextSource?: MetricSource;
 }
@@ -46,7 +47,7 @@ function UsageBar({ used }: { used: number }) {
   </span>;
 }
 
-export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, history = [], contextPercent, contextSource = "measured" }: UsageWidgetProps) {
+export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured" }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -115,6 +116,17 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
           <p className="mt-1.5 text-[10px] leading-relaxed text-neutral-500">{pressure.explanation}</p>
         </section>
 
+        <section className="mt-4" aria-label="Prompt cache diagnostics">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-neutral-500">Prompt cache</h3>
+            <span className="text-[9px] text-neutral-600">Provider-reported tokens</span>
+          </div>
+          {cacheDiagnostics.length ? <>
+            <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div>
+            {cacheDiagnostics.length > 6 && <p className="mt-2 text-[9px] text-neutral-600">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
+          </> : <p className="rounded-xl border border-dashed border-white/[0.08] px-3 py-4 text-center text-[10px] text-neutral-600">No prompt-cache telemetry reported yet.</p>}
+        </section>
+
         <section className="mt-4" aria-label="Usage history">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-neutral-500">Recent work units</h3>
@@ -126,6 +138,41 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
     </div>
   </div>;
 });
+
+function CacheRow({ diagnostic }: { diagnostic: CacheDiagnostic }) {
+  const hit = diagnostic.cacheHitRatio == null ? "unknown" : `${Math.round(diagnostic.cacheHitRatio * 100)}%`;
+  const amortization = diagnostic.writeAmortization == null ? "n/a" : `${diagnostic.writeAmortization.toFixed(1)}×`;
+  const cost = diagnostic.reportedCostMicrousd == null
+    ? "Cost unknown — provider did not report it"
+    : `$${(diagnostic.reportedCostMicrousd / 1_000_000).toFixed(4)} ${diagnostic.costCoverage}`;
+  return <div className="rounded-xl border border-white/[0.06] px-3 py-2">
+    <div className="flex min-w-0 items-center gap-2">
+      <b className="text-[10px] text-neutral-300">{diagnostic.harness}</b>
+      <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-neutral-500">{diagnostic.model}</span>
+      <span className="font-mono text-[9px] text-neutral-300">Hit {hit}</span>
+    </div>
+    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-neutral-600">
+      <span>{diagnostic.cacheReadTokens.toLocaleString()} read</span>
+      <span>{diagnostic.cacheWriteTokens.toLocaleString()} write</span>
+      <span>{diagnostic.uncachedInputTokens.toLocaleString()} uncached</span>
+      <span>write amortization {amortization}</span>
+    </div>
+    <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[8.5px] text-neutral-600">
+      <span>Role: {humanizeMetric(diagnostic.role)}</span>
+      <span>Task: {humanizeMetric(diagnostic.taskFamily)}</span>
+      <span>Restore: {humanizeMetric(diagnostic.restorationMode)}</span>
+      {diagnostic.crossHarnessReuse.map(marker => <span key={marker}>Reuse: {humanizeMetric(marker)}</span>)}
+      {diagnostic.stablePrefixId && <span className="max-w-full truncate font-mono" title={`${diagnostic.stablePrefixId} · ${diagnostic.stablePrefixHash ?? "hash unknown"}`}>{diagnostic.stablePrefixId}</span>}
+      {diagnostic.promptSchemaVersion != null && <span>schema v{diagnostic.promptSchemaVersion}</span>}
+    </div>
+    <div className="mt-1 text-[8.5px] text-neutral-600">{cost}</div>
+  </div>;
+}
+
+function humanizeMetric(value: string): string {
+  const words = value.replaceAll("_", " ").replaceAll(":", " · ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 function ProviderDetail({ provider, snapshot, samples }: { provider: { id: UsageProvider; label: string }; snapshot?: UsageSnapshot; samples: UsageRateSample[] }) {
   const used = highestUse(snapshot);

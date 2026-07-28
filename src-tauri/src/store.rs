@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 17;
+const LATEST_SCHEMA_VERSION: i64 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -238,6 +238,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             15 => migration_15_role_profiles_and_learning_jobs(&transaction)?,
             16 => migration_16_complete_role_profile_schema(&transaction)?,
             17 => migration_17_configuration_entries(&transaction)?,
+            18 => migration_18_prompt_cache_telemetry(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -264,6 +265,49 @@ fn migration_17_configuration_entries(transaction: &Transaction<'_>) -> Result<(
             PRIMARY KEY(kind,id)
         );
         CREATE INDEX idx_configuration_entries_kind ON configuration_entries(kind,updated_at);",
+    )?;
+    Ok(())
+}
+
+fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "usage_ledger", "uncached_input_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "stable_prefix_id", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "stable_prefix_hash", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "prompt_schema_version", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "prefix_token_estimate", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "harness", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "model", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "role", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "task_family", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "restoration_mode", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "cross_harness_reuse", "TEXT")?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS prompt_compilations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            turn_id TEXT,
+            prefix_id TEXT NOT NULL,
+            prefix_hash TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            prefix_bytes INTEGER NOT NULL,
+            prefix_token_estimate INTEGER NOT NULL,
+            harness TEXT NOT NULL,
+            model TEXT,
+            role TEXT NOT NULL,
+            task_family TEXT NOT NULL,
+            restoration_mode TEXT NOT NULL,
+            cross_harness_reuse TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prompt_compilations_session
+            ON prompt_compilations(session_id,id DESC);
+        CREATE INDEX IF NOT EXISTS idx_prompt_compilations_prefix
+            ON prompt_compilations(harness,prefix_hash,id DESC);"
+    )?;
+    add_column_if_missing(transaction, "prompt_compilations", "turn_id", "TEXT")?;
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_compilations_turn
+            ON prompt_compilations(session_id,turn_id,id DESC);"
     )?;
     Ok(())
 }
@@ -1664,8 +1708,8 @@ pub fn update_worker_queue(
 
 pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,source,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
         params![
             usage.workspace_id,
             usage.session_id,
@@ -1674,11 +1718,22 @@ pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i6
             usage.output_tokens,
             usage.cache_read_tokens,
             usage.cache_write_tokens,
+            usage.uncached_input_tokens,
             usage.context_percent,
             usage.capability_units,
             usage.runtime_ms,
             usage.cost_microusd,
             usage.cost_source,
+            usage.stable_prefix_id,
+            usage.stable_prefix_hash,
+            usage.prompt_schema_version,
+            usage.prefix_token_estimate,
+            usage.harness,
+            usage.model,
+            usage.role,
+            usage.task_family,
+            usage.restoration_mode,
+            usage.cross_harness_reuse,
             usage.source,
             usage.created_at,
         ],
@@ -1691,7 +1746,7 @@ pub fn usage_ledger(
     workspace_id: &str,
     session_id: Option<&str>,
 ) -> Result<Vec<UsageLedgerRow>, BridgeError> {
-    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,source,created_at
+    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at
                FROM usage_ledger WHERE workspace_id=?1 AND (?2 IS NULL OR session_id=?2) ORDER BY id";
     query_with_params(db, sql, params![workspace_id, session_id], |row| {
         Ok(UsageLedgerRow {
@@ -1703,15 +1758,70 @@ pub fn usage_ledger(
             output_tokens: row.get(5)?,
             cache_read_tokens: row.get(6)?,
             cache_write_tokens: row.get(7)?,
-            context_percent: row.get(8)?,
-            capability_units: row.get(9)?,
-            runtime_ms: row.get(10)?,
-            cost_microusd: row.get(11)?,
-            cost_source: row.get(12)?,
-            source: row.get(13)?,
-            created_at: row.get(14)?,
+            uncached_input_tokens: row.get(8)?,
+            context_percent: row.get(9)?,
+            capability_units: row.get(10)?,
+            runtime_ms: row.get(11)?,
+            cost_microusd: row.get(12)?,
+            cost_source: row.get(13)?,
+            stable_prefix_id: row.get(14)?,
+            stable_prefix_hash: row.get(15)?,
+            prompt_schema_version: row.get(16)?,
+            prefix_token_estimate: row.get(17)?,
+            harness: row.get(18)?,
+            model: row.get(19)?,
+            role: row.get(20)?,
+            task_family: row.get(21)?,
+            restoration_mode: row.get(22)?,
+            cross_harness_reuse: row.get(23)?,
+            source: row.get(24)?,
+            created_at: row.get(25)?,
         })
     })
+}
+
+pub fn record_prompt_compilation(
+    db: &Connection,
+    record: &PromptCompilationRecord,
+) -> Result<i64, BridgeError> {
+    db.execute(
+        "INSERT INTO prompt_compilations(session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![record.session_id,record.turn_id,record.prefix_id,record.prefix_hash,record.schema_version,record.prefix_bytes,record.prefix_token_estimate,record.harness,record.model,record.role,record.task_family,record.restoration_mode,record.cross_harness_reuse,record.created_at],
+    )?;
+    Ok(db.last_insert_rowid())
+}
+
+pub fn latest_prompt_compilation(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<PromptCompilationRecord>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
+         FROM prompt_compilations WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+        params![session_id],
+        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)? }),
+    ).optional()?)
+}
+
+pub fn bind_latest_prompt_compilation_to_turn(db: &Connection, session_id: &str, turn_id: &str) -> Result<bool, BridgeError> {
+    Ok(db.execute(
+        "UPDATE prompt_compilations SET turn_id=?2 WHERE id=(SELECT id FROM prompt_compilations WHERE session_id=?1 AND turn_id IS NULL ORDER BY id DESC LIMIT 1)",
+        params![session_id, turn_id],
+    )? == 1)
+}
+
+pub fn prompt_compilation_for_turn(db: &Connection, session_id: &str, turn_id: &str) -> Result<Option<PromptCompilationRecord>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
+         FROM prompt_compilations WHERE session_id=?1 AND turn_id=?2 ORDER BY id DESC LIMIT 1",
+        params![session_id, turn_id],
+        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)? }),
+    ).optional()?)
+}
+
+pub fn delete_prompt_compilation(db: &Connection, id: i64) -> Result<bool, BridgeError> {
+    Ok(db.execute("DELETE FROM prompt_compilations WHERE id=?1", params![id])? == 1)
 }
 
 fn query_with_params<T, P, F>(
@@ -2050,7 +2160,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         for table in [
             "model_profiles",
@@ -2061,6 +2171,7 @@ mod tests {
             "learning_job_runs",
             "learning_trigger_events",
             "routing_policy_promotions",
+            "prompt_compilations",
         ] {
             assert!(db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -2070,6 +2181,8 @@ mod tests {
         }
         for (table, column) in [
             ("usage_ledger", "cost_microusd"),
+            ("usage_ledger", "uncached_input_tokens"),
+            ("usage_ledger", "stable_prefix_hash"),
             ("model_profiles", "profile_id"),
             ("router_decisions", "policy_version"),
             ("router_decisions", "trace_id"),
@@ -2115,9 +2228,42 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
+    }
+
+    #[test]
+    fn upgraded_and_current_databases_have_identical_cache_telemetry_columns() {
+        fn columns(db: &Connection, table: &str) -> Vec<String> {
+            let mut values = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            values.sort();
+            values
+        }
+
+        let current = open(Path::new(":memory:")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = dir.path().join("legacy.db");
+        create_legacy_fixture(&legacy_path);
+        let upgraded = open(&legacy_path).unwrap();
+        assert_eq!(columns(&current, "usage_ledger"), columns(&upgraded, "usage_ledger"));
+        assert_eq!(columns(&current, "prompt_compilations"), columns(&upgraded, "prompt_compilations"));
+        for required in [
+            "uncached_input_tokens",
+            "stable_prefix_id",
+            "stable_prefix_hash",
+            "prompt_schema_version",
+            "prefix_token_estimate",
+            "cross_harness_reuse",
+        ] {
+            assert!(columns(&upgraded, "usage_ledger").iter().any(|column| column == required));
+        }
     }
 
     #[test]
@@ -2130,13 +2276,13 @@ mod tests {
              ALTER TABLE model_profiles DROP COLUMN profile_id;
              ALTER TABLE learning_jobs DROP COLUMN last_evidence_boundary;
              DROP TABLE configuration_entries;
-             DELETE FROM schema_version WHERE version IN (16,17);",
+             DELETE FROM schema_version WHERE version IN (16,17,18);",
         )
         .unwrap();
         drop(db);
 
         let db = open(&path).unwrap();
-        assert_eq!(current_schema_version(&db).unwrap(), 17);
+        assert_eq!(current_schema_version(&db).unwrap(), 18);
         for (table, column) in [
             ("model_profiles", "profile_id"),
             ("learning_jobs", "last_evidence_boundary"),
@@ -2445,6 +2591,38 @@ mod tests {
         upsert_worker_lease(&db, &lease).unwrap();
         assert_eq!(worker_leases(&db, "w").unwrap(), vec![lease]);
 
+        let compilation = PromptCompilationRecord {
+            id: 0,
+            session_id: "s".into(),
+            turn_id: None,
+            prefix_id: "prefix-1".into(),
+            prefix_hash: "hash-1".into(),
+            schema_version: 1,
+            prefix_bytes: 400,
+            prefix_token_estimate: 100,
+            harness: "codex".into(),
+            model: Some("gpt".into()),
+            role: "worker:implementation".into(),
+            task_family: "implementation".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+        };
+        let compilation_id = record_prompt_compilation(&db, &compilation).unwrap();
+        let stored_compilation = latest_prompt_compilation(&db, "s").unwrap().unwrap();
+        assert_eq!(stored_compilation.id, compilation_id);
+        assert_eq!(stored_compilation.prefix_hash, "hash-1");
+        assert_eq!(stored_compilation.prefix_token_estimate, 100);
+        assert!(bind_latest_prompt_compilation_to_turn(&db, "s", "turn-1").unwrap());
+        assert_eq!(prompt_compilation_for_turn(&db, "s", "turn-1").unwrap().unwrap().id, compilation_id);
+        let mut replacement = compilation.clone();
+        replacement.prefix_id = "prefix-unsent".into();
+        replacement.prefix_hash = "hash-unsent".into();
+        let replacement_id = record_prompt_compilation(&db, &replacement).unwrap();
+        assert!(delete_prompt_compilation(&db, replacement_id).unwrap());
+        assert!(!delete_prompt_compilation(&db, replacement_id).unwrap());
+        assert_eq!(latest_prompt_compilation(&db, "s").unwrap().unwrap().id, compilation_id);
+
         let usage = UsageLedgerRow {
             id: 0,
             workspace_id: "w".into(),
@@ -2454,11 +2632,22 @@ mod tests {
             output_tokens: Some(5),
             cache_read_tokens: Some(2),
             cache_write_tokens: None,
+            uncached_input_tokens: Some(8),
             context_percent: Some(25),
             capability_units: 3,
             runtime_ms: Some(100),
             cost_microusd: Some(12_345),
             cost_source: Some("provider_reported".into()),
+            stable_prefix_id: Some("prefix-1".into()),
+            stable_prefix_hash: Some("hash-1".into()),
+            prompt_schema_version: Some(1),
+            prefix_token_estimate: Some(100),
+            harness: Some("codex".into()),
+            model: Some("gpt".into()),
+            role: Some("worker:implementation".into()),
+            task_family: Some("implementation".into()),
+            restoration_mode: Some("fresh".into()),
+            cross_harness_reuse: Some("not_applicable".into()),
             source: "codex".into(),
             created_at: "now".into(),
         };
@@ -2469,6 +2658,8 @@ mod tests {
         assert_eq!(rows[0].turn_id.as_deref(), Some("turn-1"));
         assert_eq!(rows[0].capability_units, 3);
         assert_eq!(rows[0].cost_microusd, Some(12_345));
+        assert_eq!(rows[0].uncached_input_tokens, Some(8));
+        assert_eq!(rows[0].stable_prefix_hash.as_deref(), Some("hash-1"));
     }
 
     #[test]
