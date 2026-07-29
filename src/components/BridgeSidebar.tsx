@@ -77,7 +77,6 @@ export type BridgeSidebarProps = {
   workers: Session[];
   workerRuntimes: WorkerRuntimeRecord[];
   workerReasons: BridgeEvent[];
-  now: number;
   onOpenNewChat: () => void;
   onOpenMarketplace: () => void;
   onOpenSettings: () => void;
@@ -100,7 +99,6 @@ export function BridgeSidebar({
   workers,
   workerRuntimes,
   workerReasons,
-  now,
   onOpenNewChat,
   onOpenMarketplace,
   onOpenSettings,
@@ -237,7 +235,7 @@ export function BridgeSidebar({
           </button>
         </div>
 
-        <SidebarWorkerPanel workers={workers} runtimes={workerRuntimes} reasons={workerReasons} collapsed={collapsed} now={now} />
+        <SidebarWorkerPanel workers={workers} runtimes={workerRuntimes} reasons={workerReasons} collapsed={collapsed} />
 
         <div className="flex-1 overflow-auto">
           {!collapsed && <SectionLabel>Chats</SectionLabel>}

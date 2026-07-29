@@ -337,7 +337,7 @@ mod tests {
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/supervisor-w','idle','now')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Worker','starting','reported','parent',1)", []).unwrap();
-        store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:"child".into(), parent_session_id:"parent".into(), lifecycle_state:"starting".into(), task_family:"implementation".into(), compatibility_key:"key".into(), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, updated_at:"now".into() }).unwrap();
+        store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:"child".into(), parent_session_id:"parent".into(), lifecycle_state:"starting".into(), task_family:"implementation".into(), compatibility_key:"key".into(), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, last_activity_at:None, updated_at:"now".into() }).unwrap();
         db
     }
 
@@ -522,7 +522,7 @@ mod tests {
         db.execute("UPDATE worker_runtime SET lifecycle_state='working' WHERE session_id='child'", []).unwrap();
         for (session_id, lifecycle) in [("waiting-child", "waiting"), ("warm-child", "warm")] {
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES(?1,'w','claude','Worker',?2,'reported','parent',1)", params![session_id,lifecycle]).unwrap();
-            store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:session_id.into(), parent_session_id:"parent".into(), lifecycle_state:lifecycle.into(), task_family:"implementation".into(), compatibility_key:format!("key-{session_id}"), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, updated_at:"now".into() }).unwrap();
+            store::upsert_worker_runtime(&db, &WorkerRuntimeRecord { session_id:session_id.into(), parent_session_id:"parent".into(), lifecycle_state:lifecycle.into(), task_family:"implementation".into(), compatibility_key:format!("key-{session_id}"), result_status:"pending".into(), retry_count:0, warm_until:None, worktree_path:None, worktree_branch:None, last_result:None, last_activity_at:None, updated_at:"now".into() }).unwrap();
         }
         for session_id in ["child", "waiting-child", "warm-child"] {
             db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,write_mode,lease_status,created_at,updated_at) VALUES(?1,'w','implementation','standard','implementation','shared','active','now','now')", params![session_id]).unwrap();

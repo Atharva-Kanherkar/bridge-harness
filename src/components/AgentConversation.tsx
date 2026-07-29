@@ -469,7 +469,7 @@ function DelegationRow({ item }: { item: ConversationItem }) {
   if (isRejected) {
     const reason = String(item.data.reason ?? item.text ?? "");
     const willRetry = item.data.willRetry === true;
-    const launchFailed = typeof item.data.phase === "string";
+    const launchFailed = item.data.launchFailed === true;
     return <div className="my-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" role="alert">
       <div className="flex items-center gap-1.5 font-medium"><AlertTriangle size={13} aria-hidden="true" /> {launchFailed ? "Worker failed to start" : "Delegation rejected — no worker started"}</div>
       {reason && <p className="mt-1 font-mono text-[11px] leading-relaxed text-warning/90">{reason}</p>}

@@ -1,7 +1,8 @@
+import { useEffect, useState } from "react";
 import { AlertTriangle, Bot, Check, Clock3, LoaderCircle, RefreshCw } from "lucide-react";
 import type { BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import { cn } from "@/lib/utils";
-import { isBroken, isRunning, workerStatus, type WorkerTone } from "./WorkerObservabilityPanel";
+import { isBroken, isRunning, isWaiting, workerStatus, type WorkerTone } from "./workerStatus";
 
 const toneDot: Record<WorkerTone, string> = {
   working: "bg-emerald-400",
@@ -48,7 +49,7 @@ export function SidebarWorkerPanel({
   runtimes,
   reasons,
   collapsed,
-  now = Date.now(),
+  now,
 }: {
   workers: Session[];
   runtimes: WorkerRuntimeRecord[];
@@ -56,7 +57,14 @@ export function SidebarWorkerPanel({
   collapsed: boolean;
   now?: number;
 }) {
+  const [liveNow, setLiveNow] = useState(Date.now);
+  useEffect(() => {
+    if (now !== undefined) return;
+    const timer = window.setInterval(() => setLiveNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [now]);
   if (!workers.length) return null;
+  const effectiveNow = now ?? liveNow;
   const rows = workers.map(worker => {
     const runtime = runtimes.find(item => item.sessionId === worker.id);
     const status = workerStatus(worker, runtime);
@@ -66,12 +74,13 @@ export function SidebarWorkerPanel({
     return { worker, runtime, status, activity };
   });
   const running = rows.filter(row => isRunning(row.status.tone)).length;
+  const waiting = rows.filter(row => isWaiting(row.status.tone)).length;
   const broken = rows.filter(row => isBroken(row.status.tone)).length;
 
   if (collapsed) {
     const tone = broken ? "text-red-400" : running ? "text-emerald-400" : "text-neutral-500";
     return (
-      <div className="mb-3 flex justify-center" title={`${workers.length} worker${workers.length === 1 ? "" : "s"}: ${running} running`}>
+      <div className="mb-3 flex justify-center" title={`${workers.length} worker${workers.length === 1 ? "" : "s"}: ${running} running, ${waiting} waiting, ${broken} failed`}>
         <div className={cn("relative flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.035]", tone)}>
           <Bot size={16} strokeWidth={1.6} aria-hidden="true" />
           {running > 0 && <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />}
@@ -87,8 +96,11 @@ export function SidebarWorkerPanel({
         <Bot size={12} className="text-neutral-500" strokeWidth={1.6} aria-hidden="true" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-500">Live workers</span>
         <span className="font-mono text-[9px] text-neutral-600">{workers.length}</span>
-        {running > 0 && <span className="ml-auto inline-flex items-center gap-1 text-[9px] text-emerald-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{running} active</span>}
-        {running === 0 && broken > 0 && <span className="ml-auto text-[9px] text-red-400">{broken} failed</span>}
+        <span className="ml-auto flex items-center gap-1.5">
+          {running > 0 && <span className="inline-flex items-center gap-1 text-[9px] text-emerald-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />{running} active</span>}
+          {waiting > 0 && <span className="text-[9px] text-amber-400">{waiting} waiting</span>}
+          {broken > 0 && <span className="text-[9px] text-red-400">{broken} failed</span>}
+        </span>
       </div>
       <div className="max-h-48 overflow-y-auto">
         {rows.map(({ worker, runtime, status, activity }) => (
@@ -101,7 +113,7 @@ export function SidebarWorkerPanel({
             <div className="ml-5 mt-0.5 flex items-center gap-1.5 text-[9px] text-neutral-600">
               <span className="truncate">{runtime?.taskFamily ?? worker.harness}</span>
               {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5"><RefreshCw size={8} aria-hidden="true" />retry {runtime.retryCount}</span> : null}
-              <span className="ml-auto shrink-0">{relativeUpdate(runtime?.updatedAt, now)}</span>
+              <span className="ml-auto shrink-0">{relativeUpdate(runtime?.lastActivityAt ?? runtime?.updatedAt, effectiveNow)}</span>
             </div>
             {activity && <p className="ml-5 mt-1 line-clamp-2 text-[9.5px] leading-3.5 text-neutral-500">{activity}</p>}
           </div>

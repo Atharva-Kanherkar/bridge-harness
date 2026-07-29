@@ -111,8 +111,8 @@ const mockForests: Record<string, SessionForestSnapshot> = {
       { sessionId: "session-1w2", workspaceId: "demo-1", role: "verification", capabilityTier: "strong", taskFamily: "verification", ownedPaths: ["src/auth/**"], writeMode: "readOnly", leaseStatus: "released", expiresAt: null, createdAt: now, updatedAt: now }
     ],
     workerRuntimes: [
-      { sessionId: "session-1w", parentSessionId: "session-1", lifecycleState: "working", taskFamily: "implementation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: "/tmp/bridge/worker-1w", worktreeBranch: "bridge/worker-1w", lastResult: null, updatedAt: now },
-      { sessionId: "session-1w2", parentSessionId: "session-1", lifecycleState: "completed", taskFamily: "verification", compatibilityKey: "demo", resultStatus: "reported", retryCount: 0, warmUntil: null, worktreePath: null, worktreeBranch: null, lastResult: { status: "completed", summary: "All 42 auth tests pass", tests: ["auth suite"] }, updatedAt: now }
+      { sessionId: "session-1w", parentSessionId: "session-1", lifecycleState: "working", taskFamily: "implementation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: "/tmp/bridge/worker-1w", worktreeBranch: "bridge/worker-1w", lastResult: null, lastActivityAt: now, updatedAt: now },
+      { sessionId: "session-1w2", parentSessionId: "session-1", lifecycleState: "completed", taskFamily: "verification", compatibilityKey: "demo", resultStatus: "reported", retryCount: 0, warmUntil: null, worktreePath: null, worktreeBranch: null, lastResult: { status: "completed", summary: "All 42 auth tests pass", tests: ["auth suite"] }, lastActivityAt: now, updatedAt: now }
     ],
     workerQueue: [{ id: "queue-1", parentSessionId: "session-1", workspaceId: "demo-1", turnId: "mock-turn-1", request: { role: "implementation", objective: "Update the auth serializer", ownedPaths: ["src/auth/**"], writeMode: "isolated", reason: "owned_path_conflict" }, actualModel: "gpt-5.6-terra", queueStatus: "queued", sequence: 1, dispatchedSessionId: null, createdAt: now, updatedAt: now }],
     usage: [

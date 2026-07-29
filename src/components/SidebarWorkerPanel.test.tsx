@@ -30,6 +30,7 @@ const runtime: WorkerRuntimeRecord = {
   worktreePath: null,
   worktreeBranch: null,
   lastResult: null,
+  lastActivityAt: "2026-07-29T10:00:50Z",
   updatedAt: "2026-07-29T10:00:50Z",
 };
 
@@ -57,5 +58,16 @@ describe("SidebarWorkerPanel", () => {
     const html = renderToStaticMarkup(<SidebarWorkerPanel workers={[worker]} runtimes={[runtime]} reasons={[]} collapsed now={0} />);
     expect(html).toContain("1 worker: 1 running");
     expect(html).toContain("animate-pulse");
+  });
+
+  it("shows failures and waiting workers even while another worker is active", () => {
+    const failed = { ...worker, id: "worker-2", label: "Failed worker", status: "failed" as const };
+    const waiting = { ...worker, id: "worker-3", label: "Waiting worker", status: "waiting" as const };
+    const html = renderToStaticMarkup(
+      <SidebarWorkerPanel workers={[worker, failed, waiting]} runtimes={[runtime]} reasons={[]} collapsed={false} now={0} />,
+    );
+    expect(html).toContain("1 active");
+    expect(html).toContain("1 waiting");
+    expect(html).toContain("1 failed");
   });
 });
