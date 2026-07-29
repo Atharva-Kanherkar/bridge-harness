@@ -200,6 +200,10 @@ struct AppState {
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
     worker_activity: Mutex<HashMap<String, std::time::Instant>>,
+    /// Last heartbeat copied into `worker_runtime.updated_at` for live UI
+    /// visibility. Kept separate so frequent streaming frames only write to
+    /// SQLite at a bounded cadence.
+    worker_activity_persisted: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 /// A worker actively `working` that produces *no* adapter output at all for this
@@ -2441,6 +2445,11 @@ fn spawn_reader_thread(
         }
         app.state::<AppState>()
             .worker_activity
+            .lock()
+            .unwrap()
+            .remove(&session_id);
+        app.state::<AppState>()
+            .worker_activity_persisted
             .lock()
             .unwrap()
             .remove(&session_id);
@@ -4806,7 +4815,24 @@ fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
 }
 
 fn record_worker_activity(app: &AppHandle, session_id: &str) {
-    reset_worker_heartbeat(&app.state::<AppState>(), session_id);
+    let state = app.state::<AppState>();
+    reset_worker_heartbeat(&state, session_id);
+    let should_persist = {
+        let mut persisted = state.worker_activity_persisted.lock().unwrap();
+        let should_persist = persisted
+            .get(session_id)
+            .is_none_or(|seen| seen.elapsed() >= Duration::from_secs(2));
+        if should_persist {
+            persisted.insert(session_id.to_owned(), std::time::Instant::now());
+        }
+        should_persist
+    };
+    if should_persist {
+        let _ = state.db.lock().unwrap().execute(
+            "UPDATE worker_runtime SET updated_at=?2 WHERE session_id=?1 AND result_status='pending'",
+            params![session_id, Utc::now().to_rfc3339()],
+        );
+    }
 }
 
 /// Seconds since a session last produced output, if it is being tracked.
@@ -4920,6 +4946,11 @@ fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
     );
     state
         .worker_activity
+        .lock()
+        .unwrap()
+        .remove(child_session_id);
+    state
+        .worker_activity_persisted
         .lock()
         .unwrap()
         .remove(child_session_id);
@@ -6561,6 +6592,7 @@ pub fn run() {
                 credential_broker,
                 browser_bridge,
                 worker_activity: Mutex::new(HashMap::new()),
+                worker_activity_persisted: Mutex::new(HashMap::new()),
             });
             start_worker_maintenance(app.handle().clone());
             start_learning_maintenance(app.handle().clone());

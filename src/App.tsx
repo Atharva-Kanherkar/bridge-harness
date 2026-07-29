@@ -8,7 +8,6 @@ import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, Mo
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { ComposerPill } from "./components/ComposerPill";
-import { WorkerObservabilityPanel } from "./components/WorkerObservabilityPanel";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
@@ -510,6 +509,10 @@ export function App() {
       settingsActive={view === "settings"}
       expanded={expanded}
       busy={busy}
+      workers={childWorkers}
+      workerRuntimes={forest?.workerRuntimes ?? []}
+      workerReasons={forest?.reasons ?? []}
+      now={clock}
       onOpenNewChat={() => void openNewChat()}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenSettings={() => setView("settings")}
@@ -550,7 +553,6 @@ export function App() {
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
-              {childWorkers.length > 0 && <WorkerObservabilityPanel workers={childWorkers} runtimes={forest?.workerRuntimes ?? []} reasons={forest?.reasons ?? []} />}
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
