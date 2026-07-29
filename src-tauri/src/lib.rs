@@ -3446,6 +3446,8 @@ fn launch_worker_outcome(
                 parent_session_id,
                 &error.to_string(),
             );
+            drop(db);
+            report_worker_launch_failure(app, parent_session_id, "routing", &error.to_string());
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3462,7 +3464,12 @@ fn launch_worker_outcome(
             &format!("{harness} is disabled in Settings"),
         );
         drop(db);
-        let _ = app.emit("state-changed", ());
+        report_worker_launch_failure(
+            app,
+            parent_session_id,
+            "capability",
+            &format!("{harness} is disabled in Settings"),
+        );
         return WorkerLaunchOutcome::Failed;
     }
     let resolution = match state.adapter_registry.resolve_model(
@@ -3486,7 +3493,12 @@ fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            let _ = app.emit("state-changed", ());
+            report_worker_launch_failure(
+                app,
+                parent_session_id,
+                "model_resolution",
+                &error.to_string(),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3528,7 +3540,12 @@ fn launch_worker_outcome(
                 &routed.decision.id,
                 "policy_blocked",
             );
-            let _ = app.emit("state-changed", ());
+            report_worker_launch_failure(
+                app,
+                parent_session_id,
+                "policy",
+                "Worker launch was blocked by delegation policy",
+            );
             return WorkerLaunchOutcome::Failed;
         }
         Err(error) => {
@@ -3542,7 +3559,7 @@ fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            let _ = app.emit("state-changed", ());
+            report_worker_launch_failure(app, parent_session_id, "policy", &error.to_string());
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -4334,6 +4351,51 @@ fn launch_worker_outcome(
         "launched",
     );
     WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn report_worker_launch_failure(
+    app: &AppHandle,
+    parent_session_id: &str,
+    phase: &str,
+    reason: &str,
+) {
+    let state = app.state::<AppState>();
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-launch-failed",
+        "phase": phase,
+        "reason": reason,
+        "instruction": "No worker started. Do not wait for a result. Tell the user what failed, then retry only if a different route can address the failure."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let event = agent::NormalizedEvent {
+        kind: "delegation.rejected".into(),
+        item_id: Some(format!("launch-failed-{}", Uuid::new_v4())),
+        role: Some("system".into()),
+        status: Some("failed".into()),
+        title: Some("Worker failed to start".into()),
+        text: Some(reason.to_owned()),
+        data: serde_json::json!({
+            "phase": phase,
+            "reason": reason,
+            "willRetry": false,
+            "orchestratorNotified": delivered,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &state.db.lock().unwrap(),
+        parent_session_id,
+        &event,
+        &serde_json::json!({"delegation": true}),
+    ) {
+        let _ = app.emit("agent-event", stored);
+    }
+    let _ = app.emit("state-changed", ());
 }
 
 fn record_actual_execution_best_effort(

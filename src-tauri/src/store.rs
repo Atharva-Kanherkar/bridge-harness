@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 18;
+const LATEST_SCHEMA_VERSION: i64 = 19;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -239,6 +239,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             16 => migration_16_complete_role_profile_schema(&transaction)?,
             17 => migration_17_configuration_entries(&transaction)?,
             18 => migration_18_prompt_cache_telemetry(&transaction)?,
+            19 => migration_19_repair_learning_router_schema(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -310,6 +311,106 @@ fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<
             ON prompt_compilations(session_id,turn_id,id DESC);"
     )?;
     Ok(())
+}
+
+fn migration_19_repair_learning_router_schema(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    // Migration 15 changed while several feature branches were shipping with
+    // the same schema version. Databases that recorded the earlier v15 shape
+    // never received the later router columns, so worker routing failed before
+    // a child session could be created. Replaying the idempotent migration
+    // repairs every affected table instead of only the first missing column.
+    add_column_if_missing(
+        transaction,
+        "learning_jobs",
+        "run_budget_tokens",
+        "INTEGER NOT NULL DEFAULT 50000",
+    )?;
+    add_column_if_missing(transaction, "learning_triggers", "auth_digest", "TEXT")?;
+    add_column_if_missing(transaction, "learning_triggers", "expires_at", "TEXT")?;
+    add_column_if_missing(
+        transaction,
+        "learning_triggers",
+        "experimental",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_triggers",
+        "updated_at",
+        "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
+    )?;
+    add_column_if_missing(transaction, "learning_job_runs", "lease_owner", "TEXT")?;
+    add_column_if_missing(transaction, "learning_job_runs", "lease_expires_at", "TEXT")?;
+    add_column_if_missing(
+        transaction,
+        "learning_job_runs",
+        "snapshot_frozen_at",
+        "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_job_runs",
+        "evaluated_spend_microusd",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_job_runs",
+        "evaluated_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(transaction, "learning_job_runs", "replay_passed", "INTEGER")?;
+    add_column_if_missing(
+        transaction,
+        "learning_job_runs",
+        "promotion_status",
+        "TEXT NOT NULL DEFAULT 'not_requested'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_evaluations",
+        "learning_run_id",
+        "TEXT REFERENCES learning_job_runs(id) ON DELETE SET NULL",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_evaluations",
+        "decision_id",
+        "TEXT REFERENCES router_decisions(id) ON DELETE CASCADE",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_evaluations",
+        "bounded_metrics",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_evaluations",
+        "status",
+        "TEXT NOT NULL DEFAULT 'completed'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_policies",
+        "rollback_of",
+        "INTEGER REFERENCES routing_policies(version)",
+    )?;
+    add_column_if_missing(transaction, "routing_policies", "replay_report", "TEXT")?;
+    add_column_if_missing(transaction, "routing_policies", "promoted_at", "TEXT")?;
+    add_column_if_missing(transaction, "routing_policies", "activation_boundary", "INTEGER")?;
+    add_column_if_missing(transaction, "learning_trigger_events", "registration_id", "TEXT")?;
+    add_column_if_missing(transaction, "learning_trigger_events", "reason", "TEXT")?;
+    migration_15_role_profiles_and_learning_jobs(transaction)?;
+    if column_exists(transaction, "routing_evaluations", "run_id")? {
+        transaction.execute(
+            "UPDATE routing_evaluations SET learning_run_id=run_id WHERE learning_run_id IS NULL",
+            [],
+        )?;
+    }
+    migration_16_complete_role_profile_schema(transaction)
 }
 
 fn current_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
@@ -425,17 +526,24 @@ fn add_column_if_missing(
     column: &str,
     definition: &str,
 ) -> Result<(), BridgeError> {
-    let mut statement = transaction.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    if !columns.iter().any(|existing| existing == column) {
+    if !column_exists(transaction, table, column)? {
         transaction.execute_batch(&format!(
             "ALTER TABLE {table} ADD COLUMN {column} {definition}"
         ))?;
     }
     Ok(())
+}
+
+fn column_exists(
+    transaction: &Transaction<'_>,
+    table: &str,
+    column: &str,
+) -> Result<bool, BridgeError> {
+    let mut statement = transaction.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns.iter().any(|existing| existing == column))
 }
 
 fn migration_2_session_forest(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -2160,7 +2268,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
         );
         for table in [
             "model_profiles",
@@ -2228,7 +2336,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
@@ -2276,13 +2384,13 @@ mod tests {
              ALTER TABLE model_profiles DROP COLUMN profile_id;
              ALTER TABLE learning_jobs DROP COLUMN last_evidence_boundary;
              DROP TABLE configuration_entries;
-             DELETE FROM schema_version WHERE version IN (16,17,18);",
+             DELETE FROM schema_version WHERE version IN (16,17,18,19);",
         )
         .unwrap();
         drop(db);
 
         let db = open(&path).unwrap();
-        assert_eq!(current_schema_version(&db).unwrap(), 18);
+        assert_eq!(current_schema_version(&db).unwrap(), 19);
         for (table, column) in [
             ("model_profiles", "profile_id"),
             ("learning_jobs", "last_evidence_boundary"),
@@ -2304,6 +2412,65 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_19_repairs_the_early_v15_shape_recorded_as_version_18() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        let late_columns = [
+            ("router_decisions", "task_fingerprint"), ("router_decisions", "trace_id"),
+            ("router_decisions", "repository_revision"), ("router_decisions", "profile_version"),
+            ("router_decisions", "profile_purpose"), ("router_decisions", "policy_version"),
+            ("router_decisions", "catalog_snapshot"), ("router_decisions", "selection_reason"),
+            ("router_decisions", "actual_provider"), ("router_decisions", "actual_model"),
+            ("router_decisions", "actual_effort"), ("router_outcomes", "success_state"),
+            ("router_outcomes", "acceptance_state"), ("router_outcomes", "cost_microusd"),
+            ("router_outcomes", "cost_source"), ("router_outcomes", "confidence_bps"),
+            ("router_outcomes", "edit_count"), ("router_outcomes", "override_signal"),
+            ("router_outcomes", "total_tokens"), ("router_outcomes", "latency_source"),
+            ("learning_jobs", "run_budget_tokens"), ("learning_triggers", "auth_digest"),
+            ("learning_triggers", "expires_at"), ("learning_triggers", "experimental"),
+            ("learning_triggers", "updated_at"), ("learning_job_runs", "lease_owner"),
+            ("learning_job_runs", "lease_expires_at"), ("learning_job_runs", "snapshot_frozen_at"),
+            ("learning_job_runs", "evaluated_spend_microusd"), ("learning_job_runs", "evaluated_tokens"),
+            ("learning_job_runs", "replay_passed"), ("learning_job_runs", "promotion_status"),
+            ("routing_evaluations", "learning_run_id"), ("routing_evaluations", "decision_id"),
+            ("routing_evaluations", "bounded_metrics"), ("routing_evaluations", "status"),
+            ("routing_policies", "rollback_of"), ("routing_policies", "replay_report"),
+            ("routing_policies", "promoted_at"), ("routing_policies", "activation_boundary"),
+            ("learning_trigger_events", "registration_id"), ("learning_trigger_events", "reason"),
+        ];
+        for (table, column) in late_columns {
+            db.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))
+                .unwrap();
+        }
+        db.execute_batch(
+            "ALTER TABLE routing_evaluations ADD COLUMN run_id TEXT;
+             DROP TABLE routing_policy_promotions;
+             DELETE FROM schema_version WHERE version=19;",
+        ).unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        assert_eq!(current_schema_version(&db).unwrap(), 19);
+        for (table, column) in late_columns {
+            let exists = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .iter()
+                .any(|name| name == column);
+            assert!(exists, "migration 19 did not restore {table}.{column}");
+        }
+        assert!(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='routing_policy_promotions')",
+            [], |row| row.get::<_, bool>(0),
+        ).unwrap());
     }
 
     #[test]
