@@ -1532,6 +1532,7 @@ mod tests {
                 worktree_path: None,
                 worktree_branch: None,
                 last_result: None,
+                last_activity_at: None,
                 updated_at: "now".into(),
             },
         )

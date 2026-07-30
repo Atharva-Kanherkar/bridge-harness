@@ -7,8 +7,8 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { isVisibleWorker } from "./components/workerStatus";
 import { ComposerPill } from "./components/ComposerPill";
-import { WorkerObservabilityPanel } from "./components/WorkerObservabilityPanel";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
@@ -22,7 +22,7 @@ import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
-import { forestSnapshotKey } from "./forest";
+import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { startSerialPoll } from "./polling";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -93,7 +93,6 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [error, setError] = useState<string>();
-  const [clock, setClock] = useState(Date.now());
   const [forest, setForest] = useState<SessionForestSnapshot>();
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string }[]>([]);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
@@ -149,7 +148,6 @@ export function App() {
       agentEventQueueRef.current = [];
     };
   }, [reload]);
-  useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { document.documentElement.classList.add("dark"); }, []);
   useEffect(() => {
     const previous = browserSessionRef.current;
@@ -168,7 +166,11 @@ export function App() {
   const isDirectChat = session?.kind === "direct";
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
-  const childWorkers = useMemo(() => session ? state.sessions.filter(s => s.parentSessionId === session.id) : [], [state.sessions, session?.id]);
+  const childWorkers = useMemo(() => session ? state.sessions.filter(worker => {
+    if (worker.parentSessionId !== session.id) return false;
+    const runtime = forest?.workerRuntimes.find(item => item.sessionId === worker.id);
+    return isVisibleWorker(worker, runtime);
+  }) : [], [state.sessions, session?.id, forest?.workerRuntimes]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
   const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
@@ -275,7 +277,7 @@ export function App() {
       const key = forestSnapshotKey(value);
       if (key === forestKeyRef.current) return;
       forestKeyRef.current = key;
-      setForest(value);
+      setForest(current => mergeForestSnapshot(current, value));
     };
     const stop = startSerialPoll(refresh, 3000);
     return () => { active = false; stop(); };
@@ -510,6 +512,9 @@ export function App() {
       settingsActive={view === "settings"}
       expanded={expanded}
       busy={busy}
+      workers={childWorkers}
+      workerRuntimes={forest?.workerRuntimes ?? []}
+      workerReasons={forest?.reasons ?? []}
       onOpenNewChat={() => void openNewChat()}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenSettings={() => setView("settings")}
@@ -550,7 +555,6 @@ export function App() {
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
-              {childWorkers.length > 0 && <WorkerObservabilityPanel workers={childWorkers} runtimes={forest?.workerRuntimes ?? []} reasons={forest?.reasons ?? []} />}
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}

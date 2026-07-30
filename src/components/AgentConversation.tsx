@@ -469,10 +469,11 @@ function DelegationRow({ item }: { item: ConversationItem }) {
   if (isRejected) {
     const reason = String(item.data.reason ?? item.text ?? "");
     const willRetry = item.data.willRetry === true;
+    const launchFailed = item.data.launchFailed === true;
     return <div className="my-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" role="alert">
-      <div className="flex items-center gap-1.5 font-medium"><AlertTriangle size={13} aria-hidden="true" /> Delegation rejected — no worker started</div>
+      <div className="flex items-center gap-1.5 font-medium"><AlertTriangle size={13} aria-hidden="true" /> {launchFailed ? "Worker failed to start" : "Delegation rejected — no worker started"}</div>
       {reason && <p className="mt-1 font-mono text-[11px] leading-relaxed text-warning/90">{reason}</p>}
-      <p className="mt-1 text-warning/70">{willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
+      <p className="mt-1 text-warning/70">{launchFailed ? (item.data.orchestratorNotified === true ? "The orchestrator was notified and will not wait for this worker." : "The orchestrator could not be notified; retry after fixing the launch failure.") : willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
     </div>;
   }
   const isResult = "delivered" in item.data;

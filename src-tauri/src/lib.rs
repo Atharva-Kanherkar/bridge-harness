@@ -200,6 +200,10 @@ struct AppState {
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
     worker_activity: Mutex<HashMap<String, std::time::Instant>>,
+    /// Last heartbeat copied into `worker_runtime.updated_at` for live UI
+    /// visibility. Kept separate so frequent streaming frames only write to
+    /// SQLite at a bounded cadence.
+    worker_activity_persisted: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 /// A worker actively `working` that produces *no* adapter output at all for this
@@ -2422,9 +2426,18 @@ fn spawn_reader_thread(
     mut reader: Box<dyn BufRead + Send>,
 ) {
     thread::spawn(move || {
+        let tracks_worker = store::worker_runtime(
+            &app.state::<AppState>().db.lock().unwrap(),
+            &session_id,
+        )
+        .ok()
+        .flatten()
+        .is_some();
         // Seed a heartbeat so a worker that never emits a single line still has
         // a baseline the stall watchdog can measure from.
-        record_worker_activity(&app, &session_id);
+        if tracks_worker {
+            record_worker_activity(&app, &session_id);
+        }
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
@@ -2432,18 +2445,27 @@ fn spawn_reader_thread(
                 Ok(_) => {
                     // Every line proves liveness — refresh the heartbeat before
                     // normalization so tool-run and reasoning frames all count.
-                    record_worker_activity(&app, &session_id);
+                    if tracks_worker {
+                        record_worker_activity(&app, &session_id);
+                    }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
                         handle_agent_value(&app, &session_id, &current_turn, &value);
                     }
                 }
             }
         }
-        app.state::<AppState>()
-            .worker_activity
-            .lock()
-            .unwrap()
-            .remove(&session_id);
+        if tracks_worker {
+            app.state::<AppState>()
+                .worker_activity
+                .lock()
+                .unwrap()
+                .remove(&session_id);
+            app.state::<AppState>()
+                .worker_activity_persisted
+                .lock()
+                .unwrap()
+                .remove(&session_id);
+        }
         let state = app.state::<AppState>();
         let is_current_launch = state
             .db
@@ -3345,6 +3367,7 @@ fn reserve_worker_launch_outcome(
             worktree_path: None,
             worktree_branch: None,
             last_result: None,
+            last_activity_at: None,
             updated_at: Utc::now().to_rfc3339(),
         },
     )?;
@@ -3446,6 +3469,8 @@ fn launch_worker_outcome(
                 parent_session_id,
                 &error.to_string(),
             );
+            drop(db);
+            report_worker_launch_failure(app, parent_session_id, "routing", &error.to_string());
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3462,7 +3487,12 @@ fn launch_worker_outcome(
             &format!("{harness} is disabled in Settings"),
         );
         drop(db);
-        let _ = app.emit("state-changed", ());
+        report_worker_launch_failure(
+            app,
+            parent_session_id,
+            "capability",
+            &format!("{harness} is disabled in Settings"),
+        );
         return WorkerLaunchOutcome::Failed;
     }
     let resolution = match state.adapter_registry.resolve_model(
@@ -3486,7 +3516,12 @@ fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            let _ = app.emit("state-changed", ());
+            report_worker_launch_failure(
+                app,
+                parent_session_id,
+                "model_resolution",
+                &error.to_string(),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3528,7 +3563,12 @@ fn launch_worker_outcome(
                 &routed.decision.id,
                 "policy_blocked",
             );
-            let _ = app.emit("state-changed", ());
+            report_worker_launch_failure(
+                app,
+                parent_session_id,
+                "policy",
+                "Worker launch was blocked by delegation policy",
+            );
             return WorkerLaunchOutcome::Failed;
         }
         Err(error) => {
@@ -3542,7 +3582,7 @@ fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            let _ = app.emit("state-changed", ());
+            report_worker_launch_failure(app, parent_session_id, "policy", &error.to_string());
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3623,38 +3663,50 @@ fn launch_worker_outcome(
                 reservation.branch = branch;
             }
             Err(error) => {
+                if !queue_on_block {
+                    let _ = learning_router::record_route_status(
+                        &state.db.lock().unwrap(),
+                        &routed.decision.id,
+                        "worktree_failed",
+                    );
+                    fail_reserved_worker(
+                        app,
+                        &reservation.session_id,
+                        &directive.label(),
+                        &format!("Could not prepare isolated worker worktree: {error}"),
+                    );
+                    return WorkerLaunchOutcome::Failed;
+                }
                 let db = state.db.lock().unwrap();
-                let transaction = match db.unchecked_transaction() {
-                    Ok(transaction) => transaction,
-                    Err(_) => return WorkerLaunchOutcome::Failed,
-                };
-                let _ = transaction.execute(
-                    "DELETE FROM worker_runtime WHERE session_id=?1",
-                    params![reservation.session_id],
-                );
-                let _ = transaction.execute(
-                    "DELETE FROM worker_leases WHERE session_id=?1",
-                    params![reservation.session_id],
-                );
-                let _ = transaction.execute(
-                    "DELETE FROM sessions WHERE id=?1",
-                    params![reservation.session_id],
-                );
-                let _ = transaction.commit();
-                let queued = queue_on_block
-                    && worker_pool::WorkerPool::enqueue(
-                        &db,
-                        parent_session_id,
-                        &reservation.workspace_id,
-                        turn_id,
-                        directive,
-                        &reservation.actual_model,
-                    )
-                    .is_ok();
+                if let Err(cleanup_error) = delete_reserved_worker(&db, &reservation.session_id) {
+                    drop(db);
+                    fail_reserved_worker(
+                        app,
+                        &reservation.session_id,
+                        &directive.label(),
+                        &format!(
+                            "Could not prepare isolated worker worktree ({error}) or clean up its reservation: {cleanup_error}"
+                        ),
+                    );
+                    return WorkerLaunchOutcome::Failed;
+                }
+                let queued = worker_pool::WorkerPool::enqueue(
+                    &db,
+                    parent_session_id,
+                    &reservation.workspace_id,
+                    turn_id,
+                    directive,
+                    &reservation.actual_model,
+                )
+                .is_ok();
                 let _ = store::event(
                     &db,
                     "worktree",
-                    "worker.worktree_queued",
+                    if queued {
+                        "worker.worktree_queued"
+                    } else {
+                        "worker.worktree_failed"
+                    },
                     parent_session_id,
                     &error.to_string(),
                 );
@@ -3663,12 +3715,18 @@ fn launch_worker_outcome(
                     &routed.decision.id,
                     if queued { "queued" } else { "worktree_failed" },
                 );
-                let _ = app.emit("state-changed", ());
-                return if queued {
-                    WorkerLaunchOutcome::Queued
-                } else {
-                    WorkerLaunchOutcome::Failed
-                };
+                drop(db);
+                if queued {
+                    let _ = app.emit("state-changed", ());
+                    return WorkerLaunchOutcome::Queued;
+                }
+                report_worker_launch_failure(
+                    app,
+                    parent_session_id,
+                    "worktree",
+                    &format!("Could not prepare or queue isolated worker worktree: {error}"),
+                );
+                return WorkerLaunchOutcome::Failed;
             }
         }
     }
@@ -3951,15 +4009,19 @@ fn launch_worker_outcome(
         ).map(|prompt| prompt.instructions().to_owned())
     };
     let activation = if reservation.reuse_existing {
-        if session_supervisor::SessionSupervisor::transition(
+        if let Err(error) = session_supervisor::SessionSupervisor::transition(
             &state.db.lock().unwrap(),
             &reservation.session_id,
             worker_lifecycle::WorkerLifecycleState::Resuming,
             Some("compatible_cold_task"),
-        )
-        .is_err()
-        {
+        ) {
             verify_read_only_worker(app, &reservation.session_id);
+            fail_reserved_worker(
+                app,
+                &reservation.session_id,
+                &label,
+                &format!("Could not transition reused worker to resuming: {error}"),
+            );
             return WorkerLaunchOutcome::Failed;
         }
         let provider_id: Option<String> = state
@@ -4130,6 +4192,12 @@ fn launch_worker_outcome(
             &error.to_string(),
         );
         verify_read_only_worker(app, &session_id);
+        fail_reserved_worker(
+            app,
+            &session_id,
+            &label,
+            &format!("Could not transition worker to working: {error}"),
+        );
         return WorkerLaunchOutcome::Failed;
     }
     let (restoration_mode, resume_eligibility) = match activation {
@@ -4149,14 +4217,13 @@ fn launch_worker_outcome(
                 .unwrap_or(ContinuationFidelity::ProjectedMidTurn)
         }
     };
-    if restoration::set_head_state(
+    if let Err(error) = restoration::set_head_state(
         &state.db.lock().unwrap(),
         &session_id,
         restoration_mode,
         resume_eligibility,
         Some(&thread_id),
     )
-    .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
@@ -4164,14 +4231,19 @@ fn launch_worker_outcome(
             &session_id,
         );
         verify_read_only_worker(app, &session_id);
+        fail_reserved_worker(
+            app,
+            &session_id,
+            &label,
+            &format!("Could not persist worker restoration state: {error}"),
+        );
         return WorkerLaunchOutcome::Failed;
     }
-    if handoff::record_fidelity(
+    if let Err(error) = handoff::record_fidelity(
         &state.db.lock().unwrap(),
         &session_id,
         continuation_fidelity,
     )
-    .is_err()
     {
         runtime.stop(adapters::ShutdownReason::Failed);
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
@@ -4179,6 +4251,12 @@ fn launch_worker_outcome(
             &session_id,
         );
         verify_read_only_worker(app, &session_id);
+        fail_reserved_worker(
+            app,
+            &session_id,
+            &label,
+            &format!("Could not persist worker continuation fidelity: {error}"),
+        );
         return WorkerLaunchOutcome::Failed;
     }
 
@@ -4280,22 +4358,27 @@ fn launch_worker_outcome(
         );
     }
 
-    if reservation.reuse_existing
-        && worker_pool::WorkerPool::activate_reused_worker(
+    if reservation.reuse_existing {
+        if let Err(error) = worker_pool::WorkerPool::activate_reused_worker(
             &state.db.lock().unwrap(),
             &session_id,
             &reservation.workspace_id,
             directive,
-        )
-        .is_err()
-    {
-        runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
-            &state.db.lock().unwrap(),
-            &session_id,
-        );
-        verify_read_only_worker(app, &session_id);
-        return WorkerLaunchOutcome::Failed;
+        ) {
+            runtime.stop(adapters::ShutdownReason::Failed);
+            let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+                &state.db.lock().unwrap(),
+                &session_id,
+            );
+            verify_read_only_worker(app, &session_id);
+            fail_reserved_worker(
+                app,
+                &session_id,
+                &label,
+                &format!("Could not activate reused worker: {error}"),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
     }
     state
         .adapters
@@ -4334,6 +4417,52 @@ fn launch_worker_outcome(
         "launched",
     );
     WorkerLaunchOutcome::Launched(session_id)
+}
+
+fn report_worker_launch_failure(
+    app: &AppHandle,
+    parent_session_id: &str,
+    phase: &str,
+    reason: &str,
+) {
+    let state = app.state::<AppState>();
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-launch-failed",
+        "phase": phase,
+        "reason": reason,
+        "instruction": "No worker started. Do not wait for a result. Tell the user what failed, then retry only if a different route can address the failure."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let event = agent::NormalizedEvent {
+        kind: "delegation.rejected".into(),
+        item_id: Some(format!("launch-failed-{}", Uuid::new_v4())),
+        role: Some("system".into()),
+        status: Some("failed".into()),
+        title: Some("Worker failed to start".into()),
+        text: Some(reason.to_owned()),
+        data: serde_json::json!({
+            "launchFailed": true,
+            "phase": phase,
+            "reason": reason,
+            "willRetry": false,
+            "orchestratorNotified": delivered,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &state.db.lock().unwrap(),
+        parent_session_id,
+        &event,
+        &serde_json::json!({"delegation": true}),
+    ) {
+        let _ = app.emit("agent-event", stored);
+    }
+    let _ = app.emit("state-changed", ());
 }
 
 fn record_actual_execution_best_effort(
@@ -4393,6 +4522,19 @@ fn launch_worker(
 fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
     let state = app.state::<AppState>();
     if prepare_worker_failure_settlement(&state.db.lock().unwrap(), session_id).is_err() {
+        let parent_session_id = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT parent_session_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        if let Some(parent_session_id) = parent_session_id {
+            report_worker_launch_failure(app, &parent_session_id, "settlement", reason);
+        }
         return;
     }
     let result = delegation::WorkerResult {
@@ -4408,9 +4550,39 @@ fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: 
         suggested_role: None,
         suggested_task: None,
     };
-    if settle_worker_after_result(app, session_id, &result).unwrap_or(false) {
-        report_to_parent(app, session_id, &result);
+    match settle_worker_after_result(app, session_id, &result) {
+        Ok(true) => report_to_parent(app, session_id, &result),
+        Ok(false) | Err(_) => {
+            let parent_session_id = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT parent_session_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if let Some(parent_session_id) = parent_session_id {
+                report_worker_launch_failure(app, &parent_session_id, "settlement", reason);
+            }
+        }
     }
+}
+
+fn delete_reserved_worker(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "DELETE FROM worker_runtime WHERE session_id=?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM worker_leases WHERE session_id=?1",
+        params![session_id],
+    )?;
+    transaction.execute("DELETE FROM sessions WHERE id=?1", params![session_id])?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn prepare_worker_failure_settlement(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
@@ -4744,7 +4916,24 @@ fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
 }
 
 fn record_worker_activity(app: &AppHandle, session_id: &str) {
-    reset_worker_heartbeat(&app.state::<AppState>(), session_id);
+    let state = app.state::<AppState>();
+    reset_worker_heartbeat(&state, session_id);
+    let should_persist = {
+        let mut persisted = state.worker_activity_persisted.lock().unwrap();
+        let should_persist = persisted
+            .get(session_id)
+            .is_none_or(|seen| seen.elapsed() >= Duration::from_secs(2));
+        if should_persist {
+            persisted.insert(session_id.to_owned(), std::time::Instant::now());
+        }
+        should_persist
+    };
+    if should_persist {
+        let _ = state.db.lock().unwrap().execute(
+            "UPDATE worker_runtime SET last_activity_at=?2 WHERE session_id=?1 AND result_status='pending'",
+            params![session_id, Utc::now().to_rfc3339()],
+        );
+    }
 }
 
 /// Seconds since a session last produced output, if it is being tracked.
@@ -4858,6 +5047,11 @@ fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
     );
     state
         .worker_activity
+        .lock()
+        .unwrap()
+        .remove(child_session_id);
+    state
+        .worker_activity_persisted
         .lock()
         .unwrap()
         .remove(child_session_id);
@@ -6499,6 +6693,7 @@ pub fn run() {
                 credential_broker,
                 browser_bridge,
                 worker_activity: Mutex::new(HashMap::new()),
+                worker_activity_persisted: Mutex::new(HashMap::new()),
             });
             start_worker_maintenance(app.handle().clone());
             start_learning_maintenance(app.handle().clone());

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forestSnapshotKey } from "./forest";
+import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
 import type { SessionForestSnapshot } from "./types";
 
 function snapshot(): SessionForestSnapshot {
@@ -47,5 +47,33 @@ describe("forestSnapshotKey", () => {
       createdAt: "now",
     });
     expect(forestSnapshotKey(equivalent)).not.toBe(forestSnapshotKey(first));
+  });
+});
+
+describe("mergeForestSnapshot", () => {
+  it("preserves entry identity when only a worker heartbeat changes", () => {
+    const current = snapshot();
+    const next: SessionForestSnapshot = {
+      ...current,
+      entries: current.entries.map(entry => ({ ...entry })),
+      workerRuntimes: [{
+        sessionId: "worker",
+        parentSessionId: current.sessionId,
+        lifecycleState: "working",
+        taskFamily: "planning",
+        compatibilityKey: "planning",
+        resultStatus: "pending",
+        retryCount: 0,
+        warmUntil: null,
+        worktreePath: null,
+        worktreeBranch: null,
+        lastResult: null,
+        lastActivityAt: "2026-07-29T12:00:02Z",
+        updatedAt: "2026-07-29T12:00:00Z",
+      }],
+    };
+    const merged = mergeForestSnapshot(current, next);
+    expect(merged.entries).toBe(current.entries);
+    expect(merged.workerRuntimes).toBe(next.workerRuntimes);
   });
 });

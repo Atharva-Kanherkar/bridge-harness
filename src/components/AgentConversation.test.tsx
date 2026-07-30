@@ -73,6 +73,15 @@ describe("AgentConversation", () => {
     expect(html).toContain("correct and re-emit");
     expect(html).toContain('role="alert"');
   });
+  it("shows launch failures and confirms that the orchestrator will not wait", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", title: "Worker failed to start", text: "router schema mismatch", data: { launchFailed: true, phase: "routing", reason: "router schema mismatch", willRetry: false, orchestratorNotified: true } })
+    ]}/>);
+    expect(html).toContain("Worker failed to start");
+    expect(html).toContain("router schema mismatch");
+    expect(html).toContain("orchestrator was notified");
+    expect(html).toContain("will not wait");
+  });
   it("surfaces conversation and file-state divergence", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);
     expect(html).toContain("This branch&#x27;s context predates the current file state.");

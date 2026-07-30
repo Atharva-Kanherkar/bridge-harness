@@ -48,7 +48,7 @@ export interface WorkerRuntimeRecord {
   sessionId: string; parentSessionId: string; lifecycleState: string; taskFamily: string;
   compatibilityKey: string; resultStatus: string; retryCount: number; warmUntil: string | null;
   worktreePath: string | null; worktreeBranch: string | null; lastResult: Record<string, unknown> | null;
-  updatedAt: string;
+  lastActivityAt: string | null; updatedAt: string;
 }
 export interface QueuedWorkerRequest {
   id: string; parentSessionId: string; workspaceId: string; turnId: string;

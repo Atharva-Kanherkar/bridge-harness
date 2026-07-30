@@ -308,6 +308,7 @@ pub struct WorkerRuntimeRecord {
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
     pub last_result: Option<serde_json::Value>,
+    pub last_activity_at: Option<String>,
     pub updated_at: String,
 }
 
