@@ -1,3 +1,15 @@
+[workspace]
+members = ["bridge-core"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
 [package]
 name = "bridge-deck"
 version = "0.1.0"
@@ -14,26 +26,18 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+bridge-core = { path = "bridge-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
-portable-pty = "0.8"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-which = "7"
-thiserror = "2"
-tiny_http = "0.12"
-sha2 = "0.10"
-base64 = "0.22"
-regex = "1"
-reqwest = { version = "0.13", features = ["blocking", "json"] }
-zeroize = "1"
-cap-std = "4.0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+portable-pty = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [profile.dev]
 debug = 0

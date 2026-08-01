@@ -1348,7 +1348,7 @@ mod tests {
 
     #[test]
     fn completion_benchmark_fixture_enforces_the_measurement_contract() {
-        let cases: Vec<CompletionBenchmarkCase> = serde_json::from_str(include_str!("../../testing/fixtures/completion-benchmark-v1.json")).unwrap();
+        let cases: Vec<CompletionBenchmarkCase> = serde_json::from_str(include_str!("../../../testing/fixtures/completion-benchmark-v1.json")).unwrap();
         let report = benchmark(&cases);
         assert_eq!(report.cases, 10);
         assert_eq!(report.baseline_false_done, 3);

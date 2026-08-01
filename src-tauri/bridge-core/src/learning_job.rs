@@ -10,7 +10,7 @@ pub const DEFAULT_JOB_ID: &str = "default";
 pub const MIN_EVIDENCE_SAMPLES: i64 = routing_policy::MIN_EVIDENCE_SAMPLES;
 const LEASE_MINUTES: i64 = 15;
 const CODEX_SCHEDULED_TASK_PROMPT: &str =
-    include_str!("../../docs/prompts/codex-learning-scheduled-task.md");
+    include_str!("../../../docs/prompts/codex-learning-scheduled-task.md");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

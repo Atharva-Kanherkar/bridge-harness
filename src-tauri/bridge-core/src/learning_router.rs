@@ -1736,7 +1736,7 @@ mod tests {
     #[test]
     fn held_out_fixture_reports_under_five_percent_manual_selection() {
         let fixture: Vec<HeldOutObservation> = serde_json::from_str(include_str!(
-            "../../testing/fixtures/router-benchmark-v1.json"
+            "../../../testing/fixtures/router-benchmark-v1.json"
         ))
         .unwrap();
         assert_eq!(fixture.len(), 20);

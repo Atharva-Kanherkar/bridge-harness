@@ -89,13 +89,13 @@ struct Match {
     detector: &'static str,
 }
 
-pub(crate) struct CapturedSecret {
+pub struct CapturedSecret {
     pub reference: String,
     pub detector: &'static str,
     pub value: Zeroizing<String>,
 }
 
-pub(crate) struct InterceptedTurn {
+pub struct InterceptedTurn {
     pub sanitized: SanitizedTurn,
     pub captured: Vec<CapturedSecret>,
 }
@@ -111,7 +111,7 @@ pub fn sanitize(text: &str) -> SanitizedTurn {
 /// Intercept a turn while retaining captured values solely for the in-process
 /// credential broker. Captures are deliberately neither serializable nor
 /// debug-printable and their buffers are zeroized on drop.
-pub(crate) fn intercept(text: &str) -> InterceptedTurn {
+pub fn intercept(text: &str) -> InterceptedTurn {
     let mut matches = Vec::new();
     for detector in DETECTORS.iter() {
         for captures in detector.pattern.captures_iter(text) {
