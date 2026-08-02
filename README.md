@@ -178,6 +178,7 @@ The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost
 
 Useful design references:
 
+- [`docs/protocol/README.md`](docs/protocol/README.md) — the versioned RPC contract, handshake, error codes, and generated client types
 - [`docs/session-forest.md`](docs/session-forest.md) — immutable history, active branches, and divergence evidence
 - [`docs/delegation-policy.md`](docs/delegation-policy.md) — routing, budgets, write isolation, approvals, and worker lifecycle
 - [`docs/compaction-and-resume.md`](docs/compaction-and-resume.md) — checkpoint ownership and restoration modes

@@ -79,3 +79,45 @@ impl Serialize for BridgeError {
         serializer.serialize_str(&self.to_string())
     }
 }
+
+impl From<&BridgeError> for bridge_protocol::ErrorCode {
+    /// Exhaustive on purpose — adding a `BridgeError` variant must fail to
+    /// compile here until the protocol contract assigns it a stable code.
+    fn from(error: &BridgeError) -> Self {
+        match error {
+            BridgeError::Invalid(_) => bridge_protocol::ErrorCode::Invalid,
+            BridgeError::Git(_) => bridge_protocol::ErrorCode::Git,
+            BridgeError::Db(_) => bridge_protocol::ErrorCode::Database,
+            BridgeError::Io(_) => bridge_protocol::ErrorCode::Io,
+            BridgeError::Adapter(_) => bridge_protocol::ErrorCode::Adapter,
+            BridgeError::Pty(_) => bridge_protocol::ErrorCode::Pty,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_protocol::ErrorCode;
+
+    #[test]
+    fn every_bridge_error_variant_maps_to_its_stable_protocol_code() {
+        let cases: Vec<(BridgeError, ErrorCode, i64)> = vec![
+            (BridgeError::Invalid("x".into()), ErrorCode::Invalid, 1000),
+            (BridgeError::Git("x".into()), ErrorCode::Git, 1001),
+            (BridgeError::Db(rusqlite::Error::QueryReturnedNoRows), ErrorCode::Database, 1002),
+            (
+                BridgeError::Io(std::io::Error::new(std::io::ErrorKind::Other, "x")),
+                ErrorCode::Io,
+                1003,
+            ),
+            (BridgeError::Adapter("x".into()), ErrorCode::Adapter, 1004),
+            (BridgeError::Pty("x".into()), ErrorCode::Pty, 1005),
+        ];
+        for (error, expected, expected_code) in cases {
+            let mapped = ErrorCode::from(&error);
+            assert_eq!(mapped, expected, "{error}");
+            assert_eq!(mapped.code(), expected_code, "{error}");
+        }
+    }
+}
