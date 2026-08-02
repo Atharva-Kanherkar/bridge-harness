@@ -179,6 +179,21 @@ export const ERROR_CODES = {
   shutting_down: 2003,
 } as const;
 
+/** Params types for methods whose payloads are contracted so far. */
+export interface BridgeMethodParams {
+  "projects/add_project": AddProjectParams;
+  "workspaces/create_workspace": CreateWorkspaceParams;
+  "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
+  "workspaces/list_workspace_files": ListWorkspaceFilesParams;
+  "workspaces/refresh_workspace": RefreshWorkspaceParams;
+  "workspaces/archive_workspace": ArchiveWorkspaceParams;
+}
+
+/** Result types for contracted methods that do not return the BridgeState snapshot. */
+export interface BridgeMethodResults {
+  "workspaces/list_workspace_files": ListWorkspaceFilesResult;
+}
+
 export interface ClientInfo {
   name: string;
   version: string;
@@ -248,4 +263,31 @@ export interface HandshakeResponse {
   capabilities: string[];
   protocolVersion: ProtocolVersion;
   server: ServerInfo;
+}
+
+export interface AddProjectParams {
+  path: string;
+}
+
+export interface CreateWorkspaceParams {
+  title: string;
+}
+
+export interface ConnectWorkspaceFolderParams {
+  path: string;
+  workspaceId: string;
+}
+
+export interface ListWorkspaceFilesParams {
+  sessionId: string;
+}
+
+export type ListWorkspaceFilesResult = string[];
+
+export interface RefreshWorkspaceParams {
+  workspaceId: string;
+}
+
+export interface ArchiveWorkspaceParams {
+  workspaceId: string;
 }

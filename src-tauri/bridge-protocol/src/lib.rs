@@ -14,6 +14,7 @@
 pub mod envelope;
 pub mod error;
 pub mod handshake;
+pub mod messages;
 pub mod methods;
 pub mod tsgen;
 

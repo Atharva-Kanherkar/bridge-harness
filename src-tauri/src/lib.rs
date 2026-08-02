@@ -1007,26 +1007,7 @@ fn activate_session_entry_records(
 
 #[tauri::command]
 async fn add_project(path: String, state: State<'_, BridgeCore>) -> Result<BridgeState, BridgeError> {
-    let clean = git::validate_repo(Path::new(&path))?;
-    let name = Path::new(&clean)
-        .file_name()
-        .and_then(|x| x.to_str())
-        .unwrap_or("Repository")
-        .to_string();
-    let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "INSERT OR IGNORE INTO projects(id,name,path,created_at) VALUES(?1,?2,?3,?4)",
-        params![id, name, clean, Utc::now().to_rfc3339()],
-    )?;
-    store::event(
-        &db,
-        "project",
-        "project.added",
-        &id,
-        &format!("Added {name}"),
-    )?;
-    store::state(&db)
+    state.add_project(&path)
 }
 
 /// Scratch working directory for a chat that has no connected folder/repo.
@@ -1054,24 +1035,7 @@ async fn create_workspace(
     title: String,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let name = title.trim();
-    if name.is_empty() {
-        return Err(BridgeError::Invalid("Workspace name is required".into()));
-    }
-    let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "INSERT INTO workspaces(id,title,status,created_at) VALUES(?1,?2,'idle',?3)",
-        params![id, name, Utc::now().to_rfc3339()],
-    )?;
-    store::event(
-        &db,
-        "supervisor",
-        "workspace.created",
-        &id,
-        &format!("Created workspace {name}"),
-    )?;
-    store::state(&db)
+    state.create_workspace(&title)
 }
 
 /// Create a standalone direct chat (no workspace). Runs in a private scratch dir.
@@ -1572,50 +1536,7 @@ async fn connect_workspace_folder(
     path: String,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let folder = Path::new(&path);
-    if !folder.is_dir() {
-        return Err(BridgeError::Invalid("That folder no longer exists".into()));
-    }
-    let db = state.db.lock().unwrap();
-    let (resolved_path, project_id, branch) = match git::validate_repo(folder) {
-        Ok(root) => {
-            let name = Path::new(&root)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("Repository")
-                .to_string();
-            db.execute(
-                "INSERT OR IGNORE INTO projects(id,name,path,created_at) VALUES(?1,?2,?3,?4)",
-                params![
-                    Uuid::new_v4().to_string(),
-                    name,
-                    root,
-                    Utc::now().to_rfc3339()
-                ],
-            )?;
-            let project_id: Option<String> = db
-                .query_row(
-                    "SELECT id FROM projects WHERE path=?1",
-                    params![root],
-                    |r| r.get(0),
-                )
-                .ok();
-            (root.clone(), project_id, git::current_branch(folder))
-        }
-        Err(_) => (folder.to_string_lossy().to_string(), None, None),
-    };
-    db.execute(
-        "UPDATE workspaces SET path=?2,project_id=?3,branch=?4 WHERE id=?1",
-        params![workspace_id, resolved_path, project_id, branch],
-    )?;
-    store::event(
-        &db,
-        "supervisor",
-        "workspace.connected",
-        &workspace_id,
-        &format!("Connected {resolved_path}"),
-    )?;
-    store::state(&db)
+    state.connect_workspace_folder(&workspace_id, &path)
 }
 
 #[tauri::command]
@@ -5512,25 +5433,6 @@ async fn prepare_turn(
     Ok(intercepted.sanitized)
 }
 
-/// Resolve a session's workspace root (`s.cwd` falling back to the connected
-/// workspace's `path`). Returns `None` for chats with no folder — e.g. direct
-/// chats — or when the recorded path no longer exists on disk.
-fn session_workspace_root(state: &State<'_, BridgeCore>, session_id: &str) -> Option<PathBuf> {
-    let path: Option<String> = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT COALESCE(s.cwd, w.path) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
-            params![session_id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .ok()
-        .flatten();
-    let candidate = PathBuf::from(path?);
-    candidate.is_dir().then_some(candidate)
-}
-
 fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
@@ -5655,7 +5557,7 @@ async fn send_turn(
 
     // Read any @file mentions before locking the adapter map so the referenced
     // file contents ride along as trusted application context, not user text.
-    let file_context = if let Some(root) = session_workspace_root(&state, &session_id) {
+    let file_context = if let Some(root) = state.session_workspace_root(&session_id) {
         let mention_text = outbound.clone();
         tauri::async_runtime::spawn_blocking(move || {
             workspace_files::mention_context(&root, &mention_text)
@@ -5714,7 +5616,9 @@ async fn list_workspace_files(
     session_id: String,
     state: State<'_, BridgeCore>,
 ) -> Result<Vec<String>, BridgeError> {
-    match session_workspace_root(&state, &session_id) {
+    match state.session_workspace_root(&session_id) {
+        // Listing is pure filesystem work; only the blocking-pool placement
+        // is the shell's concern.
         Some(root) => tauri::async_runtime::spawn_blocking(move || {
             workspace_files::list_files(&root)
         })
@@ -6310,28 +6214,13 @@ async fn refresh_workspace(
     workspace_id: String,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    // Resolve the path under the lock, but leave Git entirely outside it so a
+    // Resolve the path under the lock, but run Git entirely outside it so a
     // slow status scan cannot delay message submission or streaming writes.
-    let path: String = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT path FROM workspaces WHERE id=?1",
-            params![workspace_id],
-            |r| r.get(0),
-        )?
-    };
-    let (dirty, adds, dels) =
-        tauri::async_runtime::spawn_blocking(move || git::stats(Path::new(&path)))
-            .await
-            .map_err(|error| {
-                BridgeError::Invalid(format!("Workspace refresh task failed: {error}"))
-            })??;
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
-        params![workspace_id, dirty, adds, dels],
-    )?;
-    store::state(&db)
+    let path = state.workspace_path(&workspace_id)?;
+    let stats = tauri::async_runtime::spawn_blocking(move || git::stats(Path::new(&path)))
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("Workspace refresh task failed: {error}")))??;
+    state.record_workspace_git_stats(&workspace_id, stats)
 }
 
 #[tauri::command]
@@ -6340,76 +6229,11 @@ async fn archive_workspace(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let (path, repo): (String, String) = db.query_row(
-        "SELECT w.path,p.path FROM workspaces w JOIN projects p ON p.id=w.project_id WHERE w.id=?1",
-        params![workspace_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let active: i64 = db.query_row(
-        "SELECT COUNT(*) FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting','ready') AND ended_at IS NULL",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    if active > 0 {
-        return Err(BridgeError::Invalid(
-            "Stop every running session before archiving this workspace".into(),
-        ));
-    }
-    let (dirty, _, _) = git::stats(Path::new(&path))?;
-    if dirty > 0 {
-        return Err(BridgeError::Invalid(format!(
-            "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
-        )));
-    }
-    archive_workspace_records(&db, &workspace_id, || {
-        git::remove_worktree(Path::new(&repo), Path::new(&path))
-    })?;
-    store::event(
-        &db,
-        "supervisor",
-        "workspace.archived",
-        &workspace_id,
-        "Archived clean workspace; branch preserved",
-    )?;
+    state.archive_workspace(&workspace_id)?;
+    // Emit before building the snapshot: the archive is committed, so a
+    // snapshot failure below must not leave listeners unaware of it.
     let _ = app.emit("state-changed", ());
-    store::state(&db)
-}
-
-fn archive_workspace_records(
-    db: &Connection,
-    workspace_id: &str,
-    remove_worktree: impl FnOnce() -> Result<(), BridgeError>,
-) -> Result<(), BridgeError> {
-    let transaction = db.unchecked_transaction()?;
-    transaction.execute(
-        "DELETE FROM task_knowledge WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM worker_leases WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM session_heads WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM session_entries WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM usage_ledger WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM sessions WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
-    remove_worktree()?;
-    transaction.commit()?;
-    Ok(())
+    state.state_snapshot()
 }
 
 pub fn run() {
@@ -6529,6 +6353,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bridge_core::workspaces;
     use std::process::Command;
 
     #[test]
@@ -7034,7 +6859,7 @@ mod tests {
     #[test]
     fn archive_workspace_records_cleans_every_dependent_table() {
         let db = archive_fixture();
-        archive_workspace_records(&db, "w", || Ok(())).unwrap();
+        workspaces::archive_workspace_records(&db, "w", || Ok(())).unwrap();
         for table in [
             "task_knowledge",
             "worker_leases",
@@ -7180,7 +7005,7 @@ mod tests {
     #[test]
     fn archive_workspace_records_rolls_back_when_worktree_removal_fails() {
         let db = archive_fixture();
-        let result = archive_workspace_records(&db, "w", || {
+        let result = workspaces::archive_workspace_records(&db, "w", || {
             Err(BridgeError::Git("injected removal failure".into()))
         });
         assert!(matches!(result, Err(BridgeError::Git(_))));

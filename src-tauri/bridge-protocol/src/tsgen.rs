@@ -13,6 +13,11 @@ use serde_json::{json, Map, Value};
 use crate::envelope::{CancelParams, RpcNotification, RpcRequest, RpcResponse};
 use crate::error::ErrorCode;
 use crate::handshake::{HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION};
+use crate::messages::{
+    AddProjectParams, ArchiveWorkspaceParams, ConnectWorkspaceFolderParams,
+    CreateWorkspaceParams, ListWorkspaceFilesParams, ListWorkspaceFilesResult,
+    RefreshWorkspaceParams, TYPED_METHODS,
+};
 use crate::methods::MethodName;
 use crate::{CANCEL_METHOD, HANDSHAKE_METHOD, JSONRPC_VERSION};
 
@@ -26,14 +31,44 @@ pub struct Artifact {
 }
 
 fn root_schemas() -> Vec<(&'static str, Value)> {
-    vec![
+    let mut roots = vec![
         ("RpcRequest", serde_json::to_value(schema_for!(RpcRequest)).unwrap()),
         ("RpcResponse", serde_json::to_value(schema_for!(RpcResponse)).unwrap()),
         ("RpcNotification", serde_json::to_value(schema_for!(RpcNotification)).unwrap()),
         ("CancelParams", serde_json::to_value(schema_for!(CancelParams)).unwrap()),
         ("HandshakeRequest", serde_json::to_value(schema_for!(HandshakeRequest)).unwrap()),
         ("HandshakeResponse", serde_json::to_value(schema_for!(HandshakeResponse)).unwrap()),
-    ]
+        ("AddProjectParams", serde_json::to_value(schema_for!(AddProjectParams)).unwrap()),
+        ("CreateWorkspaceParams", serde_json::to_value(schema_for!(CreateWorkspaceParams)).unwrap()),
+        (
+            "ConnectWorkspaceFolderParams",
+            serde_json::to_value(schema_for!(ConnectWorkspaceFolderParams)).unwrap(),
+        ),
+        (
+            "ListWorkspaceFilesParams",
+            serde_json::to_value(schema_for!(ListWorkspaceFilesParams)).unwrap(),
+        ),
+        (
+            "ListWorkspaceFilesResult",
+            serde_json::to_value(schema_for!(ListWorkspaceFilesResult)).unwrap(),
+        ),
+        ("RefreshWorkspaceParams", serde_json::to_value(schema_for!(RefreshWorkspaceParams)).unwrap()),
+        ("ArchiveWorkspaceParams", serde_json::to_value(schema_for!(ArchiveWorkspaceParams)).unwrap()),
+    ];
+    for (name, schema) in &mut roots {
+        if let Some(object) = schema.as_object_mut() {
+            // schemars titles transparent wrappers after their inner type
+            // (e.g. Array_of_String); the registry name IS the contract, so
+            // force it — generators keying on title must see the public name.
+            object.insert("title".into(), Value::String((*name).into()));
+        }
+    }
+    roots
+}
+
+/// The schema artifact filename for a registry type name.
+fn schema_file(type_name: &str) -> String {
+    format!("{}.json", kebab(type_name))
 }
 
 fn kebab(name: &str) -> String {
@@ -56,11 +91,22 @@ fn methods_table() -> Value {
         "$comment": GENERATED_HEADER,
         "protocolVersion": PROTOCOL_VERSION,
         "reserved": { "handshake": HANDSHAKE_METHOD, "cancel": CANCEL_METHOD },
-        "methods": MethodName::ALL.iter().map(|method| json!({
-            "method": method.as_str(),
-            "domain": method.domain(),
-            "command": method.command_name(),
-        })).collect::<Vec<_>>(),
+        "methods": MethodName::ALL.iter().map(|method| {
+            let mut entry = json!({
+                "method": method.as_str(),
+                "domain": method.domain(),
+                "command": method.command_name(),
+            });
+            // Non-TypeScript clients discover payload contracts here: typed
+            // methods reference their schema files by name.
+            if let Some(typed) = TYPED_METHODS.iter().find(|typed| typed.method == *method) {
+                entry["paramsSchema"] = json!(schema_file(typed.params));
+                if let Some(result) = typed.result {
+                    entry["resultSchema"] = json!(schema_file(result));
+                }
+            }
+            entry
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -83,7 +129,7 @@ pub fn artifacts() -> Vec<Artifact> {
             object.insert("$comment".into(), Value::String(GENERATED_HEADER.replace('\n', " ")));
         }
         let path: &'static str = Box::leak(
-            format!("docs/protocol/schemas/{}.json", kebab(name)).into_boxed_str(),
+            format!("docs/protocol/schemas/{}", schema_file(name)).into_boxed_str(),
         );
         artifacts.push(Artifact { path, content: pretty(&schema) });
     }
@@ -275,7 +321,24 @@ pub fn typescript() -> String {
     for code in ErrorCode::ALL {
         out.push_str(&format!("  {}: {},\n", code.name(), code.code()));
     }
-    out.push_str("} as const;\n");
+    out.push_str("} as const;\n\n");
+
+    out.push_str("/** Params types for methods whose payloads are contracted so far. */\n");
+    out.push_str("export interface BridgeMethodParams {\n");
+    for entry in TYPED_METHODS {
+        out.push_str(&format!("  \"{}\": {};\n", entry.method.as_str(), entry.params));
+    }
+    out.push_str("}\n\n");
+    out.push_str(
+        "/** Result types for contracted methods that do not return the BridgeState snapshot. */\n",
+    );
+    out.push_str("export interface BridgeMethodResults {\n");
+    for entry in TYPED_METHODS {
+        if let Some(result) = entry.result {
+            out.push_str(&format!("  \"{}\": {};\n", entry.method.as_str(), result));
+        }
+    }
+    out.push_str("}\n");
 
     for (name, schema) in &definitions {
         out.push('\n');
@@ -337,12 +400,63 @@ mod tests {
         assert!(typescript.contains("export type ResponseId = RequestId | null;"));
         assert!(typescript.contains("\"sessions/send_turn\""));
         assert!(typescript.contains("incompatible_protocol: 2000,"));
+        assert!(typescript.contains("export interface BridgeMethodParams {"));
+        assert!(typescript
+            .contains("\"workspaces/connect_workspace_folder\": ConnectWorkspaceFolderParams;"));
+        assert!(typescript
+            .contains("\"workspaces/list_workspace_files\": ListWorkspaceFilesResult;"));
+        assert!(typescript.contains("export interface ConnectWorkspaceFolderParams {"));
+        assert!(typescript.contains("export type ListWorkspaceFilesResult = string[];"));
         for method in MethodName::ALL {
             assert!(
                 typescript.contains(method.as_str()),
                 "TypeScript union is missing {}",
                 method.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn every_schema_root_keeps_its_registry_title() {
+        // Transparent wrappers would otherwise inherit their inner type's
+        // title (Array_of_String) and collide across future array results.
+        for (name, schema) in root_schemas() {
+            assert_eq!(
+                schema["title"], serde_json::json!(name),
+                "schema for {name} must be titled with its registry name"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_methods_reference_existing_schema_artifacts() {
+        let table = methods_table();
+        let artifact_paths: Vec<String> =
+            artifacts().into_iter().map(|artifact| artifact.path.to_string()).collect();
+        for row in table["methods"].as_array().unwrap() {
+            let method = row["method"].as_str().unwrap();
+            match TYPED_METHODS.iter().find(|typed| typed.method.as_str() == method) {
+                Some(typed) => {
+                    let params = row["paramsSchema"].as_str().unwrap();
+                    assert_eq!(params, schema_file(typed.params));
+                    assert!(
+                        artifact_paths.contains(&format!("docs/protocol/schemas/{params}")),
+                        "{method} references {params}, which is not a generated artifact"
+                    );
+                    if let Some(result) = typed.result {
+                        let result_file = row["resultSchema"].as_str().unwrap();
+                        assert_eq!(result_file, schema_file(result));
+                        assert!(artifact_paths
+                            .contains(&format!("docs/protocol/schemas/{result_file}")));
+                    }
+                }
+                None => {
+                    assert!(
+                        row.get("paramsSchema").is_none(),
+                        "{method} is untyped but references a params schema"
+                    );
+                }
+            }
         }
     }
 
@@ -386,6 +500,34 @@ mod tests {
             (
                 "docs/protocol/schemas/handshake-response.json",
                 include_str!("../../../docs/protocol/schemas/handshake-response.json"),
+            ),
+            (
+                "docs/protocol/schemas/add-project-params.json",
+                include_str!("../../../docs/protocol/schemas/add-project-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/create-workspace-params.json",
+                include_str!("../../../docs/protocol/schemas/create-workspace-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/connect-workspace-folder-params.json",
+                include_str!("../../../docs/protocol/schemas/connect-workspace-folder-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/list-workspace-files-params.json",
+                include_str!("../../../docs/protocol/schemas/list-workspace-files-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/list-workspace-files-result.json",
+                include_str!("../../../docs/protocol/schemas/list-workspace-files-result.json"),
+            ),
+            (
+                "docs/protocol/schemas/refresh-workspace-params.json",
+                include_str!("../../../docs/protocol/schemas/refresh-workspace-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/archive-workspace-params.json",
+                include_str!("../../../docs/protocol/schemas/archive-workspace-params.json"),
             ),
             (
                 "docs/protocol/schemas/methods.json",

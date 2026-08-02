@@ -200,6 +200,12 @@ pub struct ModelResolution {
 }
 
 impl AdapterRegistry {
+    /// A registry with no adapters and no background discovery. For hosts and
+    /// tests that need a `BridgeCore` without spawning provider processes.
+    pub fn empty() -> Self {
+        Self { adapters: HashMap::new() }
+    }
+
     pub fn built_in() -> Result<Self, BridgeError> {
         Self::built_in_with_opencode(opencode_adapter::OpenCodeSettings::default())
     }

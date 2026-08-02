@@ -92,6 +92,40 @@ pub struct BootConfig {
 }
 
 impl BridgeCore {
+    /// The aggregate application snapshot the frontend renders.
+    pub fn state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
+        store::state(&self.db.lock().unwrap())
+    }
+
+    /// A runtime around in-memory stores with no adapters, no discovery, and
+    /// a dormant browser supervisor — for exercising domain methods in tests.
+    #[cfg(test)]
+    pub(crate) fn for_tests(scratch: &std::path::Path) -> BridgeCore {
+        BridgeCore {
+            db: Mutex::new(store::open(std::path::Path::new(":memory:")).unwrap()),
+            telemetry_db: Mutex::new(
+                store::open_telemetry(std::path::Path::new(":memory:")).unwrap(),
+            ),
+            runtimes: Mutex::new(HashMap::new()),
+            adapters: Mutex::new(HashMap::new()),
+            adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
+            delegations: Mutex::new(DelegationState::default()),
+            worktrees: scratch.join("worktrees"),
+            database_path: scratch.join("bridge.db"),
+            telemetry_database_path: scratch.join("bridge-telemetry.db"),
+            snapshot_dir: scratch.join("history-snapshots"),
+            skill_store: scratch.join("skills"),
+            skill_consents: Arc::new(Mutex::new(HashMap::new())),
+            credential_broker: Arc::new(credential_broker::CredentialBroker::openai().unwrap()),
+            browser_bridge: browser_bridge::BrowserBridgeSupervisor::dormant(
+                scratch.join("no-extension"),
+                scratch.join("browser-site-metrics.json"),
+            ),
+            worker_activity: Mutex::new(HashMap::new()),
+            worker_activity_persisted: Mutex::new(HashMap::new()),
+        }
+    }
+
     /// Open the stores, run recovery, build the adapter registry, and start
     /// browser supervision — everything the runtime needs before a host can
     /// serve requests against it.
