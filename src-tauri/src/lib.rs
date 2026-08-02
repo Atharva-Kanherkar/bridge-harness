@@ -6229,9 +6229,11 @@ async fn archive_workspace(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let snapshot = state.archive_workspace(&workspace_id)?;
+    state.archive_workspace(&workspace_id)?;
+    // Emit before building the snapshot: the archive is committed, so a
+    // snapshot failure below must not leave listeners unaware of it.
     let _ = app.emit("state-changed", ());
-    Ok(snapshot)
+    state.state_snapshot()
 }
 
 pub fn run() {

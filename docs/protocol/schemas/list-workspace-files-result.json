@@ -4,6 +4,6 @@
   "items": {
     "type": "string"
   },
-  "title": "Array_of_String",
+  "title": "ListWorkspaceFilesResult",
   "type": "array"
 }

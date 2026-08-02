@@ -14,32 +14,39 @@
     {
       "command": "add_project",
       "domain": "projects",
-      "method": "projects/add_project"
+      "method": "projects/add_project",
+      "paramsSchema": "add-project-params.json"
     },
     {
       "command": "create_workspace",
       "domain": "workspaces",
-      "method": "workspaces/create_workspace"
+      "method": "workspaces/create_workspace",
+      "paramsSchema": "create-workspace-params.json"
     },
     {
       "command": "connect_workspace_folder",
       "domain": "workspaces",
-      "method": "workspaces/connect_workspace_folder"
+      "method": "workspaces/connect_workspace_folder",
+      "paramsSchema": "connect-workspace-folder-params.json"
     },
     {
       "command": "list_workspace_files",
       "domain": "workspaces",
-      "method": "workspaces/list_workspace_files"
+      "method": "workspaces/list_workspace_files",
+      "paramsSchema": "list-workspace-files-params.json",
+      "resultSchema": "list-workspace-files-result.json"
     },
     {
       "command": "refresh_workspace",
       "domain": "workspaces",
-      "method": "workspaces/refresh_workspace"
+      "method": "workspaces/refresh_workspace",
+      "paramsSchema": "refresh-workspace-params.json"
     },
     {
       "command": "archive_workspace",
       "domain": "workspaces",
-      "method": "workspaces/archive_workspace"
+      "method": "workspaces/archive_workspace",
+      "paramsSchema": "archive-workspace-params.json"
     },
     {
       "command": "get_session_forest",

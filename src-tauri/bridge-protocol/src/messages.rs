@@ -150,6 +150,27 @@ mod tests {
     }
 
     #[test]
+    fn params_reject_payloads_missing_their_required_fields() {
+        // A validator (or the future compat adapter) must not accept an
+        // empty object where the contract names required fields.
+        assert!(serde_json::from_value::<AddProjectParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<CreateWorkspaceParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<ConnectWorkspaceFolderParams>(json!({})).is_err());
+        assert!(
+            serde_json::from_value::<ConnectWorkspaceFolderParams>(json!({"path": "/x"})).is_err(),
+            "workspaceId is required"
+        );
+        assert!(serde_json::from_value::<ListWorkspaceFilesParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<RefreshWorkspaceParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<ArchiveWorkspaceParams>(json!({})).is_err());
+        // Wire names are camelCase; snake_case spellings are not accepted.
+        assert!(serde_json::from_value::<ArchiveWorkspaceParams>(
+            json!({"workspace_id": "w-1"})
+        )
+        .is_err());
+    }
+
+    #[test]
     fn typed_methods_are_unique_and_cover_the_projects_and_workspaces_domains() {
         let mut seen = HashSet::new();
         for entry in TYPED_METHODS {

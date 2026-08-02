@@ -263,6 +263,26 @@ impl BrowserBridgeSupervisor {
         supervisor
     }
 
+    /// A supervisor that never binds the browser transport socket. For hosts
+    /// and tests that hold a `BridgeCore` but do not serve the extension.
+    pub fn dormant(extension_path: PathBuf, metrics_path: PathBuf) -> Arc<Self> {
+        let remote_config_path = metrics_path.with_file_name("browser-remote-config.json");
+        let audit_path = metrics_path.with_file_name("browser-audit.json");
+        Arc::new(Self {
+            inner: Mutex::new(Inner {
+                status: "not_attached".into(),
+                ..Inner::default()
+            }),
+            outbound: Mutex::new(None),
+            next_connection: AtomicU64::new(1),
+            extension_path,
+            socket_path: std::env::temp_dir().join("dev.bridge.deck.browser.sock"),
+            metrics_path,
+            remote_config_path,
+            audit_path,
+        })
+    }
+
     #[cfg(unix)]
     fn start_socket(supervisor: Arc<Self>) {
         let socket_path = supervisor.socket_path.clone();

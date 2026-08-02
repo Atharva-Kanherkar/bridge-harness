@@ -31,7 +31,7 @@ pub struct Artifact {
 }
 
 fn root_schemas() -> Vec<(&'static str, Value)> {
-    vec![
+    let mut roots = vec![
         ("RpcRequest", serde_json::to_value(schema_for!(RpcRequest)).unwrap()),
         ("RpcResponse", serde_json::to_value(schema_for!(RpcResponse)).unwrap()),
         ("RpcNotification", serde_json::to_value(schema_for!(RpcNotification)).unwrap()),
@@ -54,7 +54,21 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         ),
         ("RefreshWorkspaceParams", serde_json::to_value(schema_for!(RefreshWorkspaceParams)).unwrap()),
         ("ArchiveWorkspaceParams", serde_json::to_value(schema_for!(ArchiveWorkspaceParams)).unwrap()),
-    ]
+    ];
+    for (name, schema) in &mut roots {
+        if let Some(object) = schema.as_object_mut() {
+            // schemars titles transparent wrappers after their inner type
+            // (e.g. Array_of_String); the registry name IS the contract, so
+            // force it — generators keying on title must see the public name.
+            object.insert("title".into(), Value::String((*name).into()));
+        }
+    }
+    roots
+}
+
+/// The schema artifact filename for a registry type name.
+fn schema_file(type_name: &str) -> String {
+    format!("{}.json", kebab(type_name))
 }
 
 fn kebab(name: &str) -> String {
@@ -77,11 +91,22 @@ fn methods_table() -> Value {
         "$comment": GENERATED_HEADER,
         "protocolVersion": PROTOCOL_VERSION,
         "reserved": { "handshake": HANDSHAKE_METHOD, "cancel": CANCEL_METHOD },
-        "methods": MethodName::ALL.iter().map(|method| json!({
-            "method": method.as_str(),
-            "domain": method.domain(),
-            "command": method.command_name(),
-        })).collect::<Vec<_>>(),
+        "methods": MethodName::ALL.iter().map(|method| {
+            let mut entry = json!({
+                "method": method.as_str(),
+                "domain": method.domain(),
+                "command": method.command_name(),
+            });
+            // Non-TypeScript clients discover payload contracts here: typed
+            // methods reference their schema files by name.
+            if let Some(typed) = TYPED_METHODS.iter().find(|typed| typed.method == *method) {
+                entry["paramsSchema"] = json!(schema_file(typed.params));
+                if let Some(result) = typed.result {
+                    entry["resultSchema"] = json!(schema_file(result));
+                }
+            }
+            entry
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -104,7 +129,7 @@ pub fn artifacts() -> Vec<Artifact> {
             object.insert("$comment".into(), Value::String(GENERATED_HEADER.replace('\n', " ")));
         }
         let path: &'static str = Box::leak(
-            format!("docs/protocol/schemas/{}.json", kebab(name)).into_boxed_str(),
+            format!("docs/protocol/schemas/{}", schema_file(name)).into_boxed_str(),
         );
         artifacts.push(Artifact { path, content: pretty(&schema) });
     }
@@ -388,6 +413,50 @@ mod tests {
                 "TypeScript union is missing {}",
                 method.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn every_schema_root_keeps_its_registry_title() {
+        // Transparent wrappers would otherwise inherit their inner type's
+        // title (Array_of_String) and collide across future array results.
+        for (name, schema) in root_schemas() {
+            assert_eq!(
+                schema["title"], serde_json::json!(name),
+                "schema for {name} must be titled with its registry name"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_methods_reference_existing_schema_artifacts() {
+        let table = methods_table();
+        let artifact_paths: Vec<String> =
+            artifacts().into_iter().map(|artifact| artifact.path.to_string()).collect();
+        for row in table["methods"].as_array().unwrap() {
+            let method = row["method"].as_str().unwrap();
+            match TYPED_METHODS.iter().find(|typed| typed.method.as_str() == method) {
+                Some(typed) => {
+                    let params = row["paramsSchema"].as_str().unwrap();
+                    assert_eq!(params, schema_file(typed.params));
+                    assert!(
+                        artifact_paths.contains(&format!("docs/protocol/schemas/{params}")),
+                        "{method} references {params}, which is not a generated artifact"
+                    );
+                    if let Some(result) = typed.result {
+                        let result_file = row["resultSchema"].as_str().unwrap();
+                        assert_eq!(result_file, schema_file(result));
+                        assert!(artifact_paths
+                            .contains(&format!("docs/protocol/schemas/{result_file}")));
+                    }
+                }
+                None => {
+                    assert!(
+                        row.get("paramsSchema").is_none(),
+                        "{method} is untyped but references a params schema"
+                    );
+                }
+            }
         }
     }
 
