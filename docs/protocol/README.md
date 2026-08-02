@@ -7,8 +7,8 @@ single source of truth is the **`bridge-protocol`** crate
 `src/protocol/generated/` is generated from it.
 
 ```
-Regenerate artifacts:  cargo run -p bridge-protocol --bin generate-protocol-artifacts
-Drift is test-enforced: cargo test -p bridge-protocol
+Regenerate artifacts:   cargo run --manifest-path src-tauri/Cargo.toml -p bridge-protocol --bin generate-protocol-artifacts
+Drift is test-enforced: cargo test --manifest-path src-tauri/Cargo.toml -p bridge-protocol
 ```
 
 ## Shape
@@ -26,9 +26,21 @@ bidirectional events — is RPC-shaped, so REST+SSE was considered and rejected.
 ## Envelope
 
 Requests, responses, and notifications follow JSON-RPC 2.0
-(`docs/protocol/schemas/rpc-*.json`). Request ids are client-chosen strings or
-numbers and are echoed back verbatim. A response carries exactly one of
-`result` or `error`.
+(`docs/protocol/schemas/rpc-*.json`), and the contract types enforce the spec
+rather than merely describing it:
+
+- `jsonrpc` is the literal `"2.0"` — any other value fails to decode.
+- Request ids are client-chosen strings or numbers, echoed back verbatim.
+  Numeric ids must stay within JavaScript's safe-integer range
+  (±(2^53 − 1)); the wire rejects anything larger, because a browser client
+  would silently round it and correlate the response with the wrong request.
+- `params`, when present, must be an object or an array. A literal
+  `"params": null` is rejected — omit the key instead.
+- A response is a **union** of success and failure: exactly one of `result`
+  or `error`, never both, never neither. `"result": null` is a valid success
+  (commands returning nothing succeed with it).
+- A response id may be `null` when the request id could not be recovered —
+  the parse-error and invalid-request cases the spec calls out.
 
 ## Handshake
 

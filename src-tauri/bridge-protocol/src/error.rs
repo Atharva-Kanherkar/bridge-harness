@@ -136,10 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_codes_cover_every_bridge_error_variant() {
-        // BridgeError has six variants: Invalid, Git, Db, Io, Adapter, Pty.
-        // The 1000-range must stay variant-for-variant with it so the host
-        // mapping is total; extend both together.
+    fn runtime_code_values_are_pinned() {
+        // The 1000-range is variant-for-variant with bridge_core::BridgeError.
+        // The compiler-enforced guard is the exhaustive `From<&BridgeError>`
+        // impl in bridge-core (this crate cannot depend on bridge-core); this
+        // test only pins the numeric values as contract.
         let runtime: Vec<_> = ErrorCode::ALL
             .into_iter()
             .filter(|entry| (1000..2000).contains(&entry.code()))

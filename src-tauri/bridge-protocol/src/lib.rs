@@ -18,8 +18,9 @@ pub mod methods;
 pub mod tsgen;
 
 pub use envelope::{
-    CancelParams, RequestId, RpcError, RpcNotification, RpcRequest, RpcResponse, CANCEL_METHOD,
-    JSONRPC_VERSION,
+    CancelParams, InvalidParams, JsonRpcVersion, Params, RequestId, ResponseId, RpcError,
+    RpcFailure, RpcNotification, RpcRequest, RpcResponse, RpcSuccess, CANCEL_METHOD,
+    JSONRPC_VERSION, MAX_SAFE_INTEGER,
 };
 pub use error::ErrorCode;
 pub use handshake::{
