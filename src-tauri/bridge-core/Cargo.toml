@@ -1,9 +1,13 @@
 [package]
 name = "bridge-core"
-version = "0.1.0"
+version = { workspace = true }
 description = "Tauri-free runtime for Bridge: stores, adapters, PTY sessions, policy, and supervision"
 authors = ["Bridge"]
 edition = "2021"
+# Embedded assets (browser-skills, prompts, test fixtures) live at the repo
+# root, outside this package — the crate is a workspace-internal library and
+# cannot be packaged standalone.
+publish = false
 
 [dependencies]
 serde = { workspace = true }

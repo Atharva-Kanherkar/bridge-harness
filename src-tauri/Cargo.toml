@@ -1,6 +1,12 @@
 [workspace]
 members = ["bridge-core"]
 
+# Single version for every crate in the workspace: bridge-core reports
+# CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
+# never drift from the application version.
+[workspace.package]
+version = "0.1.0"
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -12,7 +18,7 @@ tempfile = "3"
 
 [package]
 name = "bridge-deck"
-version = "0.1.0"
+version = { workspace = true }
 description = "Local control room for supervised coding-agent workspaces"
 authors = ["Bridge"]
 edition = "2021"

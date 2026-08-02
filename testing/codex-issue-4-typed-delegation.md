@@ -30,7 +30,7 @@
 - `lib.rs` launch paths consume only `DelegationRequest`; no `task` or `context` field crosses the parser boundary.
 - Parent notification serializes a validated typed worker result; fallback notification explicitly preserves raw text as unstructured.
 - Repair requests are sent through the existing runtime for the same child session and are not implemented by spawning a formatter worker.
-- `cargo test --manifest-path src-tauri/Cargo.toml delegation` and the full Rust suite pass.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace delegation` and the full Rust suite pass.
 
 ## Smoke Tests
 
@@ -47,4 +47,4 @@
 
 - N/A for cURL — delegation uses local structured harness processes.
 - Inspect the orchestrator/worker briefing strings and confirm workers cannot directly delegate.
-- Confirm `rg 'MAX_DEPTH\s*:\s*i64\s*=\s*3|\.task|\.context' src-tauri/src/delegation.rs src-tauri/src/lib.rs` finds no reachable legacy internal fields or depth-three default.
+- Confirm `rg 'MAX_DEPTH\s*:\s*i64\s*=\s*3|\.task|\.context' src-tauri/bridge-core/src/delegation.rs src-tauri/src/lib.rs` finds no reachable legacy internal fields or depth-three default.

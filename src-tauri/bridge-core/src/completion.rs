@@ -305,8 +305,8 @@ pub fn plan(input: PlanInput) -> EvalPlan {
     let mut commands = BTreeSet::new();
     commands.extend(input.repository_commands);
     if touches(&[".rs", "cargo.toml"]) {
-        commands.insert("cargo test --manifest-path src-tauri/Cargo.toml".into());
-        commands.insert("cargo check --manifest-path src-tauri/Cargo.toml".into());
+        commands.insert("cargo test --manifest-path src-tauri/Cargo.toml --workspace".into());
+        commands.insert("cargo check --manifest-path src-tauri/Cargo.toml --workspace".into());
     }
     if touches(&[".ts", ".tsx", ".js", ".jsx", "package.json"]) {
         commands.insert("bun run test".into());
@@ -1148,6 +1148,15 @@ mod tests {
         assert!(result.checks.iter().any(|check| check.kind == EvalKind::Scrutiny && check.different_model_family));
         assert!(result.checks.iter().any(|check| check.kind == EvalKind::UserTesting && check.required_capabilities.contains(&"browser".into())));
         assert!(result.checks.iter().any(|check| check.command.as_deref() == Some("bun run build")));
+    }
+
+    #[test]
+    fn rust_changes_verify_the_whole_cargo_workspace() {
+        // Without --workspace, cargo at the workspace root only exercises the
+        // bridge-deck shell and silently skips every bridge-core test.
+        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["Worker pool retries stalled workers".into()], changed_paths: vec!["src-tauri/bridge-core/src/worker_pool.rs".into()], repository_commands: vec![] });
+        assert!(result.checks.iter().any(|check| check.command.as_deref() == Some("cargo test --manifest-path src-tauri/Cargo.toml --workspace")));
+        assert!(result.checks.iter().any(|check| check.command.as_deref() == Some("cargo check --manifest-path src-tauri/Cargo.toml --workspace")));
     }
 
     #[test]

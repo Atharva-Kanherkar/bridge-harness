@@ -140,6 +140,166 @@ impl BridgeCore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_config;
+    use rusqlite::params;
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Point OpenCode at a nonexistent executable so background discovery
+    /// fails immediately instead of spawning a real OpenCode server; the
+    /// completion callback still fires on the failure path.
+    fn seed_fast_failing_opencode(db: &rusqlite::Connection, data_dir: &Path) {
+        let mut opencode = agent_config::state(db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .find(|harness| harness.id == "opencode")
+            .unwrap();
+        opencode.advanced = serde_json::json!({
+            "executablePath": data_dir.join("missing-opencode").to_string_lossy(),
+        });
+        agent_config::save_harness(db, opencode).unwrap();
+    }
+
+    fn seeded_config(data_dir: &Path) -> BootConfig {
+        let db = crate::store::open(&data_dir.join("bridge.db")).unwrap();
+        seed_fast_failing_opencode(&db, data_dir);
+        BootConfig {
+            data_dir: data_dir.to_path_buf(),
+            browser_extension_path: data_dir.join("no-extension"),
+            on_opencode_discovered: None,
+        }
+    }
+
+    #[test]
+    fn boot_prepares_stores_and_derived_paths_under_the_data_dir() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let core = BridgeCore::boot(seeded_config(data_dir)).unwrap();
+
+        assert!(data_dir.join("bridge.db").is_file());
+        assert!(data_dir.join("bridge-telemetry.db").is_file());
+        assert_eq!(core.database_path, data_dir.join("bridge.db"));
+        assert_eq!(core.telemetry_database_path, data_dir.join("bridge-telemetry.db"));
+        assert_eq!(core.worktrees, data_dir.join("worktrees"));
+        assert_eq!(core.snapshot_dir, data_dir.join("history-snapshots"));
+        assert_eq!(core.skill_store, data_dir.join("skills"));
+        assert!(core.runtimes.lock().unwrap().is_empty());
+        assert!(core.adapters.lock().unwrap().is_empty());
+        assert!(core.delegations.lock().unwrap().last_turn_by_session.is_empty());
+        // Both stores must be usable connections, not just files on disk.
+        let sessions: i64 = core.db.lock().unwrap()
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sessions, 0);
+    }
+
+    #[test]
+    fn boot_fails_when_the_data_dir_is_unusable() {
+        let fixture = tempfile::tempdir().unwrap();
+        let not_a_dir = fixture.path().join("occupied");
+        std::fs::write(&not_a_dir, b"file, not a directory").unwrap();
+        let result = BridgeCore::boot(BootConfig {
+            data_dir: not_a_dir,
+            browser_extension_path: fixture.path().join("no-extension"),
+            on_opencode_discovered: None,
+        });
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn boot_recovers_orphaned_adapter_processes_then_reconciles_workspaces() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let mut orphan = {
+            let db = crate::store::open(&data_dir.join("bridge.db")).unwrap();
+            seed_fast_failing_opencode(&db, data_dir);
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/boot-test','now')", []).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/boot-test-w','working','now')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,active_turn_id) VALUES('s','w','codex','Session','working','reported','turn')", []).unwrap();
+            let mut command = std::process::Command::new("sleep");
+            command.arg("30");
+            crate::adapters::configure_process_group(&mut command);
+            let child = command.spawn().unwrap();
+            crate::session_supervisor::SessionSupervisor::track_adapter_process(&db, "s", child.id()).unwrap();
+            child
+        };
+
+        let core = BridgeCore::boot(BootConfig {
+            data_dir: data_dir.to_path_buf(),
+            browser_extension_path: data_dir.join("no-extension"),
+            on_opencode_discovered: None,
+        })
+        .unwrap();
+        let _ = orphan.wait();
+
+        let db = core.db.lock().unwrap();
+        let (pid, status): (Option<i64>, String) = db
+            .query_row("SELECT adapter_pid,status FROM sessions WHERE id='s'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(pid, None, "boot must clear tracked orphan PIDs");
+        // store::open already marks live sessions stopped before recovery runs,
+        // so the orphaned session lands on 'stopped' rather than 'failed'.
+        assert_eq!(status, "stopped");
+        assert!(db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id='s' AND kind='adapter.orphan_killed')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        // Reconciliation runs last: the workspace seeded as 'working' must end
+        // 'ready' because its only session is stopped, not live.
+        let workspace: String = db
+            .query_row("SELECT status FROM workspaces WHERE id='w'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(workspace, "ready");
+    }
+
+    #[test]
+    fn boot_fires_the_opencode_discovery_callback() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let mut config = seeded_config(data_dir);
+        let (sender, receiver) = mpsc::channel();
+        config.on_opencode_discovered = Some(Box::new(move || {
+            let _ = sender.send(());
+        }));
+        let _core = BridgeCore::boot(config).unwrap();
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("discovery completion callback should fire even when discovery fails");
+    }
+
+    #[test]
+    fn boot_reopens_an_existing_database_without_disturbing_rows() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        {
+            let db = crate::store::open(&data_dir.join("bridge.db")).unwrap();
+            seed_fast_failing_opencode(&db, data_dir);
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/boot-reopen','now')", []).unwrap();
+        }
+        let core = BridgeCore::boot(BootConfig {
+            data_dir: data_dir.to_path_buf(),
+            browser_extension_path: data_dir.join("no-extension"),
+            on_opencode_discovered: None,
+        })
+        .unwrap();
+        let name: String = core.db.lock().unwrap()
+            .query_row("SELECT name FROM projects WHERE id='p'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(name, "Demo");
+    }
+}
+
 pub fn start_health_server(
     database: PathBuf,
     adapters: Vec<AdapterDescriptor>,

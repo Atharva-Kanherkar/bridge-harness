@@ -23,8 +23,8 @@
 
 ## Integration / Functional Tests
 
-- `cargo test --manifest-path src-tauri/Cargo.toml store` passes against temporary on-disk databases.
-- `cargo test --manifest-path src-tauri/Cargo.toml` passes without changing compatibility replay behavior.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace store` passes against temporary on-disk databases.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace` passes without changing compatibility replay behavior.
 - Failure injected into a transactional migration leaves no partial schema version or partial objects.
 
 ## Smoke Tests
@@ -41,4 +41,4 @@
 
 - N/A for cURL — no HTTP API changes.
 - Inspect a migrated fixture with `sqlite3 bridge.db '.schema'` and confirm schema versions, five new tables, required indexes, backfilled chains, and foreign keys.
-- Confirm `rg 'let _ = connection.execute\("ALTER TABLE' src-tauri/src/store.rs` returns no matches.
+- Confirm `rg 'let _ = connection.execute\("ALTER TABLE' src-tauri/bridge-core/src/store.rs` returns no matches.

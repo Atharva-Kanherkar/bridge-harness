@@ -2,7 +2,7 @@
 
 ## Functional Behavior
 
-- `src-tauri/src/policy.rs` is a pure deterministic gate with no model/harness call.
+- `src-tauri/bridge-core/src/policy.rs` is a pure deterministic gate with no model/harness call.
 - Every worker request produces exactly one typed `RouteDecision`: `ExecuteInParent`, `ResumeWorker`, `SpawnWorker`, `Queue`, `Reject`, or `RequireUserApproval`, with a stable `RouteReason`.
 - Default limits are enforced: 2 concurrent workers, 1 writing worker per worktree, 3 workers per orchestrator turn, 1 strong worker per turn, 1 automatic retry, and depth 1.
 - Read-only workers may run concurrently. Overlapping writers queue. Disjoint isolated writers receive a child-worktree requirement. Shared/full writers remain single-writer.
