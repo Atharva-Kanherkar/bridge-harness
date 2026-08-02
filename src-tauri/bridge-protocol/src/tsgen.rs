@@ -13,6 +13,11 @@ use serde_json::{json, Map, Value};
 use crate::envelope::{CancelParams, RpcNotification, RpcRequest, RpcResponse};
 use crate::error::ErrorCode;
 use crate::handshake::{HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION};
+use crate::messages::{
+    AddProjectParams, ArchiveWorkspaceParams, ConnectWorkspaceFolderParams,
+    CreateWorkspaceParams, ListWorkspaceFilesParams, ListWorkspaceFilesResult,
+    RefreshWorkspaceParams, TYPED_METHODS,
+};
 use crate::methods::MethodName;
 use crate::{CANCEL_METHOD, HANDSHAKE_METHOD, JSONRPC_VERSION};
 
@@ -33,6 +38,22 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         ("CancelParams", serde_json::to_value(schema_for!(CancelParams)).unwrap()),
         ("HandshakeRequest", serde_json::to_value(schema_for!(HandshakeRequest)).unwrap()),
         ("HandshakeResponse", serde_json::to_value(schema_for!(HandshakeResponse)).unwrap()),
+        ("AddProjectParams", serde_json::to_value(schema_for!(AddProjectParams)).unwrap()),
+        ("CreateWorkspaceParams", serde_json::to_value(schema_for!(CreateWorkspaceParams)).unwrap()),
+        (
+            "ConnectWorkspaceFolderParams",
+            serde_json::to_value(schema_for!(ConnectWorkspaceFolderParams)).unwrap(),
+        ),
+        (
+            "ListWorkspaceFilesParams",
+            serde_json::to_value(schema_for!(ListWorkspaceFilesParams)).unwrap(),
+        ),
+        (
+            "ListWorkspaceFilesResult",
+            serde_json::to_value(schema_for!(ListWorkspaceFilesResult)).unwrap(),
+        ),
+        ("RefreshWorkspaceParams", serde_json::to_value(schema_for!(RefreshWorkspaceParams)).unwrap()),
+        ("ArchiveWorkspaceParams", serde_json::to_value(schema_for!(ArchiveWorkspaceParams)).unwrap()),
     ]
 }
 
@@ -275,7 +296,24 @@ pub fn typescript() -> String {
     for code in ErrorCode::ALL {
         out.push_str(&format!("  {}: {},\n", code.name(), code.code()));
     }
-    out.push_str("} as const;\n");
+    out.push_str("} as const;\n\n");
+
+    out.push_str("/** Params types for methods whose payloads are contracted so far. */\n");
+    out.push_str("export interface BridgeMethodParams {\n");
+    for entry in TYPED_METHODS {
+        out.push_str(&format!("  \"{}\": {};\n", entry.method.as_str(), entry.params));
+    }
+    out.push_str("}\n\n");
+    out.push_str(
+        "/** Result types for contracted methods that do not return the BridgeState snapshot. */\n",
+    );
+    out.push_str("export interface BridgeMethodResults {\n");
+    for entry in TYPED_METHODS {
+        if let Some(result) = entry.result {
+            out.push_str(&format!("  \"{}\": {};\n", entry.method.as_str(), result));
+        }
+    }
+    out.push_str("}\n");
 
     for (name, schema) in &definitions {
         out.push('\n');
@@ -337,6 +375,13 @@ mod tests {
         assert!(typescript.contains("export type ResponseId = RequestId | null;"));
         assert!(typescript.contains("\"sessions/send_turn\""));
         assert!(typescript.contains("incompatible_protocol: 2000,"));
+        assert!(typescript.contains("export interface BridgeMethodParams {"));
+        assert!(typescript
+            .contains("\"workspaces/connect_workspace_folder\": ConnectWorkspaceFolderParams;"));
+        assert!(typescript
+            .contains("\"workspaces/list_workspace_files\": ListWorkspaceFilesResult;"));
+        assert!(typescript.contains("export interface ConnectWorkspaceFolderParams {"));
+        assert!(typescript.contains("export type ListWorkspaceFilesResult = string[];"));
         for method in MethodName::ALL {
             assert!(
                 typescript.contains(method.as_str()),
@@ -386,6 +431,34 @@ mod tests {
             (
                 "docs/protocol/schemas/handshake-response.json",
                 include_str!("../../../docs/protocol/schemas/handshake-response.json"),
+            ),
+            (
+                "docs/protocol/schemas/add-project-params.json",
+                include_str!("../../../docs/protocol/schemas/add-project-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/create-workspace-params.json",
+                include_str!("../../../docs/protocol/schemas/create-workspace-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/connect-workspace-folder-params.json",
+                include_str!("../../../docs/protocol/schemas/connect-workspace-folder-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/list-workspace-files-params.json",
+                include_str!("../../../docs/protocol/schemas/list-workspace-files-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/list-workspace-files-result.json",
+                include_str!("../../../docs/protocol/schemas/list-workspace-files-result.json"),
+            ),
+            (
+                "docs/protocol/schemas/refresh-workspace-params.json",
+                include_str!("../../../docs/protocol/schemas/refresh-workspace-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/archive-workspace-params.json",
+                include_str!("../../../docs/protocol/schemas/archive-workspace-params.json"),
             ),
             (
                 "docs/protocol/schemas/methods.json",

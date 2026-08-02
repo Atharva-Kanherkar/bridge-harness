@@ -71,7 +71,10 @@ Domains: `approvals`, `browser`, `completion`, `config`, `health`,
 
 Per-method typed params/results land domain by domain as command bodies move
 onto `BridgeCore`; until a domain is typed, params mirror the command's
-current serde signature.
+current serde signature. Typed so far: **projects** and **workspaces** (see
+`BridgeMethodParams` / `BridgeMethodResults` in the generated TypeScript).
+Methods returning the aggregate `BridgeState` snapshot keep untyped results
+until the snapshot DTO itself is contracted — that is its own slice.
 
 ## Cancellation
 

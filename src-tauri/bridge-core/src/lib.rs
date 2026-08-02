@@ -46,6 +46,7 @@ pub mod worker_lifecycle;
 pub mod worker_pool;
 pub mod worker_sandbox;
 pub mod workspace_files;
+pub mod workspaces;
 pub mod worktree_coordinator;
 
 pub use runtime::{
