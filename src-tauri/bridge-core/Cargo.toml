@@ -1,0 +1,30 @@
+[package]
+name = "bridge-core"
+version = { workspace = true }
+description = "Tauri-free runtime for Bridge: stores, adapters, PTY sessions, policy, and supervision"
+authors = ["Bridge"]
+edition = "2021"
+# Embedded assets (browser-skills, prompts, test fixtures) live at the repo
+# root, outside this package — the crate is a workspace-internal library and
+# cannot be packaged standalone.
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+portable-pty = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+which = "7"
+thiserror = "2"
+tiny_http = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+regex = "1"
+reqwest = { version = "0.13", features = ["blocking", "json"] }
+zeroize = "1"
+cap-std = "4.0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

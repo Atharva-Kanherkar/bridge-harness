@@ -190,7 +190,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bridge-deck"
+name = "bridge-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -203,15 +203,29 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
  "tempfile",
  "thiserror 2.0.18",
  "tiny_http",
  "uuid",
  "which",
  "zeroize",
+]
+
+[[package]]
+name = "bridge-deck"
+version = "0.1.0"
+dependencies = [
+ "bridge-core",
+ "chrono",
+ "portable-pty",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

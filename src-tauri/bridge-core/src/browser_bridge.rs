@@ -1133,9 +1133,9 @@ pub fn route_browser(request: BrowserRouteRequest) -> BrowserRouteDecision {
 
 pub fn bundled_skills() -> Vec<BrowserSkill> {
     [
-        include_str!("../../browser-skills/github.json"),
-        include_str!("../../browser-skills/google-workspace.json"),
-        include_str!("../../browser-skills/notion.json"),
+        include_str!("../../../browser-skills/github.json"),
+        include_str!("../../../browser-skills/google-workspace.json"),
+        include_str!("../../../browser-skills/notion.json"),
     ]
     .iter()
     .filter_map(|source| serde_json::from_str(source).ok())

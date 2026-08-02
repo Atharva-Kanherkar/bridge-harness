@@ -14,7 +14,7 @@
 ## Integration / Functional Tests
 - `bun run test` passes.
 - `bun run build` passes.
-- `cargo check --manifest-path src-tauri/Cargo.toml` passes.
+- `cargo check --manifest-path src-tauri/Cargo.toml --workspace` passes.
 
 ## Smoke Tests
 - `http://127.0.0.1:4317/health` returns HTTP 200 with `ok: true`.

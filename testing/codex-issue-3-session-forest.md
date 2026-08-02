@@ -2,7 +2,7 @@
 
 ## Functional Behavior
 
-- `src-tauri/src/session_forest.rs` is the typed, append-only API over `session_entries` and `session_heads`.
+- `src-tauri/bridge-core/src/session_forest.rs` is the typed, append-only API over `session_entries` and `session_heads`.
 - Every durable entry kind listed in issue #1 has a typed enum value and kind-specific payload validation; compatibility-only legacy kinds may be read but cannot be appended through the typed API.
 - Appending uses the active head by default; appending from an earlier entry creates a branch without changing or deleting prior entries, and sequence remains global per-session insertion order.
 - Navigation changes only `session_heads.active_entry_id`; no entry row is updated or deleted and no filesystem operation occurs.
@@ -26,8 +26,8 @@
 
 - The module uses the schema and store types landed in #2 and is registered in the Tauri crate.
 - A migrated compatibility forest remains readable; known durable kinds validate while legacy-only kinds remain inspectable but cannot be newly appended.
-- `cargo test --manifest-path src-tauri/Cargo.toml session_forest` passes.
-- `cargo test --manifest-path src-tauri/Cargo.toml` passes.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace session_forest` passes.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace` passes.
 
 ## Smoke Tests
 
@@ -43,4 +43,4 @@
 
 - N/A for cURL — no HTTP API changes.
 - Inspect `session_entries` before and after navigation and confirm only `session_heads` changes.
-- Confirm `rg 'UPDATE session_entries|DELETE FROM session_entries' src-tauri/src/session_forest.rs` returns no production mutation statements.
+- Confirm `rg 'UPDATE session_entries|DELETE FROM session_entries' src-tauri/bridge-core/src/session_forest.rs` returns no production mutation statements.

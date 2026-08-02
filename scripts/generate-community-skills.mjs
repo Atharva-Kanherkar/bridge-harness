@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, posix } from "node:path";
 
-const OUTPUT = new URL("../src-tauri/src/community_skills.json", import.meta.url);
+const OUTPUT = new URL("../src-tauri/bridge-core/src/community_skills.json", import.meta.url);
 const LIMIT = 60;
 const MAX_PER_SOURCE = 3;
 const MAX_FILES_PER_SKILL = 256;

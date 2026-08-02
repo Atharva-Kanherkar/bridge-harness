@@ -6,13 +6,13 @@ use std::{collections::HashMap, io::Read, sync::Mutex, time::Duration};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-pub(crate) const PROXY_PREFIX: &str = "/credential-proxy/";
-pub(crate) const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+pub const PROXY_PREFIX: &str = "/credential-proxy/";
+pub const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 /// Header the wrapped harness must present to authorize a proxy call. The token
 /// is delivered only through in-memory harness instructions, never through the
 /// chat turn, so knowledge of the persisted `[secret:sec_...]` reference alone
 /// is not enough to replay a call.
-pub(crate) const PROXY_AUTH_HEADER: &str = "x-bridge-proxy-auth";
+pub const PROXY_AUTH_HEADER: &str = "x-bridge-proxy-auth";
 
 /// Compare two tokens without leaking length-independent timing.
 fn tokens_match(expected: &str, provided: &str) -> bool {
@@ -33,7 +33,7 @@ struct SecretRecord {
     value: Zeroizing<String>,
 }
 
-pub(crate) struct ProxyRequest {
+pub struct ProxyRequest {
     pub session_id: String,
     pub reference: String,
     pub method: String,
@@ -43,13 +43,13 @@ pub(crate) struct ProxyRequest {
     pub body: Vec<u8>,
 }
 
-pub(crate) struct ProxyResponse {
+pub struct ProxyResponse {
     pub status: u16,
     pub content_type: Option<String>,
     pub body: Vec<u8>,
 }
 
-pub(crate) struct CredentialBroker {
+pub struct CredentialBroker {
     records: Mutex<HashMap<String, SecretRecord>>,
     client: Client,
     upstream: String,

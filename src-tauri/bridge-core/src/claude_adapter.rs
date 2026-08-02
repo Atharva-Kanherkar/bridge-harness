@@ -247,7 +247,7 @@ fn sidecar_entry() -> Result<PathBuf, BridgeError> {
         }
     }
     candidates
-        .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sidecar/claude-agent/index.mjs"));
+        .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar/claude-agent/index.mjs"));
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())

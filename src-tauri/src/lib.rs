@@ -1,47 +1,23 @@
-mod adapters;
-mod agent;
-mod agent_config;
-mod binary;
-mod browser_bridge;
-mod claude_adapter;
-mod codex_adapter;
-mod compaction_controller;
-pub mod completion;
-mod context;
-mod credential_broker;
-mod delegation;
-mod git;
-mod handoff;
-pub mod learning_job;
-pub mod learning_router;
-mod marketplace;
-mod model;
-pub mod model_profiles;
-mod opencode_adapter;
-mod orchestrator;
-mod policy;
-mod policy_coordinator;
-pub mod policy_replay;
-mod restoration;
-pub mod router_replay;
-pub mod routing_policy;
-mod prompt_compiler;
-mod secret_interception;
-mod session_forest;
-mod session_supervisor;
-mod skill_marketplace;
-mod slash;
-mod store;
-mod worker_guard;
-mod worker_lifecycle;
-mod worker_pool;
-mod worker_sandbox;
-mod workspace_files;
-mod worktree_coordinator;
+pub use bridge_core::{
+    completion, learning_job, learning_router, model_profiles, policy_replay, router_replay,
+    routing_policy,
+};
 
+use bridge_core::model::*;
+use bridge_core::{
+    adapters, agent, agent_config, binary, browser_bridge, claude_adapter,
+    compaction_controller, delegation, git, handoff, marketplace,
+    opencode_adapter, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
+    secret_interception, session_forest, session_supervisor, skill_marketplace, slash, store,
+    worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
+    worktree_coordinator,
+};
+use bridge_core::{
+    start_health_server, BootConfig, BridgeCore, BridgeError, RuntimeSession,
+    WORKER_STALL_TIMEOUT_SECONDS,
+};
 use chrono::Utc;
-use model::*;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
@@ -54,32 +30,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
-use thiserror::Error;
 use uuid::Uuid;
-
-#[derive(Debug, Error)]
-pub enum BridgeError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("Git: {0}")]
-    Git(String),
-    #[error("Database: {0}")]
-    Db(#[from] rusqlite::Error),
-    #[error("I/O: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Adapter: {0}")]
-    Adapter(String),
-    #[error("PTY: {0}")]
-    Pty(String),
-}
-impl Serialize for BridgeError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
 
 fn compile_orchestrator_prompt(
     configured_prompt: &str,
@@ -176,62 +127,6 @@ fn cross_harness_reuse_marker(
     }
 }
 
-struct RuntimeSession {
-    writer: Box<dyn Write + Send>,
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
-}
-struct AppState {
-    db: Mutex<Connection>,
-    telemetry_db: Mutex<Connection>,
-    runtimes: Mutex<HashMap<String, RuntimeSession>>,
-    adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
-    adapter_registry: Arc<adapters::AdapterRegistry>,
-    delegations: Mutex<DelegationState>,
-    worktrees: PathBuf,
-    database_path: PathBuf,
-    telemetry_database_path: PathBuf,
-    snapshot_dir: PathBuf,
-    skill_store: PathBuf,
-    skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
-    credential_broker: Arc<credential_broker::CredentialBroker>,
-    browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
-    /// Last time each session produced adapter output, used by the worker
-    /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
-    /// only — process death is already handled by the reader-thread EOF path.
-    worker_activity: Mutex<HashMap<String, std::time::Instant>>,
-    /// Last heartbeat copied into `worker_runtime.updated_at` for live UI
-    /// visibility. Kept separate so frequent streaming frames only write to
-    /// SQLite at a bounded cadence.
-    worker_activity_persisted: Mutex<HashMap<String, std::time::Instant>>,
-}
-
-/// A worker actively `working` that produces *no* adapter output at all for this
-/// long is treated as hung. The window is deliberately generous: healthy agents
-/// stream reasoning/tool frames far more often, so total silence this long is a
-/// strong stall signal, while a legitimate long build/test is very unlikely to
-/// emit nothing for ten minutes. Death is still caught immediately on EOF; this
-/// only covers the alive-but-silent case.
-const WORKER_STALL_TIMEOUT_SECONDS: u64 = 600;
-
-/// Bookkeeping for the multi-agent delegation tree.
-#[derive(Default)]
-struct DelegationState {
-    /// Tracks the single same-session repair allowed for malformed worker output.
-    result_repairs: delegation::ResultRepairTracker,
-    /// Last observed provider turn per session, retained until the next turn
-    /// so late usage events keep the originating user-request budget key.
-    last_turn_by_session: HashMap<String, String>,
-    /// Per-session count of automatic corrective turns sent after a rejected
-    /// `bridge-delegate` request, so a persistently malformed orchestrator turn
-    /// cannot drive an unbounded correction loop.
-    invalid_request_corrections: HashMap<String, u32>,
-    /// Read-only worker session → tracked Git state captured before process start.
-    read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
-    /// OS-level boundary and output directory retained until the worker exits.
-    read_only_sandboxes: HashMap<String, worker_sandbox::ReadOnlySandbox>,
-}
-
 #[derive(Serialize)]
 struct Health {
     ok: bool,
@@ -244,7 +139,7 @@ struct Health {
 }
 
 #[tauri::command]
-async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
+async fn health(state: State<'_, BridgeCore>) -> Result<Health, BridgeError> {
     let adapters = state.adapter_registry.descriptors();
     let opencode_available = adapters
         .iter()
@@ -268,13 +163,13 @@ async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
 
 #[tauri::command]
 async fn browser_bridge_state(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
     Ok(state.browser_bridge.snapshot())
 }
 
 #[tauri::command]
-async fn install_browser_native_host(state: State<'_, AppState>) -> Result<String, BridgeError> {
+async fn install_browser_native_host(state: State<'_, BridgeCore>) -> Result<String, BridgeError> {
     let supervisor = Arc::clone(&state.browser_bridge);
     tauri::async_runtime::spawn_blocking(move || {
         let executable = std::env::var_os("BRIDGE_BROWSER_HOST")
@@ -307,7 +202,7 @@ fn find_browser_host(directory: &Path) -> Option<PathBuf> {
 #[tauri::command]
 async fn browser_action(
     request: browser_bridge::BrowserActionRequest,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<String, BridgeError> {
     state.browser_bridge.issue(request)
 }
@@ -315,7 +210,7 @@ async fn browser_action(
 #[tauri::command]
 async fn set_browser_permission(
     permission: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     state.browser_bridge.set_permission(&permission)
 }
@@ -324,18 +219,18 @@ async fn set_browser_permission(
 async fn resolve_browser_approval(
     approval_id: String,
     allow: bool,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     state.browser_bridge.resolve_approval(&approval_id, allow)
 }
 
 #[tauri::command]
-async fn takeover_browser(state: State<'_, AppState>) -> Result<(), BridgeError> {
+async fn takeover_browser(state: State<'_, BridgeCore>) -> Result<(), BridgeError> {
     state.browser_bridge.takeover()
 }
 
 #[tauri::command]
-async fn detach_browser(state: State<'_, AppState>) -> Result<String, BridgeError> {
+async fn detach_browser(state: State<'_, BridgeCore>) -> Result<String, BridgeError> {
     state.browser_bridge.detach()
 }
 
@@ -354,7 +249,7 @@ async fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
 #[tauri::command]
 async fn configure_remote_browser(
     config: Option<browser_bridge::RemoteBrowserConfig>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     let supervisor = Arc::clone(&state.browser_bridge);
     tauri::async_runtime::spawn_blocking(move || supervisor.configure_remote(config))
@@ -367,7 +262,7 @@ async fn configure_remote_browser(
 #[tauri::command]
 async fn start_remote_browser(
     initial_url: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Value, BridgeError> {
     let supervisor = Arc::clone(&state.browser_bridge);
     tauri::async_runtime::spawn_blocking(move || supervisor.start_remote_session(&initial_url))
@@ -393,7 +288,7 @@ fn user_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-async fn live_available_capabilities(state: &AppState) -> std::collections::HashSet<String> {
+async fn live_available_capabilities(state: &BridgeCore) -> std::collections::HashSet<String> {
     let mut capabilities = state
         .adapter_registry
         .descriptors()
@@ -415,7 +310,7 @@ async fn live_available_capabilities(state: &AppState) -> std::collections::Hash
 
 #[tauri::command]
 async fn skill_catalog(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
     let home = user_home();
     let store = state.skill_store.clone();
@@ -428,7 +323,7 @@ async fn skill_catalog(
 async fn skill_suggestions(
     query: String,
     provider: skill_marketplace::SkillProvider,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
     let home = user_home();
     let store = state.skill_store.clone();
@@ -444,7 +339,7 @@ async fn preview_skill_change(
     skill_id: String,
     action: skill_marketplace::SkillAction,
     targets: Vec<skill_marketplace::SkillProvider>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<skill_marketplace::SkillPreview, BridgeError> {
     let home = user_home();
     let store = state.skill_store.clone();
@@ -467,7 +362,7 @@ async fn preview_skill_change(
 async fn execute_skill_change(
     confirmation_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Vec<skill_marketplace::SkillActionResult>, BridgeError> {
     let home = user_home();
     let store = state.skill_store.clone();
@@ -491,7 +386,7 @@ async fn marketplace_action(
     marketplace::execute_action(provider, &plugin_id, marketplace.as_deref(), action)
 }
 #[tauri::command]
-async fn get_state(state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
+async fn get_state(state: State<'_, BridgeCore>) -> Result<BridgeState, BridgeError> {
     store::state(&state.db.lock().unwrap())
 }
 
@@ -563,7 +458,7 @@ fn session_forest_snapshot_with_repository_state(
 #[tauri::command]
 async fn get_session_forest(
     session_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // run it on the macOS event loop or while holding the global SQLite lock.
@@ -646,7 +541,7 @@ async fn create_completion_plan(
     markdown_projection: Option<String>,
     markdown_committed: bool,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let (workspace_id, implementer_family): (String, Option<String>) = {
         let db = state.db.lock().unwrap();
@@ -707,7 +602,7 @@ async fn record_completion_check(
     attempt_id: String,
     run: completion::CheckRun,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
@@ -726,7 +621,7 @@ async fn waive_completion(
     check_ids: Vec<String>,
     reason: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = state.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
@@ -750,7 +645,7 @@ async fn waive_completion(
 async fn register_verifier_manifest(
     source: String,
     manifest: completion::VerifierManifest,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     completion::register_verifier_manifest(&state.db.lock().unwrap(), &source, &manifest)
 }
@@ -759,7 +654,7 @@ async fn register_verifier_manifest(
 async fn verifier_candidates(
     change_labels: Vec<String>,
     available_capabilities: Vec<String>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Vec<completion::VerifierCandidate>, BridgeError> {
     completion::verifier_candidates(
         &state.db.lock().unwrap(),
@@ -771,7 +666,7 @@ async fn verifier_candidates(
 #[tauri::command]
 async fn get_router_preferences(
     workspace_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
     learning_router::load_preferences(&state.db.lock().unwrap(), &workspace_id)
 }
@@ -780,7 +675,7 @@ async fn get_router_preferences(
 async fn update_router_preferences(
     workspace_id: String,
     preferences: learning_router::RouterPreferences,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
     let db = state.db.lock().unwrap();
     learning_router::save_preferences(&db, &workspace_id, &preferences)?;
@@ -789,14 +684,14 @@ async fn update_router_preferences(
 
 #[tauri::command]
 async fn get_model_setup(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
     model_profiles::setup_state(&state.db.lock().unwrap())
 }
 
 #[tauri::command]
 async fn recommended_model_profiles(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Vec<model_profiles::ModelProfileDraft>, BridgeError> {
     model_profiles::recommended_profiles(&state.adapter_registry.descriptors())
 }
@@ -804,7 +699,7 @@ async fn recommended_model_profiles(
 #[tauri::command]
 async fn save_model_profiles(
     profiles: Vec<model_profiles::ModelProfileDraft>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
     model_profiles::save_profiles(
         &state.db.lock().unwrap(),
@@ -815,7 +710,7 @@ async fn save_model_profiles(
 
 #[tauri::command]
 async fn reset_model_profiles(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
     model_profiles::reset_profiles(
         &state.db.lock().unwrap(),
@@ -825,7 +720,7 @@ async fn reset_model_profiles(
 
 #[tauri::command]
 async fn get_config_state(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::state(&state.db.lock().unwrap())
 }
@@ -833,7 +728,7 @@ async fn get_config_state(
 #[tauri::command]
 async fn save_harness_config(
     config: agent_config::HarnessConfig,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let opencode_settings = (config.id == "opencode")
         .then(|| agent_config::opencode_settings(Some(&config)))
@@ -853,7 +748,7 @@ async fn save_harness_config(
 #[tauri::command]
 async fn reset_harness_config(
     id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_harness(&state.db.lock().unwrap(), &id)?;
     if id == "opencode" {
@@ -885,7 +780,7 @@ fn opencode_directory(directory: Option<String>) -> Result<String, BridgeError> 
 #[tauri::command]
 async fn refresh_opencode_catalog(
     directory: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
     let registry = state.adapter_registry.clone();
@@ -900,7 +795,7 @@ async fn set_opencode_provider_api_key(
     provider_id: String,
     api_key: String,
     directory: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
     let registry = state.adapter_registry.clone();
@@ -917,7 +812,7 @@ async fn set_opencode_provider_api_key(
 async fn remove_opencode_provider_auth(
     provider_id: String,
     directory: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
     let registry = state.adapter_registry.clone();
@@ -933,7 +828,7 @@ async fn remove_opencode_provider_auth(
 #[tauri::command]
 async fn save_agent_config(
     agent: agent_config::AgentDefinition,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::save_agent(&state.db.lock().unwrap(), agent)
 }
@@ -941,7 +836,7 @@ async fn save_agent_config(
 #[tauri::command]
 async fn delete_agent_config(
     id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::delete_agent(&state.db.lock().unwrap(), &id)
 }
@@ -949,14 +844,14 @@ async fn delete_agent_config(
 #[tauri::command]
 async fn set_default_agent(
     id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     agent_config::set_default(&state.db.lock().unwrap(), &id)
 }
 
 #[tauri::command]
 async fn reset_all_config(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_all(&state.db.lock().unwrap())?;
     let registry = state.adapter_registry.clone();
@@ -970,7 +865,7 @@ async fn reset_all_config(
 
 #[tauri::command]
 async fn get_learning_state(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningState, BridgeError> {
     learning_job::learning_state(&state.db.lock().unwrap())
 }
@@ -979,7 +874,7 @@ async fn get_learning_state(
 async fn run_learning(
     trigger_kind: learning_job::LearningTriggerKind,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     if matches!(
         trigger_kind,
@@ -1005,7 +900,7 @@ async fn run_learning(
 async fn cancel_learning_run(
     run_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
     let _ = app.emit("learning-job-changed", &run);
@@ -1015,7 +910,7 @@ async fn cancel_learning_run(
 #[tauri::command]
 async fn update_learning_schedule(
     schedule: learning_job::LearningSchedule,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningSchedule, BridgeError> {
     learning_job::update_schedule(&state.db.lock().unwrap(), &schedule)
 }
@@ -1026,7 +921,7 @@ async fn register_learning_trigger(
     registration_id: String,
     credential_ref: Option<String>,
     expires_at: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     learning_job::register_trigger_with_expiry(
         &state.db.lock().unwrap(),
@@ -1050,7 +945,7 @@ async fn get_learning_trigger_instructions(
 async fn enable_learning_trigger(
     kind: learning_job::LearningTriggerKind,
     registration_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     learning_job::enable_trigger(&state.db.lock().unwrap(), kind, &registration_id)
 }
@@ -1059,7 +954,7 @@ async fn enable_learning_trigger(
 async fn approve_learning_run(
     run_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
     let _ = app.emit("learning-job-changed", &run);
@@ -1071,7 +966,7 @@ async fn rollback_routing_policy(
     target_version: i64,
     explanation: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningState, BridgeError> {
     learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
     let result = learning_job::learning_state(&state.db.lock().unwrap())?;
@@ -1084,7 +979,7 @@ async fn activate_session_entry(
     session_id: String,
     entry_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     let db = state.db.lock().unwrap();
     let snapshot = activate_session_entry_records(&db, &session_id, &entry_id)?;
@@ -1111,7 +1006,7 @@ fn activate_session_entry_records(
 }
 
 #[tauri::command]
-async fn add_project(path: String, state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
+async fn add_project(path: String, state: State<'_, BridgeCore>) -> Result<BridgeState, BridgeError> {
     let clean = git::validate_repo(Path::new(&path))?;
     let name = Path::new(&clean)
         .file_name()
@@ -1135,7 +1030,7 @@ async fn add_project(path: String, state: State<'_, AppState>) -> Result<BridgeS
 }
 
 /// Scratch working directory for a chat that has no connected folder/repo.
-fn chat_scratch_dir(state: &AppState, session_id: &str) -> PathBuf {
+fn chat_scratch_dir(state: &BridgeCore, session_id: &str) -> PathBuf {
     state
         .database_path
         .parent()
@@ -1157,7 +1052,7 @@ fn chat_label(title: Option<&str>) -> String {
 #[tauri::command]
 async fn create_workspace(
     title: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let name = title.trim();
     if name.is_empty() {
@@ -1185,7 +1080,7 @@ async fn create_chat(
     harness: Harness,
     model: Option<String>,
     title: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
     let id = Uuid::new_v4().to_string();
@@ -1337,7 +1232,7 @@ fn resolve_orchestrator_selection(
 async fn create_workspace_session(
     workspace_id: String,
     create_worktree: Option<bool>,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let id = Uuid::new_v4().to_string();
     let (selection, workspace_title, workspace_path, project_id) = {
@@ -1452,7 +1347,7 @@ async fn update_chat_model(
     harness: Harness,
     model: Option<String>,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let adapter_id = store::harness_name(&harness);
     if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
@@ -1522,7 +1417,7 @@ async fn update_chat_model(
     let stop_session_id = session_id.clone();
     let shutdown_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = shutdown_app.state::<AppState>();
+        let state = shutdown_app.state::<BridgeCore>();
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         };
@@ -1595,7 +1490,7 @@ struct SlashCommandResolve {
 /// can offer a labeled `/` menu.
 #[tauri::command]
 async fn list_slash_commands(
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
     let available: std::collections::HashSet<String> = state
         .adapter_registry
@@ -1613,7 +1508,7 @@ async fn list_slash_commands(
 async fn resolve_slash_command(
     text: String,
     session_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Option<SlashCommandResolve>, BridgeError> {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix('/') else {
@@ -1675,7 +1570,7 @@ async fn resolve_slash_command(
 async fn connect_workspace_folder(
     workspace_id: String,
     path: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let folder = Path::new(&path);
     if !folder.is_dir() {
@@ -1729,7 +1624,7 @@ async fn start_session(
     harness: Option<Harness>,
     model: Option<String>,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     // An explicit chat choice wins. Without one, the persisted Standard
     // orchestrator profile remains the default.
@@ -2157,7 +2052,7 @@ async fn start_session(
 async fn start_chat(
     session_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
         String,
@@ -2427,7 +2322,7 @@ fn spawn_reader_thread(
 ) {
     thread::spawn(move || {
         let tracks_worker = store::worker_runtime(
-            &app.state::<AppState>().db.lock().unwrap(),
+            &app.state::<BridgeCore>().db.lock().unwrap(),
             &session_id,
         )
         .ok()
@@ -2455,18 +2350,18 @@ fn spawn_reader_thread(
             }
         }
         if tracks_worker {
-            app.state::<AppState>()
+            app.state::<BridgeCore>()
                 .worker_activity
                 .lock()
                 .unwrap()
                 .remove(&session_id);
-            app.state::<AppState>()
+            app.state::<BridgeCore>()
                 .worker_activity_persisted
                 .lock()
                 .unwrap()
                 .remove(&session_id);
         }
-        let state = app.state::<AppState>();
+        let state = app.state::<BridgeCore>();
         let is_current_launch = state
             .db
             .lock()
@@ -2550,7 +2445,7 @@ fn handle_agent_value(
         emit_account_usage(app, "codex", rate_limits);
         return;
     }
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
     let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
@@ -3066,7 +2961,7 @@ fn send_internal_checkpoint_turn(
     session_id: &str,
     prompt: &str,
 ) -> Result<(), BridgeError> {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(session_id)
@@ -3084,7 +2979,7 @@ fn send_internal_checkpoint_turn(
 }
 
 fn finish_worker_checkpoint(app: &AppHandle, session_id: &str, reason: adapters::ShutdownReason) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let should_stop = {
         let db = state.db.lock().unwrap();
         let checkpointing = store::worker_runtime(&db, session_id)
@@ -3121,7 +3016,7 @@ fn finish_orchestrator_shutdown(
     session_id: &str,
     reason: adapters::ShutdownReason,
 ) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
         runtime.stop(reason);
     }
@@ -3148,7 +3043,7 @@ fn finish_orchestrator_shutdown(
 }
 
 fn run_compaction_recovery(app: &AppHandle, session_id: &str) -> Result<(), BridgeError> {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let workspace_path: String = {
         let db = state.db.lock().unwrap();
         db.query_row(
@@ -3447,7 +3342,7 @@ fn launch_worker_outcome(
     directive: &delegation::DelegationRequest,
     queue_on_block: bool,
 ) -> WorkerLaunchOutcome {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let routed = {
         let db = state.db.lock().unwrap();
         learning_router::route(
@@ -4425,7 +4320,7 @@ fn report_worker_launch_failure(
     phase: &str,
     reason: &str,
 ) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-launch-failed",
         "phase": phase,
@@ -4520,7 +4415,7 @@ fn launch_worker(
 }
 
 fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     if prepare_worker_failure_settlement(&state.db.lock().unwrap(), session_id).is_err() {
         let parent_session_id = state
             .db
@@ -4605,7 +4500,7 @@ fn prepare_worker_failure_settlement(db: &Connection, session_id: &str) -> Resul
 
 /// Frame a finished worker's final message and send it up to its parent.
 fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let meta: Option<(
         Option<String>,
         String,
@@ -4763,7 +4658,7 @@ fn settle_worker_after_result(
     child_session_id: &str,
     result: &delegation::WorkerResult,
 ) -> Result<bool, BridgeError> {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let current = state
         .db
         .lock()
@@ -4907,7 +4802,7 @@ fn settle_worker_after_result(
 /// If a worker process exits before ever reporting, tell its parent so the
 /// parent is not left waiting on a child that will never answer.
 /// Refresh a session's liveness heartbeat for the stall watchdog.
-fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
+fn reset_worker_heartbeat(state: &BridgeCore, session_id: &str) {
     state
         .worker_activity
         .lock()
@@ -4916,7 +4811,7 @@ fn reset_worker_heartbeat(state: &AppState, session_id: &str) {
 }
 
 fn record_worker_activity(app: &AppHandle, session_id: &str) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     reset_worker_heartbeat(&state, session_id);
     let should_persist = {
         let mut persisted = state.worker_activity_persisted.lock().unwrap();
@@ -4937,7 +4832,7 @@ fn record_worker_activity(app: &AppHandle, session_id: &str) {
 }
 
 /// Seconds since a session last produced output, if it is being tracked.
-fn worker_silence_secs(state: &AppState, session_id: &str) -> Option<u64> {
+fn worker_silence_secs(state: &BridgeCore, session_id: &str) -> Option<u64> {
     state
         .worker_activity
         .lock()
@@ -4950,7 +4845,7 @@ fn worker_silence_secs(state: &AppState, session_id: &str) -> Option<u64> {
 /// the process-exit and stall failure paths; `record_result` is idempotent on
 /// `result_status="reported"`, so a later real EOF won't double-report.
 fn unreported_worker_meta(app: &AppHandle, child_session_id: &str) -> Option<String> {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let reported = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
         .ok()
         .flatten()
@@ -4984,7 +4879,7 @@ fn report_synthetic_worker_failure(
         Ok(false) => return,
         Err(error) => {
             let _ = store::event(
-                &app.state::<AppState>().db.lock().unwrap(),
+                &app.state::<BridgeCore>().db.lock().unwrap(),
                 "supervisor",
                 "worker.settle_failed",
                 child_session_id,
@@ -5030,7 +4925,7 @@ fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
 ///      already reported and is a no-op, so the UI shows STALLED, not the
 ///      generic "ended without reporting".
 fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     // (1) Confirm the worker is still silent — closes the snapshot→act race.
     match worker_silence_secs(&state, child_session_id) {
         Some(silent) if silent >= WORKER_STALL_TIMEOUT_SECONDS => {}
@@ -5084,7 +4979,7 @@ fn notify_parent_on_worker_stalled(app: &AppHandle, child_session_id: &str) {
 }
 
 fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let baseline = state
         .delegations
         .lock()
@@ -5124,7 +5019,7 @@ fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
 /// Deliver a framed message from a child to its parent session: send it into the
 /// parent's live turn stream and drop a marker card into the parent's transcript.
 fn report_to_parent(app: &AppHandle, child_session_id: &str, result: &delegation::WorkerResult) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let report = {
         let db = state.db.lock().unwrap();
         session_supervisor::SessionSupervisor::record_result(&db, child_session_id, result)
@@ -5138,7 +5033,7 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, result: &delegation
     let child_session_id = child_session_id.to_owned();
     let result = result.clone();
     tauri::async_runtime::spawn(async move {
-        let state = app.state::<AppState>();
+        let state = app.state::<BridgeCore>();
         let available_capabilities = live_available_capabilities(&state).await;
         let completion_result = {
             let db = state.db.lock().unwrap();
@@ -5231,7 +5126,7 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, result: &delegation
 }
 
 fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let queued =
         worker_pool::WorkerPool::claim_next_queued(&state.db.lock().unwrap(), workspace_id)
             .ok()
@@ -5270,7 +5165,7 @@ fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
 }
 
 fn maintain_worker_pool(app: &AppHandle) {
-    let state = app.state::<AppState>();
+    let state = app.state::<BridgeCore>();
     let expired = worker_pool::WorkerPool::warm_workers_due(&state.db.lock().unwrap(), Utc::now())
         .unwrap_or_default();
     for session_id in expired {
@@ -5472,7 +5367,7 @@ fn start_worker_maintenance(app: AppHandle) {
 fn start_learning_maintenance(app: AppHandle) {
     thread::spawn(move || loop {
         let ran = {
-            let state = app.state::<AppState>();
+            let state = app.state::<BridgeCore>();
             let database_path = state.database_path.clone();
             let result = learning_job::run_due_database(&database_path, Utc::now())
                 .ok()
@@ -5491,7 +5386,7 @@ const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 fn start_history_snapshot_maintenance(app: AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
-        let state = app.state::<AppState>();
+        let state = app.state::<BridgeCore>();
         if let Ok(db) = Connection::open_with_flags(
             &state.database_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -5505,7 +5400,7 @@ fn start_history_snapshot_maintenance(app: AppHandle) {
 async fn open_terminal(
     workspace_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     let runtime_id = format!("terminal:{workspace_id}");
     if state.runtimes.lock().unwrap().contains_key(&runtime_id) {
@@ -5572,7 +5467,7 @@ async fn open_terminal(
                 }
             }
         }
-        let state = app_reader.state::<AppState>();
+        let state = app_reader.state::<BridgeCore>();
         state.runtimes.lock().unwrap().remove(&runtime_reader);
     });
     Ok(())
@@ -5582,7 +5477,7 @@ async fn open_terminal(
 async fn write_terminal(
     workspace_id: String,
     data: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     let mut sessions = state.runtimes.lock().unwrap();
     let runtime = sessions
@@ -5597,7 +5492,7 @@ async fn write_terminal(
 async fn prepare_turn(
     session_id: String,
     text: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
@@ -5620,7 +5515,7 @@ async fn prepare_turn(
 /// Resolve a session's workspace root (`s.cwd` falling back to the connected
 /// workspace's `path`). Returns `None` for chats with no folder — e.g. direct
 /// chats — or when the recorded path no longer exists on disk.
-fn session_workspace_root(state: &State<'_, AppState>, session_id: &str) -> Option<PathBuf> {
+fn session_workspace_root(state: &State<'_, BridgeCore>, session_id: &str) -> Option<PathBuf> {
     let path: Option<String> = state
         .db
         .lock()
@@ -5676,7 +5571,7 @@ async fn send_turn(
     session_id: String,
     text: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
@@ -5817,7 +5712,7 @@ async fn send_turn(
 #[tauri::command]
 async fn list_workspace_files(
     session_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<Vec<String>, BridgeError> {
     match session_workspace_root(&state, &session_id) {
         Some(root) => tauri::async_runtime::spawn_blocking(move || {
@@ -5830,7 +5725,7 @@ async fn list_workspace_files(
 }
 
 fn record_recoverable_adapter_failure(
-    state: &State<'_, AppState>,
+    state: &State<'_, BridgeCore>,
     session_id: &str,
     error: &BridgeError,
 ) -> Result<(), BridgeError> {
@@ -5851,7 +5746,7 @@ fn record_recoverable_adapter_failure(
 
 fn emit_local_assistant(
     app: &AppHandle,
-    state: &State<'_, AppState>,
+    state: &State<'_, BridgeCore>,
     session_id: &str,
     adapter_id: &str,
     text: &str,
@@ -5879,7 +5774,7 @@ fn emit_local_assistant(
 async fn compact_session(
     session_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     let prompt = {
         let db = state.db.lock().unwrap();
@@ -5928,7 +5823,7 @@ async fn compact_session(
 }
 
 #[tauri::command]
-async fn interrupt_turn(session_id: String, state: State<'_, AppState>) -> Result<(), BridgeError> {
+async fn interrupt_turn(session_id: String, state: State<'_, BridgeCore>) -> Result<(), BridgeError> {
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(&session_id)
@@ -5943,7 +5838,7 @@ async fn interrupt_turn(session_id: String, state: State<'_, AppState>) -> Resul
 #[tauri::command]
 async fn refresh_account_usage(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     // Claude: a global, read-only account query — no running session required.
     if binary::resolve("claude").is_some() {
@@ -6007,7 +5902,7 @@ async fn resolve_approval(
     event_id: i64,
     decision: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     if !matches!(
         decision.as_str(),
@@ -6230,7 +6125,7 @@ async fn resize_terminal(
     workspace_id: String,
     rows: u16,
     cols: u16,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
     if let Some(runtime) = state
         .runtimes
@@ -6254,7 +6149,7 @@ async fn resize_terminal(
 async fn stop_session(
     session_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
@@ -6413,7 +6308,7 @@ fn record_shutdown_reason(
 #[tauri::command]
 async fn refresh_workspace(
     workspace_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     // Resolve the path under the lock, but leave Git entirely outside it so a
     // slow status scan cannot delay message submission or streaming writes.
@@ -6443,7 +6338,7 @@ async fn refresh_workspace(
 async fn archive_workspace(
     workspace_id: String,
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let db = state.db.lock().unwrap();
     let (path, repo): (String, String) = db.query_row(
@@ -6517,184 +6412,34 @@ fn archive_workspace_records(
     Ok(())
 }
 
-fn start_health_server(
-    database: PathBuf,
-    adapters: Vec<AdapterDescriptor>,
-    credential_broker: Arc<credential_broker::CredentialBroker>,
-) {
-    thread::spawn(move || {
-        let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
-            return;
-        };
-        for request in server.incoming_requests() {
-            if request.url() == "/health" {
-                let body = serde_json::json!({
-                    "ok": true,
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "database": database,
-                    "adapters": adapters,
-                    "harnesses": {
-                        "claude": binary::resolve("claude").is_some(),
-                        "codex": binary::resolve("codex").is_some(),
-                        "opencode": binary::resolve("opencode").is_some(),
-                        "shell": true
-                    }
-                })
-                .to_string();
-                let mut response = tiny_http::Response::from_string(body).with_status_code(200);
-                if let Ok(header) =
-                    tiny_http::Header::from_bytes("Content-Type", "application/json")
-                {
-                    response.add_header(header);
-                }
-                let _ = request.respond(response);
-                continue;
-            }
-            if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
-                // Handle each proxy call on its own thread so a slow (or
-                // deliberately slow-drip) upstream request cannot block /health
-                // liveness or serialize other agents behind the single accept loop.
-                let route = route.to_owned();
-                let method = request.method().as_str().to_owned();
-                let token = request
-                    .headers()
-                    .iter()
-                    .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
-                    .map(|header| header.value.as_str().to_owned())
-                    .unwrap_or_default();
-                let headers: Vec<(String, String)> = request
-                    .headers()
-                    .iter()
-                    .map(|header| (header.field.to_string(), header.value.as_str().to_owned()))
-                    .collect();
-                let broker = credential_broker.clone();
-                thread::spawn(move || {
-                    let mut request = request;
-                    let mut parts = route.splitn(3, '/');
-                    let session_id = parts.next().unwrap_or_default().to_owned();
-                    let reference = parts.next().unwrap_or_default().to_owned();
-                    let path_and_query = format!("/{}", parts.next().unwrap_or_default());
-                    let mut body = Vec::new();
-                    let result = request
-                        .as_reader()
-                        .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
-                        .read_to_end(&mut body)
-                        .map_err(BridgeError::Io)
-                        .and_then(|_| {
-                            broker.proxy(credential_broker::ProxyRequest {
-                                session_id,
-                                reference,
-                                method,
-                                path_and_query,
-                                headers,
-                                token,
-                                body,
-                            })
-                        });
-                    let response = match result {
-                        Ok(proxied) => {
-                            let mut response = tiny_http::Response::from_data(proxied.body)
-                                .with_status_code(proxied.status);
-                            if let Some(header) = proxied.content_type.and_then(|value| {
-                                tiny_http::Header::from_bytes("Content-Type", value).ok()
-                            }) {
-                                response.add_header(header);
-                            }
-                            response
-                        }
-                        Err(error) => {
-                            let body = serde_json::json!({"ok": false, "error": error.to_string()})
-                                .to_string();
-                            tiny_http::Response::from_string(body).with_status_code(400)
-                        }
-                    };
-                    let _ = request.respond(response);
-                });
-                continue;
-            }
-            let body = serde_json::json!({"ok": false, "error": "not found"}).to_string();
-            let mut response = tiny_http::Response::from_string(body).with_status_code(404);
-            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
-                response.add_header(header);
-            }
-            let _ = request.respond(response);
-        }
-    });
-}
-
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data = app.path().app_data_dir()?;
-            let db_path = data.join("bridge.db");
-            let telemetry_db_path = data.join("bridge-telemetry.db");
-            let snapshot_dir = data.join("history-snapshots");
-            let connection =
-                store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            let telemetry_connection = store::open_telemetry(&telemetry_db_path)
-                .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            let _ = store::export_history_snapshot(&connection, &snapshot_dir);
-            let opencode_config = agent_config::state(&connection)?
-                .harnesses
-                .into_iter()
-                .find(|config| config.id == "opencode");
-            let opencode_settings = agent_config::opencode_settings(opencode_config.as_ref())?;
             let discovery_handle = app.handle().clone();
-            let adapter_registry = Arc::new(
-                adapters::AdapterRegistry::built_in_with_opencode_notify(
-                    opencode_settings,
-                    Some(Box::new(move || {
-                        // OpenCode discovery finishes after the frontend's initial
-                        // health fetch; tell it to re-read adapter availability.
-                        let _ = discovery_handle.emit("adapters-changed", ());
-                    })),
-                )
-                .map_err(Box::<dyn std::error::Error>::from)?,
-            );
-            let credential_broker = Arc::new(
-                credential_broker::CredentialBroker::openai()
-                    .map_err(|error| Box::<dyn std::error::Error>::from(error))?,
-            );
             let bundled_extension = app.path().resource_dir()?.join("browser-extension");
             let extension_path = if bundled_extension.exists() {
                 bundled_extension
             } else {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
             };
-            let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
-                extension_path,
-                data.join("browser-site-metrics.json"),
-            );
+            let core = BridgeCore::boot(BootConfig {
+                data_dir: data,
+                browser_extension_path: extension_path,
+                on_opencode_discovered: Some(Box::new(move || {
+                    // OpenCode discovery finishes after the frontend's initial
+                    // health fetch; tell it to re-read adapter availability.
+                    let _ = discovery_handle.emit("adapters-changed", ());
+                })),
+            })
+            .map_err(Box::<dyn std::error::Error>::from)?;
             start_health_server(
-                db_path.clone(),
-                adapter_registry.descriptors(),
-                credential_broker.clone(),
+                core.database_path.clone(),
+                core.adapter_registry.descriptors(),
+                core.credential_broker.clone(),
             );
-            app.manage(AppState {
-                db: Mutex::new(connection),
-                telemetry_db: Mutex::new(telemetry_connection),
-                runtimes: Mutex::new(HashMap::new()),
-                adapters: Mutex::new(HashMap::new()),
-                adapter_registry,
-                delegations: Mutex::new(DelegationState::default()),
-                worktrees: data.join("worktrees"),
-                database_path: db_path,
-                telemetry_database_path: telemetry_db_path,
-                snapshot_dir,
-                skill_store: data.join("skills"),
-                skill_consents: Arc::new(Mutex::new(HashMap::new())),
-                credential_broker,
-                browser_bridge,
-                worker_activity: Mutex::new(HashMap::new()),
-                worker_activity_persisted: Mutex::new(HashMap::new()),
-            });
+            app.manage(core);
             start_worker_maintenance(app.handle().clone());
             start_learning_maintenance(app.handle().clone());
             start_history_snapshot_maintenance(app.handle().clone());

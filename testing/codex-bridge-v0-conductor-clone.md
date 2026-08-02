@@ -51,7 +51,7 @@ The agent experience is no longer allowed to render a harness TUI. This revision
 
 - `bun run check` passes TypeScript and Rust checks.
 - `bun run test` passes reducer, GUI, protocol, registry, persistence, and Git/worktree tests.
-- `cargo test --manifest-path src-tauri/Cargo.toml live_app_server_emits_a_structured_turn -- --ignored` passes against an installed authenticated Codex binary.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace live_app_server_emits_a_structured_turn -- --ignored` passes against an installed authenticated Codex binary.
 - `bun run tauri build --debug --bundles app` produces a launchable `Bridge.app`.
 - Packaged-app QA proves Agent renders structured history and provider errors, while Terminal is a distinct tab.
 - `curl -s http://127.0.0.1:4317/health` returns health and adapter capability descriptors.
