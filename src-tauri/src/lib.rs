@@ -6675,6 +6675,33 @@ mod tests {
     }
 
     #[test]
+    fn the_protocol_contract_matches_the_registered_command_surface() {
+        let source = include_str!("lib.rs");
+        let start = source.find("generate_handler![").expect("command registry")
+            + "generate_handler![".len();
+        let end = start + source[start..].find(']').expect("registry end");
+        let commands: Vec<&str> = source[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        assert!(!commands.is_empty());
+        for command in &commands {
+            assert!(
+                bridge_protocol::MethodName::from_command(command).is_some(),
+                "command {command} is registered with Tauri but missing from the \
+                 bridge-protocol method registry"
+            );
+        }
+        assert_eq!(
+            commands.len(),
+            bridge_protocol::MethodName::ALL.len(),
+            "bridge-protocol declares methods for commands that are not registered; \
+             the registry and generate_handler![...] must stay 1:1"
+        );
+    }
+
+    #[test]
     fn evidence_recording_failure_is_not_load_bearing_for_worker_launch() {
         let db = Connection::open_in_memory().unwrap();
         record_actual_execution_best_effort(

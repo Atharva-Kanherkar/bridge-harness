@@ -216,6 +216,7 @@ name = "bridge-deck"
 version = "0.1.0"
 dependencies = [
  "bridge-core",
+ "bridge-protocol",
  "chrono",
  "portable-pty",
  "rusqlite",
@@ -226,6 +227,15 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "bridge-protocol"
+version = "0.1.0"
+dependencies = [
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

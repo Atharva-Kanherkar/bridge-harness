@@ -1,5 +1,5 @@
 [workspace]
-members = ["bridge-core"]
+members = ["bridge-core", "bridge-protocol"]
 
 # Single version for every crate in the workspace: bridge-core reports
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
@@ -33,6 +33,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 bridge-core = { path = "bridge-core" }
+bridge-protocol = { path = "bridge-protocol" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }
