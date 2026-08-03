@@ -119,6 +119,18 @@ pub struct UpdateChatModelParams {
     pub model: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptTurnParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactSessionParams {
+    pub session_id: String,
+}
+
 // --- registry ----------------------------------------------------------------
 
 /// A method whose payloads are contracted: its params type name and, when the
@@ -128,58 +140,71 @@ pub struct UpdateChatModelParams {
 /// this table.
 pub struct TypedMethod {
     pub method: MethodName,
-    pub params: &'static str,
+    /// The params type name, or `None` when the method takes no parameters —
+    /// that absence is itself contract (a validator rejects any params).
+    pub params: Option<&'static str>,
     pub result: Option<&'static str>,
 }
 
 pub const TYPED_METHODS: &[TypedMethod] = &[
-    TypedMethod { method: MethodName::AddProject, params: "AddProjectParams", result: None },
+    TypedMethod { method: MethodName::AddProject, params: Some("AddProjectParams"), result: None },
     TypedMethod {
         method: MethodName::CreateWorkspace,
-        params: "CreateWorkspaceParams",
+        params: Some("CreateWorkspaceParams"),
         result: None,
     },
     TypedMethod {
         method: MethodName::ConnectWorkspaceFolder,
-        params: "ConnectWorkspaceFolderParams",
+        params: Some("ConnectWorkspaceFolderParams"),
         result: None,
     },
     TypedMethod {
         method: MethodName::ListWorkspaceFiles,
-        params: "ListWorkspaceFilesParams",
+        params: Some("ListWorkspaceFilesParams"),
         result: Some("ListWorkspaceFilesResult"),
     },
     TypedMethod {
         method: MethodName::RefreshWorkspace,
-        params: "RefreshWorkspaceParams",
+        params: Some("RefreshWorkspaceParams"),
         result: None,
     },
     TypedMethod {
         method: MethodName::ArchiveWorkspace,
-        params: "ArchiveWorkspaceParams",
+        params: Some("ArchiveWorkspaceParams"),
         result: None,
     },
     TypedMethod {
         method: MethodName::GetSessionForest,
-        params: "GetSessionForestParams",
+        params: Some("GetSessionForestParams"),
         result: None,
     },
     TypedMethod {
         method: MethodName::ActivateSessionEntry,
-        params: "ActivateSessionEntryParams",
+        params: Some("ActivateSessionEntryParams"),
         result: None,
     },
-    TypedMethod { method: MethodName::CreateChat, params: "CreateChatParams", result: None },
+    TypedMethod { method: MethodName::CreateChat, params: Some("CreateChatParams"), result: None },
     TypedMethod {
         method: MethodName::CreateWorkspaceSession,
-        params: "CreateWorkspaceSessionParams",
+        params: Some("CreateWorkspaceSessionParams"),
         result: None,
     },
     TypedMethod {
         method: MethodName::UpdateChatModel,
-        params: "UpdateChatModelParams",
+        params: Some("UpdateChatModelParams"),
         result: None,
     },
+    TypedMethod {
+        method: MethodName::InterruptTurn,
+        params: Some("InterruptTurnParams"),
+        result: None,
+    },
+    TypedMethod {
+        method: MethodName::CompactSession,
+        params: Some("CompactSessionParams"),
+        result: None,
+    },
+    TypedMethod { method: MethodName::RefreshAccountUsage, params: None, result: None },
 ];
 
 #[cfg(test)]
@@ -297,6 +322,20 @@ mod tests {
             json!({"sessionId": "s"})
         )
         .is_err());
+        assert!(serde_json::from_value::<InterruptTurnParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<CompactSessionParams>(
+            json!({"session_id": "s"})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn no_params_methods_are_contracted_as_such() {
+        let refresh = TYPED_METHODS
+            .iter()
+            .find(|entry| entry.method == MethodName::RefreshAccountUsage)
+            .unwrap();
+        assert!(refresh.params.is_none(), "refresh_account_usage takes no parameters");
     }
 
     #[test]
@@ -314,9 +353,6 @@ mod tests {
             MethodName::StartChat,
             MethodName::PrepareTurn,
             MethodName::SendTurn,
-            MethodName::CompactSession,
-            MethodName::InterruptTurn,
-            MethodName::RefreshAccountUsage,
             MethodName::StopSession,
         ];
         for method in MethodName::ALL.iter().copied() {
