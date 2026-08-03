@@ -38,6 +38,7 @@ mod runtime;
 pub mod secret_interception;
 pub mod session_forest;
 pub mod session_supervisor;
+pub mod sessions;
 pub mod skill_marketplace;
 pub mod slash;
 pub mod store;
@@ -96,6 +97,30 @@ impl From<&BridgeError> for bridge_protocol::ErrorCode {
     }
 }
 
+impl From<bridge_protocol::messages::HarnessId> for model::Harness {
+    /// Exhaustive both ways — adding a harness must fail to compile until
+    /// the protocol contract names it.
+    fn from(id: bridge_protocol::messages::HarnessId) -> Self {
+        match id {
+            bridge_protocol::messages::HarnessId::Claude => model::Harness::Claude,
+            bridge_protocol::messages::HarnessId::Codex => model::Harness::Codex,
+            bridge_protocol::messages::HarnessId::OpenCode => model::Harness::OpenCode,
+            bridge_protocol::messages::HarnessId::Shell => model::Harness::Shell,
+        }
+    }
+}
+
+impl From<&model::Harness> for bridge_protocol::messages::HarnessId {
+    fn from(harness: &model::Harness) -> Self {
+        match harness {
+            model::Harness::Claude => bridge_protocol::messages::HarnessId::Claude,
+            model::Harness::Codex => bridge_protocol::messages::HarnessId::Codex,
+            model::Harness::OpenCode => bridge_protocol::messages::HarnessId::OpenCode,
+            model::Harness::Shell => bridge_protocol::messages::HarnessId::Shell,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +144,24 @@ mod tests {
             let mapped = ErrorCode::from(&error);
             assert_eq!(mapped, expected, "{error}");
             assert_eq!(mapped.code(), expected_code, "{error}");
+        }
+    }
+
+    #[test]
+    fn harness_ids_round_trip_with_identical_wire_values() {
+        for harness in [
+            model::Harness::Claude,
+            model::Harness::Codex,
+            model::Harness::OpenCode,
+            model::Harness::Shell,
+        ] {
+            let id = bridge_protocol::messages::HarnessId::from(&harness);
+            assert_eq!(
+                serde_json::to_string(&harness).unwrap(),
+                serde_json::to_string(&id).unwrap(),
+                "protocol and core harness wire values must match"
+            );
+            assert_eq!(model::Harness::from(id), harness);
         }
     }
 }

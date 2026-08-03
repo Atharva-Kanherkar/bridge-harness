@@ -60,6 +60,65 @@ pub struct ArchiveWorkspaceParams {
     pub workspace_id: String,
 }
 
+// --- sessions ----------------------------------------------------------------
+
+/// A harness identifier on the wire. Mirrors `bridge_core::model::Harness`
+/// variant for variant; an exhaustive conversion in bridge-core keeps the two
+/// from drifting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HarnessId {
+    Claude,
+    Codex,
+    OpenCode,
+    Shell,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GetSessionForestParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateSessionEntryParams {
+    pub session_id: String,
+    /// The forest entry to become the conversation head; files are not changed.
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChatParams {
+    pub harness: HarnessId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorkspaceSessionParams {
+    pub workspace_id: String,
+    /// Create the session in an isolated Git worktree (requires a connected
+    /// repository).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create_worktree: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateChatModelParams {
+    pub session_id: String,
+    pub harness: HarnessId,
+    /// Explicit model id; omitted selects the harness's default for the
+    /// chat's tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 // --- registry ----------------------------------------------------------------
 
 /// A method whose payloads are contracted: its params type name and, when the
@@ -98,6 +157,27 @@ pub const TYPED_METHODS: &[TypedMethod] = &[
     TypedMethod {
         method: MethodName::ArchiveWorkspace,
         params: "ArchiveWorkspaceParams",
+        result: None,
+    },
+    TypedMethod {
+        method: MethodName::GetSessionForest,
+        params: "GetSessionForestParams",
+        result: None,
+    },
+    TypedMethod {
+        method: MethodName::ActivateSessionEntry,
+        params: "ActivateSessionEntryParams",
+        result: None,
+    },
+    TypedMethod { method: MethodName::CreateChat, params: "CreateChatParams", result: None },
+    TypedMethod {
+        method: MethodName::CreateWorkspaceSession,
+        params: "CreateWorkspaceSessionParams",
+        result: None,
+    },
+    TypedMethod {
+        method: MethodName::UpdateChatModel,
+        params: "UpdateChatModelParams",
         result: None,
     },
 ];
@@ -150,6 +230,40 @@ mod tests {
     }
 
     #[test]
+    fn session_params_round_trip_and_omit_absent_options() {
+        let create = CreateChatParams { harness: HarnessId::Codex, model: None, title: None };
+        let wire = serde_json::to_value(&create).unwrap();
+        assert_eq!(wire, json!({"harness": "codex"}), "absent options stay off the wire");
+        assert_eq!(round_trip(&create), create);
+
+        let update = UpdateChatModelParams {
+            session_id: "s-1".into(),
+            harness: HarnessId::OpenCode,
+            model: Some("kimi-k2.5".into()),
+        };
+        let wire = serde_json::to_value(&update).unwrap();
+        assert_eq!(
+            wire,
+            json!({"sessionId": "s-1", "harness": "opencode", "model": "kimi-k2.5"})
+        );
+        assert_eq!(round_trip(&update), update);
+
+        let session = CreateWorkspaceSessionParams {
+            workspace_id: "w-1".into(),
+            create_worktree: Some(true),
+        };
+        assert_eq!(
+            serde_json::to_value(&session).unwrap(),
+            json!({"workspaceId": "w-1", "createWorktree": true})
+        );
+        let activate =
+            ActivateSessionEntryParams { session_id: "s-1".into(), entry_id: "e-9".into() };
+        assert_eq!(round_trip(&activate), activate);
+        let forest = GetSessionForestParams { session_id: "s-1".into() };
+        assert_eq!(round_trip(&forest), forest);
+    }
+
+    #[test]
     fn params_reject_payloads_missing_their_required_fields() {
         // A validator (or the future compat adapter) must not accept an
         // empty object where the contract names required fields.
@@ -168,22 +282,60 @@ mod tests {
             json!({"workspace_id": "w-1"})
         )
         .is_err());
+        assert!(serde_json::from_value::<GetSessionForestParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<ActivateSessionEntryParams>(
+            json!({"sessionId": "s"})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<CreateChatParams>(json!({})).is_err());
+        assert!(
+            serde_json::from_value::<CreateChatParams>(json!({"harness": "cursor"})).is_err(),
+            "unknown harness ids must be rejected"
+        );
+        assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<UpdateChatModelParams>(
+            json!({"sessionId": "s"})
+        )
+        .is_err());
     }
 
     #[test]
-    fn typed_methods_are_unique_and_cover_the_projects_and_workspaces_domains() {
+    fn typed_methods_are_unique_and_cover_their_domains() {
         let mut seen = HashSet::new();
         for entry in TYPED_METHODS {
             assert!(seen.insert(entry.method.as_str()), "duplicate {}", entry.method.as_str());
         }
+        // The live-turn half of the sessions domain is not yet contracted —
+        // it lands with the event-publisher seam. Every other method in a
+        // typed domain must have typed params; shrink this list as slice B
+        // methods are contracted.
+        const PENDING_SESSIONS_SLICE_B: &[MethodName] = &[
+            MethodName::StartSession,
+            MethodName::StartChat,
+            MethodName::PrepareTurn,
+            MethodName::SendTurn,
+            MethodName::CompactSession,
+            MethodName::InterruptTurn,
+            MethodName::RefreshAccountUsage,
+            MethodName::StopSession,
+        ];
         for method in MethodName::ALL.iter().copied() {
-            if matches!(method.domain(), "projects" | "workspaces") {
+            if matches!(method.domain(), "projects" | "workspaces" | "sessions")
+                && !PENDING_SESSIONS_SLICE_B.contains(&method)
+            {
                 assert!(
                     TYPED_METHODS.iter().any(|entry| entry.method == method),
                     "{} is in a typed domain but has no typed params",
                     method.as_str()
                 );
             }
+        }
+        for method in PENDING_SESSIONS_SLICE_B {
+            assert!(
+                TYPED_METHODS.iter().all(|entry| entry.method != *method),
+                "{} is typed — remove it from the pending list",
+                method.as_str()
+            );
         }
     }
 }

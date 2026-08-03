@@ -187,6 +187,11 @@ export interface BridgeMethodParams {
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
   "workspaces/refresh_workspace": RefreshWorkspaceParams;
   "workspaces/archive_workspace": ArchiveWorkspaceParams;
+  "sessions/get_session_forest": GetSessionForestParams;
+  "sessions/activate_session_entry": ActivateSessionEntryParams;
+  "sessions/create_chat": CreateChatParams;
+  "sessions/create_workspace_session": CreateWorkspaceSessionParams;
+  "sessions/update_chat_model": UpdateChatModelParams;
 }
 
 /** Result types for contracted methods that do not return the BridgeState snapshot. */
@@ -198,6 +203,8 @@ export interface ClientInfo {
   name: string;
   version: string;
 }
+
+export type HarnessId = "claude" | "codex" | "opencode" | "shell";
 
 export type JsonRpcVersion = "2.0";
 
@@ -290,4 +297,30 @@ export interface RefreshWorkspaceParams {
 
 export interface ArchiveWorkspaceParams {
   workspaceId: string;
+}
+
+export interface GetSessionForestParams {
+  sessionId: string;
+}
+
+export interface ActivateSessionEntryParams {
+  entryId: string;
+  sessionId: string;
+}
+
+export interface CreateChatParams {
+  harness: HarnessId;
+  model?: string | null;
+  title?: string | null;
+}
+
+export interface CreateWorkspaceSessionParams {
+  createWorktree?: boolean | null;
+  workspaceId: string;
+}
+
+export interface UpdateChatModelParams {
+  harness: HarnessId;
+  model?: string | null;
+  sessionId: string;
 }

@@ -1,0 +1,941 @@
+//! Sessions domain, management half: creating chats and workspace sessions,
+//! switching a chat's model, and reading/rewinding the session forest — as
+//! [`BridgeCore`] methods.
+//!
+//! Host shells keep only transport concerns: blocking-pool placement for Git
+//! scans and worktree creation, and event emission after mutations. Methods
+//! that surround a host-run blocking step are split into a `plan_*` /
+//! `persist_*`(or `commit_*`) pair; everything in between is the host's
+//! scheduling choice, not domain logic.
+//!
+//! The live-turn half of the domain (starting adapters, sending turns,
+//! compaction) stays in the shell until the event-publisher seam exists.
+
+use crate::model::*;
+use crate::runtime::BridgeCore;
+use crate::{
+    adapters, agent, agent_config, completion, git, model_profiles, orchestrator, policy,
+    restoration, session_forest, session_supervisor, store, BridgeError,
+};
+use rusqlite::{params, Connection};
+use std::path::{Path, PathBuf};
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct OrchestratorSelection {
+    pub adapter_id: String,
+    pub model: String,
+    pub tier: CapabilityTier,
+    pub effort: Option<crate::delegation::Effort>,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrchestratorWorktree {
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+/// Everything resolved up front for a new workspace session, so the host can
+/// run worktree creation on its blocking pool between planning and
+/// persistence.
+#[derive(Debug)]
+pub struct WorkspaceSessionPlan {
+    pub session_id: String,
+    pub selection: OrchestratorSelection,
+    pub workspace_title: String,
+    pub workspace_path: Option<String>,
+    /// Repository to create the isolated worktree from; `Some` exactly when
+    /// isolation was requested (validated to have a connected repository).
+    pub worktree_source: Option<String>,
+}
+
+/// A validated, not-yet-applied chat model switch.
+#[derive(Debug)]
+pub struct ChatModelChange {
+    pub adapter_id: String,
+    pub kind: String,
+    pub previous_harness: String,
+    pub previous_model: Option<String>,
+    pub selected: ModelOption,
+}
+
+impl BridgeCore {
+    /// Scratch working directory for a chat that has no connected folder/repo.
+    pub fn chat_scratch_dir(&self, session_id: &str) -> PathBuf {
+        self.database_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("chats")
+            .join(session_id)
+    }
+
+    /// Create a standalone direct chat (no workspace). Runs in a private
+    /// scratch dir.
+    pub fn create_chat(
+        &self,
+        harness: &Harness,
+        model: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<BridgeState, BridgeError> {
+        let adapter_id = store::harness_name(harness);
+        let id = Uuid::new_v4().to_string();
+        let cwd = self.chat_scratch_dir(&id);
+        let label = chat_label(title);
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,NULL,?2,?3,'idle','estimated',?4,'direct',?5,?6,0)",
+            params![id, adapter_id, label, model, title, cwd.to_string_lossy()],
+        )?;
+        store::event(
+            &db,
+            "chat",
+            "chat.created",
+            &id,
+            &format!("Created chat {label}"),
+        )?;
+        store::state(&db)
+    }
+
+    /// Move a session's conversation head. The host emits its state-changed
+    /// notification after this returns successfully.
+    pub fn activate_session_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<SessionForestSnapshot, BridgeError> {
+        let db = self.db.lock().unwrap();
+        activate_session_entry_records(&db, session_id, entry_id)
+    }
+
+    /// The session's repository path, if any. Hosts resolve this under the
+    /// lock, then compute the repository state outside it — Git may be slow
+    /// on large repositories or during index contention.
+    pub fn session_repository_path(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PathBuf>, BridgeError> {
+        let db = self.db.lock().unwrap();
+        store::repository_path_for_session(&db, session_id)
+    }
+
+    pub fn session_forest_snapshot_with_repository_state(
+        &self,
+        session_id: &str,
+        repository_state: serde_json::Value,
+    ) -> Result<SessionForestSnapshot, BridgeError> {
+        let db = self.db.lock().unwrap();
+        session_forest_snapshot_with_repository_state(&db, session_id, repository_state)
+    }
+
+    /// Resolve the orchestrator selection and workspace facts for a new
+    /// session; validates isolation requirements when `isolated` is set.
+    pub fn plan_workspace_session(
+        &self,
+        workspace_id: &str,
+        isolated: bool,
+    ) -> Result<WorkspaceSessionPlan, BridgeError> {
+        let (selection, workspace_title, workspace_path, project_id) = {
+            let db = self.db.lock().unwrap();
+            let selection = resolve_orchestrator_selection(&db, &self.adapter_registry)?;
+            let (title, path, project_id): (String, Option<String>, Option<String>) = db
+                .query_row(
+                    "SELECT title,path,project_id FROM workspaces WHERE id=?1",
+                    params![workspace_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            (selection, title, path, project_id)
+        };
+        let worktree_source = if isolated {
+            if project_id.is_none() {
+                return Err(BridgeError::Invalid(
+                    "Connect a Git repository before creating an isolated worktree".into(),
+                ));
+            }
+            Some(
+                workspace_path
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        BridgeError::Invalid(
+                            "Connect a Git repository before creating an isolated worktree".into(),
+                        )
+                    })?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        Ok(WorkspaceSessionPlan {
+            session_id: Uuid::new_v4().to_string(),
+            selection,
+            workspace_title,
+            workspace_path,
+            worktree_source,
+        })
+    }
+
+    /// Persist the planned session (and its worktree evidence) in one
+    /// transaction. A persistence failure removes the just-created worktree
+    /// so a retry starts clean.
+    pub fn persist_workspace_session(
+        &self,
+        workspace_id: &str,
+        plan: &WorkspaceSessionPlan,
+        worktree: Option<OrchestratorWorktree>,
+    ) -> Result<BridgeState, BridgeError> {
+        let cwd = worktree
+            .as_ref()
+            .map(|value| value.path.to_string_lossy().into_owned())
+            .or_else(|| plan.workspace_path.clone())
+            .unwrap_or_else(|| {
+                self.chat_scratch_dir(&plan.session_id)
+                    .to_string_lossy()
+                    .to_string()
+            });
+        let persisted = (|| -> Result<BridgeState, BridgeError> {
+            let db = self.db.lock().unwrap();
+            let transaction = db.unchecked_transaction()?;
+            transaction.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
+                params![plan.session_id, workspace_id, plan.selection.adapter_id, plan.selection.label, plan.selection.model, plan.selection.tier.as_str(), plan.selection.effort.map(|effort| effort.as_str()), cwd],
+            )?;
+            store::event(
+                &transaction,
+                "supervisor",
+                "session.created",
+                &plan.session_id,
+                "New agent session",
+            )?;
+            if let Some(created) = &worktree {
+                store::event(
+                    &transaction,
+                    "worktree",
+                    "session.worktree_created",
+                    &plan.session_id,
+                    &format!(
+                        "Created isolated worktree {} on branch {}",
+                        created.path.display(),
+                        created.branch
+                    ),
+                )?;
+            }
+            let next = store::state(&transaction)?;
+            transaction.commit()?;
+            Ok(next)
+        })();
+        if persisted.is_err() {
+            if let Some(created) = &worktree {
+                let _ = git::remove_worktree(
+                    Path::new(plan.workspace_path.as_deref().unwrap_or("")),
+                    &created.path,
+                );
+            }
+        }
+        persisted
+    }
+
+    /// Validate a chat model switch and select the concrete model. Returns
+    /// `None` when the chat already runs the requested harness/model.
+    pub fn plan_chat_model_change(
+        &self,
+        session_id: &str,
+        harness: &Harness,
+        model: Option<&str>,
+    ) -> Result<Option<ChatModelChange>, BridgeError> {
+        let adapter_id = store::harness_name(harness);
+        if !agent_config::is_harness_enabled(&self.db.lock().unwrap(), adapter_id) {
+            return Err(BridgeError::Invalid(format!(
+                "{} is disabled in Settings",
+                harness.label()
+            )));
+        }
+        let (kind, previous_harness, previous_model, active_turn_id, parent_session_id): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = self.db.lock().unwrap().query_row(
+            "SELECT kind,harness,model,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        if parent_session_id.is_some() || !matches!(kind.as_str(), "direct" | "orchestrator") {
+            return Err(BridgeError::Invalid(
+                "Only root chats and orchestrators can change models".into(),
+            ));
+        }
+        if active_turn_id.is_some() {
+            return Err(BridgeError::Invalid(
+                "Wait for the current response before switching models".into(),
+            ));
+        }
+        let descriptor = self
+            .adapter_registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == adapter_id)
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}"))
+            })?;
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(
+                descriptor
+                    .unavailable_reason
+                    .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
+            ));
+        }
+        let default_tier = if kind == "orchestrator" {
+            CapabilityTier::Standard
+        } else {
+            CapabilityTier::Fast
+        };
+        let selected = if let Some(requested) =
+            model.filter(|value| !value.trim().is_empty())
+        {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+                .cloned()
+                .ok_or_else(|| {
+                    BridgeError::Invalid(format!(
+                        "{} does not offer model {requested}",
+                        descriptor.label
+                    ))
+                })?
+        } else {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.tier == default_tier && option.default_for_tier)
+                .or_else(|| {
+                    descriptor
+                        .models
+                        .iter()
+                        .find(|option| option.tier == default_tier)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    BridgeError::Invalid(format!(
+                        "{} has no {} model",
+                        descriptor.label,
+                        default_tier.as_str()
+                    ))
+                })?
+        };
+        if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str())
+        {
+            return Ok(None);
+        }
+        Ok(Some(ChatModelChange {
+            adapter_id: adapter_id.to_owned(),
+            kind,
+            previous_harness,
+            previous_model,
+            selected,
+        }))
+    }
+
+    /// Remove and stop a session's live adapter runtime, if any. Blocking —
+    /// hosts place this on their blocking pool.
+    pub fn stop_session_adapter(&self, session_id: &str, reason: adapters::ShutdownReason) {
+        if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
+            runtime.stop(reason);
+        }
+    }
+
+    /// Apply a planned model change: clear the tracked provider process,
+    /// persist the selection, reset restoration state, and record both audit
+    /// events. Returns the session event for the host to broadcast.
+    pub fn commit_chat_model_change(
+        &self,
+        session_id: &str,
+        change: &ChatModelChange,
+    ) -> Result<AgentEvent, BridgeError> {
+        let db = self.db.lock().unwrap();
+        session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
+        if persist_chat_model_selection(
+            &db,
+            session_id,
+            &change.adapter_id,
+            &change.selected.id,
+            change.selected.tier,
+        )? != 1
+        {
+            return Err(BridgeError::Invalid(
+                "The chat could not be updated because it is no longer a root chat".into(),
+            ));
+        }
+        restoration::set_head_state(
+            &db,
+            session_id,
+            RestorationMode::Fresh,
+            ResumeEligibility::Fresh,
+            None,
+        )?;
+        let subject = if change.kind == "orchestrator" {
+            "Orchestrator"
+        } else {
+            "Chat"
+        };
+        let detail = format!(
+            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session.",
+            change.previous_harness,
+            change.previous_model.as_deref().unwrap_or("automatic"),
+            change.adapter_id,
+            change.selected.id,
+        );
+        store::event(&db, "chat", "session.model_changed", session_id, &detail)?;
+        store::session_event(
+            &db,
+            session_id,
+            &agent::NormalizedEvent {
+                kind: "session.model_changed".into(),
+                item_id: Some(format!("model-change-{}", Uuid::new_v4())),
+                role: Some("system".into()),
+                status: Some("ready".into()),
+                title: Some(format!("{subject} model changed")),
+                text: Some(detail),
+                data: serde_json::json!({
+                    "previousHarness": change.previous_harness,
+                    "previousModel": change.previous_model,
+                    "harness": change.adapter_id,
+                    "model": change.selected.id,
+                    "modelLabel": change.selected.label,
+                    "tier": change.selected.tier,
+                    "freshProviderSession": true,
+                }),
+            },
+            &serde_json::json!({"source": "user-selection"}),
+        )
+    }
+}
+
+fn chat_label(title: Option<&str>) -> String {
+    title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("New chat")
+        .to_string()
+}
+
+pub fn session_forest_snapshot(
+    db: &Connection,
+    session_id: &str,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    let current_state = store::repository_state_for_session(db, session_id)?;
+    session_forest_snapshot_with_repository_state(db, session_id, current_state)
+}
+
+pub fn session_forest_snapshot_with_repository_state(
+    db: &Connection,
+    session_id: &str,
+    current_state: serde_json::Value,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    let workspace_id: String = db.query_row(
+        "SELECT workspace_id FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let config = policy::PolicyConfig::default();
+    let entries = store::session_entries(db, session_id)?;
+    let head = store::session_head(db, session_id)?;
+    let selected_state = head
+        .as_ref()
+        .and_then(|head| head.active_entry_id.as_deref())
+        .and_then(|id| entries.iter().find(|entry| entry.id == id))
+        .and_then(|entry| entry.payload.get("_bridgeRepoState"))
+        .cloned();
+    let comparable = |value: &serde_json::Value| {
+        value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable")
+    };
+    let divergence_status = match selected_state.as_ref() {
+        Some(selected)
+            if comparable(selected) && comparable(&current_state) && selected == &current_state =>
+        {
+            "aligned"
+        }
+        Some(selected) if comparable(selected) && comparable(&current_state) => "diverged",
+        _ => "unknown",
+    };
+    Ok(SessionForestSnapshot {
+        session_id: session_id.to_owned(),
+        entries,
+        head,
+        leaves: session_forest::SessionForest::new(db)
+            .branch_leaves(session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+        worker_leases: store::worker_leases(db, &workspace_id)?,
+        worker_runtimes: store::worker_runtimes(db, &workspace_id)?,
+        worker_queue: store::worker_queue_requests(db, &workspace_id)?,
+        usage: store::usage_ledger(db, &workspace_id, None)?,
+        reasons: store::workspace_reason_events(db, &workspace_id)?,
+        policy_limits: PolicyLimits {
+            max_workers_per_turn: config.max_workers_per_turn as i64,
+            max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
+            max_capability_units_per_turn: config.max_capability_units_per_turn,
+        },
+        repository_divergence: RepositoryDivergence {
+            status: divergence_status.into(),
+            selected_state,
+            current_state,
+        },
+        completion: completion::latest_summary(db, session_id)?,
+    })
+}
+
+pub fn activate_session_entry_records(
+    db: &Connection,
+    session_id: &str,
+    entry_id: &str,
+) -> Result<SessionForestSnapshot, BridgeError> {
+    session_forest::SessionForest::new(db)
+        .move_head(session_id, Some(entry_id))
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "session-forest",
+        "session.head_moved",
+        session_id,
+        &format!("Conversation head moved to {entry_id}; files were not changed"),
+    )?;
+    session_forest_snapshot(db, session_id)
+}
+
+pub fn persist_chat_model_selection(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    model: &str,
+    tier: CapabilityTier,
+) -> Result<usize, BridgeError> {
+    Ok(db.execute(
+        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator')",
+        params![session_id, adapter_id, model, tier.as_str()],
+    )?)
+}
+
+pub fn prepare_orchestrator_worktree(
+    namespace_root: &Path,
+    workspace_title: &str,
+    workspace_path: &Path,
+    session_id: &str,
+) -> Result<OrchestratorWorktree, BridgeError> {
+    git::validate_repo(workspace_path).map_err(|_| {
+        BridgeError::Invalid(
+            "Connect a Git repository before creating an isolated worktree".into(),
+        )
+    })?;
+    let workspace_slug = {
+        let value = git::slug(workspace_title);
+        if value.is_empty() {
+            "workspace".to_owned()
+        } else {
+            value
+        }
+    };
+    let session_slug = git::slug(session_id);
+    let short_session = session_slug.chars().take(8).collect::<String>();
+    let branch = format!("bridge/{workspace_slug}-{short_session}");
+    let path = namespace_root
+        .join("orchestrators")
+        .join(&workspace_slug)
+        .join(session_id);
+    git::create_worktree(workspace_path, &path, &branch)?;
+    Ok(OrchestratorWorktree { path, branch })
+}
+
+pub fn resolve_orchestrator_selection(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+) -> Result<OrchestratorSelection, BridgeError> {
+    let descriptors = registry.descriptors();
+    let configured_agent = agent_config::default_orchestrator(db);
+    if let Some(agent) = configured_agent.as_ref() {
+        if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
+            let harness_config = agent_config::harness_config(db, &agent.harness);
+            let preferred_model = agent
+                .model
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    harness_config
+                        .as_ref()
+                        .and_then(|config| config.default_model.as_deref())
+                        .filter(|value| !value.trim().is_empty())
+                });
+            if harness_config.is_some() {
+                if let Ok(resolution) = registry.resolve_model(
+                    &agent.harness,
+                    CapabilityTier::Standard,
+                    preferred_model,
+                ) {
+                    return Ok(OrchestratorSelection {
+                        adapter_id: agent.harness.clone(),
+                        model: resolution.actual_model,
+                        tier: CapabilityTier::Standard,
+                        effort: harness_config
+                            .and_then(|config| config.effort)
+                            .or(Some(agent.effort)),
+                        label: agent.name.clone(),
+                    });
+                }
+            }
+        }
+    }
+    if let Some(profile) = model_profiles::resolve_profile(
+        db,
+        &descriptors,
+        model_profiles::ProfilePurpose::StandardOrchestrator,
+    )?
+    .filter(|profile| agent_config::is_harness_enabled(db, &profile.provider))
+    {
+        let resolution =
+            registry.resolve_model(&profile.provider, profile.tier, Some(&profile.model))?;
+        return Ok(OrchestratorSelection {
+            adapter_id: profile.provider,
+            model: resolution.actual_model,
+            tier: profile.tier,
+            effort: configured_agent
+                .as_ref()
+                .filter(|agent| !agent.is_built_in || !agent.updated_at.is_empty())
+                .map(|agent| agent.effort)
+                .or(Some(profile.effort)),
+            label: configured_agent
+                .as_ref()
+                .map(|agent| agent.name.clone())
+                .unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
+        });
+    }
+    for descriptor in descriptors.iter().filter(|descriptor| {
+        descriptor.available && agent_config::is_harness_enabled(db, &descriptor.id)
+    }) {
+        if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
+            return Ok(OrchestratorSelection {
+                adapter_id: descriptor.id.clone(),
+                model: resolution.actual_model,
+                tier: orchestrator::TIER,
+                effort: None,
+                label: orchestrator::SESSION_LABEL.into(),
+            });
+        }
+    }
+    Err(BridgeError::Invalid(
+        "no available adapter can resolve the Standard orchestrator profile".into(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    /// A registered, available harness with Standard and Fast models, so
+    /// selection logic can run without real provider binaries.
+    struct StubAdapter;
+    impl adapters::HarnessAdapter for StubAdapter {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            AdapterDescriptor {
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: true,
+                version: None,
+                capabilities: Vec::new(),
+                unavailable_reason: None,
+                models: vec![
+                    ModelOption {
+                        id: "stub-standard".into(),
+                        label: "Stub Standard".into(),
+                        tier: CapabilityTier::Standard,
+                        default_for_tier: true,
+                    },
+                    ModelOption {
+                        id: "stub-fast".into(),
+                        label: "Stub Fast".into(),
+                        tier: CapabilityTier::Fast,
+                        default_for_tier: true,
+                    },
+                ],
+                default_model: None,
+            }
+        }
+        fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Adapter("stub adapter cannot start".into()))
+        }
+        fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Adapter("stub adapter cannot resume".into()))
+        }
+        fn supports_native_resume(&self) -> bool {
+            false
+        }
+        fn normalize(&self, _: &Value) -> Vec<agent::NormalizedEvent> {
+            Vec::new()
+        }
+    }
+
+    fn fixture() -> (tempfile::TempDir, BridgeCore) {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(StubAdapter)).unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        (scratch, core)
+    }
+
+    fn seed_workspace(core: &BridgeCore, with_project: bool) {
+        let db = core.db.lock().unwrap();
+        if with_project {
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/sessions-demo','now')", []).unwrap();
+        }
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,title,path,status,created_at) VALUES('w',?1,'Payments API','/tmp/sessions-demo','idle','now')",
+            params![with_project.then_some("p")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn create_chat_persists_a_scratch_dir_direct_session() {
+        let (_scratch, core) = fixture();
+        let snapshot = core.create_chat(&Harness::Codex, Some("stub-fast"), Some("  Billing  ")).unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        let db = core.db.lock().unwrap();
+        let (kind, label, model, cwd): (String, String, Option<String>, String) = db
+            .query_row("SELECT kind,label,model,cwd FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap();
+        assert_eq!(kind, "direct");
+        assert_eq!(label, "Billing");
+        assert_eq!(model.as_deref(), Some("stub-fast"));
+        assert!(cwd.contains("chats"), "direct chats run in a private scratch dir: {cwd}");
+    }
+
+    #[test]
+    fn create_chat_defaults_the_label_when_the_title_is_blank() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, Some("   ")).unwrap();
+        let db = core.db.lock().unwrap();
+        let label: String = db.query_row("SELECT label FROM sessions", [], |row| row.get(0)).unwrap();
+        assert_eq!(label, "New chat");
+    }
+
+    #[test]
+    fn activate_session_entry_moves_the_head_and_records_the_event() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','S','idle','reported')", []).unwrap();
+            db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{}','now'),('e2','s','e1',2,'assistant.message','{}','now')", []).unwrap();
+            db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at) VALUES('s','e2','fresh','now')", []).unwrap();
+        }
+        let snapshot = core.activate_session_entry("s", "e1").unwrap();
+        assert_eq!(snapshot.head.unwrap().active_entry_id.as_deref(), Some("e1"));
+        let db = core.db.lock().unwrap();
+        assert!(db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE kind='session.head_moved' AND entity_id='s')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn plan_workspace_session_validates_isolation_and_resolves_a_selection() {
+        let (_scratch, core) = fixture();
+        assert!(matches!(core.plan_workspace_session("missing", false), Err(BridgeError::Db(_))));
+
+        seed_workspace(&core, false);
+        let error = core.plan_workspace_session("w", true).unwrap_err();
+        assert!(error.to_string().contains("Connect a Git repository"), "{error}");
+
+        let plan = core.plan_workspace_session("w", false).unwrap();
+        assert_eq!(plan.selection.adapter_id, "codex");
+        assert!(
+            plan.selection.model.starts_with("stub-"),
+            "selection must come from the registered adapter, got {}",
+            plan.selection.model
+        );
+        assert_eq!(plan.workspace_title, "Payments API");
+        assert!(plan.worktree_source.is_none());
+    }
+
+    #[test]
+    fn plan_workspace_session_requires_a_registered_adapter() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(scratch.path());
+        seed_workspace(&core, false);
+        let error = core.plan_workspace_session("w", false).unwrap_err();
+        assert!(error.to_string().contains("no available adapter"), "{error}");
+    }
+
+    #[test]
+    fn persist_workspace_session_records_the_orchestrator_row() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session("w", false).unwrap();
+        let snapshot = core.persist_workspace_session("w", &plan, None).unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        let db = core.db.lock().unwrap();
+        let (kind, cwd, harness): (String, String, String) = db
+            .query_row("SELECT kind,cwd,harness FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(kind, "orchestrator");
+        assert_eq!(cwd, "/tmp/sessions-demo", "cwd falls back to the workspace path");
+        assert_eq!(harness, "codex");
+        assert!(db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE kind='session.created')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn failed_persistence_removes_the_created_worktree() {
+        let (scratch, core) = fixture();
+        // Real repository + worktree so the compensating removal is real.
+        let repo = scratch.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "bridge-test@example.invalid"],
+            vec!["config", "user.name", "Bridge Test"],
+        ] {
+            assert!(std::process::Command::new("git").args(&args).current_dir(&repo).status().unwrap().success());
+        }
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-m", "fixture", "-q"]] {
+            assert!(std::process::Command::new("git").args(&args).current_dir(&repo).status().unwrap().success());
+        }
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![repo.to_string_lossy()]).unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,title,path,status,created_at) VALUES('w','p','Payments API',?1,'idle','now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+        }
+        let plan = core.plan_workspace_session("w", true).unwrap();
+        let worktree = prepare_orchestrator_worktree(
+            &core.worktrees,
+            &plan.workspace_title,
+            Path::new(plan.worktree_source.as_deref().unwrap()),
+            &plan.session_id,
+        )
+        .unwrap();
+        assert!(worktree.path.exists());
+        // Force the insert to fail: a session with the planned id already exists.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,'w','codex','占','idle','reported')",
+                params![plan.session_id],
+            )
+            .unwrap();
+        let result = core.persist_workspace_session("w", &plan, Some(worktree.clone()));
+        assert!(result.is_err());
+        assert!(!worktree.path.exists(), "failed persistence must remove the worktree");
+    }
+
+    #[test]
+    fn chat_model_changes_are_validated_planned_and_committed() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+
+        // Unknown adapter (claude has no stub registered).
+        let error = core.plan_chat_model_change(&session_id, &Harness::Claude, None).unwrap_err();
+        assert!(error.to_string().contains("No model adapter"), "{error}");
+        // Unknown model on a registered adapter.
+        let error = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, Some("no-such-model"))
+            .unwrap_err();
+        assert!(error.to_string().contains("does not offer model"), "{error}");
+        // Busy chats cannot switch.
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET active_turn_id='turn' WHERE id=?1", params![session_id])
+            .unwrap();
+        let error = core.plan_chat_model_change(&session_id, &Harness::Codex, None).unwrap_err();
+        assert!(error.to_string().contains("Wait for the current response"), "{error}");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET active_turn_id=NULL WHERE id=?1", params![session_id])
+            .unwrap();
+
+        // Plan + commit: direct chats default to the Fast tier.
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .expect("switching claude -> codex is a real change");
+        assert_eq!(change.selected.id, "stub-fast");
+        let event = core.commit_chat_model_change(&session_id, &change).unwrap();
+        assert_eq!(event.kind, "session.model_changed");
+        let db = core.db.lock().unwrap();
+        let (harness, model): (String, Option<String>) = db
+            .query_row("SELECT harness,model FROM sessions WHERE id=?1", params![session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(harness, "codex");
+        assert_eq!(model.as_deref(), Some("stub-fast"));
+        drop(db);
+
+        // Re-planning the same harness/model is a no-op.
+        assert!(core
+            .plan_chat_model_change(&session_id, &Harness::Codex, Some("stub-fast"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn commit_refuses_when_the_session_stopped_being_a_root_chat() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET parent_session_id='parent' WHERE id=?1", params![session_id])
+            .unwrap();
+        let error = core.commit_chat_model_change(&session_id, &change).unwrap_err();
+        assert!(error.to_string().contains("no longer a root chat"), "{error}");
+    }
+
+    #[test]
+    fn stopping_a_session_without_a_live_adapter_is_a_no_op() {
+        let (_scratch, core) = fixture();
+        core.stop_session_adapter("nothing-running", adapters::ShutdownReason::Replaced);
+        assert!(core.adapters.lock().unwrap().is_empty());
+    }
+}
