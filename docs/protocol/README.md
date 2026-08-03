@@ -71,8 +71,14 @@ Domains: `approvals`, `browser`, `completion`, `config`, `health`,
 
 Per-method typed params/results land domain by domain as command bodies move
 onto `BridgeCore`; until a domain is typed, params mirror the command's
-current serde signature. Typed so far: **projects** and **workspaces** (see
-`BridgeMethodParams` / `BridgeMethodResults` in the generated TypeScript).
+current serde signature. Typed so far: **projects**, **workspaces**, and the
+**management half of sessions** (`get_session_forest`,
+`activate_session_entry`, `create_chat`, `create_workspace_session`,
+`update_chat_model`) — see `BridgeMethodParams` / `BridgeMethodResults` in
+the generated TypeScript. Still pending in sessions, blocked on the
+event-publisher seam: `start_session`, `start_chat`, `prepare_turn`,
+`send_turn`, `compact_session`, `interrupt_turn`, `refresh_account_usage`,
+and `stop_session` (the list is test-enforced and must shrink as they land).
 Methods returning the aggregate `BridgeState` snapshot keep untyped results
 until the snapshot DTO itself is contracted — that is its own slice.
 

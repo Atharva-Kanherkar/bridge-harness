@@ -51,22 +51,26 @@
     {
       "command": "get_session_forest",
       "domain": "sessions",
-      "method": "sessions/get_session_forest"
+      "method": "sessions/get_session_forest",
+      "paramsSchema": "get-session-forest-params.json"
     },
     {
       "command": "activate_session_entry",
       "domain": "sessions",
-      "method": "sessions/activate_session_entry"
+      "method": "sessions/activate_session_entry",
+      "paramsSchema": "activate-session-entry-params.json"
     },
     {
       "command": "create_chat",
       "domain": "sessions",
-      "method": "sessions/create_chat"
+      "method": "sessions/create_chat",
+      "paramsSchema": "create-chat-params.json"
     },
     {
       "command": "create_workspace_session",
       "domain": "sessions",
-      "method": "sessions/create_workspace_session"
+      "method": "sessions/create_workspace_session",
+      "paramsSchema": "create-workspace-session-params.json"
     },
     {
       "command": "start_session",
@@ -81,7 +85,8 @@
     {
       "command": "update_chat_model",
       "domain": "sessions",
-      "method": "sessions/update_chat_model"
+      "method": "sessions/update_chat_model",
+      "paramsSchema": "update-chat-model-params.json"
     },
     {
       "command": "prepare_turn",

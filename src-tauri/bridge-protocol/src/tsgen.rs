@@ -14,9 +14,10 @@ use crate::envelope::{CancelParams, RpcNotification, RpcRequest, RpcResponse};
 use crate::error::ErrorCode;
 use crate::handshake::{HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION};
 use crate::messages::{
-    AddProjectParams, ArchiveWorkspaceParams, ConnectWorkspaceFolderParams,
-    CreateWorkspaceParams, ListWorkspaceFilesParams, ListWorkspaceFilesResult,
-    RefreshWorkspaceParams, TYPED_METHODS,
+    ActivateSessionEntryParams, AddProjectParams, ArchiveWorkspaceParams, ConnectWorkspaceFolderParams,
+    CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams, GetSessionForestParams,
+    ListWorkspaceFilesParams, ListWorkspaceFilesResult, RefreshWorkspaceParams,
+    UpdateChatModelParams, TYPED_METHODS,
 };
 use crate::methods::MethodName;
 use crate::{CANCEL_METHOD, HANDSHAKE_METHOD, JSONRPC_VERSION};
@@ -54,6 +55,17 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         ),
         ("RefreshWorkspaceParams", serde_json::to_value(schema_for!(RefreshWorkspaceParams)).unwrap()),
         ("ArchiveWorkspaceParams", serde_json::to_value(schema_for!(ArchiveWorkspaceParams)).unwrap()),
+        ("GetSessionForestParams", serde_json::to_value(schema_for!(GetSessionForestParams)).unwrap()),
+        (
+            "ActivateSessionEntryParams",
+            serde_json::to_value(schema_for!(ActivateSessionEntryParams)).unwrap(),
+        ),
+        ("CreateChatParams", serde_json::to_value(schema_for!(CreateChatParams)).unwrap()),
+        (
+            "CreateWorkspaceSessionParams",
+            serde_json::to_value(schema_for!(CreateWorkspaceSessionParams)).unwrap(),
+        ),
+        ("UpdateChatModelParams", serde_json::to_value(schema_for!(UpdateChatModelParams)).unwrap()),
     ];
     for (name, schema) in &mut roots {
         if let Some(object) = schema.as_object_mut() {
@@ -528,6 +540,26 @@ mod tests {
             (
                 "docs/protocol/schemas/archive-workspace-params.json",
                 include_str!("../../../docs/protocol/schemas/archive-workspace-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/get-session-forest-params.json",
+                include_str!("../../../docs/protocol/schemas/get-session-forest-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/activate-session-entry-params.json",
+                include_str!("../../../docs/protocol/schemas/activate-session-entry-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/create-chat-params.json",
+                include_str!("../../../docs/protocol/schemas/create-chat-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/create-workspace-session-params.json",
+                include_str!("../../../docs/protocol/schemas/create-workspace-session-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/update-chat-model-params.json",
+                include_str!("../../../docs/protocol/schemas/update-chat-model-params.json"),
             ),
             (
                 "docs/protocol/schemas/methods.json",

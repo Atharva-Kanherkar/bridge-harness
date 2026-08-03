@@ -8,7 +8,8 @@ use bridge_core::{
     adapters, agent, agent_config, binary, browser_bridge, claude_adapter,
     compaction_controller, delegation, git, handoff, marketplace,
     opencode_adapter, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
-    secret_interception, session_forest, session_supervisor, skill_marketplace, slash, store,
+    secret_interception, session_forest, session_supervisor, sessions, skill_marketplace, slash,
+    store,
     worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
     worktree_coordinator,
 };
@@ -390,71 +391,6 @@ async fn get_state(state: State<'_, BridgeCore>) -> Result<BridgeState, BridgeEr
     store::state(&state.db.lock().unwrap())
 }
 
-fn session_forest_snapshot(
-    db: &Connection,
-    session_id: &str,
-) -> Result<SessionForestSnapshot, BridgeError> {
-    let current_state = store::repository_state_for_session(db, session_id)?;
-    session_forest_snapshot_with_repository_state(db, session_id, current_state)
-}
-
-fn session_forest_snapshot_with_repository_state(
-    db: &Connection,
-    session_id: &str,
-    current_state: serde_json::Value,
-) -> Result<SessionForestSnapshot, BridgeError> {
-    let workspace_id: String = db.query_row(
-        "SELECT workspace_id FROM sessions WHERE id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-    let config = policy::PolicyConfig::default();
-    let entries = store::session_entries(db, session_id)?;
-    let head = store::session_head(db, session_id)?;
-    let selected_state = head
-        .as_ref()
-        .and_then(|head| head.active_entry_id.as_deref())
-        .and_then(|id| entries.iter().find(|entry| entry.id == id))
-        .and_then(|entry| entry.payload.get("_bridgeRepoState"))
-        .cloned();
-    let comparable = |value: &serde_json::Value| {
-        value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable")
-    };
-    let divergence_status = match selected_state.as_ref() {
-        Some(selected)
-            if comparable(selected) && comparable(&current_state) && selected == &current_state =>
-        {
-            "aligned"
-        }
-        Some(selected) if comparable(selected) && comparable(&current_state) => "diverged",
-        _ => "unknown",
-    };
-    Ok(SessionForestSnapshot {
-        session_id: session_id.to_owned(),
-        entries,
-        head,
-        leaves: session_forest::SessionForest::new(db)
-            .branch_leaves(session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
-        worker_leases: store::worker_leases(db, &workspace_id)?,
-        worker_runtimes: store::worker_runtimes(db, &workspace_id)?,
-        worker_queue: store::worker_queue_requests(db, &workspace_id)?,
-        usage: store::usage_ledger(db, &workspace_id, None)?,
-        reasons: store::workspace_reason_events(db, &workspace_id)?,
-        policy_limits: PolicyLimits {
-            max_workers_per_turn: config.max_workers_per_turn as i64,
-            max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
-            max_capability_units_per_turn: config.max_capability_units_per_turn,
-        },
-        repository_divergence: RepositoryDivergence {
-            status: divergence_status.into(),
-            selected_state,
-            current_state,
-        },
-        completion: completion::latest_summary(db, session_id)?,
-    })
-}
-
 #[tauri::command]
 async fn get_session_forest(
     session_id: String,
@@ -462,10 +398,7 @@ async fn get_session_forest(
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // run it on the macOS event loop or while holding the global SQLite lock.
-    let repository_path = {
-        let db = state.db.lock().unwrap();
-        store::repository_path_for_session(&db, &session_id)?
-    };
+    let repository_path = state.session_repository_path(&session_id)?;
     let repository_state = match repository_path {
         Some(path) => {
             tauri::async_runtime::spawn_blocking(move || store::repository_state_for_path(&path))
@@ -476,8 +409,7 @@ async fn get_session_forest(
         }
         None => serde_json::json!({"status":"unavailable"}),
     };
-    let db = state.db.lock().unwrap();
-    session_forest_snapshot_with_repository_state(&db, &session_id, repository_state)
+    state.session_forest_snapshot_with_repository_state(&session_id, repository_state)
 }
 
 fn completion_repository_stamp(
@@ -981,52 +913,14 @@ async fn activate_session_entry(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let snapshot = activate_session_entry_records(&db, &session_id, &entry_id)?;
+    let snapshot = state.activate_session_entry(&session_id, &entry_id)?;
     let _ = app.emit("state-changed", ());
     Ok(snapshot)
-}
-
-fn activate_session_entry_records(
-    db: &Connection,
-    session_id: &str,
-    entry_id: &str,
-) -> Result<SessionForestSnapshot, BridgeError> {
-    session_forest::SessionForest::new(db)
-        .move_head(session_id, Some(entry_id))
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    store::event(
-        db,
-        "session-forest",
-        "session.head_moved",
-        session_id,
-        &format!("Conversation head moved to {entry_id}; files were not changed"),
-    )?;
-    session_forest_snapshot(db, session_id)
 }
 
 #[tauri::command]
 async fn add_project(path: String, state: State<'_, BridgeCore>) -> Result<BridgeState, BridgeError> {
     state.add_project(&path)
-}
-
-/// Scratch working directory for a chat that has no connected folder/repo.
-fn chat_scratch_dir(state: &BridgeCore, session_id: &str) -> PathBuf {
-    state
-        .database_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("chats")
-        .join(session_id)
-}
-
-fn chat_label(title: Option<&str>) -> String {
-    title
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("New chat")
-        .to_string()
 }
 
 /// Create a repo-less workspace. A folder/git repo can be connected later.
@@ -1046,261 +940,43 @@ async fn create_chat(
     title: Option<String>,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let adapter_id = store::harness_name(&harness);
-    let id = Uuid::new_v4().to_string();
-    let cwd = chat_scratch_dir(state.inner(), &id);
-    let label = chat_label(title.as_deref());
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,NULL,?2,?3,'idle','estimated',?4,'direct',?5,?6,0)",
-        params![id, adapter_id, label, model, title, cwd.to_string_lossy()],
-    )?;
-    store::event(
-        &db,
-        "chat",
-        "chat.created",
-        &id,
-        &format!("Created chat {label}"),
-    )?;
-    store::state(&db)
+    state.create_chat(&harness, model.as_deref(), title.as_deref())
 }
 
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
-#[derive(Debug, Clone)]
-struct OrchestratorSelection {
-    adapter_id: String,
-    model: String,
-    tier: CapabilityTier,
-    effort: Option<delegation::Effort>,
-    label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OrchestratorWorktree {
-    path: PathBuf,
-    branch: String,
-}
-
-fn prepare_orchestrator_worktree(
-    namespace_root: &Path,
-    workspace_title: &str,
-    workspace_path: &Path,
-    session_id: &str,
-) -> Result<OrchestratorWorktree, BridgeError> {
-    git::validate_repo(workspace_path).map_err(|_| {
-        BridgeError::Invalid(
-            "Connect a Git repository before creating an isolated worktree".into(),
-        )
-    })?;
-    let workspace_slug = {
-        let value = git::slug(workspace_title);
-        if value.is_empty() {
-            "workspace".to_owned()
-        } else {
-            value
-        }
-    };
-    let session_slug = git::slug(session_id);
-    let short_session = session_slug.chars().take(8).collect::<String>();
-    let branch = format!("bridge/{workspace_slug}-{short_session}");
-    let path = namespace_root
-        .join("orchestrators")
-        .join(&workspace_slug)
-        .join(session_id);
-    git::create_worktree(workspace_path, &path, &branch)?;
-    Ok(OrchestratorWorktree { path, branch })
-}
-
-fn resolve_orchestrator_selection(
-    db: &Connection,
-    registry: &adapters::AdapterRegistry,
-) -> Result<OrchestratorSelection, BridgeError> {
-    let descriptors = registry.descriptors();
-    let configured_agent = agent_config::default_orchestrator(db);
-    if let Some(agent) = configured_agent.as_ref() {
-        if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
-            let harness_config = agent_config::harness_config(db, &agent.harness);
-            let preferred_model = agent
-                .model
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| {
-                    harness_config
-                        .as_ref()
-                        .and_then(|config| config.default_model.as_deref())
-                        .filter(|value| !value.trim().is_empty())
-                });
-            if harness_config.is_some() {
-                if let Ok(resolution) = registry.resolve_model(
-                    &agent.harness,
-                    CapabilityTier::Standard,
-                    preferred_model,
-                ) {
-                    return Ok(OrchestratorSelection {
-                        adapter_id: agent.harness.clone(),
-                        model: resolution.actual_model,
-                        tier: CapabilityTier::Standard,
-                        effort: harness_config
-                            .and_then(|config| config.effort)
-                            .or(Some(agent.effort)),
-                        label: agent.name.clone(),
-                    });
-                }
-            }
-        }
-    }
-    if let Some(profile) = model_profiles::resolve_profile(
-        db,
-        &descriptors,
-        model_profiles::ProfilePurpose::StandardOrchestrator,
-    )?
-    .filter(|profile| agent_config::is_harness_enabled(db, &profile.provider))
-    {
-        let resolution =
-            registry.resolve_model(&profile.provider, profile.tier, Some(&profile.model))?;
-        return Ok(OrchestratorSelection {
-            adapter_id: profile.provider,
-            model: resolution.actual_model,
-            tier: profile.tier,
-            effort: configured_agent
-                .as_ref()
-                .filter(|agent| !agent.is_built_in || !agent.updated_at.is_empty())
-                .map(|agent| agent.effort)
-                .or(Some(profile.effort)),
-            label: configured_agent
-                .as_ref()
-                .map(|agent| agent.name.clone())
-                .unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
-        });
-    }
-    for descriptor in descriptors.iter().filter(|descriptor| {
-        descriptor.available && agent_config::is_harness_enabled(db, &descriptor.id)
-    }) {
-        if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
-            return Ok(OrchestratorSelection {
-                adapter_id: descriptor.id.clone(),
-                model: resolution.actual_model,
-                tier: orchestrator::TIER,
-                effort: None,
-                label: orchestrator::SESSION_LABEL.into(),
-            });
-        }
-    }
-    Err(BridgeError::Invalid(
-        "no available adapter can resolve the Standard orchestrator profile".into(),
-    ))
-}
-
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
     create_worktree: Option<bool>,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let id = Uuid::new_v4().to_string();
-    let (selection, workspace_title, workspace_path, project_id) = {
-        let db = state.db.lock().unwrap();
-        let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
-        let (title, path, project_id): (String, Option<String>, Option<String>) = db.query_row(
-            "SELECT title,path,project_id FROM workspaces WHERE id=?1",
-            params![workspace_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        (selection, title, path, project_id)
-    };
-    let isolated = create_worktree.unwrap_or(false);
-    if isolated && project_id.is_none() {
-        return Err(BridgeError::Invalid(
-            "Connect a Git repository before creating an isolated worktree".into(),
-        ));
-    }
-    let worktree = if isolated {
-        let source = workspace_path
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                BridgeError::Invalid(
-                    "Connect a Git repository before creating an isolated worktree".into(),
-                )
-            })?
-            .to_owned();
-        let namespace = state.worktrees.clone();
-        let title = workspace_title.clone();
-        let session_id = id.clone();
-        Some(
-            tauri::async_runtime::spawn_blocking(move || {
-                prepare_orchestrator_worktree(
-                    &namespace,
-                    &title,
-                    Path::new(&source),
-                    &session_id,
-                )
-            })
-            .await
-            .map_err(|error| {
-                BridgeError::Invalid(format!("Worktree creation task failed: {error}"))
-            })??,
-        )
-    } else {
-        None
-    };
-    let cwd = worktree
-        .as_ref()
-        .map(|value| value.path.to_string_lossy().into_owned())
-        .or_else(|| workspace_path.clone())
-        .unwrap_or_else(|| {
-            chat_scratch_dir(state.inner(), &id)
-                .to_string_lossy()
-                .to_string()
-        });
-    let persisted = (|| -> Result<BridgeState, BridgeError> {
-        let db = state.db.lock().unwrap();
-        let transaction = db.unchecked_transaction()?;
-        transaction.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-            params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
-        )?;
-        store::event(&transaction, "supervisor", "session.created", &id, "New agent session")?;
-        if let Some(created) = &worktree {
-            store::event(
-                &transaction,
-                "worktree",
-                "session.worktree_created",
-                &id,
-                &format!(
-                    "Created isolated worktree {} on branch {}",
-                    created.path.display(),
-                    created.branch
-                ),
-            )?;
+    let plan = state.plan_workspace_session(&workspace_id, create_worktree.unwrap_or(false))?;
+    let worktree = match plan.worktree_source().map(str::to_owned) {
+        // Worktree creation shells out to Git; only its blocking-pool
+        // placement is the shell's concern.
+        Some(source) => {
+            let namespace = state.worktrees.clone();
+            let title = plan.workspace_title().to_owned();
+            let session_id = plan.session_id().to_owned();
+            Some(
+                tauri::async_runtime::spawn_blocking(move || {
+                    sessions::prepare_orchestrator_worktree(
+                        &namespace,
+                        &title,
+                        Path::new(&source),
+                        &session_id,
+                    )
+                })
+                .await
+                .map_err(|error| {
+                    BridgeError::Invalid(format!("Worktree creation task failed: {error}"))
+                })??,
+            )
         }
-        let next = store::state(&transaction)?;
-        transaction.commit()?;
-        Ok(next)
-    })();
-    if persisted.is_err() {
-        if let Some(created) = &worktree {
-            let _ = git::remove_worktree(
-                Path::new(workspace_path.as_deref().unwrap_or("")),
-                &created.path,
-            );
-        }
-    }
-    persisted
-}
-
-fn persist_chat_model_selection(
-    db: &Connection,
-    session_id: &str,
-    adapter_id: &str,
-    model: &str,
-    tier: CapabilityTier,
-) -> Result<usize, BridgeError> {
-    Ok(db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator')",
-        params![session_id, adapter_id, model, tier.as_str()],
-    )?)
+        None => None,
+    };
+    state.persist_workspace_session(plan, worktree)
 }
 
 /// Change a root chat's provider/model. Stops any running adapter so the next
@@ -1313,131 +989,28 @@ async fn update_chat_model(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
-    let adapter_id = store::harness_name(&harness);
-    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
-        return Err(BridgeError::Invalid(format!(
-            "{} is disabled in Settings",
-            harness.label()
-        )));
-    }
-    let (kind, previous_harness, previous_model, active_turn_id, parent_session_id): (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = state.db.lock().unwrap().query_row(
-        "SELECT kind,harness,model,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
-        params![session_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    )?;
-    if parent_session_id.is_some() || !matches!(kind.as_str(), "direct" | "orchestrator") {
-        return Err(BridgeError::Invalid(
-            "Only root chats and orchestrators can change models".into(),
-        ));
-    }
-    if active_turn_id.is_some() {
-        return Err(BridgeError::Invalid(
-            "Wait for the current response before switching models".into(),
-        ));
-    }
-    let descriptor = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .find(|descriptor| descriptor.id == adapter_id)
-        .ok_or_else(|| BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}")))?;
-    if !descriptor.available {
-        return Err(BridgeError::Invalid(
-            descriptor
-                .unavailable_reason
-                .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
-        ));
-    }
-    let default_tier = if kind == "orchestrator" {
-        CapabilityTier::Standard
-    } else {
-        CapabilityTier::Fast
+    // Exclusive for the whole plan -> teardown -> commit window: a concurrent
+    // start would otherwise slip in after teardown and be orphaned by the
+    // commit clearing its process and turn state.
+    let _lifecycle = state.claim_session_lifecycle(&session_id, "model switch")?;
+    let Some(change) = state.plan_chat_model_change(&session_id, &harness, model.as_deref())?
+    else {
+        return state.state_snapshot();
     };
-    let selected = if let Some(requested) = model.as_deref().filter(|value| !value.trim().is_empty()) {
-        descriptor
-            .models
-            .iter()
-            .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
-            .cloned()
-            .ok_or_else(|| BridgeError::Invalid(format!("{} does not offer model {requested}", descriptor.label)))?
-    } else {
-        descriptor
-            .models
-            .iter()
-            .find(|option| option.tier == default_tier && option.default_for_tier)
-            .or_else(|| descriptor.models.iter().find(|option| option.tier == default_tier))
-            .cloned()
-            .ok_or_else(|| BridgeError::Invalid(format!("{} has no {} model", descriptor.label, default_tier.as_str())))?
-    };
-    if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str()) {
-        return store::state(&state.db.lock().unwrap());
-    }
+    // Stopping the old adapter can block on process teardown; run it on the
+    // blocking pool rather than the macOS event loop.
     let stop_session_id = session_id.clone();
     let shutdown_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = shutdown_app.state::<BridgeCore>();
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
-            runtime.stop(adapters::ShutdownReason::Replaced);
-        };
+        shutdown_app
+            .state::<BridgeCore>()
+            .stop_session_adapter(&stop_session_id, adapters::ShutdownReason::Replaced);
     })
     .await
     .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
-    session_supervisor::SessionSupervisor::clear_adapter_process(
-        &state.db.lock().unwrap(),
-        &session_id,
-    )?;
-    let db = state.db.lock().unwrap();
-    if persist_chat_model_selection(&db, &session_id, adapter_id, &selected.id, selected.tier)? != 1 {
-        return Err(BridgeError::Invalid(
-            "The chat could not be updated because it is no longer a root chat".into(),
-        ));
-    }
-    restoration::set_head_state(
-        &db,
-        &session_id,
-        RestorationMode::Fresh,
-        ResumeEligibility::Fresh,
-        None,
-    )?;
-    let subject = if kind == "orchestrator" { "Orchestrator" } else { "Chat" };
-    let detail = format!(
-        "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session.",
-        previous_harness,
-        previous_model.as_deref().unwrap_or("automatic"),
-        adapter_id,
-        selected.id,
-    );
-    store::event(&db, "chat", "session.model_changed", &session_id, &detail)?;
-    let event = store::session_event(
-        &db,
-        &session_id,
-        &agent::NormalizedEvent {
-            kind: "session.model_changed".into(),
-            item_id: Some(format!("model-change-{}", Uuid::new_v4())),
-            role: Some("system".into()),
-            status: Some("ready".into()),
-            title: Some(format!("{subject} model changed")),
-            text: Some(detail),
-            data: serde_json::json!({
-                "previousHarness": previous_harness,
-                "previousModel": previous_model,
-                "harness": adapter_id,
-                "model": selected.id,
-                "modelLabel": selected.label,
-                "tier": selected.tier,
-                "freshProviderSession": true,
-            }),
-        },
-        &serde_json::json!({"source": "user-selection"}),
-    )?;
+    let event = state.commit_chat_model_change(change)?;
     let _ = app.emit("agent-event", event);
-    store::state(&db)
+    state.state_snapshot()
 }
 
 #[derive(serde::Serialize)]
@@ -1587,7 +1160,7 @@ async fn start_session(
                 .cloned()
                 .ok_or_else(|| BridgeError::Invalid(format!("{} has no standard model", descriptor.label)))?
         };
-        OrchestratorSelection {
+        sessions::OrchestratorSelection {
             adapter_id,
             model: selected.id,
             tier: selected.tier,
@@ -1599,7 +1172,7 @@ async fn start_session(
         }
     } else {
         let db = state.db.lock().unwrap();
-        resolve_orchestrator_selection(&db, &state.adapter_registry)?
+        sessions::resolve_orchestrator_selection(&db, &state.adapter_registry)?
     };
     let adapter_id = selection.adapter_id.as_str();
     let session_label = selection.label.as_str();
@@ -1630,8 +1203,12 @@ async fn start_session(
         None
     };
     drop(db);
+    // Exclusive with model switches (and other starts) on this session for
+    // the rest of the launch flow.
+    let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
-        chat_scratch_dir(state.inner(), &session_id)
+        state
+            .chat_scratch_dir(&session_id)
             .to_string_lossy()
             .to_string()
     });
@@ -1975,6 +1552,10 @@ async fn start_chat(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
+    // Exclusive with model switches (and other starts) on this session: the
+    // switch flow tears the adapter down across an await, and a start
+    // interleaving into that window would be orphaned by its commit.
+    let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
         String,
         String,
@@ -2012,7 +1593,8 @@ async fn start_chat(
                     .flatten()
             });
             workspace_path.unwrap_or_else(|| {
-                chat_scratch_dir(state.inner(), &session_id)
+                state
+                    .chat_scratch_dir(&session_id)
                     .to_string_lossy()
                     .to_string()
             })
@@ -6374,7 +5956,7 @@ mod tests {
         let expected_model = expected.model.clone();
         let db = store::open(Path::new(":memory:")).unwrap();
         model_profiles::save_profiles(&db, &descriptors, &profiles).unwrap();
-        let selected = resolve_orchestrator_selection(&db, &registry).unwrap();
+        let selected = sessions::resolve_orchestrator_selection(&db, &registry).unwrap();
         assert_eq!(selected.adapter_id, expected_provider);
         assert_eq!(selected.model, expected_model);
         assert_eq!(selected.effort, Some(delegation::Effort::High));
@@ -6417,35 +5999,6 @@ mod tests {
     }
 
     #[test]
-    fn user_model_selection_updates_an_orchestrator_session() {
-        let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,kind,depth) VALUES('orchestrator',NULL,'codex','Orchestrator','ready','reported','old-model','standard','orchestrator',0)",
-            [],
-        )
-        .unwrap();
-
-        let changed = persist_chat_model_selection(
-            &db,
-            "orchestrator",
-            "claude",
-            "opus",
-            CapabilityTier::Strong,
-        )
-        .unwrap();
-        let actual: (String, String, String, String, Option<String>) = db
-            .query_row(
-                "SELECT harness,model,requested_tier,status,provider_session_id FROM sessions WHERE id='orchestrator'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            )
-            .unwrap();
-
-        assert_eq!(changed, 1);
-        assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
-    }
-
-    #[test]
     fn orchestrator_worktree_is_created_from_the_connected_repository_head() {
         let fixture = tempfile::tempdir().unwrap();
         let repo = fixture.path().join("repository");
@@ -6469,7 +6022,7 @@ mod tests {
         run_git(&["add", "."]);
         run_git(&["commit", "-m", "fixture", "-q"]);
 
-        let created = prepare_orchestrator_worktree(
+        let created = sessions::prepare_orchestrator_worktree(
             &fixture.path().join("managed-worktrees"),
             "Payments / API",
             &repo,
@@ -6888,7 +6441,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        let initial = session_forest_snapshot(&db, "s").unwrap();
+        let initial = sessions::session_forest_snapshot(&db, "s").unwrap();
         assert_eq!(initial.repository_divergence.status, "unknown");
         assert_eq!(initial.head.unwrap().active_entry_id.as_deref(), Some("e2"));
         assert_eq!(initial.entries.len(), 2);
@@ -6903,7 +6456,7 @@ mod tests {
         assert_eq!(initial.worker_leases.len(), 1);
         assert_eq!(initial.usage.len(), 1);
 
-        let rewound = activate_session_entry_records(&db, "s", "e1").unwrap();
+        let rewound = sessions::activate_session_entry_records(&db, "s", "e1").unwrap();
         assert_eq!(rewound.head.unwrap().active_entry_id.as_deref(), Some("e1"));
         assert_eq!(store::session_entries(&db, "s").unwrap(), before_entries);
         assert_eq!(
@@ -6966,7 +6519,7 @@ mod tests {
             .unwrap();
         assert_eq!(clean.payload["_bridgeRepoState"]["status"], "clean");
         assert_eq!(
-            session_forest_snapshot(&db, "s")
+            sessions::session_forest_snapshot(&db, "s")
                 .unwrap()
                 .repository_divergence
                 .status,
@@ -6987,14 +6540,14 @@ mod tests {
             dirty.payload["_bridgeRepoState"]
         );
         assert_eq!(
-            session_forest_snapshot(&db, "s")
+            sessions::session_forest_snapshot(&db, "s")
                 .unwrap()
                 .repository_divergence
                 .status,
             "aligned"
         );
 
-        let rewound = activate_session_entry_records(&db, "s", &clean.id).unwrap();
+        let rewound = sessions::activate_session_entry_records(&db, "s", &clean.id).unwrap();
         assert_eq!(rewound.repository_divergence.status, "diverged");
         assert_eq!(
             std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
