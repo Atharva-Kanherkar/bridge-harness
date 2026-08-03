@@ -107,8 +107,8 @@ pub struct DelegationState {
 }
 
 /// Host-provided configuration for [`BridgeCore::boot`]. The host resolves
-/// platform paths (data directory, bundled browser extension) and supplies
-/// notification callbacks; the core owns everything that happens after.
+/// platform paths (data directory, bundled browser extension) and optionally
+/// injects a pre-subscribed event bus; the core owns everything after that.
 pub struct BootConfig {
     /// Application data directory holding the databases, worktrees, skills,
     /// and history snapshots.
@@ -238,7 +238,6 @@ impl BridgeCore {
 mod tests {
     use super::*;
     use crate::agent_config;
-    use rusqlite::params;
     use std::path::Path;
     use std::time::Duration;
 

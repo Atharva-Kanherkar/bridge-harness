@@ -5839,12 +5839,17 @@ pub fn run() {
                         Ok(event) => {
                             let _ = forwarder.emit(event.kind().as_str(), event.payload());
                         }
-                        // The live channel is notify-only; durable events are
-                        // recovered from the store, so a lag just skips ahead.
-                        Err(bridge_core::events::broadcast::error::RecvError::Lagged(_)) => {
+                        // The compatibility UI already reconciles durable
+                        // history from the session forest. Skip stale live
+                        // frames here; daemon clients use cursor replay.
+                        Err(bridge_core::events::ReceiveError::Lagged(_)) => {
+                            for event in receiver.reconciliation_events() {
+                                let _ =
+                                    forwarder.emit(event.kind().as_str(), event.payload());
+                            }
                             continue
                         }
-                        Err(bridge_core::events::broadcast::error::RecvError::Closed) => break,
+                        Err(bridge_core::events::ReceiveError::Closed) => break,
                     }
                 })?;
             let core = BridgeCore::boot(BootConfig {

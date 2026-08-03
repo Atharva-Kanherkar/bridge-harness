@@ -388,9 +388,10 @@ impl BridgeCore {
     ) -> Result<AgentEvent, BridgeError> {
         let session_id = change.session_id.as_str();
         let db = self.db.lock().unwrap();
-        session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
+        let transaction = db.unchecked_transaction()?;
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
         if persist_chat_model_selection(
-            &db,
+            &transaction,
             session_id,
             &change.adapter_id,
             &change.selected.id,
@@ -404,7 +405,7 @@ impl BridgeCore {
             ));
         }
         restoration::set_head_state(
-            &db,
+            &transaction,
             session_id,
             RestorationMode::Fresh,
             ResumeEligibility::Fresh,
@@ -422,9 +423,9 @@ impl BridgeCore {
             change.adapter_id,
             change.selected.id,
         );
-        store::event(&db, "chat", "session.model_changed", session_id, &detail)?;
-        let event = store::session_event(
-            &db,
+        store::event(&transaction, "chat", "session.model_changed", session_id, &detail)?;
+        let event = store::session_event_in_transaction(
+            &transaction,
             session_id,
             &agent::NormalizedEvent {
                 kind: "session.model_changed".into(),
@@ -445,6 +446,7 @@ impl BridgeCore {
             },
             &serde_json::json!({"source": "user-selection"}),
         )?;
+        transaction.commit()?;
         self.events.publish(crate::events::CoreEvent::Agent(event.clone()));
         Ok(event)
     }
@@ -528,17 +530,20 @@ pub fn activate_session_entry_records(
     session_id: &str,
     entry_id: &str,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    session_forest::SessionForest::new(db)
+    let transaction = db.unchecked_transaction()?;
+    session_forest::SessionForest::new(&transaction)
         .move_head(session_id, Some(entry_id))
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     store::event(
-        db,
+        &transaction,
         "session-forest",
         "session.head_moved",
         session_id,
         &format!("Conversation head moved to {entry_id}; files were not changed"),
     )?;
-    session_forest_snapshot(db, session_id)
+    let snapshot = session_forest_snapshot(&transaction, session_id)?;
+    transaction.commit()?;
+    Ok(snapshot)
 }
 
 /// Crate-private on purpose: callers must go through the plan/commit pair so
@@ -792,6 +797,36 @@ mod tests {
     }
 
     #[test]
+    fn activate_session_entry_rolls_back_and_publishes_nothing_when_audit_fails() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','S','idle','reported')", []).unwrap();
+            db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{}','now'),('e2','s','e1',2,'assistant.message','{}','now')", []).unwrap();
+            db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at) VALUES('s','e2','fresh','now')", []).unwrap();
+            db.execute_batch(
+                "CREATE TRIGGER fail_head_audit BEFORE INSERT ON events
+                 WHEN NEW.kind='session.head_moved'
+                 BEGIN SELECT RAISE(FAIL, 'injected audit failure'); END;",
+            )
+            .unwrap();
+        }
+        let mut events = core.events.subscribe();
+        assert!(core.activate_session_entry("s", "e1").is_err());
+        assert!(events.try_recv().is_err(), "a rolled-back head move must publish nothing");
+        let active: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT active_entry_id FROM session_heads WHERE session_id='s'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(active, "e2", "the head move and audit must roll back together");
+    }
+
+    #[test]
     fn plan_workspace_session_validates_isolation_and_resolves_a_selection() {
         let (_scratch, core) = fixture();
         assert!(matches!(core.plan_workspace_session("missing", false), Err(BridgeError::Db(_))));
@@ -962,6 +997,47 @@ mod tests {
     }
 
     #[test]
+    fn chat_model_change_rolls_back_and_publishes_nothing_when_history_fails() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_model_history BEFORE INSERT ON session_entries
+                 WHEN NEW.kind='session.model_changed'
+                 BEGIN SELECT RAISE(FAIL, 'injected history failure'); END;",
+            )
+            .unwrap();
+
+        let mut events = core.events.subscribe();
+        assert!(core.commit_chat_model_change(change).is_err());
+        assert!(events.try_recv().is_err(), "a rolled-back model change must publish nothing");
+        let (harness, model): (String, Option<String>) = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT harness,model FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(harness, "claude");
+        assert_eq!(model, None, "session state and durable history must commit together");
+    }
+
+    #[test]
     fn user_model_selection_updates_an_orchestrator_session() {
         let db = crate::store::open(Path::new(":memory:")).unwrap();
         db.execute(
@@ -1037,8 +1113,10 @@ mod tests {
             .unwrap()
             .execute("UPDATE sessions SET model='switched-elsewhere' WHERE id=?1", params![session_id])
             .unwrap();
+        let mut events = core.events.subscribe();
         let error = core.commit_chat_model_change(change).unwrap_err();
         assert!(error.to_string().contains("changed while the switch was in flight"), "{error}");
+        assert!(events.try_recv().is_err(), "a stale model-change plan must publish nothing");
         let model: Option<String> = core
             .db
             .lock()

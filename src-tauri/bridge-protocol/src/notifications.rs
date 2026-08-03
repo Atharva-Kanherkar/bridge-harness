@@ -3,9 +3,9 @@
 //!
 //! **Durable** notifications are backed by the session forest (SQLite), carry
 //! a per-session sequence cursor, and are replayable after a disconnect or a
-//! lagged live channel — the live channel is notify-only and lossy, never the
-//! source of truth. **Transient** notifications (terminal bytes, usage ticks,
-//! refetch hints) are delivered live only and never replayed.
+//! lagged live channel. **Mixed** notifications share a wire name between
+//! durable records and transient streaming frames; the positive cursor is the
+//! discriminator. **Transient** notifications are delivered live only.
 //!
 //! Wire names are the Tauri event names, so the migration compatibility
 //! adapter forwards them unchanged.
@@ -39,6 +39,9 @@ pub enum DeliveryClass {
     /// Backed by durable history with a sequence cursor; replayable with no
     /// gaps or duplicates after a disconnect or a lagged live channel.
     Durable,
+    /// A wire name carries both persisted events (positive cursor) and
+    /// transient frames (cursor zero). Clients replay only persisted events.
+    Mixed,
     /// Live-only; never replayed. Either a refetch hint or data that is
     /// worthless once stale (terminal bytes, usage ticks).
     Transient,
@@ -48,15 +51,16 @@ impl DeliveryClass {
     pub const fn as_str(self) -> &'static str {
         match self {
             DeliveryClass::Durable => "durable",
+            DeliveryClass::Mixed => "mixed",
             DeliveryClass::Transient => "transient",
         }
     }
 }
 
 notifications![
-    // Durable conversation history: each payload is a session-forest entry
-    // with `sessionId` and a monotonic per-session `sequence` cursor.
-    (AgentEvent, "agent-event", Durable),
+    // Persisted conversation history has a positive session-forest cursor;
+    // streaming deltas/progress use sequence zero and are transient.
+    (AgentEvent, "agent-event", Mixed),
     // Refetch hints: the payload carries no state; clients re-read snapshots.
     (StateChanged, "state-changed", Transient),
     (AdaptersChanged, "adapters-changed", Transient),
@@ -69,7 +73,10 @@ notifications![
 impl NotificationName {
     /// Parse a wire name.
     pub fn parse(name: &str) -> Option<NotificationName> {
-        NotificationName::ALL.iter().copied().find(|candidate| candidate.as_str() == name)
+        NotificationName::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == name)
     }
 }
 
@@ -82,8 +89,15 @@ mod tests {
     fn wire_names_are_unique_and_parse_back() {
         let mut seen = HashSet::new();
         for notification in NotificationName::ALL.iter().copied() {
-            assert!(seen.insert(notification.as_str()), "duplicate {}", notification.as_str());
-            assert_eq!(NotificationName::parse(notification.as_str()), Some(notification));
+            assert!(
+                seen.insert(notification.as_str()),
+                "duplicate {}",
+                notification.as_str()
+            );
+            assert_eq!(
+                NotificationName::parse(notification.as_str()),
+                Some(notification)
+            );
         }
         assert_eq!(NotificationName::parse("no-such-event"), None);
     }
@@ -93,7 +107,10 @@ mod tests {
         // Delivery class is contract: durable events promise replay, and
         // transient streams promise they will never be replayed. Changing a
         // class is a breaking protocol change — this test makes it loud.
-        assert_eq!(NotificationName::AgentEvent.delivery(), DeliveryClass::Durable);
+        assert_eq!(
+            NotificationName::AgentEvent.delivery(),
+            DeliveryClass::Mixed
+        );
         for transient in [
             NotificationName::StateChanged,
             NotificationName::AdaptersChanged,
@@ -101,7 +118,12 @@ mod tests {
             NotificationName::SessionOutput,
             NotificationName::AccountUsage,
         ] {
-            assert_eq!(transient.delivery(), DeliveryClass::Transient, "{}", transient.as_str());
+            assert_eq!(
+                transient.delivery(),
+                DeliveryClass::Transient,
+                "{}",
+                transient.as_str()
+            );
         }
     }
 }

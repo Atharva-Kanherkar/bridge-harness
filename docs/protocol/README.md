@@ -48,7 +48,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.1**),
+- its `protocolVersion` (this document describes **0.2**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -109,7 +109,7 @@ unchanged.
 
 | Notification | Delivery | Meaning |
 | --- | --- | --- |
-| `agent-event` | durable | A session-forest entry; payload carries `sessionId` and a monotonic per-session `sequence` cursor |
+| `agent-event` | mixed | Persisted entries carry a positive per-session `sequence`; sequence-zero streaming frames are transient |
 | `state-changed` | transient | Refetch hint: re-read the state snapshot |
 | `adapters-changed` | transient | Refetch hint: re-read adapter availability |
 | `learning-job-changed` | transient | Refetch hint carrying the changed run/state |
@@ -120,9 +120,12 @@ The delivery rules are contract: the session forest (SQLite) is the
 authoritative history; the live channel is bounded and notify-only — it
 drops the oldest events when a receiver lags and must never be treated as
 the source of truth. Durable events are published **only after their DB
-transaction commits** and are replayed from the last seen cursor after a
-disconnect or lag, with no gaps or duplicates (a dedicated replay RPC lands
-with the daemon). Transient events are never replayed.
+transaction commits** and expose the cursor needed to reconcile from the
+session forest after a disconnect or lag. Sequence-zero `agent-event` frames
+are transient and never replayed. Refetch hints are coalesced and re-emitted
+after live-channel lag so clients converge even when the original hint was
+evicted. The Tauri compatibility UI also polls the forest; daemon clients will
+use the dedicated replay RPC when it lands.
 
 ## Generated client types
 

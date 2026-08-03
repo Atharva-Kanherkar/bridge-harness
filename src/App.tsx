@@ -106,19 +106,31 @@ export function App() {
 
   const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
   useEffect(() => {
-    void Promise.all([reload(), bridgeApi.health(), bridgeApi.modelSetup()])
-      .then(([, healthValue, setup]) => { setHealth(healthValue); setModelSetup(setup); })
+    void Promise.all([reload(), bridgeApi.modelSetup()])
+      .then(([, setup]) => { setModelSetup(setup); })
       .catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
     let offAdapters: (() => void) | undefined;
+    let active = true;
+    const reloadHealth = () => {
+      void bridgeApi.health().then(setHealth).catch(value => setError(errorMessage(value)));
+    };
     void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
     // Adapter availability can change after startup (OpenCode catalog discovery
     // runs in the background) — re-read health when the backend says so.
-    void bridgeApi.onAdaptersChanged(() => {
-      void bridgeApi.health().then(setHealth).catch(value => setError(errorMessage(value)));
-    }).then(fn => offAdapters = fn);
+    void bridgeApi.onAdaptersChanged(reloadHealth).then(fn => {
+      if (!active) { fn(); return; }
+      offAdapters = fn;
+      // Fetch only after the listener is installed: discovery can complete
+      // during startup, and Tauri events are not buffered for the webview.
+      reloadHealth();
+    }).catch(value => {
+      if (!active) return;
+      setError(errorMessage(value));
+      reloadHealth();
+    });
     const queueAgentEvent = (event: AgentEvent) => {
       agentEventQueueRef.current.push(event);
       if (agentEventTimerRef.current !== undefined) return;
@@ -142,6 +154,7 @@ export function App() {
       }
     }).then(fn => offUsage = fn);
     return () => {
+      active = false;
       offState?.(); offAgent?.(); offUsage?.(); offAdapters?.();
       if (agentEventTimerRef.current !== undefined) window.clearTimeout(agentEventTimerRef.current);
       agentEventTimerRef.current = undefined;

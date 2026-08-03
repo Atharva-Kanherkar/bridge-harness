@@ -445,7 +445,7 @@ mod tests {
         assert!(typescript.contains("\"sessions/send_turn\""));
         assert!(typescript.contains("incompatible_protocol: 2000,"));
         assert!(typescript.contains("export type BridgeNotification ="));
-        assert!(typescript.contains("{ notification: \"agent-event\", delivery: \"durable\" },"));
+        assert!(typescript.contains("{ notification: \"agent-event\", delivery: \"mixed\" },"));
         assert!(typescript.contains("{ notification: \"session-output\", delivery: \"transient\" },"));
         assert!(typescript.contains("export interface BridgeMethodParams {"));
         assert!(typescript

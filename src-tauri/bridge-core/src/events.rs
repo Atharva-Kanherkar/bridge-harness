@@ -20,7 +20,8 @@
 use crate::model::AgentEvent;
 use bridge_protocol::notifications::NotificationName;
 use serde_json::Value;
-pub use tokio::sync::broadcast;
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
 /// Bounded capacity of the live channel. Deliberately generous — lagging is
 /// legal (receivers replay durable events from the store) but should be rare.
@@ -35,14 +36,18 @@ pub enum CoreEvent {
     StateChanged,
     /// Refetch hint: adapter availability changed.
     AdaptersChanged,
-    /// Durable conversation-history event, backed by a session-forest entry.
+    /// Conversation event. Positive sequences are durable session-forest
+    /// entries; sequence zero is a transient streaming frame.
     Agent(AgentEvent),
     /// Refetch hint carrying the changed learning run/state payload.
     LearningJobChanged(Value),
     /// Transient terminal bytes; worthless once stale, never replayed.
     SessionOutput { session_id: String, data: String },
     /// Transient provider usage tick for the ambient meter.
-    AccountUsage { provider: String, rate_limits: Value },
+    AccountUsage {
+        provider: String,
+        rate_limits: Value,
+    },
 }
 
 impl CoreEvent {
@@ -70,20 +75,76 @@ impl CoreEvent {
                 "sessionId": session_id,
                 "data": data,
             }),
-            CoreEvent::AccountUsage { provider, rate_limits } => serde_json::json!({
+            CoreEvent::AccountUsage {
+                provider,
+                rate_limits,
+            } => serde_json::json!({
                 "provider": provider,
                 "rateLimits": rate_limits,
             }),
         }
     }
 
-    /// The durable replay cursor: the session-forest sequence for durable
-    /// events, `None` for transient ones.
+    /// The durable replay cursor: a positive session-forest sequence for
+    /// persisted events, `None` for transient sequence-zero frames and other
+    /// live-only notifications.
     pub fn durable_cursor(&self) -> Option<i64> {
         match self {
-            CoreEvent::Agent(event) => Some(event.sequence),
+            CoreEvent::Agent(event) if event.sequence > 0 => Some(event.sequence),
             _ => None,
         }
+    }
+}
+
+#[derive(Default)]
+struct ReconciliationState {
+    state_changed: bool,
+    adapters_changed: bool,
+    learning_job_changed: Option<Value>,
+}
+
+/// Receive failures exposed without coupling hosts to Tokio's channel types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiveError {
+    Lagged(u64),
+    Closed,
+}
+
+/// A host subscription to the live event stream.
+pub struct EventReceiver {
+    receiver: broadcast::Receiver<CoreEvent>,
+    reconciliation: Arc<Mutex<ReconciliationState>>,
+}
+
+impl EventReceiver {
+    pub fn blocking_recv(&mut self) -> Result<CoreEvent, ReceiveError> {
+        self.receiver.blocking_recv().map_err(|error| match error {
+            broadcast::error::RecvError::Lagged(missed) => ReceiveError::Lagged(missed),
+            broadcast::error::RecvError::Closed => ReceiveError::Closed,
+        })
+    }
+
+    /// Idempotent refetch hints that restore convergence after a lag. It is
+    /// safe to resend a hint seen earlier; clients simply refetch the latest
+    /// authoritative state.
+    pub fn reconciliation_events(&self) -> Vec<CoreEvent> {
+        let state = self.reconciliation.lock().unwrap();
+        let mut events = Vec::new();
+        if state.state_changed {
+            events.push(CoreEvent::StateChanged);
+        }
+        if state.adapters_changed {
+            events.push(CoreEvent::AdaptersChanged);
+        }
+        if let Some(payload) = &state.learning_job_changed {
+            events.push(CoreEvent::LearningJobChanged(payload.clone()));
+        }
+        events
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_recv(&mut self) -> Result<CoreEvent, broadcast::error::TryRecvError> {
+        self.receiver.try_recv()
     }
 }
 
@@ -92,6 +153,7 @@ impl CoreEvent {
 #[derive(Clone)]
 pub struct EventBus {
     sender: broadcast::Sender<CoreEvent>,
+    reconciliation: Arc<Mutex<ReconciliationState>>,
 }
 
 impl Default for EventBus {
@@ -103,17 +165,36 @@ impl Default for EventBus {
 impl EventBus {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(EVENT_BUS_CAPACITY);
-        Self { sender }
+        Self {
+            sender,
+            reconciliation: Arc::new(Mutex::new(ReconciliationState::default())),
+        }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<CoreEvent> {
-        self.sender.subscribe()
+    pub fn subscribe(&self) -> EventReceiver {
+        EventReceiver {
+            receiver: self.sender.subscribe(),
+            reconciliation: self.reconciliation.clone(),
+        }
     }
 
     /// Publish an event. Call sites must sit **after** the corresponding DB
     /// commit. Delivery is best-effort by design: no subscribers (or lagged
     /// subscribers) are not errors, because durable history lives in SQLite.
     pub fn publish(&self, event: CoreEvent) {
+        {
+            let mut state = self.reconciliation.lock().unwrap();
+            match &event {
+                CoreEvent::StateChanged => state.state_changed = true,
+                CoreEvent::AdaptersChanged => state.adapters_changed = true,
+                CoreEvent::LearningJobChanged(payload) => {
+                    state.learning_job_changed = Some(payload.clone())
+                }
+                CoreEvent::Agent(_)
+                | CoreEvent::SessionOutput { .. }
+                | CoreEvent::AccountUsage { .. } => {}
+            }
+        }
         let _ = self.sender.send(event);
     }
 }
@@ -148,28 +229,43 @@ mod tests {
             CoreEvent::AdaptersChanged,
             CoreEvent::Agent(agent_event(1)),
             CoreEvent::LearningJobChanged(serde_json::json!({"id":"run"})),
-            CoreEvent::SessionOutput { session_id: "s".into(), data: "$ ls".into() },
-            CoreEvent::AccountUsage { provider: "codex".into(), rate_limits: serde_json::json!({}) },
+            CoreEvent::SessionOutput {
+                session_id: "s".into(),
+                data: "$ ls".into(),
+            },
+            CoreEvent::AccountUsage {
+                provider: "codex".into(),
+                rate_limits: serde_json::json!({}),
+            },
         ];
         for event in &events {
-            // Durable events — and only durable events — expose a cursor.
             assert_eq!(
                 event.durable_cursor().is_some(),
-                event.kind().delivery() == DeliveryClass::Durable,
-                "{}",
-                event.kind().as_str()
+                matches!(event, CoreEvent::Agent(_))
             );
         }
-        let kinds: std::collections::HashSet<_> =
-            events.iter().map(|event| event.kind()).collect();
-        assert_eq!(kinds.len(), NotificationName::ALL.len(), "every notification kind is covered");
+        let kinds: std::collections::HashSet<_> = events.iter().map(|event| event.kind()).collect();
+        assert_eq!(
+            kinds.len(),
+            NotificationName::ALL.len(),
+            "every notification kind is covered"
+        );
+        let transient_agent = CoreEvent::Agent(agent_event(0));
+        assert_eq!(transient_agent.kind().delivery(), DeliveryClass::Mixed);
+        assert_eq!(transient_agent.durable_cursor(), None);
     }
 
     #[test]
     fn payloads_match_the_legacy_emit_shapes() {
         assert_eq!(CoreEvent::StateChanged.payload(), Value::Null);
-        let output = CoreEvent::SessionOutput { session_id: "s".into(), data: "hi".into() };
-        assert_eq!(output.payload(), serde_json::json!({"sessionId":"s","data":"hi"}));
+        let output = CoreEvent::SessionOutput {
+            session_id: "s".into(),
+            data: "hi".into(),
+        };
+        assert_eq!(
+            output.payload(),
+            serde_json::json!({"sessionId":"s","data":"hi"})
+        );
         let usage = CoreEvent::AccountUsage {
             provider: "claude".into(),
             rate_limits: serde_json::json!({"remaining": 10}),
@@ -192,7 +288,9 @@ mod tests {
 
         // The subscriber sees the first event, then stalls while five more
         // land in a channel with room for two.
-        sender.send(CoreEvent::Agent(durable_store[0].clone())).unwrap();
+        sender
+            .send(CoreEvent::Agent(durable_store[0].clone()))
+            .unwrap();
         let first = receiver.try_recv().unwrap();
         let mut last_cursor = first.durable_cursor().unwrap();
         assert_eq!(last_cursor, 1);
@@ -219,7 +317,10 @@ mod tests {
                     // duplicate of the replay and is skipped by cursor.
                     while let Ok(event) = receiver.try_recv() {
                         let cursor = event.durable_cursor().unwrap();
-                        assert!(cursor <= last_cursor, "buffered events never exceed the replayed cursor");
+                        assert!(
+                            cursor <= last_cursor,
+                            "buffered events never exceed the replayed cursor"
+                        );
                     }
                     break;
                 }
@@ -228,5 +329,37 @@ mod tests {
             }
         }
         assert_eq!(last_cursor, 6);
+    }
+
+    #[test]
+    fn lagged_hosts_can_reemit_every_refetch_hint() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe();
+        bus.publish(CoreEvent::StateChanged);
+        bus.publish(CoreEvent::AdaptersChanged);
+        bus.publish(CoreEvent::LearningJobChanged(
+            serde_json::json!({"id":"latest"}),
+        ));
+        for index in 0..=EVENT_BUS_CAPACITY {
+            bus.publish(CoreEvent::SessionOutput {
+                session_id: "s".into(),
+                data: index.to_string(),
+            });
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+        let recovered = receiver.reconciliation_events();
+        assert!(recovered
+            .iter()
+            .any(|event| matches!(event, CoreEvent::StateChanged)));
+        assert!(recovered
+            .iter()
+            .any(|event| matches!(event, CoreEvent::AdaptersChanged)));
+        assert!(recovered.iter().any(|event| matches!(
+            event,
+            CoreEvent::LearningJobChanged(payload) if payload["id"] == "latest"
+        )));
     }
 }
