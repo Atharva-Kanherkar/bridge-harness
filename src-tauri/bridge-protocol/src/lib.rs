@@ -16,6 +16,7 @@ pub mod error;
 pub mod handshake;
 pub mod messages;
 pub mod methods;
+pub mod notifications;
 pub mod tsgen;
 
 pub use envelope::{
@@ -29,3 +30,4 @@ pub use handshake::{
     HANDSHAKE_METHOD, PROTOCOL_VERSION,
 };
 pub use methods::MethodName;
+pub use notifications::{DeliveryClass, NotificationName};

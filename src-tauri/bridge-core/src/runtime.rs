@@ -4,6 +4,7 @@
 //! Nothing in this module (or its API) may reference `tauri::` types — host
 //! integration happens in the shell crate that embeds [`BridgeCore`].
 
+use crate::events::{CoreEvent, EventBus};
 use crate::{
     adapters, agent_config, binary, browser_bridge, credential_broker, delegation,
     model::AdapterDescriptor, session_supervisor, skill_marketplace, store, worker_guard,
@@ -47,6 +48,9 @@ pub struct BridgeCore {
     /// visibility. Kept separate so frequent streaming frames only write to
     /// SQLite at a bounded cadence.
     pub worker_activity_persisted: Mutex<HashMap<String, std::time::Instant>>,
+    /// The notify-only live event channel; durable history stays in SQLite.
+    /// See `events.rs` for the publish-after-commit rules.
+    pub events: EventBus,
     /// Sessions with an exclusive lifecycle operation in flight (adapter
     /// start, model switch), mapped to the operation name for error messages.
     /// Lifecycle flows span host-run blocking steps, so this claim — not the
@@ -103,8 +107,8 @@ pub struct DelegationState {
 }
 
 /// Host-provided configuration for [`BridgeCore::boot`]. The host resolves
-/// platform paths (data directory, bundled browser extension) and supplies
-/// notification callbacks; the core owns everything that happens after.
+/// platform paths (data directory, bundled browser extension) and optionally
+/// injects a pre-subscribed event bus; the core owns everything after that.
 pub struct BootConfig {
     /// Application data directory holding the databases, worktrees, skills,
     /// and history snapshots.
@@ -112,10 +116,11 @@ pub struct BootConfig {
     /// Directory containing the browser extension handed to the browser
     /// bridge supervisor.
     pub browser_extension_path: PathBuf,
-    /// Fires once the background OpenCode catalog discovery finishes
-    /// (successfully or not), so the host can tell the frontend to re-read
-    /// adapter availability.
-    pub on_opencode_discovered: Option<Box<dyn FnOnce() + Send>>,
+    /// The live event channel the runtime publishes to. Hosts subscribe
+    /// before calling [`BridgeCore::boot`] and inject the bus here so
+    /// boot-time events (adapter discovery completion) cannot be missed;
+    /// `None` creates a fresh bus.
+    pub events: Option<EventBus>,
 }
 
 impl BridgeCore {
@@ -170,6 +175,7 @@ impl BridgeCore {
             ),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
+            events: EventBus::new(),
             lifecycle_claims: Mutex::new(HashMap::new()),
         }
     }
@@ -192,9 +198,13 @@ impl BridgeCore {
             .into_iter()
             .find(|config| config.id == "opencode");
         let opencode_settings = agent_config::opencode_settings(opencode_config.as_ref())?;
+        let events = config.events.unwrap_or_default();
+        // OpenCode discovery finishes after boot returns; publish the refetch
+        // hint so subscribed hosts re-read adapter availability.
+        let discovery_events = events.clone();
         let adapter_registry = Arc::new(adapters::AdapterRegistry::built_in_with_opencode_notify(
             opencode_settings,
-            config.on_opencode_discovered,
+            Some(Box::new(move || discovery_events.publish(CoreEvent::AdaptersChanged))),
         )?);
         let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()?);
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
@@ -218,6 +228,7 @@ impl BridgeCore {
             browser_bridge,
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
+            events,
             lifecycle_claims: Mutex::new(HashMap::new()),
         })
     }
@@ -227,9 +238,7 @@ impl BridgeCore {
 mod tests {
     use super::*;
     use crate::agent_config;
-    use rusqlite::params;
     use std::path::Path;
-    use std::sync::mpsc;
     use std::time::Duration;
 
     /// Point OpenCode at a nonexistent executable so background discovery
@@ -254,7 +263,7 @@ mod tests {
         BootConfig {
             data_dir: data_dir.to_path_buf(),
             browser_extension_path: data_dir.join("no-extension"),
-            on_opencode_discovered: None,
+            events: None,
         }
     }
 
@@ -289,7 +298,7 @@ mod tests {
         let result = BridgeCore::boot(BootConfig {
             data_dir: not_a_dir,
             browser_extension_path: fixture.path().join("no-extension"),
-            on_opencode_discovered: None,
+            events: None,
         });
         assert!(result.is_err());
     }
@@ -316,7 +325,7 @@ mod tests {
         let core = BridgeCore::boot(BootConfig {
             data_dir: data_dir.to_path_buf(),
             browser_extension_path: data_dir.join("no-extension"),
-            on_opencode_discovered: None,
+            events: None,
         })
         .unwrap();
         let _ = orphan.wait();
@@ -347,18 +356,30 @@ mod tests {
     }
 
     #[test]
-    fn boot_fires_the_opencode_discovery_callback() {
+    fn boot_publishes_adapters_changed_once_discovery_completes() {
         let fixture = tempfile::tempdir().unwrap();
         let data_dir = fixture.path();
         let mut config = seeded_config(data_dir);
-        let (sender, receiver) = mpsc::channel();
-        config.on_opencode_discovered = Some(Box::new(move || {
-            let _ = sender.send(());
-        }));
+        // Hosts subscribe before boot so the discovery event cannot be missed.
+        let bus = crate::events::EventBus::new();
+        let mut receiver = bus.subscribe();
+        config.events = Some(bus);
         let _core = BridgeCore::boot(config).unwrap();
-        receiver
-            .recv_timeout(Duration::from_secs(30))
-            .expect("discovery completion callback should fire even when discovery fails");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    assert!(matches!(event, CoreEvent::AdaptersChanged), "{:?}", event.kind());
+                    break;
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!(
+                    "discovery completion must publish adapters-changed even when discovery fails: {error}"
+                ),
+            }
+        }
     }
 
     #[test]
@@ -373,7 +394,7 @@ mod tests {
         let core = BridgeCore::boot(BootConfig {
             data_dir: data_dir.to_path_buf(),
             browser_extension_path: data_dir.join("no-extension"),
-            on_opencode_discovered: None,
+            events: None,
         })
         .unwrap();
         let name: String = core.db.lock().unwrap()

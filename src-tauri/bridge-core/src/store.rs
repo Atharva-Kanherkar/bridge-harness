@@ -2032,6 +2032,22 @@ pub fn session_event(
 ) -> Result<AgentEvent, BridgeError> {
     event.validate().map_err(BridgeError::Invalid)?;
     let transaction = db.unchecked_transaction()?;
+    let stored = session_event_in_transaction(&transaction, session_id, event, provider_meta)?;
+    transaction.commit()?;
+    Ok(stored)
+}
+
+/// Append a durable agent event inside a caller-owned transaction.
+///
+/// Callers that update related session state use this helper so the state
+/// change, audit records, and durable notification history commit together.
+pub(crate) fn session_event_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    event: &crate::agent::NormalizedEvent,
+    provider_meta: &serde_json::Value,
+) -> Result<AgentEvent, BridgeError> {
+    event.validate().map_err(BridgeError::Invalid)?;
     let parent_entry_id: Option<String> = transaction
         .query_row(
             "SELECT active_entry_id FROM session_heads WHERE session_id=?1",
@@ -2081,7 +2097,7 @@ pub fn session_event(
     }
 
     let entry = append_session_entry_tx(
-        &transaction,
+        transaction,
         session_id,
         parent_entry_id.as_deref(),
         final_kind,
@@ -2090,7 +2106,6 @@ pub fn session_event(
         "eligible",
         None,
     )?;
-    transaction.commit()?;
     Ok(AgentEvent {
         id: entry.sequence,
         session_id: session_id.into(),

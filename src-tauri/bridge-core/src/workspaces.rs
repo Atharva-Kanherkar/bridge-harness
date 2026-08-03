@@ -187,13 +187,9 @@ impl BridgeCore {
         archive_workspace_records(&db, workspace_id, || {
             git::remove_worktree(Path::new(&repo), Path::new(&path))
         })?;
-        store::event(
-            &db,
-            "supervisor",
-            "workspace.archived",
-            workspace_id,
-            "Archived clean workspace; branch preserved",
-        )?;
+        // The archive is committed; publish only now so a rolled-back
+        // transaction can never announce itself.
+        self.events.publish(crate::events::CoreEvent::StateChanged);
         Ok(())
     }
 }
@@ -232,6 +228,13 @@ pub fn archive_workspace_records(
         params![workspace_id],
     )?;
     transaction.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
+    store::event(
+        &transaction,
+        "supervisor",
+        "workspace.archived",
+        workspace_id,
+        "Archived clean workspace; branch preserved",
+    )?;
     remove_worktree()?;
     transaction.commit()?;
     Ok(())
@@ -454,7 +457,11 @@ mod tests {
     fn archive_workspace_removes_records_and_the_worktree() {
         let (scratch, core) = fixture();
         let (_repo, worktree) = archive_fixture(&core, scratch.path());
+        let mut events = core.events.subscribe();
         core.archive_workspace("w").unwrap();
+        // Exactly one state-changed refetch hint, published after the commit.
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::StateChanged));
+        assert!(events.try_recv().is_err(), "exactly one event per archive");
         assert_eq!(count(&core, "workspaces"), 0);
         assert_eq!(count(&core, "sessions"), 0);
         assert!(!worktree.exists(), "worktree directory must be removed");
@@ -499,10 +506,34 @@ mod tests {
         std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
         std::fs::rename(&imposter, &worktree).unwrap();
 
+        let mut events = core.events.subscribe();
         let error = core.archive_workspace("w").unwrap_err();
         assert!(matches!(error, BridgeError::Git(_)), "{error}");
+        assert!(events.try_recv().is_err(), "a rolled-back archive must emit nothing");
         assert_eq!(count(&core, "workspaces"), 1, "failed archive must roll back");
         assert_eq!(count(&core, "sessions"), 1);
         assert!(!event_exists(&core, "workspace.archived", "w"));
+    }
+
+    #[test]
+    fn archive_workspace_does_not_remove_the_worktree_when_audit_fails() {
+        let (scratch, core) = fixture();
+        let (_repo, worktree) = archive_fixture(&core, scratch.path());
+        core.db
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_archive_audit BEFORE INSERT ON events
+                 WHEN NEW.kind='workspace.archived'
+                 BEGIN SELECT RAISE(FAIL, 'injected audit failure'); END;",
+            )
+            .unwrap();
+
+        let mut events = core.events.subscribe();
+        assert!(core.archive_workspace("w").is_err());
+        assert!(events.try_recv().is_err(), "a rolled-back archive must publish nothing");
+        assert_eq!(count(&core, "workspaces"), 1);
+        assert_eq!(count(&core, "sessions"), 1);
+        assert!(worktree.exists(), "audit failure must happen before worktree removal");
     }
 }

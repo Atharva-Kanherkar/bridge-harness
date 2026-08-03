@@ -910,12 +910,10 @@ async fn rollback_routing_policy(
 async fn activate_session_entry(
     session_id: String,
     entry_id: String,
-    app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    let snapshot = state.activate_session_entry(&session_id, &entry_id)?;
-    let _ = app.emit("state-changed", ());
-    Ok(snapshot)
+    // The core publishes state-changed once the head move is recorded.
+    state.activate_session_entry(&session_id, &entry_id)
 }
 
 #[tauri::command]
@@ -1008,8 +1006,8 @@ async fn update_chat_model(
     })
     .await
     .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
-    let event = state.commit_chat_model_change(change)?;
-    let _ = app.emit("agent-event", event);
+    // The core publishes the durable agent event when the commit lands.
+    state.commit_chat_model_change(change)?;
     state.state_snapshot()
 }
 
@@ -5808,13 +5806,11 @@ async fn refresh_workspace(
 #[tauri::command]
 async fn archive_workspace(
     workspace_id: String,
-    app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
+    // The core publishes state-changed as soon as the archive commits, so a
+    // snapshot failure below cannot leave listeners unaware of it.
     state.archive_workspace(&workspace_id)?;
-    // Emit before building the snapshot: the archive is committed, so a
-    // snapshot failure below must not leave listeners unaware of it.
-    let _ = app.emit("state-changed", ());
     state.state_snapshot()
 }
 
@@ -5823,21 +5819,43 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data = app.path().app_data_dir()?;
-            let discovery_handle = app.handle().clone();
             let bundled_extension = app.path().resource_dir()?.join("browser-extension");
             let extension_path = if bundled_extension.exists() {
                 bundled_extension
             } else {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
             };
+            // The Tauri compatibility adapter: subscribe BEFORE boot so
+            // boot-time events (adapter discovery) cannot be missed, then
+            // forward every core event to the webview with unchanged names
+            // and payloads.
+            let events = bridge_core::events::EventBus::new();
+            let mut receiver = events.subscribe();
+            let forwarder = app.handle().clone();
+            std::thread::Builder::new()
+                .name("core-event-forwarder".into())
+                .spawn(move || loop {
+                    match receiver.blocking_recv() {
+                        Ok(event) => {
+                            let _ = forwarder.emit(event.kind().as_str(), event.payload());
+                        }
+                        // The compatibility UI already reconciles durable
+                        // history from the session forest. Skip stale live
+                        // frames here; daemon clients use cursor replay.
+                        Err(bridge_core::events::ReceiveError::Lagged(_)) => {
+                            for event in receiver.reconciliation_events() {
+                                let _ =
+                                    forwarder.emit(event.kind().as_str(), event.payload());
+                            }
+                            continue
+                        }
+                        Err(bridge_core::events::ReceiveError::Closed) => break,
+                    }
+                })?;
             let core = BridgeCore::boot(BootConfig {
                 data_dir: data,
                 browser_extension_path: extension_path,
-                on_opencode_discovered: Some(Box::new(move || {
-                    // OpenCode discovery finishes after the frontend's initial
-                    // health fetch; tell it to re-read adapter availability.
-                    let _ = discovery_handle.emit("adapters-changed", ());
-                })),
+                events: Some(events),
             })
             .map_err(Box::<dyn std::error::Error>::from)?;
             start_health_server(
