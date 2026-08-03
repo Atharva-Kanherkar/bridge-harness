@@ -102,12 +102,27 @@ full registry with summaries is `docs/protocol/schemas/error-codes.json`.
 
 ## Notifications (events)
 
-Typed notification kinds land with the event-semantics work: the session
-forest remains the authoritative durable history with per-event cursors;
-live notifications are notify-only and lossy under lag, with a replay RPC to
-catch up after disconnect. Terminal bytes and usage ticks are explicitly
-transient. The contract here will name each notification and mark it durable
-or transient.
+`docs/protocol/schemas/notifications.json` is the registry: every
+notification a host pushes, marked **durable** or **transient**. Wire names
+are the Tauri event names, so the compatibility adapter forwards them
+unchanged.
+
+| Notification | Delivery | Meaning |
+| --- | --- | --- |
+| `agent-event` | durable | A session-forest entry; payload carries `sessionId` and a monotonic per-session `sequence` cursor |
+| `state-changed` | transient | Refetch hint: re-read the state snapshot |
+| `adapters-changed` | transient | Refetch hint: re-read adapter availability |
+| `learning-job-changed` | transient | Refetch hint carrying the changed run/state |
+| `session-output` | transient | Terminal bytes; worthless once stale |
+| `account-usage` | transient | Provider usage tick for the ambient meter |
+
+The delivery rules are contract: the session forest (SQLite) is the
+authoritative history; the live channel is bounded and notify-only — it
+drops the oldest events when a receiver lags and must never be treated as
+the source of truth. Durable events are published **only after their DB
+transaction commits** and are replayed from the last seen cursor after a
+disconnect or lag, with no gaps or duplicates (a dedicated replay RPC lands
+with the daemon). Transient events are never replayed.
 
 ## Generated client types
 

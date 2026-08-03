@@ -20,6 +20,7 @@ use crate::messages::{
     UpdateChatModelParams, TYPED_METHODS,
 };
 use crate::methods::MethodName;
+use crate::notifications::NotificationName;
 use crate::{CANCEL_METHOD, HANDSHAKE_METHOD, JSONRPC_VERSION};
 
 const GENERATED_HEADER: &str =
@@ -122,6 +123,16 @@ fn methods_table() -> Value {
     })
 }
 
+fn notifications_table() -> Value {
+    json!({
+        "$comment": GENERATED_HEADER,
+        "notifications": NotificationName::ALL.iter().map(|notification| json!({
+            "notification": notification.as_str(),
+            "delivery": notification.delivery().as_str(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn error_codes_table() -> Value {
     json!({
         "$comment": GENERATED_HEADER,
@@ -148,6 +159,10 @@ pub fn artifacts() -> Vec<Artifact> {
     artifacts.push(Artifact {
         path: "docs/protocol/schemas/methods.json",
         content: pretty(&methods_table()),
+    });
+    artifacts.push(Artifact {
+        path: "docs/protocol/schemas/notifications.json",
+        content: pretty(&notifications_table()),
     });
     artifacts.push(Artifact {
         path: "docs/protocol/schemas/error-codes.json",
@@ -329,6 +344,23 @@ pub fn typescript() -> String {
     }
     out.push_str("] as const;\n\n");
 
+    let notification_literals: Vec<String> = NotificationName::ALL
+        .iter()
+        .map(|notification| format!("  | \"{}\"", notification.as_str()))
+        .collect();
+    out.push_str("export type BridgeNotification =\n");
+    out.push_str(&notification_literals.join("\n"));
+    out.push_str(";\n\n");
+    out.push_str("export const BRIDGE_NOTIFICATIONS = [\n");
+    for notification in NotificationName::ALL {
+        out.push_str(&format!(
+            "  {{ notification: \"{}\", delivery: \"{}\" }},\n",
+            notification.as_str(),
+            notification.delivery().as_str()
+        ));
+    }
+    out.push_str("] as const;\n\n");
+
     out.push_str("export const ERROR_CODES = {\n");
     for code in ErrorCode::ALL {
         out.push_str(&format!("  {}: {},\n", code.name(), code.code()));
@@ -412,6 +444,9 @@ mod tests {
         assert!(typescript.contains("export type ResponseId = RequestId | null;"));
         assert!(typescript.contains("\"sessions/send_turn\""));
         assert!(typescript.contains("incompatible_protocol: 2000,"));
+        assert!(typescript.contains("export type BridgeNotification ="));
+        assert!(typescript.contains("{ notification: \"agent-event\", delivery: \"durable\" },"));
+        assert!(typescript.contains("{ notification: \"session-output\", delivery: \"transient\" },"));
         assert!(typescript.contains("export interface BridgeMethodParams {"));
         assert!(typescript
             .contains("\"workspaces/connect_workspace_folder\": ConnectWorkspaceFolderParams;"));
@@ -564,6 +599,10 @@ mod tests {
             (
                 "docs/protocol/schemas/methods.json",
                 include_str!("../../../docs/protocol/schemas/methods.json"),
+            ),
+            (
+                "docs/protocol/schemas/notifications.json",
+                include_str!("../../../docs/protocol/schemas/notifications.json"),
             ),
             (
                 "docs/protocol/schemas/error-codes.json",

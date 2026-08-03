@@ -18,6 +18,7 @@ pub mod completion;
 pub mod context;
 pub mod credential_broker;
 pub mod delegation;
+pub mod events;
 pub mod git;
 pub mod handoff;
 pub mod learning_job;

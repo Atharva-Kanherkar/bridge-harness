@@ -127,15 +127,17 @@ impl BridgeCore {
         store::state(&db)
     }
 
-    /// Move a session's conversation head. The host emits its state-changed
-    /// notification after this returns successfully.
+    /// Move a session's conversation head. Publishes the state-changed
+    /// refetch hint once the move is recorded.
     pub fn activate_session_entry(
         &self,
         session_id: &str,
         entry_id: &str,
     ) -> Result<SessionForestSnapshot, BridgeError> {
         let db = self.db.lock().unwrap();
-        activate_session_entry_records(&db, session_id, entry_id)
+        let snapshot = activate_session_entry_records(&db, session_id, entry_id)?;
+        self.events.publish(crate::events::CoreEvent::StateChanged);
+        Ok(snapshot)
     }
 
     /// The session's repository path, if any. Hosts resolve this under the
@@ -378,8 +380,8 @@ impl BridgeCore {
     }
 
     /// Apply a planned model change: clear the tracked provider process,
-    /// persist the selection, reset restoration state, and record both audit
-    /// events. Returns the session event for the host to broadcast.
+    /// persist the selection, reset restoration state, record both audit
+    /// events, and publish the durable agent event. Also returns it.
     pub fn commit_chat_model_change(
         &self,
         change: ChatModelChange,
@@ -421,7 +423,7 @@ impl BridgeCore {
             change.selected.id,
         );
         store::event(&db, "chat", "session.model_changed", session_id, &detail)?;
-        store::session_event(
+        let event = store::session_event(
             &db,
             session_id,
             &agent::NormalizedEvent {
@@ -442,7 +444,9 @@ impl BridgeCore {
                 }),
             },
             &serde_json::json!({"source": "user-selection"}),
-        )
+        )?;
+        self.events.publish(crate::events::CoreEvent::Agent(event.clone()));
+        Ok(event)
     }
 }
 
@@ -773,8 +777,10 @@ mod tests {
             db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{}','now'),('e2','s','e1',2,'assistant.message','{}','now')", []).unwrap();
             db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at) VALUES('s','e2','fresh','now')", []).unwrap();
         }
+        let mut events = core.events.subscribe();
         let snapshot = core.activate_session_entry("s", "e1").unwrap();
         assert_eq!(snapshot.head.unwrap().active_entry_id.as_deref(), Some("e1"));
+        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::StateChanged));
         let db = core.db.lock().unwrap();
         assert!(db
             .query_row(
@@ -927,8 +933,17 @@ mod tests {
             .unwrap()
             .expect("switching claude -> codex is a real change");
         assert_eq!(change.selected_model(), "stub-fast");
+        let mut events = core.events.subscribe();
         let event = core.commit_chat_model_change(change).unwrap();
         assert_eq!(event.kind, "session.model_changed");
+        // The durable agent event rides the bus with its replay cursor.
+        match events.try_recv().unwrap() {
+            crate::events::CoreEvent::Agent(published) => {
+                assert_eq!(published.id, event.id);
+                assert_eq!(published.sequence, event.sequence);
+            }
+            other => panic!("expected the agent event, got {:?}", other.kind()),
+        }
         let db = core.db.lock().unwrap();
         let (harness, model): (String, Option<String>) = db
             .query_row("SELECT harness,model FROM sessions WHERE id=?1", params![session_id], |row| {

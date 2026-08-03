@@ -161,6 +161,23 @@ export const BRIDGE_METHODS = [
   { method: "skills/execute_skill_change", domain: "skills", command: "execute_skill_change" },
 ] as const;
 
+export type BridgeNotification =
+  | "agent-event"
+  | "state-changed"
+  | "adapters-changed"
+  | "learning-job-changed"
+  | "session-output"
+  | "account-usage";
+
+export const BRIDGE_NOTIFICATIONS = [
+  { notification: "agent-event", delivery: "durable" },
+  { notification: "state-changed", delivery: "transient" },
+  { notification: "adapters-changed", delivery: "transient" },
+  { notification: "learning-job-changed", delivery: "transient" },
+  { notification: "session-output", delivery: "transient" },
+  { notification: "account-usage", delivery: "transient" },
+] as const;
+
 export const ERROR_CODES = {
   parse_error: -32700,
   invalid_request: -32600,
