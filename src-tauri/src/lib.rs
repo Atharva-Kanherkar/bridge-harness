@@ -952,13 +952,13 @@ async fn create_workspace_session(
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
     let plan = state.plan_workspace_session(&workspace_id, create_worktree.unwrap_or(false))?;
-    let worktree = match plan.worktree_source.clone() {
+    let worktree = match plan.worktree_source().map(str::to_owned) {
         // Worktree creation shells out to Git; only its blocking-pool
         // placement is the shell's concern.
         Some(source) => {
             let namespace = state.worktrees.clone();
-            let title = plan.workspace_title.clone();
-            let session_id = plan.session_id.clone();
+            let title = plan.workspace_title().to_owned();
+            let session_id = plan.session_id().to_owned();
             Some(
                 tauri::async_runtime::spawn_blocking(move || {
                     sessions::prepare_orchestrator_worktree(
@@ -976,7 +976,7 @@ async fn create_workspace_session(
         }
         None => None,
     };
-    state.persist_workspace_session(&workspace_id, &plan, worktree)
+    state.persist_workspace_session(plan, worktree)
 }
 
 /// Change a root chat's provider/model. Stops any running adapter so the next
@@ -989,6 +989,10 @@ async fn update_chat_model(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
+    // Exclusive for the whole plan -> teardown -> commit window: a concurrent
+    // start would otherwise slip in after teardown and be orphaned by the
+    // commit clearing its process and turn state.
+    let _lifecycle = state.claim_session_lifecycle(&session_id, "model switch")?;
     let Some(change) = state.plan_chat_model_change(&session_id, &harness, model.as_deref())?
     else {
         return state.state_snapshot();
@@ -1004,7 +1008,7 @@ async fn update_chat_model(
     })
     .await
     .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
-    let event = state.commit_chat_model_change(&session_id, &change)?;
+    let event = state.commit_chat_model_change(change)?;
     let _ = app.emit("agent-event", event);
     state.state_snapshot()
 }
@@ -1199,6 +1203,9 @@ async fn start_session(
         None
     };
     drop(db);
+    // Exclusive with model switches (and other starts) on this session for
+    // the rest of the launch flow.
+    let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)
@@ -1545,6 +1552,10 @@ async fn start_chat(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<BridgeState, BridgeError> {
+    // Exclusive with model switches (and other starts) on this session: the
+    // switch flow tears the adapter down across an await, and a start
+    // interleaving into that window would be orphaned by its commit.
+    let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
         String,
         String,
@@ -5985,35 +5996,6 @@ mod tests {
         assert_eq!(stored.prefix_hash, prompt.metadata.prefix_hash);
         assert!(!serde_json::to_string(&stored).unwrap().contains("Verify the task"));
         assert!(!serde_json::to_string(&stored).unwrap().contains("checkpoint evidence"));
-    }
-
-    #[test]
-    fn user_model_selection_updates_an_orchestrator_session() {
-        let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,kind,depth) VALUES('orchestrator',NULL,'codex','Orchestrator','ready','reported','old-model','standard','orchestrator',0)",
-            [],
-        )
-        .unwrap();
-
-        let changed = sessions::persist_chat_model_selection(
-            &db,
-            "orchestrator",
-            "claude",
-            "opus",
-            CapabilityTier::Strong,
-        )
-        .unwrap();
-        let actual: (String, String, String, String, Option<String>) = db
-            .query_row(
-                "SELECT harness,model,requested_tier,status,provider_session_id FROM sessions WHERE id='orchestrator'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            )
-            .unwrap();
-
-        assert_eq!(changed, 1);
-        assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
     }
 
     #[test]

@@ -51,6 +51,7 @@ pub mod workspaces;
 pub mod worktree_coordinator;
 
 pub use runtime::{
+    SessionLifecycleClaim,
     start_health_server, BootConfig, BridgeCore, DelegationState, RuntimeSession,
     WORKER_STALL_TIMEOUT_SECONDS,
 };

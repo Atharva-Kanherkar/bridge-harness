@@ -47,6 +47,33 @@ pub struct BridgeCore {
     /// visibility. Kept separate so frequent streaming frames only write to
     /// SQLite at a bounded cadence.
     pub worker_activity_persisted: Mutex<HashMap<String, std::time::Instant>>,
+    /// Sessions with an exclusive lifecycle operation in flight (adapter
+    /// start, model switch), mapped to the operation name for error messages.
+    /// Lifecycle flows span host-run blocking steps, so this claim — not the
+    /// runtimes map — is what keeps a concurrent start from racing a
+    /// teardown/commit window and orphaning a live adapter.
+    pub lifecycle_claims: Mutex<HashMap<String, &'static str>>,
+}
+
+/// An exclusive per-session lifecycle claim; released on drop.
+pub struct SessionLifecycleClaim<'core> {
+    core: &'core BridgeCore,
+    session_id: String,
+}
+
+impl std::fmt::Debug for SessionLifecycleClaim<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionLifecycleClaim")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for SessionLifecycleClaim<'_> {
+    fn drop(&mut self) {
+        self.core.lifecycle_claims.lock().unwrap().remove(&self.session_id);
+    }
 }
 
 /// A worker actively `working` that produces *no* adapter output at all for this
@@ -97,6 +124,26 @@ impl BridgeCore {
         store::state(&self.db.lock().unwrap())
     }
 
+    /// Claim exclusive lifecycle access to a session for the duration of the
+    /// returned guard. Every flow that starts, replaces, or tears down a
+    /// session's adapter runtime must hold this across its whole
+    /// plan → blocking-step → commit window; a concurrent claim fails fast
+    /// with the name of the operation already in flight.
+    pub fn claim_session_lifecycle(
+        &self,
+        session_id: &str,
+        operation: &'static str,
+    ) -> Result<SessionLifecycleClaim<'_>, BridgeError> {
+        let mut claims = self.lifecycle_claims.lock().unwrap();
+        if let Some(in_flight) = claims.get(session_id) {
+            return Err(BridgeError::Invalid(format!(
+                "Another operation ({in_flight}) is already in progress for this session; try again once it finishes"
+            )));
+        }
+        claims.insert(session_id.to_owned(), operation);
+        Ok(SessionLifecycleClaim { core: self, session_id: session_id.to_owned() })
+    }
+
     /// A runtime around in-memory stores with no adapters, no discovery, and
     /// a dormant browser supervisor — for exercising domain methods in tests.
     #[cfg(test)]
@@ -123,6 +170,7 @@ impl BridgeCore {
             ),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
+            lifecycle_claims: Mutex::new(HashMap::new()),
         }
     }
 
@@ -170,6 +218,7 @@ impl BridgeCore {
             browser_bridge,
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
+            lifecycle_claims: Mutex::new(HashMap::new()),
         })
     }
 }

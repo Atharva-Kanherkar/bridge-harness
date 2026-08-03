@@ -39,25 +39,54 @@ pub struct OrchestratorWorktree {
 /// Everything resolved up front for a new workspace session, so the host can
 /// run worktree creation on its blocking pool between planning and
 /// persistence.
+/// Fields are private on purpose: a plan is an opaque, single-use token
+/// bound to the workspace it was planned for, consumed by
+/// [`BridgeCore::persist_workspace_session`]. Hosts read what they need for
+/// the blocking step through the accessors.
 #[derive(Debug)]
 pub struct WorkspaceSessionPlan {
-    pub session_id: String,
-    pub selection: OrchestratorSelection,
-    pub workspace_title: String,
-    pub workspace_path: Option<String>,
-    /// Repository to create the isolated worktree from; `Some` exactly when
-    /// isolation was requested (validated to have a connected repository).
-    pub worktree_source: Option<String>,
+    workspace_id: String,
+    session_id: String,
+    selection: OrchestratorSelection,
+    workspace_title: String,
+    workspace_path: Option<String>,
+    worktree_source: Option<String>,
 }
 
-/// A validated, not-yet-applied chat model switch.
+impl WorkspaceSessionPlan {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn workspace_title(&self) -> &str {
+        &self.workspace_title
+    }
+
+    /// Repository to create the isolated worktree from; `Some` exactly when
+    /// isolation was requested (validated to have a connected repository).
+    pub fn worktree_source(&self) -> Option<&str> {
+        self.worktree_source.as_deref()
+    }
+}
+
+/// A validated, not-yet-applied chat model switch: an opaque, single-use
+/// token bound to the session it was planned for and carrying the planned
+/// revision (the previous harness/model), which the commit re-verifies.
 #[derive(Debug)]
 pub struct ChatModelChange {
-    pub adapter_id: String,
-    pub kind: String,
-    pub previous_harness: String,
-    pub previous_model: Option<String>,
-    pub selected: ModelOption,
+    session_id: String,
+    adapter_id: String,
+    kind: String,
+    previous_harness: String,
+    previous_model: Option<String>,
+    selected: ModelOption,
+}
+
+impl ChatModelChange {
+    /// The model the plan selected (visible for logging and tests).
+    pub fn selected_model(&self) -> &str {
+        &self.selected.id
+    }
 }
 
 impl BridgeCore {
@@ -168,6 +197,7 @@ impl BridgeCore {
             None
         };
         Ok(WorkspaceSessionPlan {
+            workspace_id: workspace_id.to_owned(),
             session_id: Uuid::new_v4().to_string(),
             selection,
             workspace_title,
@@ -181,8 +211,7 @@ impl BridgeCore {
     /// so a retry starts clean.
     pub fn persist_workspace_session(
         &self,
-        workspace_id: &str,
-        plan: &WorkspaceSessionPlan,
+        plan: WorkspaceSessionPlan,
         worktree: Option<OrchestratorWorktree>,
     ) -> Result<BridgeState, BridgeError> {
         let cwd = worktree
@@ -199,7 +228,7 @@ impl BridgeCore {
             let transaction = db.unchecked_transaction()?;
             transaction.execute(
                 "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-                params![plan.session_id, workspace_id, plan.selection.adapter_id, plan.selection.label, plan.selection.model, plan.selection.tier.as_str(), plan.selection.effort.map(|effort| effort.as_str()), cwd],
+                params![plan.session_id, plan.workspace_id, plan.selection.adapter_id, plan.selection.label, plan.selection.model, plan.selection.tier.as_str(), plan.selection.effort.map(|effort| effort.as_str()), cwd],
             )?;
             store::event(
                 &transaction,
@@ -331,6 +360,7 @@ impl BridgeCore {
             return Ok(None);
         }
         Ok(Some(ChatModelChange {
+            session_id: session_id.to_owned(),
             adapter_id: adapter_id.to_owned(),
             kind,
             previous_harness,
@@ -352,9 +382,9 @@ impl BridgeCore {
     /// events. Returns the session event for the host to broadcast.
     pub fn commit_chat_model_change(
         &self,
-        session_id: &str,
-        change: &ChatModelChange,
+        change: ChatModelChange,
     ) -> Result<AgentEvent, BridgeError> {
+        let session_id = change.session_id.as_str();
         let db = self.db.lock().unwrap();
         session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
         if persist_chat_model_selection(
@@ -363,10 +393,12 @@ impl BridgeCore {
             &change.adapter_id,
             &change.selected.id,
             change.selected.tier,
+            (&change.previous_harness, change.previous_model.as_deref()),
         )? != 1
         {
             return Err(BridgeError::Invalid(
-                "The chat could not be updated because it is no longer a root chat".into(),
+                "The chat could not be updated because it changed while the switch was in flight"
+                    .into(),
             ));
         }
         restoration::set_head_state(
@@ -505,16 +537,21 @@ pub fn activate_session_entry_records(
     session_forest_snapshot(db, session_id)
 }
 
-pub fn persist_chat_model_selection(
+/// Crate-private on purpose: callers must go through the plan/commit pair so
+/// validation cannot be bypassed. The WHERE clause re-verifies the planned
+/// revision (previous harness/model) and that no turn started meanwhile, so a
+/// stale plan updates zero rows instead of clobbering a changed session.
+pub(crate) fn persist_chat_model_selection(
     db: &Connection,
     session_id: &str,
     adapter_id: &str,
     model: &str,
     tier: CapabilityTier,
+    (previous_harness, previous_model): (&str, Option<&str>),
 ) -> Result<usize, BridgeError> {
     Ok(db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator')",
-        params![session_id, adapter_id, model, tier.as_str()],
+        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+        params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
     )?)
 }
 
@@ -782,7 +819,7 @@ mod tests {
         let (_scratch, core) = fixture();
         seed_workspace(&core, false);
         let plan = core.plan_workspace_session("w", false).unwrap();
-        let snapshot = core.persist_workspace_session("w", &plan, None).unwrap();
+        let snapshot = core.persist_workspace_session(plan, None).unwrap();
         assert_eq!(snapshot.sessions.len(), 1);
         let db = core.db.lock().unwrap();
         let (kind, cwd, harness): (String, String, String) = db
@@ -831,9 +868,9 @@ mod tests {
         let plan = core.plan_workspace_session("w", true).unwrap();
         let worktree = prepare_orchestrator_worktree(
             &core.worktrees,
-            &plan.workspace_title,
-            Path::new(plan.worktree_source.as_deref().unwrap()),
-            &plan.session_id,
+            plan.workspace_title(),
+            Path::new(plan.worktree_source().unwrap()),
+            plan.session_id(),
         )
         .unwrap();
         assert!(worktree.path.exists());
@@ -843,10 +880,10 @@ mod tests {
             .unwrap()
             .execute(
                 "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,'w','codex','占','idle','reported')",
-                params![plan.session_id],
+                params![plan.session_id()],
             )
             .unwrap();
-        let result = core.persist_workspace_session("w", &plan, Some(worktree.clone()));
+        let result = core.persist_workspace_session(plan, Some(worktree.clone()));
         assert!(result.is_err());
         assert!(!worktree.path.exists(), "failed persistence must remove the worktree");
     }
@@ -889,8 +926,8 @@ mod tests {
             .plan_chat_model_change(&session_id, &Harness::Codex, None)
             .unwrap()
             .expect("switching claude -> codex is a real change");
-        assert_eq!(change.selected.id, "stub-fast");
-        let event = core.commit_chat_model_change(&session_id, &change).unwrap();
+        assert_eq!(change.selected_model(), "stub-fast");
+        let event = core.commit_chat_model_change(change).unwrap();
         assert_eq!(event.kind, "session.model_changed");
         let db = core.db.lock().unwrap();
         let (harness, model): (String, Option<String>) = db
@@ -907,6 +944,93 @@ mod tests {
             .plan_chat_model_change(&session_id, &Harness::Codex, Some("stub-fast"))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn user_model_selection_updates_an_orchestrator_session() {
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,kind,depth) VALUES('orchestrator',NULL,'codex','Orchestrator','ready','reported','old-model','standard','orchestrator',0)",
+            [],
+        )
+        .unwrap();
+        let changed = persist_chat_model_selection(
+            &db,
+            "orchestrator",
+            "claude",
+            "opus",
+            CapabilityTier::Strong,
+            ("codex", Some("old-model")),
+        )
+        .unwrap();
+        assert_eq!(changed, 1);
+        let actual: (String, String, String, String, Option<String>) = db
+            .query_row(
+                "SELECT harness,model,requested_tier,status,provider_session_id FROM sessions WHERE id='orchestrator'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
+
+        // A stale revision (the session changed since planning) updates nothing.
+        let stale = persist_chat_model_selection(
+            &db,
+            "orchestrator",
+            "codex",
+            "other",
+            CapabilityTier::Standard,
+            ("codex", Some("old-model")),
+        )
+        .unwrap();
+        assert_eq!(stale, 0, "a stale plan must not clobber a changed session");
+    }
+
+    #[test]
+    fn lifecycle_claims_serialize_starts_against_model_switches() {
+        let (_scratch, core) = fixture();
+        let claim = core.claim_session_lifecycle("s", "model switch").unwrap();
+        let error = core.claim_session_lifecycle("s", "session start").unwrap_err();
+        assert!(
+            error.to_string().contains("model switch"),
+            "the conflict names the operation in flight: {error}"
+        );
+        // Other sessions are unaffected; releasing the claim reopens the session.
+        core.claim_session_lifecycle("other", "session start").unwrap();
+        drop(claim);
+        core.claim_session_lifecycle("s", "session start").unwrap();
+    }
+
+    #[test]
+    fn a_session_that_changed_after_planning_cannot_be_clobbered_by_the_commit() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .unwrap();
+        // Simulate an interleaved switch landing first: the stored model no
+        // longer matches the plan's revision.
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET model='switched-elsewhere' WHERE id=?1", params![session_id])
+            .unwrap();
+        let error = core.commit_chat_model_change(change).unwrap_err();
+        assert!(error.to_string().contains("changed while the switch was in flight"), "{error}");
+        let model: Option<String> = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT model FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(model.as_deref(), Some("switched-elsewhere"), "the interleaved state survives");
     }
 
     #[test]
@@ -928,8 +1052,8 @@ mod tests {
             .unwrap()
             .execute("UPDATE sessions SET parent_session_id='parent' WHERE id=?1", params![session_id])
             .unwrap();
-        let error = core.commit_chat_model_change(&session_id, &change).unwrap_err();
-        assert!(error.to_string().contains("no longer a root chat"), "{error}");
+        let error = core.commit_chat_model_change(change).unwrap_err();
+        assert!(error.to_string().contains("changed while the switch was in flight"), "{error}");
     }
 
     #[test]
