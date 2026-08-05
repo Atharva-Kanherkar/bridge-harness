@@ -20,7 +20,7 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// upgrade); a **minor** bump means additive changes (new methods,
 /// notifications, or optional fields). A server accepts a client when the
 /// majors match and the client's minor is not newer than the server's.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 2 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

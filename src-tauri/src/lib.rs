@@ -13,6 +13,7 @@ use bridge_core::{
     worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
     worktree_coordinator,
 };
+use bridge_core::events::CoreEvent;
 use bridge_core::{
     start_health_server, BootConfig, BridgeCore, BridgeError, RuntimeSession,
     WORKER_STALL_TIMEOUT_SECONDS,
@@ -32,6 +33,14 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+
+
+/// Every UI notification flows through the core event bus; the setup
+/// forwarder is the only code that touches Tauri's event system. The shell
+/// publishes, it never emits.
+fn publish(app: &AppHandle, event: CoreEvent) {
+    app.state::<BridgeCore>().events.publish(event);
+}
 
 fn compile_orchestrator_prompt(
     configured_prompt: &str,
@@ -373,7 +382,7 @@ async fn execute_skill_change(
     })
     .await
     .map_err(|error| BridgeError::Invalid(format!("Skill installer task failed: {error}")))??;
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     Ok(results)
 }
 
@@ -525,7 +534,7 @@ async fn create_completion_plan(
     )?;
     let summary = completion::latest_summary(&db, &session_id)?
         .ok_or_else(|| BridgeError::Invalid("completion plan was not persisted".into()))?;
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     Ok(summary)
 }
 
@@ -543,7 +552,7 @@ async fn record_completion_check(
     completion::reconcile_parent_readiness(&db, &session_id)?;
     let summary = completion::latest_summary(&db, &session_id)?
         .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     Ok(summary)
 }
 
@@ -569,7 +578,7 @@ async fn waive_completion(
     completion::reconcile_parent_readiness(&db, &session_id)?;
     let summary = completion::latest_summary(&db, &session_id)?
         .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     Ok(summary)
 }
 
@@ -824,7 +833,7 @@ async fn run_learning(
     })
     .await
     .map_err(|error| BridgeError::Invalid(format!("Learning task failed: {error}")))??;
-    let _ = app.emit("learning-job-changed", &run);
+    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()));
     Ok(run)
 }
 
@@ -835,7 +844,7 @@ async fn cancel_learning_run(
     state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
-    let _ = app.emit("learning-job-changed", &run);
+    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()));
     Ok(run)
 }
 
@@ -889,7 +898,7 @@ async fn approve_learning_run(
     state: State<'_, BridgeCore>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
-    let _ = app.emit("learning-job-changed", &run);
+    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()));
     Ok(run)
 }
 
@@ -902,7 +911,7 @@ async fn rollback_routing_policy(
 ) -> Result<learning_job::LearningState, BridgeError> {
     learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
     let result = learning_job::learning_state(&state.db.lock().unwrap())?;
-    let _ = app.emit("learning-job-changed", &result);
+    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&result).unwrap_or_default()));
     Ok(result)
 }
 
@@ -1537,7 +1546,7 @@ async fn start_session(
         current_turn,
         reader,
     );
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     store::state(&state.db.lock().unwrap())
 }
 
@@ -1808,7 +1817,7 @@ async fn start_chat(
         current_turn,
         reader,
     );
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     store::state(&state.db.lock().unwrap())
 }
 
@@ -1901,7 +1910,7 @@ fn spawn_reader_thread(
             let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
         }
         drop(db);
-        let _ = app.emit("state-changed", ());
+        publish(&app, CoreEvent::StateChanged);
     });
 }
 
@@ -1949,7 +1958,6 @@ fn handle_agent_value(
     let state = app.state::<BridgeCore>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
-    let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
@@ -2205,7 +2213,10 @@ fn handle_agent_value(
                     &normalized_event,
                     &event.created_at,
                 ));
-                pending_ui_events.push(event);
+                // Publish while the database mutex is still held. This keeps
+                // durable live delivery in commit/sequence order: another
+                // thread cannot persist and publish sequence N+1 before N.
+                state.events.publish(CoreEvent::Agent(event));
             }
             let pending_compaction =
                 compaction_controller::CompactionController::pending(&db, session_id)
@@ -2360,7 +2371,7 @@ fn handle_agent_value(
                 &rejection,
                 &serde_json::json!({"delegation": true}),
             ) {
-                let _ = app.emit("agent-event", stored);
+                publish(&app, CoreEvent::Agent(stored));
             }
         }
         if will_retry {
@@ -2406,11 +2417,8 @@ fn handle_agent_value(
             forward_turn_result(app, session_id);
         }
     }
-    for event in pending_ui_events {
-        let _ = app.emit("agent-event", event);
-    }
     if bridge_state_changed {
-        let _ = app.emit("state-changed", ());
+        publish(&app, CoreEvent::StateChanged);
     }
 }
 
@@ -2540,7 +2548,7 @@ fn finish_orchestrator_shutdown(
             params![workspace_id],
         );
     }
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
 }
 
 fn run_compaction_recovery(app: &AppHandle, session_id: &str) -> Result<(), BridgeError> {
@@ -2950,7 +2958,7 @@ fn launch_worker_outcome(
                 &routed.decision.id,
                 "queued",
             );
-            let _ = app.emit("state-changed", ());
+            publish(&app, CoreEvent::StateChanged);
             return WorkerLaunchOutcome::Queued;
         }
         Ok(WorkerReservationOutcome::Blocked) => {
@@ -3113,7 +3121,7 @@ fn launch_worker_outcome(
                 );
                 drop(db);
                 if queued {
-                    let _ = app.emit("state-changed", ());
+                    publish(&app, CoreEvent::StateChanged);
                     return WorkerLaunchOutcome::Queued;
                 }
                 report_worker_launch_failure(
@@ -3290,7 +3298,7 @@ fn launch_worker_outcome(
                 &routed.decision.id,
                 "launched",
             );
-            let _ = app.emit("state-changed", ());
+            publish(&app, CoreEvent::StateChanged);
             return WorkerLaunchOutcome::Launched(reservation.session_id);
         }
         let error = activation_result.unwrap_err();
@@ -3731,7 +3739,7 @@ fn launch_worker_outcome(
             &spawn_event,
             &serde_json::json!({"delegation": true}),
         ) {
-            let _ = app.emit("agent-event", stored);
+            publish(&app, CoreEvent::Agent(stored));
         }
         let _ = store::event(
             &db,
@@ -3806,7 +3814,7 @@ fn launch_worker_outcome(
         verify_read_only_worker(app, &session_id);
         return WorkerLaunchOutcome::Failed;
     }
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     let _ = learning_router::record_route_status(
         &state.db.lock().unwrap(),
         &routed.decision.id,
@@ -3856,9 +3864,9 @@ fn report_worker_launch_failure(
         &event,
         &serde_json::json!({"delegation": true}),
     ) {
-        let _ = app.emit("agent-event", stored);
+        publish(&app, CoreEvent::Agent(stored));
     }
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
 }
 
 fn record_actual_execution_best_effort(
@@ -4070,7 +4078,7 @@ fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
         }
     };
     let Some(result) = result else {
-        let _ = app.emit("state-changed", ());
+        publish(&app, CoreEvent::StateChanged);
         return;
     };
     let _ = (label, harness, model, effort);
@@ -4600,7 +4608,7 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, result: &delegation
                 &result_event,
                 &serde_json::json!({"delegation": true}),
             ) {
-                let _ = app.emit("agent-event", stored);
+                publish(&app, CoreEvent::Agent(stored));
             }
             if delivered {
                 let _ = db.execute(
@@ -4619,7 +4627,7 @@ fn report_to_parent(app: &AppHandle, child_session_id: &str, result: &delegation
                 |row| row.get::<_, String>(0),
             )
             .ok();
-        let _ = app.emit("state-changed", ());
+        publish(&app, CoreEvent::StateChanged);
         if let Some(workspace_id) = workspace_id {
             dispatch_next_queued_worker(&app, &workspace_id);
         }
@@ -4876,7 +4884,7 @@ fn start_learning_maintenance(app: AppHandle) {
             result
         };
         if let Some(run) = ran {
-            let _ = app.emit("learning-job-changed", run);
+            publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(run).unwrap_or_default()));
         }
         thread::sleep(Duration::from_secs(60));
     });
@@ -4958,9 +4966,9 @@ async fn open_terminal(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let _ = app_reader.emit(
-                        "session-output",
-                        TerminalChunk {
+                    publish(
+                        &app_reader,
+                        CoreEvent::SessionOutput {
                             session_id: workspace_reader.clone(),
                             data,
                         },
@@ -5118,7 +5126,7 @@ async fn send_turn(
                 &session_harness,
                 "Cleared this chat’s provider session. Send a message to start fresh.",
             )?;
-            let _ = app.emit("state-changed", ());
+            publish(&app, CoreEvent::StateChanged);
             return Ok(());
         }
         slash::SlashDispatch::Unsupported { name, harness } => {
@@ -5179,13 +5187,13 @@ async fn send_turn(
     };
     if let Some(event) = persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
     {
-        let _ = app.emit("agent-event", event);
+        publish(&app, CoreEvent::Agent(event));
     }
     let _ = db.execute(
         "UPDATE sessions SET status='working' WHERE id=?1",
         params![session_id],
     );
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     Ok(())
 }
 
@@ -5250,7 +5258,7 @@ fn emit_local_assistant(
         },
         &serde_json::json!({ "adapter": adapter_id }),
     )?;
-    let _ = app.emit("agent-event", event);
+    publish(&app, CoreEvent::Agent(event));
     Ok(())
 }
 
@@ -5264,6 +5272,23 @@ async fn compact_session(
     // Delivering the checkpoint prompt is turn machinery; it moves with the
     // live-turn slice.
     send_internal_checkpoint_turn(&app, &session_id, &prompt)
+}
+
+/// Replay durable session events after a cursor — the recovery half of the
+/// notify-then-replay event contract.
+#[tauri::command]
+async fn replay_session_events(
+    session_id: String,
+    after_sequence: i64,
+    limit: Option<u32>,
+    app: AppHandle,
+) -> Result<Vec<AgentEvent>, BridgeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<BridgeCore>()
+            .replay_session_events(&session_id, after_sequence, limit)
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Session replay task failed: {error}")))?
 }
 
 #[tauri::command]
@@ -5330,14 +5355,14 @@ async fn resolve_approval(
                 WorkerLaunchOutcome::Failed => {
                     let db = state.db.lock().unwrap();
                     record_approved_launch_failure(&db, &session_id, &turn_id, &request)?;
-                    let _ = app.emit("state-changed", ());
+                    publish(&app, CoreEvent::StateChanged);
                     return Err(BridgeError::Invalid(
                         "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
                     ));
                 }
             }
         }
-        let _ = app.emit("state-changed", ());
+        publish(&app, CoreEvent::StateChanged);
         return Ok(());
     }
     let request_id = data
@@ -5405,8 +5430,8 @@ async fn resolve_approval(
          WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
         params![session_id],
     )?;
-    let _ = app.emit("agent-event", event);
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::Agent(event));
+    publish(&app, CoreEvent::StateChanged);
     Ok(())
 }
 
@@ -5590,7 +5615,7 @@ async fn stop_session(
             |row| row.get(0),
         )?;
         db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
-        let _ = app.emit("state-changed", ());
+        publish(&app, CoreEvent::StateChanged);
         return store::state(&db);
     }
     let has_process = state.adapters.lock().unwrap().contains_key(&session_id);
@@ -5633,7 +5658,7 @@ async fn stop_session(
                     "UPDATE sessions SET status='checkpointing' WHERE id=?1",
                     params![session_id],
                 )?;
-                let _ = app.emit("state-changed", ());
+                publish(&app, CoreEvent::StateChanged);
                 return store::state(&db);
             }
             Err(error) => {
@@ -5679,7 +5704,7 @@ async fn stop_session(
         &session_id,
         "Session stopped by user",
     )?;
-    let _ = app.emit("state-changed", ());
+    publish(&app, CoreEvent::StateChanged);
     store::state(&db)
 }
 
@@ -5806,6 +5831,7 @@ pub fn run() {
             execute_skill_change,
             get_state,
             get_session_forest,
+            replay_session_events,
             create_completion_plan,
             record_completion_check,
             waive_completion,
@@ -5983,6 +6009,21 @@ mod tests {
         ]
         .concat();
         assert!(!source.contains(&locked_learning_call));
+    }
+
+    #[test]
+    fn the_shell_never_emits_a_literal_event_name() {
+        // Every notification flows through the core event bus; the setup
+        // forwarder (which emits `event.kind().as_str()`) is the only code
+        // that touches Tauri's event system. A literal event name in an
+        // emit call means someone bypassed the bus — and broke the durable
+        // replay contract for that event.
+        let source = include_str!("lib.rs");
+        assert_eq!(
+            source.matches(".emit(\"").count(),
+            0,
+            "publish CoreEvent on state.events instead of emitting directly"
+        );
     }
 
     #[test]

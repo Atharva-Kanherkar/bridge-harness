@@ -48,7 +48,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.2**),
+- its `protocolVersion` (this document describes **0.3**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -128,8 +128,16 @@ transaction commits** and expose the cursor needed to reconcile from the
 session forest after a disconnect or lag. Sequence-zero `agent-event` frames
 are transient and never replayed. Refetch hints are coalesced and re-emitted
 after live-channel lag so clients converge even when the original hint was
-evicted. The Tauri compatibility UI also polls the forest; daemon clients will
-use the dedicated replay RPC when it lands.
+evicted. The Tauri compatibility UI also polls the forest; the dedicated
+replay method exists as **`sessions/replay_session_events`** — pass the last
+seen durable cursor (`afterSequence`) and receive the next page of missed
+durable events in order, no gaps, no duplicates. `limit` is optional (default
+500, maximum 1000); continue from the last returned sequence until the method
+returns fewer than the requested limit. Transient and sequence-zero frames are
+never replayed. To close the subscribe-before-replay race, clients discard live
+durable events at or below the highest sequence returned by replay, then process
+newer live events normally. The daemon brings the remote transport for it;
+in-process hosts call it like any other method.
 
 ## Generated client types
 

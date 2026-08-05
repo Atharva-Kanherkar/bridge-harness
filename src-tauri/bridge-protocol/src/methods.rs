@@ -51,6 +51,7 @@ methods![
     (ArchiveWorkspace, "workspaces", "archive_workspace"),
     // sessions
     (GetSessionForest, "sessions", "get_session_forest"),
+    (ReplaySessionEvents, "sessions", "replay_session_events"),
     (ActivateSessionEntry, "sessions", "activate_session_entry"),
     (CreateChat, "sessions", "create_chat"),
     (CreateWorkspaceSession, "sessions", "create_workspace_session"),

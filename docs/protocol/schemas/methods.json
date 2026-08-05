@@ -55,6 +55,13 @@
       "paramsSchema": "get-session-forest-params.json"
     },
     {
+      "command": "replay_session_events",
+      "domain": "sessions",
+      "method": "sessions/replay_session_events",
+      "paramsSchema": "replay-session-events-params.json",
+      "resultSchema": "replay-session-events-result.json"
+    },
+    {
       "command": "activate_session_entry",
       "domain": "sessions",
       "method": "sessions/activate_session_entry",
@@ -397,7 +404,7 @@
   ],
   "protocolVersion": {
     "major": 0,
-    "minor": 2
+    "minor": 3
   },
   "reserved": {
     "cancel": "$/cancel",
