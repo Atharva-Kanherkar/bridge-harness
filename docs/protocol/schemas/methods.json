@@ -82,12 +82,14 @@
     {
       "command": "start_session",
       "domain": "sessions",
-      "method": "sessions/start_session"
+      "method": "sessions/start_session",
+      "paramsSchema": "start-session-params.json"
     },
     {
       "command": "start_chat",
       "domain": "sessions",
-      "method": "sessions/start_chat"
+      "method": "sessions/start_chat",
+      "paramsSchema": "start-chat-params.json"
     },
     {
       "command": "update_chat_model",
@@ -98,12 +100,15 @@
     {
       "command": "prepare_turn",
       "domain": "sessions",
-      "method": "sessions/prepare_turn"
+      "method": "sessions/prepare_turn",
+      "paramsSchema": "prepare-turn-params.json"
     },
     {
       "command": "send_turn",
       "domain": "sessions",
-      "method": "sessions/send_turn"
+      "method": "sessions/send_turn",
+      "paramsSchema": "send-turn-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "compact_session",
@@ -129,7 +134,8 @@
     {
       "command": "stop_session",
       "domain": "sessions",
-      "method": "sessions/stop_session"
+      "method": "sessions/stop_session",
+      "paramsSchema": "stop-session-params.json"
     },
     {
       "command": "resolve_approval",
@@ -404,7 +410,7 @@
   ],
   "protocolVersion": {
     "major": 0,
-    "minor": 3
+    "minor": 4
   },
   "reserved": {
     "cancel": "$/cancel",
