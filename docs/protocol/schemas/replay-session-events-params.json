@@ -5,7 +5,18 @@
     "afterSequence": {
       "description": "The last durable sequence the client has seen; events strictly after this cursor are returned in order, with no gaps and no duplicates.",
       "format": "int64",
+      "minimum": 0.0,
       "type": "integer"
+    },
+    "limit": {
+      "description": "Maximum number of events to return. Omitted requests use 500; the server rejects values outside 1..=1000.",
+      "format": "uint32",
+      "maximum": 1000.0,
+      "minimum": 1.0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "sessionId": {
       "type": "string"

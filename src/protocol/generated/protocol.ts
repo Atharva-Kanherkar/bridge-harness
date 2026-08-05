@@ -223,6 +223,7 @@ export interface BridgeMethodResults {
   "sessions/interrupt_turn": UnitResult;
   "sessions/compact_session": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
+  "sessions/replay_session_events": ReplaySessionEventsResult;
 }
 
 export interface ClientInfo {
@@ -239,6 +240,22 @@ export type Params = Record<string, unknown> | unknown[];
 export interface ProtocolVersion {
   major: number;
   minor: number;
+}
+
+export interface ReplaySessionEvent {
+  createdAt: string;
+  data: StructuredJson;
+  id: number;
+  itemId?: string | null;
+  kind: string;
+  protocolVersion: number;
+  providerMeta: unknown;
+  role?: string | null;
+  sequence: number;
+  sessionId: string;
+  status?: string | null;
+  text?: string | null;
+  title?: string | null;
 }
 
 export type RequestId = number | string;
@@ -267,6 +284,8 @@ export interface ServerInfo {
   name: string;
   version: string;
 }
+
+export type StructuredJson = Record<string, unknown> | unknown[];
 
 export interface RpcRequest {
   id: RequestId;
@@ -361,7 +380,10 @@ export interface CompactSessionParams {
 
 export interface ReplaySessionEventsParams {
   afterSequence: number;
+  limit?: number | null;
   sessionId: string;
 }
+
+export type ReplaySessionEventsResult = ReplaySessionEvent[];
 
 export type UnitResult = null;

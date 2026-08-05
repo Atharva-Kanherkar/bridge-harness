@@ -18,7 +18,7 @@ use crate::messages::{
     CompactSessionParams, CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams,
     GetSessionForestParams, InterruptTurnParams, ListWorkspaceFilesParams,
     ListWorkspaceFilesResult, RefreshWorkspaceParams, UnitResult, UpdateChatModelParams,
-    ReplaySessionEventsParams, TYPED_METHODS,
+    ReplaySessionEventsParams, ReplaySessionEventsResult, TYPED_METHODS,
 };
 use crate::methods::MethodName;
 use crate::notifications::NotificationName;
@@ -73,6 +73,10 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         (
             "ReplaySessionEventsParams",
             serde_json::to_value(schema_for!(ReplaySessionEventsParams)).unwrap(),
+        ),
+        (
+            "ReplaySessionEventsResult",
+            serde_json::to_value(schema_for!(ReplaySessionEventsResult)).unwrap(),
         ),
         ("UnitResult", serde_json::to_value(schema_for!(UnitResult)).unwrap()),
     ];
@@ -485,6 +489,10 @@ mod tests {
         }
         assert!(typescript.contains("export interface ConnectWorkspaceFolderParams {"));
         assert!(typescript.contains("export type ListWorkspaceFilesResult = string[];"));
+        assert!(typescript.contains(
+            "\"sessions/replay_session_events\": ReplaySessionEventsResult;"
+        ));
+        assert!(typescript.contains("export type ReplaySessionEventsResult = ReplaySessionEvent[];"));
         assert!(typescript.contains("export type UnitResult = null;"));
         for method in MethodName::ALL {
             assert!(
@@ -648,6 +656,10 @@ mod tests {
             (
                 "docs/protocol/schemas/replay-session-events-params.json",
                 include_str!("../../../docs/protocol/schemas/replay-session-events-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/replay-session-events-result.json",
+                include_str!("../../../docs/protocol/schemas/replay-session-events-result.json"),
             ),
             (
                 "docs/protocol/schemas/unit-result.json",

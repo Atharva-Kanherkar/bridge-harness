@@ -8,6 +8,8 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::methods::MethodName;
 
@@ -61,6 +63,9 @@ pub struct ArchiveWorkspaceParams {
 }
 
 // --- sessions ----------------------------------------------------------------
+
+pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
+pub const MAX_REPLAY_EVENT_LIMIT: u32 = 1_000;
 
 /// A harness identifier on the wire. Mirrors `bridge_core::model::Harness`
 /// variant for variant; an exhaustive conversion in bridge-core keeps the two
@@ -125,8 +130,46 @@ pub struct ReplaySessionEventsParams {
     pub session_id: String,
     /// The last durable sequence the client has seen; events strictly after
     /// this cursor are returned in order, with no gaps and no duplicates.
+    #[schemars(range(min = 0))]
     pub after_sequence: i64,
+    /// Maximum number of events to return. Omitted requests use 500; the
+    /// server rejects values outside 1..=1000.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 1_000))]
+    pub limit: Option<u32>,
 }
+
+/// Structured provider data accepted by normalized events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum StructuredJson {
+    Object(BTreeMap<String, Value>),
+    Array(Vec<Value>),
+}
+
+/// The durable event wire shape returned by session replay. This mirrors the
+/// core `AgentEvent` DTO without making the protocol crate depend on core.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaySessionEvent {
+    pub id: i64,
+    pub session_id: String,
+    pub sequence: i64,
+    pub protocol_version: i64,
+    pub kind: String,
+    pub item_id: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+    pub title: Option<String>,
+    pub text: Option<String>,
+    pub data: StructuredJson,
+    pub provider_meta: Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ReplaySessionEventsResult(pub Vec<ReplaySessionEvent>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -227,7 +270,7 @@ pub const TYPED_METHODS: &[TypedMethod] = &[
     TypedMethod {
         method: MethodName::ReplaySessionEvents,
         params: Some("ReplaySessionEventsParams"),
-        result: None,
+        result: Some("ReplaySessionEventsResult"),
     },
 ];
 
@@ -275,6 +318,27 @@ mod tests {
             serde_json::to_value(&result).unwrap(),
             json!(["src/main.rs", "README.md"])
         );
+        assert_eq!(round_trip(&result), result);
+    }
+
+    #[test]
+    fn replay_result_accepts_array_event_data() {
+        let result = ReplaySessionEventsResult(vec![ReplaySessionEvent {
+            id: 1,
+            session_id: "s".into(),
+            sequence: 1,
+            protocol_version: 1,
+            kind: "tool.completed".into(),
+            item_id: Some("tool-1".into()),
+            role: Some("tool".into()),
+            status: Some("completed".into()),
+            title: None,
+            text: None,
+            data: StructuredJson::Array(vec![json!({"line": 1})]),
+            provider_meta: json!({"adapter": "codex"}),
+            created_at: "now".into(),
+        }]);
+        assert_eq!(serde_json::to_value(&result).unwrap()[0]["data"][0]["line"], 1);
         assert_eq!(round_trip(&result), result);
     }
 

@@ -1958,7 +1958,6 @@ fn handle_agent_value(
     let state = app.state::<BridgeCore>();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
-    let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
@@ -2214,7 +2213,10 @@ fn handle_agent_value(
                     &normalized_event,
                     &event.created_at,
                 ));
-                pending_ui_events.push(event);
+                // Publish while the database mutex is still held. This keeps
+                // durable live delivery in commit/sequence order: another
+                // thread cannot persist and publish sequence N+1 before N.
+                state.events.publish(CoreEvent::Agent(event));
             }
             let pending_compaction =
                 compaction_controller::CompactionController::pending(&db, session_id)
@@ -2414,9 +2416,6 @@ fn handle_agent_value(
         if idle {
             forward_turn_result(app, session_id);
         }
-    }
-    for event in pending_ui_events {
-        publish(&app, CoreEvent::Agent(event));
     }
     if bridge_state_changed {
         publish(&app, CoreEvent::StateChanged);
@@ -5281,9 +5280,15 @@ async fn compact_session(
 async fn replay_session_events(
     session_id: String,
     after_sequence: i64,
-    state: State<'_, BridgeCore>,
+    limit: Option<u32>,
+    app: AppHandle,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
-    state.replay_session_events(&session_id, after_sequence)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<BridgeCore>()
+            .replay_session_events(&session_id, after_sequence, limit)
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(format!("Session replay task failed: {error}")))?
 }
 
 #[tauri::command]

@@ -212,13 +212,6 @@ pub struct BridgeState {
     pub events: Vec<BridgeEvent>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalChunk {
-    pub session_id: String,
-    pub data: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEvent {

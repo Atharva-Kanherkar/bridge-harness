@@ -390,9 +390,22 @@ impl BridgeCore {
         &self,
         session_id: &str,
         after_sequence: i64,
+        limit: Option<u32>,
     ) -> Result<Vec<AgentEvent>, BridgeError> {
+        if after_sequence < 0 {
+            return Err(BridgeError::Invalid(
+                "afterSequence must be non-negative".into(),
+            ));
+        }
+        let limit = limit.unwrap_or(bridge_protocol::messages::DEFAULT_REPLAY_EVENT_LIMIT);
+        if !(1..=bridge_protocol::messages::MAX_REPLAY_EVENT_LIMIT).contains(&limit) {
+            return Err(BridgeError::Invalid(format!(
+                "limit must be between 1 and {}",
+                bridge_protocol::messages::MAX_REPLAY_EVENT_LIMIT
+            )));
+        }
         let db = self.db.lock().unwrap();
-        store::session_events_after(&db, session_id, after_sequence)
+        store::session_events_after(&db, session_id, after_sequence, limit)
     }
 
     /// Interrupt the session's active turn on its live adapter runtime.
@@ -1443,7 +1456,7 @@ mod tests {
 
         // The client is connected for the first two events...
         let mut live = core.events.subscribe();
-        let first = persist("one");
+        persist("one");
         let second = persist("two");
         let mut last_seen = 0;
         for _ in 0..2 {
@@ -1459,21 +1472,154 @@ mod tests {
         let fifth = persist("five");
 
         // Reconnect: subscribe first, then replay from the last seen cursor.
+        // An event committed in that window appears in both streams; the
+        // client drops live cursors at or below the replay high-water mark.
         let mut reconnected = core.events.subscribe();
-        let replayed = core.replay_session_events(&session_id, last_seen).unwrap();
+        let raced = persist("raced");
+        let replayed = core.replay_session_events(&session_id, last_seen, None).unwrap();
         let sequences: Vec<i64> = replayed.iter().map(|event| event.sequence).collect();
-        assert_eq!(sequences, vec![third, third + 1, fifth], "no gaps, no duplicates");
+        assert_eq!(
+            sequences,
+            vec![third, third + 1, fifth, raced],
+            "replay itself has no gaps or duplicates"
+        );
         assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(replayed[0].text.as_deref(), Some("three"));
         assert_eq!(replayed[0].kind, "assistant.message", "replay carries the durable forest kind");
         assert!(replayed[0].sequence > 0, "durable events always carry a positive cursor");
-        // Nothing published since the reconnect: the live channel is quiet.
-        assert!(reconnected.try_recv().is_err());
+        let replay_high_water = *sequences.last().unwrap();
+        let raced_live = match reconnected.try_recv().unwrap() {
+            crate::events::CoreEvent::Agent(event) => event,
+            other => panic!("expected raced agent event, got {:?}", other.kind()),
+        };
+        assert_eq!(raced_live.sequence, replay_high_water);
+        let mut delivered = sequences.clone();
+        if raced_live.sequence > replay_high_water {
+            delivered.push(raced_live.sequence);
+        }
+        let after_replay = persist("after-replay");
+        let newer_live = match reconnected.try_recv().unwrap() {
+            crate::events::CoreEvent::Agent(event) => event,
+            other => panic!("expected newer agent event, got {:?}", other.kind()),
+        };
+        if newer_live.sequence > replay_high_water {
+            delivered.push(newer_live.sequence);
+        }
+        assert_eq!(delivered, vec![third, third + 1, fifth, raced, after_replay]);
         // Replaying from the newest cursor is empty; from zero is everything durable.
-        assert!(core.replay_session_events(&session_id, fifth).unwrap().is_empty());
-        assert_eq!(core.replay_session_events(&session_id, 0).unwrap().len() >= 5, true);
+        assert!(core
+            .replay_session_events(&session_id, after_replay, None)
+            .unwrap()
+            .is_empty());
+        assert!(core.replay_session_events(&session_id, 0, None).unwrap().len() >= 5);
         // Unknown sessions replay nothing rather than erroring.
-        assert!(core.replay_session_events("no-such-session", 0).unwrap().is_empty());
+        assert!(core
+            .replay_session_events("no-such-session", 0, None)
+            .unwrap()
+            .is_empty());
+        assert!(core.replay_session_events(&session_id, -1, None).is_err());
+        assert!(core.replay_session_events(&session_id, 0, Some(0)).is_err());
+        assert!(core
+            .replay_session_events(
+                &session_id,
+                0,
+                Some(bridge_protocol::messages::MAX_REPLAY_EVENT_LIMIT + 1),
+            )
+            .is_err());
+        assert_eq!(
+            core.replay_session_events(&session_id, 0, Some(2))
+                .unwrap()
+                .len(),
+            2,
+            "replay pages are bounded by the requested limit"
+        );
+    }
+
+    #[test]
+    fn replay_preserves_legacy_and_typed_forest_payloads() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, None, None).unwrap();
+        let session_id: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let (stored, typed_payload) = {
+            let db = core.db.lock().unwrap();
+            let stored = store::session_event(
+                &db,
+                &session_id,
+                &agent::NormalizedEvent {
+                    kind: "message.completed".into(),
+                    item_id: Some("item-1".into()),
+                    role: Some("assistant".into()),
+                    status: Some("completed".into()),
+                    title: Some("Title".into()),
+                    text: Some("Body".into()),
+                    data: serde_json::json!([{"nested": 7}]),
+                },
+                &serde_json::json!({"adapter": "codex", "requestId": "r1"}),
+            )
+            .unwrap();
+            let typed = session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::ArtifactCreated,
+                    serde_json::json!({"path": "result.json", "protocolVersion": 99}),
+                )
+                .unwrap();
+            (stored, typed.payload)
+        };
+
+        let replayed = core.replay_session_events(&session_id, 0, None).unwrap();
+        assert_eq!(replayed[0].item_id.as_deref(), Some("item-1"));
+        assert_eq!(replayed[0].title.as_deref(), Some("Title"));
+        assert_eq!(replayed[0].data, serde_json::json!([{"nested": 7}]));
+        assert_eq!(
+            replayed[0].provider_meta,
+            serde_json::json!({"adapter": "codex", "requestId": "r1"})
+        );
+        assert_eq!(replayed[0].created_at, stored.created_at);
+        assert_eq!(replayed[1].kind, "artifact.created");
+        assert_eq!(replayed[1].protocol_version, 1);
+        assert_eq!(replayed[1].data, typed_payload);
+    }
+
+    #[test]
+    fn replay_rejects_corrupt_or_future_schema_history() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, None, None).unwrap();
+        let db = core.db.lock().unwrap();
+        let session_id: String = db
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        session_forest::SessionForest::new(&db)
+            .append(
+                &session_id,
+                session_forest::EntryKind::ArtifactCreated,
+                serde_json::json!({"path": "result.json"}),
+            )
+            .unwrap();
+        db.execute(
+            "UPDATE session_entries SET payload='not-json' WHERE session_id=?1",
+            params![session_id],
+        )
+        .unwrap();
+        drop(db);
+        assert!(core.replay_session_events(&session_id, 0, None).is_err());
+
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "UPDATE session_entries SET payload='{\"path\":\"result.json\"}',semantic_schema_version=?2 WHERE session_id=?1",
+            params![
+                session_id,
+                SEMANTIC_EVENT_SCHEMA_VERSION + 1,
+            ],
+        )
+        .unwrap();
+        drop(db);
+        assert!(core.replay_session_events(&session_id, 0, None).is_err());
     }
 
     #[test]

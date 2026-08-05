@@ -1583,41 +1583,89 @@ pub fn session_events_after(
     db: &Connection,
     session_id: &str,
     after_sequence: i64,
+    limit: u32,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
-    query_with_params(
+    let entries = query_with_params(
         db,
-        "SELECT sequence,kind,payload,created_at FROM session_entries
-         WHERE session_id=?1 AND sequence>?2 ORDER BY sequence",
-        params![session_id, after_sequence],
+        "SELECT id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
+         FROM session_entries WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
+        params![session_id, after_sequence, limit],
         |row| {
-            let sequence: i64 = row.get(0)?;
-            let payload = parse_json_column(row, 2);
+            Ok(SessionEntry {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                parent_entry_id: row.get(2)?,
+                sequence: row.get(3)?,
+                semantic_schema_version: row.get(4)?,
+                kind: row.get(5)?,
+                payload: parse_json_column(row, 6),
+                provider_event_id: row.get(7)?,
+                context_visibility: row.get(8)?,
+                token_estimate: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )?;
+    let forest = crate::session_forest::SessionForest::new(db);
+    entries
+        .into_iter()
+        .map(|entry| {
+            forest
+                .validate_stored_entry(&entry)
+                .map_err(|error| BridgeError::Invalid(format!(
+                    "cannot replay session entry {} at sequence {}: {error}",
+                    entry.id, entry.sequence
+                )))?;
+            let payload = &entry.payload;
             let field = |name: &str| {
                 payload
                     .get(name)
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned)
             };
-            Ok(AgentEvent {
-                id: sequence,
-                session_id: session_id.into(),
-                sequence,
-                protocol_version: payload
+            let typed_forest_payload = payload
+                .get(crate::session_forest::TYPED_SCHEMA_MARKER)
+                .and_then(serde_json::Value::as_u64)
+                == Some(crate::session_forest::TYPED_SCHEMA_VERSION);
+            let legacy_agent_envelope = !typed_forest_payload
+                && payload
                     .get("protocolVersion")
                     .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(1),
-                kind: row.get(1)?,
+                    .is_some();
+            Ok(AgentEvent {
+                id: entry.sequence,
+                session_id: entry.session_id,
+                sequence: entry.sequence,
+                protocol_version: if legacy_agent_envelope {
+                    payload
+                        .get("protocolVersion")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(1)
+                } else {
+                    1
+                },
+                kind: entry.kind,
                 item_id: field("itemId"),
                 role: field("role"),
                 status: field("status"),
                 title: field("title"),
                 text: field("text"),
-                data: payload.get("data").cloned().unwrap_or_default(),
-                provider_meta: payload.get("providerMeta").cloned().unwrap_or_default(),
-                created_at: row.get(3)?,
+                data: if legacy_agent_envelope {
+                    payload
+                        .get("data")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}))
+                } else {
+                    payload.clone()
+                },
+                provider_meta: payload
+                    .get("providerMeta")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                created_at: entry.created_at,
             })
-        },
-    )
+        })
+        .collect()
 }
 
 pub fn session_entries(

@@ -58,7 +58,8 @@
       "command": "replay_session_events",
       "domain": "sessions",
       "method": "sessions/replay_session_events",
-      "paramsSchema": "replay-session-events-params.json"
+      "paramsSchema": "replay-session-events-params.json",
+      "resultSchema": "replay-session-events-result.json"
     },
     {
       "command": "activate_session_entry",

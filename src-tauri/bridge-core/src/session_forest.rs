@@ -11,8 +11,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-const TYPED_SCHEMA_MARKER: &str = "_bridgeTypedSchemaVersion";
-const TYPED_SCHEMA_VERSION: u64 = 1;
+pub(crate) const TYPED_SCHEMA_MARKER: &str = "_bridgeTypedSchemaVersion";
+pub(crate) const TYPED_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
@@ -1000,7 +1000,7 @@ impl<'connection> SessionForest<'connection> {
         Ok(findings)
     }
 
-    fn validate_stored_entry(&self, entry: &SessionEntry) -> Result<(), ForestError> {
+    pub(crate) fn validate_stored_entry(&self, entry: &SessionEntry) -> Result<(), ForestError> {
         if !(MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION..=SEMANTIC_EVENT_SCHEMA_VERSION)
             .contains(&entry.semantic_schema_version)
         {
