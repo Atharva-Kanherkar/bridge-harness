@@ -1574,6 +1574,52 @@ fn stable_dirty_hash(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
+/// Durable events for a session with a sequence strictly greater than the
+/// cursor, in sequence order — the replay half of the notify-then-replay
+/// contract. Replayed events carry their durable forest kind (e.g.
+/// `assistant.message`) and payload exactly as persisted; transient frames
+/// (sequence 0 on the live channel) were never stored and are never replayed.
+pub fn session_events_after(
+    db: &Connection,
+    session_id: &str,
+    after_sequence: i64,
+) -> Result<Vec<AgentEvent>, BridgeError> {
+    query_with_params(
+        db,
+        "SELECT sequence,kind,payload,created_at FROM session_entries
+         WHERE session_id=?1 AND sequence>?2 ORDER BY sequence",
+        params![session_id, after_sequence],
+        |row| {
+            let sequence: i64 = row.get(0)?;
+            let payload = parse_json_column(row, 2);
+            let field = |name: &str| {
+                payload
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            Ok(AgentEvent {
+                id: sequence,
+                session_id: session_id.into(),
+                sequence,
+                protocol_version: payload
+                    .get("protocolVersion")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(1),
+                kind: row.get(1)?,
+                item_id: field("itemId"),
+                role: field("role"),
+                status: field("status"),
+                title: field("title"),
+                text: field("text"),
+                data: payload.get("data").cloned().unwrap_or_default(),
+                provider_meta: payload.get("providerMeta").cloned().unwrap_or_default(),
+                created_at: row.get(3)?,
+            })
+        },
+    )
+}
+
 pub fn session_entries(
     db: &Connection,
     session_id: &str,

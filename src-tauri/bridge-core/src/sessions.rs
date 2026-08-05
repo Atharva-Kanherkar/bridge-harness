@@ -381,6 +381,20 @@ impl BridgeCore {
         }
     }
 
+    /// Replay durable session events with a sequence greater than the
+    /// cursor. This is the recovery path of the notify-then-replay contract:
+    /// after a disconnect or a lagged live channel, a client calls this with
+    /// its last seen cursor and receives the missed durable history with no
+    /// gaps and no duplicates. Transient frames are never replayed.
+    pub fn replay_session_events(
+        &self,
+        session_id: &str,
+        after_sequence: i64,
+    ) -> Result<Vec<AgentEvent>, BridgeError> {
+        let db = self.db.lock().unwrap();
+        store::session_events_after(&db, session_id, after_sequence)
+    }
+
     /// Interrupt the session's active turn on its live adapter runtime.
     pub fn interrupt_turn(&self, session_id: &str) -> Result<(), BridgeError> {
         let adapters = self.adapters.lock().unwrap();
@@ -1393,6 +1407,73 @@ mod tests {
             }
             other => panic!("expected account usage, got {:?}", other.kind()),
         }
+    }
+
+    #[test]
+    fn kill_and_reconnect_replays_missed_events_by_cursor_with_no_gaps_or_duplicates() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, None, None).unwrap();
+        let session_id: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let persist = |text: &str| -> i64 {
+            let db = core.db.lock().unwrap();
+            let event = store::session_event(
+                &db,
+                &session_id,
+                &agent::NormalizedEvent {
+                    kind: "message.completed".into(),
+                    item_id: Some(format!("item-{text}")),
+                    role: Some("assistant".into()),
+                    status: Some("completed".into()),
+                    title: None,
+                    text: Some(text.into()),
+                    data: serde_json::json!({}),
+                },
+                &serde_json::json!({"adapter": "codex"}),
+            )
+            .unwrap();
+            drop(db);
+            core.events.publish(crate::events::CoreEvent::Agent(event.clone()));
+            event.sequence
+        };
+
+        // The client is connected for the first two events...
+        let mut live = core.events.subscribe();
+        let first = persist("one");
+        let second = persist("two");
+        let mut last_seen = 0;
+        for _ in 0..2 {
+            if let crate::events::CoreEvent::Agent(event) = live.try_recv().unwrap() {
+                last_seen = event.sequence;
+            }
+        }
+        assert_eq!(last_seen, second);
+        // ...then dies. Three more events land while it is gone.
+        drop(live);
+        let third = persist("three");
+        persist("four");
+        let fifth = persist("five");
+
+        // Reconnect: subscribe first, then replay from the last seen cursor.
+        let mut reconnected = core.events.subscribe();
+        let replayed = core.replay_session_events(&session_id, last_seen).unwrap();
+        let sequences: Vec<i64> = replayed.iter().map(|event| event.sequence).collect();
+        assert_eq!(sequences, vec![third, third + 1, fifth], "no gaps, no duplicates");
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(replayed[0].text.as_deref(), Some("three"));
+        assert_eq!(replayed[0].kind, "assistant.message", "replay carries the durable forest kind");
+        assert!(replayed[0].sequence > 0, "durable events always carry a positive cursor");
+        // Nothing published since the reconnect: the live channel is quiet.
+        assert!(reconnected.try_recv().is_err());
+        // Replaying from the newest cursor is empty; from zero is everything durable.
+        assert!(core.replay_session_events(&session_id, fifth).unwrap().is_empty());
+        assert_eq!(core.replay_session_events(&session_id, 0).unwrap().len() >= 5, true);
+        // Unknown sessions replay nothing rather than erroring.
+        assert!(core.replay_session_events("no-such-session", 0).unwrap().is_empty());
     }
 
     #[test]

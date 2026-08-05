@@ -18,7 +18,7 @@ use crate::messages::{
     CompactSessionParams, CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams,
     GetSessionForestParams, InterruptTurnParams, ListWorkspaceFilesParams,
     ListWorkspaceFilesResult, RefreshWorkspaceParams, UnitResult, UpdateChatModelParams,
-    TYPED_METHODS,
+    ReplaySessionEventsParams, TYPED_METHODS,
 };
 use crate::methods::MethodName;
 use crate::notifications::NotificationName;
@@ -70,6 +70,10 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         ("UpdateChatModelParams", serde_json::to_value(schema_for!(UpdateChatModelParams)).unwrap()),
         ("InterruptTurnParams", serde_json::to_value(schema_for!(InterruptTurnParams)).unwrap()),
         ("CompactSessionParams", serde_json::to_value(schema_for!(CompactSessionParams)).unwrap()),
+        (
+            "ReplaySessionEventsParams",
+            serde_json::to_value(schema_for!(ReplaySessionEventsParams)).unwrap(),
+        ),
         ("UnitResult", serde_json::to_value(schema_for!(UnitResult)).unwrap()),
     ];
     for (name, schema) in &mut roots {
@@ -640,6 +644,10 @@ mod tests {
             (
                 "docs/protocol/schemas/compact-session-params.json",
                 include_str!("../../../docs/protocol/schemas/compact-session-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/replay-session-events-params.json",
+                include_str!("../../../docs/protocol/schemas/replay-session-events-params.json"),
             ),
             (
                 "docs/protocol/schemas/unit-result.json",

@@ -121,6 +121,15 @@ pub struct UpdateChatModelParams {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct ReplaySessionEventsParams {
+    pub session_id: String,
+    /// The last durable sequence the client has seen; events strictly after
+    /// this cursor are returned in order, with no gaps and no duplicates.
+    pub after_sequence: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct InterruptTurnParams {
     pub session_id: String,
 }
@@ -214,6 +223,11 @@ pub const TYPED_METHODS: &[TypedMethod] = &[
         method: MethodName::RefreshAccountUsage,
         params: None,
         result: Some("UnitResult"),
+    },
+    TypedMethod {
+        method: MethodName::ReplaySessionEvents,
+        params: Some("ReplaySessionEventsParams"),
+        result: None,
     },
 ];
 
@@ -333,6 +347,11 @@ mod tests {
         )
         .is_err());
         assert!(serde_json::from_value::<InterruptTurnParams>(json!({})).is_err());
+        assert!(
+            serde_json::from_value::<ReplaySessionEventsParams>(json!({"sessionId": "s"}))
+                .is_err(),
+            "afterSequence is required"
+        );
         assert!(serde_json::from_value::<CompactSessionParams>(
             json!({"session_id": "s"})
         )

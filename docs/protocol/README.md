@@ -128,8 +128,12 @@ transaction commits** and expose the cursor needed to reconcile from the
 session forest after a disconnect or lag. Sequence-zero `agent-event` frames
 are transient and never replayed. Refetch hints are coalesced and re-emitted
 after live-channel lag so clients converge even when the original hint was
-evicted. The Tauri compatibility UI also polls the forest; daemon clients will
-use the dedicated replay RPC when it lands.
+evicted. The Tauri compatibility UI also polls the forest; the dedicated
+replay method exists as **`sessions/replay_session_events`** — pass the last
+seen durable cursor (`afterSequence`) and receive the missed durable events
+in order, no gaps, no duplicates (transient and sequence-zero frames are
+never replayed). The daemon brings the remote transport for it; in-process
+hosts call it like any other method.
 
 ## Generated client types
 
