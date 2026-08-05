@@ -173,6 +173,43 @@ pub struct ReplaySessionEventsResult(pub Vec<ReplaySessionEvent>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct StartSessionParams {
+    pub workspace_id: String,
+    /// Explicit harness; omitted resolves the configured orchestrator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StartChatParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareTurnParams {
+    pub session_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTurnParams {
+    pub session_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StopSessionParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct InterruptTurnParams {
     pub session_id: String,
 }
@@ -266,6 +303,23 @@ pub const TYPED_METHODS: &[TypedMethod] = &[
         method: MethodName::RefreshAccountUsage,
         params: None,
         result: Some("UnitResult"),
+    },
+    TypedMethod { method: MethodName::StartSession, params: Some("StartSessionParams"), result: None },
+    TypedMethod { method: MethodName::StartChat, params: Some("StartChatParams"), result: None },
+    TypedMethod {
+        method: MethodName::PrepareTurn,
+        params: Some("PrepareTurnParams"),
+        result: None,
+    },
+    TypedMethod {
+        method: MethodName::SendTurn,
+        params: Some("SendTurnParams"),
+        result: Some("UnitResult"),
+    },
+    TypedMethod {
+        method: MethodName::StopSession,
+        params: Some("StopSessionParams"),
+        result: None,
     },
     TypedMethod {
         method: MethodName::ReplaySessionEvents,
@@ -456,13 +510,8 @@ mod tests {
         // it lands with the event-publisher seam. Every other method in a
         // typed domain must have typed params; shrink this list as slice B
         // methods are contracted.
-        const PENDING_SESSIONS_SLICE_B: &[MethodName] = &[
-            MethodName::StartSession,
-            MethodName::StartChat,
-            MethodName::PrepareTurn,
-            MethodName::SendTurn,
-            MethodName::StopSession,
-        ];
+        // The live-turn extraction landed: every sessions method is contracted.
+        const PENDING_SESSIONS_SLICE_B: &[MethodName] = &[];
         for method in MethodName::ALL.iter().copied() {
             if matches!(method.domain(), "projects" | "workspaces" | "sessions")
                 && !PENDING_SESSIONS_SLICE_B.contains(&method)

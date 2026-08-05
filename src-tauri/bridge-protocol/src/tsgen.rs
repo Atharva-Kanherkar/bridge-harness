@@ -18,7 +18,8 @@ use crate::messages::{
     CompactSessionParams, CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams,
     GetSessionForestParams, InterruptTurnParams, ListWorkspaceFilesParams,
     ListWorkspaceFilesResult, RefreshWorkspaceParams, UnitResult, UpdateChatModelParams,
-    ReplaySessionEventsParams, ReplaySessionEventsResult, TYPED_METHODS,
+    PrepareTurnParams, ReplaySessionEventsParams, SendTurnParams, StartChatParams,
+    StartSessionParams, StopSessionParams, ReplaySessionEventsResult, TYPED_METHODS,
 };
 use crate::methods::MethodName;
 use crate::notifications::NotificationName;
@@ -70,6 +71,11 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         ("UpdateChatModelParams", serde_json::to_value(schema_for!(UpdateChatModelParams)).unwrap()),
         ("InterruptTurnParams", serde_json::to_value(schema_for!(InterruptTurnParams)).unwrap()),
         ("CompactSessionParams", serde_json::to_value(schema_for!(CompactSessionParams)).unwrap()),
+        ("StartSessionParams", serde_json::to_value(schema_for!(StartSessionParams)).unwrap()),
+        ("StartChatParams", serde_json::to_value(schema_for!(StartChatParams)).unwrap()),
+        ("PrepareTurnParams", serde_json::to_value(schema_for!(PrepareTurnParams)).unwrap()),
+        ("SendTurnParams", serde_json::to_value(schema_for!(SendTurnParams)).unwrap()),
+        ("StopSessionParams", serde_json::to_value(schema_for!(StopSessionParams)).unwrap()),
         (
             "ReplaySessionEventsParams",
             serde_json::to_value(schema_for!(ReplaySessionEventsParams)).unwrap(),
@@ -652,6 +658,26 @@ mod tests {
             (
                 "docs/protocol/schemas/compact-session-params.json",
                 include_str!("../../../docs/protocol/schemas/compact-session-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/start-session-params.json",
+                include_str!("../../../docs/protocol/schemas/start-session-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/start-chat-params.json",
+                include_str!("../../../docs/protocol/schemas/start-chat-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/prepare-turn-params.json",
+                include_str!("../../../docs/protocol/schemas/prepare-turn-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/send-turn-params.json",
+                include_str!("../../../docs/protocol/schemas/send-turn-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/stop-session-params.json",
+                include_str!("../../../docs/protocol/schemas/stop-session-params.json"),
             ),
             (
                 "docs/protocol/schemas/replay-session-events-params.json",
