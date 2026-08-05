@@ -5,7 +5,7 @@ pub use bridge_core::{
 
 use bridge_core::model::*;
 use bridge_core::{
-    adapters, agent, agent_config, binary, browser_bridge, claude_adapter,
+    adapters, agent, agent_config, binary, browser_bridge,
     compaction_controller, delegation, git, handoff, marketplace,
     opencode_adapter, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
     secret_interception, session_forest, session_supervisor, sessions, skill_marketplace, slash,
@@ -1943,7 +1943,7 @@ fn handle_agent_value(
     // and its rolling push) are subscription telemetry, not conversation. Route
     // them straight to the ambient usage channel without persisting.
     if let Some(rate_limits) = codex_rate_limits_from_frame(value) {
-        emit_account_usage(app, "codex", rate_limits);
+        app.state::<BridgeCore>().publish_account_usage("codex", rate_limits);
         return;
     }
     let state = app.state::<BridgeCore>();
@@ -5086,7 +5086,7 @@ async fn send_turn(
 
     let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
         slash::SlashDispatch::Usage => {
-            refresh_account_usage(app.clone(), state.clone()).await?;
+            state.refresh_account_usage()?;
             emit_local_assistant(
                 &app,
                 &state,
@@ -5260,59 +5260,15 @@ async fn compact_session(
     app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
-    let prompt = {
-        let db = state.db.lock().unwrap();
-        let status: String = db.query_row(
-            "SELECT status FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        if matches!(status.as_str(), "working" | "waiting" | "checkpointing") {
-            return Err(BridgeError::Invalid(
-                "Compaction waits until the active tool, approval, or turn finishes".into(),
-            ));
-        }
-        let branch = session_forest::SessionForest::new(&db)
-            .active_branch(&session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
-        });
-        compaction_controller::decide(&compaction_controller::TriggerState {
-            reason: compaction_controller::CompactionReason::Manual,
-            context_percent: None,
-            projected_tokens_with_reserve: None,
-            context_window_tokens: None,
-            has_valid_typed_result: false,
-            one_shot_worker: false,
-            tool_call_active: false,
-            approval_active: false,
-            has_meaningful_new_work: meaningful,
-            wall_clock_only: false,
-        })
-        .map_err(|reason| BridgeError::Invalid(format!("Compaction suppressed: {reason:?}")))?;
-        let tokens = compaction_controller::active_token_estimate(&db, &session_id)?;
-        compaction_controller::CompactionController::begin(
-            &db,
-            &session_id,
-            compaction_controller::CompactionReason::Manual,
-            tokens,
-        )?
-        .ok_or_else(|| BridgeError::Invalid("Compaction is already pending".into()))?
-    };
+    let prompt = state.begin_manual_compaction(&session_id)?;
+    // Delivering the checkpoint prompt is turn machinery; it moves with the
+    // live-turn slice.
     send_internal_checkpoint_turn(&app, &session_id, &prompt)
 }
 
 #[tauri::command]
 async fn interrupt_turn(session_id: String, state: State<'_, BridgeCore>) -> Result<(), BridgeError> {
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(&session_id)
-        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.interrupt()
+    state.interrupt_turn(&session_id)
 }
 
 /// Refresh subscription usage for every provider, independent of which session
@@ -5321,42 +5277,9 @@ async fn interrupt_turn(session_id: String, state: State<'_, BridgeCore>) -> Res
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
 async fn refresh_account_usage(
-    app: AppHandle,
     state: State<'_, BridgeCore>,
 ) -> Result<(), BridgeError> {
-    // Claude: a global, read-only account query — no running session required.
-    if binary::resolve("claude").is_some() {
-        let app = app.clone();
-        thread::spawn(move || {
-            let cwd = std::env::temp_dir();
-            let cwd = cwd.to_string_lossy();
-            if let Some(data) = claude_adapter::read_usage_snapshot(cwd.as_ref()) {
-                if let Some(rate_limits) = data.get("rateLimits") {
-                    emit_account_usage(&app, "claude", rate_limits.clone());
-                }
-            }
-        });
-    }
-    // Codex: rate limits are account-wide, so a single running session answers
-    // for the whole account. Its reply routes back through handle_agent_value.
-    let codex_sessions: Vec<String> = {
-        let db = state.db.lock().unwrap();
-        let mut statement =
-            db.prepare("SELECT id FROM sessions WHERE harness='codex' AND ended_at IS NULL")?;
-        let ids = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(Result::ok)
-            .collect::<Vec<_>>();
-        ids
-    };
-    let adapters = state.adapters.lock().unwrap();
-    for session_id in codex_sessions {
-        if let Some(runtime) = adapters.get(&session_id) {
-            let _ = runtime.read_usage();
-            break;
-        }
-    }
-    Ok(())
+    state.refresh_account_usage()
 }
 
 /// Rate-limit snapshot carried by a Codex account frame, if this is one.
@@ -5370,14 +5293,6 @@ fn codex_rate_limits_from_frame(value: &serde_json::Value) -> Option<serde_json:
         }
     }
     None
-}
-
-/// Broadcast a provider's subscription usage to the UI's ambient meter.
-fn emit_account_usage(app: &AppHandle, provider: &str, rate_limits: serde_json::Value) {
-    let _ = app.emit(
-        "account-usage",
-        serde_json::json!({ "provider": provider, "rateLimits": rate_limits }),
-    );
 }
 
 #[tauri::command]

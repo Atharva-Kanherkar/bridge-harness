@@ -1,6 +1,7 @@
-//! Sessions domain, management half: creating chats and workspace sessions,
-//! switching a chat's model, and reading/rewinding the session forest — as
-//! [`BridgeCore`] methods.
+//! Sessions domain, management and control surfaces: creating chats and
+//! workspace sessions, switching models, reading/rewinding the session forest,
+//! interrupting turns, starting manual compaction, and refreshing account usage
+//! as [`BridgeCore`] methods.
 //!
 //! Host shells keep only transport concerns: blocking-pool placement for Git
 //! scans and worktree creation, and event emission after mutations. Methods
@@ -8,14 +9,15 @@
 //! `persist_*`(or `commit_*`) pair; everything in between is the host's
 //! scheduling choice, not domain logic.
 //!
-//! The live-turn half of the domain (starting adapters, sending turns,
-//! compaction) stays in the shell until the event-publisher seam exists.
+//! Starting adapters, sending turns, and delivering checkpoint prompts remain
+//! host-run live-turn orchestration until that slice moves behind the core seam.
 
 use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::{
-    adapters, agent, agent_config, completion, git, model_profiles, orchestrator, policy,
-    restoration, session_forest, session_supervisor, store, BridgeError,
+    adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion,
+    git, model_profiles, orchestrator, policy, restoration, session_forest, session_supervisor,
+    store, BridgeError,
 };
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
@@ -377,6 +379,121 @@ impl BridgeCore {
         if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
+    }
+
+    /// Interrupt the session's active turn on its live adapter runtime.
+    pub fn interrupt_turn(&self, session_id: &str) -> Result<(), BridgeError> {
+        let adapters = self.adapters.lock().unwrap();
+        let runtime = adapters
+            .get(session_id)
+            .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+        runtime.interrupt()
+    }
+
+    /// Validate and begin a manual compaction, returning the checkpoint
+    /// prompt. Delivering that prompt as an internal turn is still shell
+    /// machinery until the live-turn slice lands.
+    pub fn begin_manual_compaction(&self, session_id: &str) -> Result<String, BridgeError> {
+        let db = self.db.lock().unwrap();
+        let status: String = db.query_row(
+            "SELECT status FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if matches!(status.as_str(), "working" | "waiting" | "checkpointing") {
+            return Err(BridgeError::Invalid(
+                "Compaction waits until the active tool, approval, or turn finishes".into(),
+            ));
+        }
+        let branch = session_forest::SessionForest::new(&db)
+            .active_branch(session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let meaningful = branch.iter().any(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
+            )
+        });
+        compaction_controller::decide(&compaction_controller::TriggerState {
+            reason: compaction_controller::CompactionReason::Manual,
+            context_percent: None,
+            projected_tokens_with_reserve: None,
+            context_window_tokens: None,
+            has_valid_typed_result: false,
+            one_shot_worker: false,
+            tool_call_active: false,
+            approval_active: false,
+            has_meaningful_new_work: meaningful,
+            wall_clock_only: false,
+        })
+        .map_err(|reason| BridgeError::Invalid(format!("Compaction suppressed: {reason:?}")))?;
+        let tokens = compaction_controller::active_token_estimate(&db, session_id)?;
+        compaction_controller::CompactionController::begin(
+            &db,
+            session_id,
+            compaction_controller::CompactionReason::Manual,
+            tokens,
+        )?
+        .ok_or_else(|| BridgeError::Invalid("Compaction is already pending".into()))
+    }
+
+    /// Publish one provider's subscription usage tick to the ambient meter.
+    pub fn publish_account_usage(&self, provider: &str, rate_limits: serde_json::Value) {
+        self.events.publish(crate::events::CoreEvent::AccountUsage {
+            provider: provider.to_owned(),
+            rate_limits,
+        });
+    }
+
+    /// Ask one live Codex session for account-wide rate limits; the reply
+    /// arrives asynchronously on its event stream.
+    pub fn request_codex_usage(&self) -> Result<(), BridgeError> {
+        let codex_sessions: Vec<String> = {
+            let db = self.db.lock().unwrap();
+            let mut statement =
+                db.prepare("SELECT id FROM sessions WHERE harness='codex' AND ended_at IS NULL")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+            ids
+        };
+        let adapters = self.adapters.lock().unwrap();
+        for session_id in codex_sessions {
+            if let Some(runtime) = adapters.get(&session_id) {
+                let _ = runtime.read_usage();
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refresh subscription usage for every provider, independent of which
+    /// session is on screen. Claude is queried out-of-band via its headless
+    /// `/usage` command; Codex is asked on a live session and answers on its
+    /// event stream. Both results ride the `account-usage` channel.
+    pub fn refresh_account_usage(&self) -> Result<(), BridgeError> {
+        // Claude: a global, read-only account query — no running session
+        // required. The probe shells out and can be slow; it runs on its own
+        // thread and publishes when it returns.
+        if binary::resolve("claude").is_some() {
+            let events = self.events.clone();
+            std::thread::spawn(move || {
+                let cwd = std::env::temp_dir();
+                let cwd = cwd.to_string_lossy();
+                if let Some(data) = claude_adapter::read_usage_snapshot(cwd.as_ref()) {
+                    if let Some(rate_limits) = data.get("rateLimits") {
+                        events.publish(crate::events::CoreEvent::AccountUsage {
+                            provider: "claude".into(),
+                            rate_limits: rate_limits.clone(),
+                        });
+                    }
+                }
+            });
+        }
+        // Codex: rate limits are account-wide, so a single running session
+        // answers for the whole account.
+        self.request_codex_usage()
     }
 
     /// Apply a planned model change: clear the tracked provider process,
@@ -1147,6 +1264,135 @@ mod tests {
             .unwrap();
         let error = core.commit_chat_model_change(change).unwrap_err();
         assert!(error.to_string().contains("changed while the switch was in flight"), "{error}");
+    }
+
+    /// A live adapter runtime that records control calls.
+    struct RecordingRuntime {
+        interrupted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        usage_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl adapters::AdapterRuntime for RecordingRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "recording"
+        }
+        fn current_turn(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+            std::sync::Arc::new(std::sync::Mutex::new(None))
+        }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            self.interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn read_usage(&self) -> Result<(), BridgeError> {
+            self.usage_requested.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
+    #[test]
+    fn interrupt_turn_requires_and_reaches_the_live_runtime() {
+        let (_scratch, core) = fixture();
+        let error = core.interrupt_turn("absent").unwrap_err();
+        assert!(error.to_string().contains("not running"), "{error}");
+
+        let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        core.adapters.lock().unwrap().insert(
+            "live".into(),
+            Box::new(RecordingRuntime {
+                interrupted: interrupted.clone(),
+                usage_requested: Default::default(),
+            }),
+        );
+        core.interrupt_turn("live").unwrap();
+        assert!(interrupted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn manual_compaction_validates_status_and_meaningful_work() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','S','working','reported')", []).unwrap();
+        }
+        let error = core.begin_manual_compaction("s").unwrap_err();
+        assert!(error.to_string().contains("waits until"), "{error}");
+
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='idle' WHERE id='s'", [])
+            .unwrap();
+        // No meaningful conversation yet: the controller suppresses it.
+        let error = core.begin_manual_compaction("s").unwrap_err();
+        assert!(error.to_string().contains("Compaction suppressed"), "{error}");
+
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'assistant.message','{\"text\":\"work\"}','now')",
+                [],
+            )
+            .unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at) VALUES('s','e1','fresh','now')",
+                [],
+            )
+            .unwrap();
+        let prompt = core.begin_manual_compaction("s").unwrap();
+        assert!(!prompt.is_empty());
+        let error = core.begin_manual_compaction("s").unwrap_err();
+        assert!(error.to_string().contains("already pending"), "{error}");
+    }
+
+    #[test]
+    fn codex_usage_is_requested_on_one_live_session() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('c1','w','codex','S','idle','reported')", []).unwrap();
+        }
+        // No live runtime: the request is a quiet no-op.
+        core.request_codex_usage().unwrap();
+
+        let usage_requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        core.adapters.lock().unwrap().insert(
+            "c1".into(),
+            Box::new(RecordingRuntime {
+                interrupted: Default::default(),
+                usage_requested: usage_requested.clone(),
+            }),
+        );
+        core.request_codex_usage().unwrap();
+        assert!(usage_requested.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn account_usage_ticks_ride_the_bus_with_the_legacy_payload() {
+        let (_scratch, core) = fixture();
+        let mut events = core.events.subscribe();
+        core.publish_account_usage("codex", serde_json::json!({"remaining": 5}));
+        match events.try_recv().unwrap() {
+            crate::events::CoreEvent::AccountUsage { provider, rate_limits } => {
+                assert_eq!(provider, "codex");
+                assert_eq!(rate_limits, serde_json::json!({"remaining": 5}));
+            }
+            other => panic!("expected account usage, got {:?}", other.kind()),
+        }
     }
 
     #[test]

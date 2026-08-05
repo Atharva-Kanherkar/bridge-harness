@@ -209,11 +209,17 @@ export interface BridgeMethodParams {
   "sessions/create_chat": CreateChatParams;
   "sessions/create_workspace_session": CreateWorkspaceSessionParams;
   "sessions/update_chat_model": UpdateChatModelParams;
+  "sessions/interrupt_turn": InterruptTurnParams;
+  "sessions/compact_session": CompactSessionParams;
+  "sessions/refresh_account_usage": undefined;
 }
 
 /** Result types for contracted methods that do not return the BridgeState snapshot. */
 export interface BridgeMethodResults {
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
+  "sessions/interrupt_turn": UnitResult;
+  "sessions/compact_session": UnitResult;
+  "sessions/refresh_account_usage": UnitResult;
 }
 
 export interface ClientInfo {
@@ -341,3 +347,13 @@ export interface UpdateChatModelParams {
   model?: string | null;
   sessionId: string;
 }
+
+export interface InterruptTurnParams {
+  sessionId: string;
+}
+
+export interface CompactSessionParams {
+  sessionId: string;
+}
+
+export type UnitResult = null;

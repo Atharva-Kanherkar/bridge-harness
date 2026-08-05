@@ -15,9 +15,10 @@ use crate::error::ErrorCode;
 use crate::handshake::{HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION};
 use crate::messages::{
     ActivateSessionEntryParams, AddProjectParams, ArchiveWorkspaceParams, ConnectWorkspaceFolderParams,
-    CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams, GetSessionForestParams,
-    ListWorkspaceFilesParams, ListWorkspaceFilesResult, RefreshWorkspaceParams,
-    UpdateChatModelParams, TYPED_METHODS,
+    CompactSessionParams, CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams,
+    GetSessionForestParams, InterruptTurnParams, ListWorkspaceFilesParams,
+    ListWorkspaceFilesResult, RefreshWorkspaceParams, UnitResult, UpdateChatModelParams,
+    TYPED_METHODS,
 };
 use crate::methods::MethodName;
 use crate::notifications::NotificationName;
@@ -67,6 +68,9 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
             serde_json::to_value(schema_for!(CreateWorkspaceSessionParams)).unwrap(),
         ),
         ("UpdateChatModelParams", serde_json::to_value(schema_for!(UpdateChatModelParams)).unwrap()),
+        ("InterruptTurnParams", serde_json::to_value(schema_for!(InterruptTurnParams)).unwrap()),
+        ("CompactSessionParams", serde_json::to_value(schema_for!(CompactSessionParams)).unwrap()),
+        ("UnitResult", serde_json::to_value(schema_for!(UnitResult)).unwrap()),
     ];
     for (name, schema) in &mut roots {
         if let Some(object) = schema.as_object_mut() {
@@ -113,7 +117,12 @@ fn methods_table() -> Value {
             // Non-TypeScript clients discover payload contracts here: typed
             // methods reference their schema files by name.
             if let Some(typed) = TYPED_METHODS.iter().find(|typed| typed.method == *method) {
-                entry["paramsSchema"] = json!(schema_file(typed.params));
+                // An explicit null means "contracted to take no parameters";
+                // an absent key means the method is not yet contracted.
+                entry["paramsSchema"] = match typed.params {
+                    Some(params) => json!(schema_file(params)),
+                    None => Value::Null,
+                };
                 if let Some(result) = typed.result {
                     entry["resultSchema"] = json!(schema_file(result));
                 }
@@ -370,7 +379,11 @@ pub fn typescript() -> String {
     out.push_str("/** Params types for methods whose payloads are contracted so far. */\n");
     out.push_str("export interface BridgeMethodParams {\n");
     for entry in TYPED_METHODS {
-        out.push_str(&format!("  \"{}\": {};\n", entry.method.as_str(), entry.params));
+        out.push_str(&format!(
+            "  \"{}\": {};\n",
+            entry.method.as_str(),
+            entry.params.unwrap_or("undefined")
+        ));
     }
     out.push_str("}\n\n");
     out.push_str(
@@ -452,8 +465,23 @@ mod tests {
             .contains("\"workspaces/connect_workspace_folder\": ConnectWorkspaceFolderParams;"));
         assert!(typescript
             .contains("\"workspaces/list_workspace_files\": ListWorkspaceFilesResult;"));
+        assert!(
+            typescript.contains("\"sessions/refresh_account_usage\": undefined;"),
+            "parameterless methods appear in the map with type undefined"
+        );
+        for method in [
+            "sessions/interrupt_turn",
+            "sessions/compact_session",
+            "sessions/refresh_account_usage",
+        ] {
+            assert!(
+                typescript.contains(&format!("\"{method}\": UnitResult;")),
+                "unit-returning method {method} has an explicit result contract"
+            );
+        }
         assert!(typescript.contains("export interface ConnectWorkspaceFolderParams {"));
         assert!(typescript.contains("export type ListWorkspaceFilesResult = string[];"));
+        assert!(typescript.contains("export type UnitResult = null;"));
         for method in MethodName::ALL {
             assert!(
                 typescript.contains(method.as_str()),
@@ -484,12 +512,21 @@ mod tests {
             let method = row["method"].as_str().unwrap();
             match TYPED_METHODS.iter().find(|typed| typed.method.as_str() == method) {
                 Some(typed) => {
-                    let params = row["paramsSchema"].as_str().unwrap();
-                    assert_eq!(params, schema_file(typed.params));
-                    assert!(
-                        artifact_paths.contains(&format!("docs/protocol/schemas/{params}")),
-                        "{method} references {params}, which is not a generated artifact"
-                    );
+                    let params_ref = &row["paramsSchema"];
+                    match typed.params {
+                        Some(expected) => {
+                            let params = params_ref.as_str().unwrap();
+                            assert_eq!(params, schema_file(expected));
+                            assert!(
+                                artifact_paths.contains(&format!("docs/protocol/schemas/{params}")),
+                                "{method} references {params}, which is not a generated artifact"
+                            );
+                        }
+                        None => assert!(
+                            params_ref.is_null(),
+                            "{method} is contracted parameterless; paramsSchema must be null"
+                        ),
+                    }
                     if let Some(result) = typed.result {
                         let result_file = row["resultSchema"].as_str().unwrap();
                         assert_eq!(result_file, schema_file(result));
@@ -595,6 +632,18 @@ mod tests {
             (
                 "docs/protocol/schemas/update-chat-model-params.json",
                 include_str!("../../../docs/protocol/schemas/update-chat-model-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/interrupt-turn-params.json",
+                include_str!("../../../docs/protocol/schemas/interrupt-turn-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/compact-session-params.json",
+                include_str!("../../../docs/protocol/schemas/compact-session-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/unit-result.json",
+                include_str!("../../../docs/protocol/schemas/unit-result.json"),
             ),
             (
                 "docs/protocol/schemas/methods.json",
