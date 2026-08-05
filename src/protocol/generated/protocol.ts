@@ -217,6 +217,9 @@ export interface BridgeMethodParams {
 /** Result types for contracted methods that do not return the BridgeState snapshot. */
 export interface BridgeMethodResults {
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
+  "sessions/interrupt_turn": UnitResult;
+  "sessions/compact_session": UnitResult;
+  "sessions/refresh_account_usage": UnitResult;
 }
 
 export interface ClientInfo {
@@ -352,3 +355,5 @@ export interface InterruptTurnParams {
 export interface CompactSessionParams {
   sessionId: string;
 }
+
+export type UnitResult = null;

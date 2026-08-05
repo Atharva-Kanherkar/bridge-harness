@@ -17,7 +17,8 @@ use crate::messages::{
     ActivateSessionEntryParams, AddProjectParams, ArchiveWorkspaceParams, ConnectWorkspaceFolderParams,
     CompactSessionParams, CreateChatParams, CreateWorkspaceParams, CreateWorkspaceSessionParams,
     GetSessionForestParams, InterruptTurnParams, ListWorkspaceFilesParams,
-    ListWorkspaceFilesResult, RefreshWorkspaceParams, UpdateChatModelParams, TYPED_METHODS,
+    ListWorkspaceFilesResult, RefreshWorkspaceParams, UnitResult, UpdateChatModelParams,
+    TYPED_METHODS,
 };
 use crate::methods::MethodName;
 use crate::notifications::NotificationName;
@@ -69,6 +70,7 @@ fn root_schemas() -> Vec<(&'static str, Value)> {
         ("UpdateChatModelParams", serde_json::to_value(schema_for!(UpdateChatModelParams)).unwrap()),
         ("InterruptTurnParams", serde_json::to_value(schema_for!(InterruptTurnParams)).unwrap()),
         ("CompactSessionParams", serde_json::to_value(schema_for!(CompactSessionParams)).unwrap()),
+        ("UnitResult", serde_json::to_value(schema_for!(UnitResult)).unwrap()),
     ];
     for (name, schema) in &mut roots {
         if let Some(object) = schema.as_object_mut() {
@@ -467,8 +469,19 @@ mod tests {
             typescript.contains("\"sessions/refresh_account_usage\": undefined;"),
             "parameterless methods appear in the map with type undefined"
         );
+        for method in [
+            "sessions/interrupt_turn",
+            "sessions/compact_session",
+            "sessions/refresh_account_usage",
+        ] {
+            assert!(
+                typescript.contains(&format!("\"{method}\": UnitResult;")),
+                "unit-returning method {method} has an explicit result contract"
+            );
+        }
         assert!(typescript.contains("export interface ConnectWorkspaceFolderParams {"));
         assert!(typescript.contains("export type ListWorkspaceFilesResult = string[];"));
+        assert!(typescript.contains("export type UnitResult = null;"));
         for method in MethodName::ALL {
             assert!(
                 typescript.contains(method.as_str()),
@@ -627,6 +640,10 @@ mod tests {
             (
                 "docs/protocol/schemas/compact-session-params.json",
                 include_str!("../../../docs/protocol/schemas/compact-session-params.json"),
+            ),
+            (
+                "docs/protocol/schemas/unit-result.json",
+                include_str!("../../../docs/protocol/schemas/unit-result.json"),
             ),
             (
                 "docs/protocol/schemas/methods.json",

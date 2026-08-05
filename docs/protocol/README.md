@@ -83,7 +83,8 @@ Still pending in sessions, riding the live-turn extraction:
 `start_session`, `start_chat`, `prepare_turn`, `send_turn`, and
 `stop_session` (the list is test-enforced and must shrink as they land).
 Methods returning the aggregate `BridgeState` snapshot keep untyped results
-until the snapshot DTO itself is contracted — that is its own slice.
+until the snapshot DTO itself is contracted — that is its own slice. Commands
+returning no value use the explicit `UnitResult` contract (`result: null`).
 
 ## Cancellation
 

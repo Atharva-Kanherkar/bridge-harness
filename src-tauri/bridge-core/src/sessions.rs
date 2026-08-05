@@ -1,6 +1,7 @@
-//! Sessions domain, management half: creating chats and workspace sessions,
-//! switching a chat's model, and reading/rewinding the session forest — as
-//! [`BridgeCore`] methods.
+//! Sessions domain, management and control surfaces: creating chats and
+//! workspace sessions, switching models, reading/rewinding the session forest,
+//! interrupting turns, starting manual compaction, and refreshing account usage
+//! as [`BridgeCore`] methods.
 //!
 //! Host shells keep only transport concerns: blocking-pool placement for Git
 //! scans and worktree creation, and event emission after mutations. Methods
@@ -8,8 +9,8 @@
 //! `persist_*`(or `commit_*`) pair; everything in between is the host's
 //! scheduling choice, not domain logic.
 //!
-//! The live-turn half of the domain (starting adapters, sending turns,
-//! compaction) stays in the shell until the event-publisher seam exists.
+//! Starting adapters, sending turns, and delivering checkpoint prompts remain
+//! host-run live-turn orchestration until that slice moves behind the core seam.
 
 use crate::model::*;
 use crate::runtime::BridgeCore;

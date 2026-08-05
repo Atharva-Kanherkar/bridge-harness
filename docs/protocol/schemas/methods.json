@@ -102,19 +102,22 @@
       "command": "compact_session",
       "domain": "sessions",
       "method": "sessions/compact_session",
-      "paramsSchema": "compact-session-params.json"
+      "paramsSchema": "compact-session-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "interrupt_turn",
       "domain": "sessions",
       "method": "sessions/interrupt_turn",
-      "paramsSchema": "interrupt-turn-params.json"
+      "paramsSchema": "interrupt-turn-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "refresh_account_usage",
       "domain": "sessions",
       "method": "sessions/refresh_account_usage",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "stop_session",

@@ -131,6 +131,12 @@ pub struct CompactSessionParams {
     pub session_id: String,
 }
 
+/// Successful result for commands that return no value. JSON-RPC carries Rust
+/// unit as an explicit `null` result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct UnitResult(pub ());
+
 // --- registry ----------------------------------------------------------------
 
 /// A method whose payloads are contracted: its params type name and, when the
@@ -197,14 +203,18 @@ pub const TYPED_METHODS: &[TypedMethod] = &[
     TypedMethod {
         method: MethodName::InterruptTurn,
         params: Some("InterruptTurnParams"),
-        result: None,
+        result: Some("UnitResult"),
     },
     TypedMethod {
         method: MethodName::CompactSession,
         params: Some("CompactSessionParams"),
-        result: None,
+        result: Some("UnitResult"),
     },
-    TypedMethod { method: MethodName::RefreshAccountUsage, params: None, result: None },
+    TypedMethod {
+        method: MethodName::RefreshAccountUsage,
+        params: None,
+        result: Some("UnitResult"),
+    },
 ];
 
 #[cfg(test)]
@@ -336,6 +346,21 @@ mod tests {
             .find(|entry| entry.method == MethodName::RefreshAccountUsage)
             .unwrap();
         assert!(refresh.params.is_none(), "refresh_account_usage takes no parameters");
+    }
+
+    #[test]
+    fn unit_results_are_explicit_json_null() {
+        assert_eq!(serde_json::to_value(UnitResult(())).unwrap(), serde_json::Value::Null);
+        assert_eq!(round_trip(&UnitResult(())), UnitResult(()));
+
+        for method in [
+            MethodName::InterruptTurn,
+            MethodName::CompactSession,
+            MethodName::RefreshAccountUsage,
+        ] {
+            let typed = TYPED_METHODS.iter().find(|entry| entry.method == method).unwrap();
+            assert_eq!(typed.result, Some("UnitResult"), "{} returns JSON null", method.as_str());
+        }
     }
 
     #[test]
