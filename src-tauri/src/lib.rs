@@ -756,7 +756,29 @@ async fn archive_workspace(
 /// contract to `bridged` and the webview cannot tell the difference.
 pub enum HostMode {
     Embedded,
-    Daemon(Arc<daemon_host::DaemonProxy>),
+    Daemon(Arc<DaemonHostRuntime>),
+}
+
+pub struct DaemonHostRuntime {
+    proxy: Arc<daemon_host::DaemonProxy>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    supervisor: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl DaemonHostRuntime {
+    fn shutdown(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.proxy.disconnect();
+        if let Some(supervisor) = self.supervisor.lock().unwrap().take() {
+            let _ = supervisor.join();
+        }
+    }
+}
+
+impl Drop for DaemonHostRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 fn select_host(
@@ -802,7 +824,7 @@ fn start_daemon_host(
     app: AppHandle,
     data_dir: PathBuf,
     browser_extension: PathBuf,
-) -> Result<Arc<daemon_host::DaemonProxy>, String> {
+) -> Result<Arc<DaemonHostRuntime>, String> {
     let mut launcher = daemon_host::Launcher::new(
         data_dir,
         browser_extension,
@@ -812,22 +834,27 @@ fn start_daemon_host(
     eprintln!("bridge: attached to bridged (desktop runs as a daemon client)");
     let proxy = Arc::new(daemon_host::DaemonProxy::default());
     let supervisor_proxy = proxy.clone();
-    std::thread::Builder::new()
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let supervisor_stop = stop.clone();
+    let supervisor = std::thread::Builder::new()
         .name("daemon-host-supervisor".into())
         .spawn(move || {
-            let stop = std::sync::atomic::AtomicBool::new(false);
             daemon_host::supervise(
                 &supervisor_proxy,
                 launcher,
                 Some(clients),
-                &stop,
+                &supervisor_stop,
                 |kind, payload| {
                     let _ = app.emit(kind, payload);
                 },
             );
         })
         .map_err(|error| format!("could not start the daemon supervisor: {error}"))?;
-    Ok(proxy)
+    Ok(Arc::new(DaemonHostRuntime {
+        proxy,
+        stop,
+        supervisor: std::sync::Mutex::new(Some(supervisor)),
+    }))
 }
 
 /// The in-process runtime, unchanged from before the daemon existed. Still
@@ -899,6 +926,7 @@ fn setup_embedded(
 pub fn run() {
     let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
     let setup_slot = host.clone();
+    let exit_host = host.clone();
     let embedded_commands: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
             health,
@@ -982,7 +1010,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| select_host(app, &setup_slot))
         .invoke_handler(move |invoke| match host.get() {
-            Some(HostMode::Daemon(proxy)) => daemon_host::proxy_invoke(proxy.clone(), invoke),
+            Some(HostMode::Daemon(runtime)) => {
+                daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
+            }
             Some(HostMode::Embedded) => embedded_commands(invoke),
             // Invokes cannot arrive before setup finishes; refuse rather
             // than panic if that assumption ever breaks.
@@ -991,8 +1021,15 @@ pub fn run() {
                 true
             }
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("Bridge failed to start")
+        .run(move |_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
+                    runtime.shutdown();
+                }
+            }
+        })
 }
 
 #[cfg(test)]
@@ -1017,6 +1054,25 @@ mod tests {
     use std::process::Command;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[test]
+    fn daemon_runtime_shutdown_stops_and_joins_its_supervisor() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let supervisor = std::thread::spawn(move || {
+            while !worker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let runtime = DaemonHostRuntime {
+            proxy: Arc::new(daemon_host::DaemonProxy::default()),
+            stop,
+            supervisor: std::sync::Mutex::new(Some(supervisor)),
+        };
+        runtime.shutdown();
+        assert!(runtime.stop.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(runtime.supervisor.lock().unwrap().is_none());
+    }
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {

@@ -47,6 +47,11 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// never unbounded client memory.
 const SUBSCRIBER_CAPACITY: usize = 1024;
 
+/// Server frames include state snapshots and replay pages, so they need a
+/// separate ceiling from the daemon's 1 MiB request limit. This remains a
+/// hard memory bound without rejecting normal large workspace responses.
+const MAX_SERVER_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Debug)]
 pub enum ClientError {
     /// The socket could not be reached (daemon not running, wrong path).
@@ -120,16 +125,30 @@ pub struct NotificationSubscription {
 }
 
 impl NotificationSubscription {
+    fn take_lag_marker(&self) -> Option<RpcNotification> {
+        if !self.lagged.swap(false, Ordering::SeqCst) {
+            return None;
+        }
+        // Everything already queued predates the overflow. Drop that epoch
+        // before reconciliation so stale transient frames cannot follow it.
+        for _ in 0..SUBSCRIBER_CAPACITY {
+            if self.receiver.try_recv().is_err() {
+                break;
+            }
+        }
+        Some(local_lag_marker())
+    }
+
     pub fn recv_timeout(&self, timeout: Duration) -> Result<RpcNotification, RecvTimeoutError> {
-        if self.lagged.swap(false, Ordering::SeqCst) {
-            return Ok(local_lag_marker());
+        if let Some(marker) = self.take_lag_marker() {
+            return Ok(marker);
         }
         self.receiver.recv_timeout(timeout)
     }
 
     pub fn try_recv(&self) -> Result<RpcNotification, TryRecvError> {
-        if self.lagged.swap(false, Ordering::SeqCst) {
-            return Ok(local_lag_marker());
+        if let Some(marker) = self.take_lag_marker() {
+            return Ok(marker);
         }
         self.receiver.try_recv()
     }
@@ -325,9 +344,13 @@ impl DaemonClient {
         drop(stream);
         if let Err(error) = written {
             return Err(match error.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => ClientError::Timeout,
                 std::io::ErrorKind::InvalidData => ClientError::Protocol(error.to_string()),
-                _ => ClientError::Disconnected,
+                _ => {
+                    // write_all may have emitted a prefix. Reusing this socket
+                    // would append the next request to a corrupt JSON frame.
+                    let _ = self.stream.lock().unwrap().shutdown(std::net::Shutdown::Both);
+                    ClientError::Disconnected
+                }
             });
         }
         let responses = self.responses.lock().unwrap();
@@ -418,15 +441,15 @@ fn write_frame<T: serde::Serialize>(writer: &mut impl Write, frame: &T) -> std::
 
 fn read_frame(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
     let mut line = Vec::new();
-    let mut bounded = reader.take((bridged::MAX_FRAME_BYTES + 1) as u64);
+    let mut bounded = reader.take((MAX_SERVER_FRAME_BYTES + 1) as u64);
     let read = bounded.read_until(b'\n', &mut line)?;
     if read == 0 {
         return Ok(None);
     }
-    if line.len() > bridged::MAX_FRAME_BYTES || line.last() != Some(&b'\n') {
+    if line.len() > MAX_SERVER_FRAME_BYTES || line.last() != Some(&b'\n') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("daemon frame exceeds {} bytes", bridged::MAX_FRAME_BYTES),
+            format!("daemon frame exceeds {MAX_SERVER_FRAME_BYTES} bytes"),
         ));
     }
     Ok(Some(line))
@@ -656,9 +679,6 @@ mod tests {
         }
         // No later delivery is needed to make the lag marker observable.
         assert_eq!(receiver.try_recv().unwrap().method, "stream-lagged");
-        for _ in 0..SUBSCRIBER_CAPACITY {
-            assert_eq!(receiver.try_recv().unwrap().method, "session-output");
-        }
         assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
     }
 
@@ -692,7 +712,13 @@ mod tests {
         let oversized = "x".repeat(bridged::MAX_FRAME_BYTES + 1);
         let mut sink = Vec::new();
         assert_eq!(write_frame(&mut sink, &oversized).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
-        let mut input = std::io::Cursor::new(vec![b'x'; bridged::MAX_FRAME_BYTES + 1]);
+        let mut large_valid = vec![b'x'; 2 * 1024 * 1024];
+        large_valid.push(b'\n');
+        assert_eq!(
+            read_frame(&mut std::io::Cursor::new(large_valid)).unwrap().unwrap().len(),
+            2 * 1024 * 1024 + 1
+        );
+        let mut input = std::io::Cursor::new(vec![b'x'; MAX_SERVER_FRAME_BYTES + 1]);
         assert_eq!(read_frame(&mut input).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 }

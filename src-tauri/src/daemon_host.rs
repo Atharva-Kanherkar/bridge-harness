@@ -20,6 +20,7 @@ use bridge_protocol::{ErrorCode, MethodName, Params, RpcNotification, TypedMetho
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -49,8 +50,12 @@ const START_DEADLINE: Duration = Duration::from_secs(30);
 /// Handshake budget per connection attempt against a live socket.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Graceful process-group shutdown budget before a forced kill.
+const CHILD_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
 /// Where a spawned daemon's stdout/stderr goes, inside the data directory.
 const DAEMON_LOG_FILE: &str = "bridged.log";
+const MAX_DAEMON_LOG_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Which host the desktop runs, from `BRIDGE_DESKTOP_HOST`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +226,10 @@ impl DaemonProxy {
         self.link.read().unwrap().is_some()
     }
 
+    pub fn disconnect(&self) {
+        self.invalidate_all();
+    }
+
     fn wait_for_link(&self, timeout: Duration) -> Option<Arc<Link>> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -287,6 +296,14 @@ impl Launcher {
         &mut self,
         start_deadline: Duration,
     ) -> Result<Vec<Arc<DaemonClient>>, String> {
+        self.ensure_with_stop(start_deadline, None)
+    }
+
+    fn ensure_with_stop(
+        &mut self,
+        start_deadline: Duration,
+        stop: Option<&AtomicBool>,
+    ) -> Result<Vec<Arc<DaemonClient>>, String> {
         let initial = self.attach();
         match initial {
             Ok(clients) => return Ok(clients),
@@ -301,7 +318,7 @@ impl Launcher {
             }
             Err(_) => {}
         }
-        let retrying_live_daemon = matches!(
+        let mut retrying_live_daemon = matches!(
             initial,
             Err(ClientError::Handshake(ref error)) if retryable_handshake(error)
         );
@@ -321,6 +338,10 @@ impl Launcher {
         }
         let deadline = Instant::now() + start_deadline;
         loop {
+            if stop.is_some_and(|stop| stop.load(Ordering::SeqCst)) {
+                self.terminate_child();
+                return Err("daemon startup cancelled".into());
+            }
             std::thread::sleep(Duration::from_millis(200));
             match self.attach() {
                 Ok(clients) => return Ok(clients),
@@ -331,12 +352,24 @@ impl Launcher {
                         error.code, error.message
                     ));
                 }
+                Err(ClientError::Handshake(_)) => {}
+                Err(_) if retrying_live_daemon && self.child.is_none() && binary.is_some() => {
+                    self.spawn(binary.as_deref().unwrap())?;
+                    retrying_live_daemon = false;
+                    continue;
+                }
                 Err(_) => {}
             }
             // A startup failure (say, another owner holds the data-dir
             // lease) exits the child; report its last words instead of
             // timing out in silence.
             if let Some(Ok(Some(status))) = self.child.as_mut().map(Child::try_wait) {
+                if retrying_live_daemon && binary.is_some() {
+                    self.reap_child();
+                    self.spawn(binary.as_deref().unwrap())?;
+                    retrying_live_daemon = false;
+                    continue;
+                }
                 self.reap_child();
                 return Err(format!(
                     "bridged exited during startup ({status}): {}",
@@ -387,10 +420,15 @@ impl Launcher {
         }
         std::fs::set_permissions(self.log_path(), std::fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("could not secure the daemon log: {error}"))?;
+        if log.metadata().map(|metadata| metadata.len()).unwrap_or(0) > MAX_DAEMON_LOG_BYTES {
+            log.set_len(0)
+                .map_err(|error| format!("could not rotate the daemon log: {error}"))?;
+        }
         let log_err = log
             .try_clone()
             .map_err(|error| format!("could not open the daemon log: {error}"))?;
         let child = daemon_command(binary, &self.data_dir, &self.browser_extension)
+            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
@@ -411,7 +449,24 @@ impl Launcher {
 
     fn terminate_child(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
+            let group = -(child.id() as libc::pid_t);
+            if unsafe { libc::kill(group, libc::SIGTERM) } != 0 {
+                let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+            }
+            let deadline = Instant::now() + CHILD_SHUTDOWN_DEADLINE;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    _ if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    _ => {
+                        let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+                        let _ = child.kill();
+                        break;
+                    }
+                }
+            }
             let _ = child.wait();
         }
     }
@@ -436,10 +491,11 @@ impl Launcher {
         if file.seek(SeekFrom::Start(start)).is_err() {
             return format!("could not seek daemon log {}", self.log_path().display());
         }
-        let mut contents = String::new();
-        if file.read_to_string(&mut contents).is_err() {
+        let mut contents = Vec::new();
+        if (&mut file).take(TAIL_BYTES).read_to_end(&mut contents).is_err() {
             return format!("could not read daemon log {}", self.log_path().display());
         }
+        let contents = String::from_utf8_lossy(&contents);
         let lines: Vec<&str> = contents.lines().rev().take(5).collect();
         if lines.is_empty() {
             return format!("daemon log {} is empty", self.log_path().display());
@@ -522,9 +578,12 @@ pub fn supervise<E: Fn(&str, Value)>(
     while !stop.load(Ordering::SeqCst) {
         let clients = match pending.take() {
             Some(clients) => clients,
-            None => match launcher.ensure() {
+            None => match launcher.ensure_with_stop(START_DEADLINE, Some(stop)) {
                 Ok(clients) => clients,
                 Err(error) => {
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
                     eprintln!("bridge: cannot reach the daemon ({error}); retrying");
                     let backoff = Instant::now() + Duration::from_secs(2);
                     while Instant::now() < backoff && !stop.load(Ordering::SeqCst) {
@@ -591,6 +650,8 @@ fn emit_reconciliation<E: Fn(&str, Value)>(emit: &E) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
 
     #[test]
     fn parameterless_methods_send_no_params() {
@@ -783,5 +844,57 @@ mod tests {
         assert!(error.contains("did not become reachable"), "{error}");
         assert!(launcher.child.is_none());
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child {pid} survived timeout");
+    }
+
+    #[test]
+    fn a_disappeared_shutting_down_daemon_allows_replacement_spawn() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join(bridge_client::TOKEN_FILE_NAME), "test-token").unwrap();
+        let socket_path = data_dir.join(bridge_client::SOCKET_FILE_NAME);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(socket.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert!(!request.is_empty());
+            let refusal = bridge_protocol::RpcResponse::error(
+                bridge_protocol::ResponseId::Null,
+                bridge_protocol::RpcError::new(
+                    ErrorCode::ShuttingDown,
+                    "the daemon is shutting down",
+                ),
+            );
+            serde_json::to_writer(&mut socket, &refusal).unwrap();
+            socket.write_all(b"\n").unwrap();
+        });
+
+        let spawned = fixture.path().join("spawned");
+        let binary = fixture.path().join("fake-bridged");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\necho spawned > '{}'\nexec sleep 30\n",
+                spawned.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut launcher = Launcher::new(
+            data_dir,
+            fixture.path().join("extension"),
+            Some(binary),
+        );
+        let error = match launcher.ensure_with_deadline(Duration::from_millis(1500)) {
+            Ok(_) => panic!("fake replacement unexpectedly accepted connections"),
+            Err(error) => error,
+        };
+        server.join().unwrap();
+        assert!(error.contains("did not become reachable"), "{error}");
+        assert!(spawned.is_file(), "replacement binary was never started: {error}");
+        assert!(launcher.child.is_none());
     }
 }
