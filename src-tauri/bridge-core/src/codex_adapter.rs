@@ -23,6 +23,7 @@ pub struct CodexRuntime {
     request_id: AtomicI64,
     sandbox_policy: Option<Value>,
     stopped: bool,
+    stderr_tail: crate::adapters::StderrTail,
 }
 
 pub struct StartedCodex {
@@ -80,7 +81,9 @@ fn launch(
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        // Piped and tail-captured: a worker that dies before its typed result
+        // reports the provider's own error, not a generic exit.
+        .stderr(Stdio::piped());
     if let Some(sandbox) = read_only_sandbox {
         prepare_isolated_codex_home(sandbox)?;
         command
@@ -90,6 +93,7 @@ fn launch(
     }
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
+    let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let stdin = child
         .stdin
         .take()
@@ -138,6 +142,7 @@ fn launch(
             request_id: AtomicI64::new(10),
             sandbox_policy,
             stopped: false,
+            stderr_tail,
         },
         reader,
         startup_messages,
@@ -378,6 +383,9 @@ impl AdapterRuntime for CodexRuntime {
         // Its response lands on the event stream and is normalized to usage.updated.
         // The protocol requires a null params field.
         self.request("account/rateLimits/read", Value::Null)
+    }
+    fn failure_context(&mut self) -> Option<String> {
+        crate::adapters::process_failure_context(&mut self.child, &self.stderr_tail)
     }
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();

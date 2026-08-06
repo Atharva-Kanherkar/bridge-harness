@@ -912,12 +912,17 @@ fn spawn_reader_thread(
         if !is_current_launch {
             return;
         }
-        state.adapters.lock().unwrap().remove(&session_id);
+        // Keep the exited runtime long enough to ask it why it died — the
+        // exit status and stderr tail are the only real diagnostics a worker
+        // that never produced a typed result leaves behind.
+        let exited_runtime = state.adapters.lock().unwrap().remove(&session_id);
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
             &state.db.lock().unwrap(),
             &session_id,
         );
-        notify_parent_on_worker_exit(&core, &session_id);
+        let failure_context =
+            exited_runtime.and_then(|mut runtime| runtime.failure_context());
+        notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
         let db = state.db.lock().unwrap();
         let is_worker = store::worker_runtime(&db, &session_id)
             .ok()
@@ -2391,6 +2396,7 @@ pub fn launch_worker_outcome(
             Ok(sandbox) => {
                 let output = sandbox.output_dir().display().to_string();
                 let network_allowed = sandbox.network_allowed();
+                let sandbox_runtime_egress = !sandbox.runtime_network_denied();
                 state
                     .delegations
                     .lock()
@@ -2405,8 +2411,9 @@ pub fn launch_worker_outcome(
                     "worker.read_only_isolation_prepared",
                     &reservation.session_id,
                     &format!(
-                        "mode=seatbelt network_allowed={} output_dir={output}",
-                        network_allowed
+                        "mode=seatbelt task_network={} runtime_egress={} output_dir={output}",
+                        network_allowed,
+                        if sandbox_runtime_egress { "allowed" } else { "denied" }
                     ),
                 );
             }
@@ -3428,25 +3435,65 @@ fn report_synthetic_worker_failure(
     report_to_parent(core, child_session_id, result);
 }
 
-fn notify_parent_on_worker_exit(core: &Arc<BridgeCore>, child_session_id: &str) {
+fn notify_parent_on_worker_exit(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    failure_context: Option<&str>,
+) {
     verify_read_only_worker(core, child_session_id);
     let Some(label) = unreported_worker_meta(core, child_session_id) else {
         return;
     };
-    let result = delegation::WorkerResult {
+    if let Some(context) = failure_context {
+        // Auditable independently of the worker result: the reasons ledger
+        // keeps the provider's last words even if settlement fails.
+        let _ = store::event(
+            &core.clone().db.lock().unwrap(),
+            "supervisor",
+            "worker.exit_context",
+            child_session_id,
+            context,
+        );
+    }
+    let result = synthetic_exit_result(&label, failure_context);
+    report_synthetic_worker_failure(core, child_session_id, &result);
+}
+
+/// The failure a worker's silent exit settles as. With captured context the
+/// summary carries the provider's final error line and the risks carry the
+/// full tail, so the parent (which reads the typed result as evidence) and
+/// the UI both see the actual cause, never just "ended without reporting".
+fn synthetic_exit_result(
+    label: &str,
+    failure_context: Option<&str>,
+) -> delegation::WorkerResult {
+    let mut risks = vec!["Worker process exited before a typed result was produced".to_owned()];
+    let summary = match failure_context {
+        Some(context) => {
+            risks.push(context.to_owned());
+            let last_line = context
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("unknown error")
+                .trim();
+            format!("{label} ended without reporting a result — {last_line}")
+        }
+        None => format!("{label} ended without reporting a result"),
+    };
+    delegation::WorkerResult {
         schema_version: delegation::SCHEMA_VERSION,
         status: delegation::WorkerResultStatus::Failed,
-        summary: format!("{label} ended without reporting a result"),
+        summary,
         files_changed: vec![],
         tests: vec![],
         decisions: vec![],
-        risks: vec!["Worker process exited before a typed result was produced".into()],
+        risks,
         remaining_work: vec!["Retry or delegate the task differently".into()],
         suggested_next_action: delegation::SuggestedNextAction::Finish,
         suggested_role: None,
         suggested_task: None,
-    };
-    report_synthetic_worker_failure(core, child_session_id, &result);
+    }
 }
 
 /// Stall watchdog action: a worker that has been silent past the timeout.
@@ -4447,4 +4494,31 @@ fn record_shutdown_reason(
         session_id,
         reason.as_str(),
     )
+}
+
+#[cfg(test)]
+mod exit_result_tests {
+    use super::synthetic_exit_result;
+
+    #[test]
+    fn a_captured_failure_reaches_summary_and_risks() {
+        let context = "Provider process exit status: 1. Stderr tail:\nAPI Error: fetch failed";
+        let result = synthetic_exit_result("Research · standard", Some(context));
+        // Validation must hold — an invalid synthetic result would silently
+        // fail settlement and reintroduce the generic message.
+        result.validate().expect("synthetic result validates");
+        assert_eq!(
+            result.summary,
+            "Research · standard ended without reporting a result — API Error: fetch failed"
+        );
+        assert!(result.risks.iter().any(|risk| risk.contains("Stderr tail")));
+    }
+
+    #[test]
+    fn no_context_keeps_the_plain_summary() {
+        let result = synthetic_exit_result("Research · standard", None);
+        result.validate().expect("synthetic result validates");
+        assert_eq!(result.summary, "Research · standard ended without reporting a result");
+        assert_eq!(result.risks.len(), 1);
+    }
 }
