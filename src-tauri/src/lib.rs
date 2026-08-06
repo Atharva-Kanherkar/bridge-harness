@@ -2015,6 +2015,14 @@ mod tests {
             ParameterShape::Integer("uint16".into())
         );
         assert_eq!(
+            rust_parameter_shape(MethodName::ReplaySessionEvents, "after", "i64"),
+            ParameterShape::Integer("int64".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::SaveAgentConfig, "args", "Vec<String>"),
+            ParameterShape::Array(Box::new(ParameterShape::String))
+        );
+        assert_eq!(
             rust_parameter_shape(
                 MethodName::SaveModelProfiles,
                 "profiles",
@@ -2035,6 +2043,14 @@ mod tests {
                 "learning_job::LearningTriggerKind"
             ),
             ParameterShape::Reference("ExternalLearningTriggerKind".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::RunLearning,
+                "triggerKind",
+                "learning_job::LearningTriggerKind"
+            ),
+            ParameterShape::Reference("LocalLearningTriggerKind".into())
         );
     }
 
