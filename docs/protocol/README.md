@@ -85,12 +85,19 @@ exactly the duration of the command — CI never keeps a user daemon alive, and
 an embedded desktop owner is reported by identity instead of failing opaquely.
 
 ```bash
-bridge exec --json --data-dir "$DIR" --method state/get_state   # one call
-bridge exec --json --data-dir "$DIR" "run the tests"            # one turn, JSONL events
+bridge exec --json --data-dir "$DIR" --method state/get_state            # one call
+bridge exec --json --data-dir "$DIR" --harness codex "run the tests"     # one turn, JSONL events
 ```
 
-Exit codes: 0 success, 1 failure (RPC error / failed turn), 2 usage,
-3 timeout.
+Prompt mode requires `--harness` naming an available structured adapter
+(checked against `health/health` before any session is created). The
+`--timeout` budget covers the whole command — connect, setup calls, and the
+event stream; on timeout the turn is interrupted via
+`sessions/interrupt_turn`. Turn failure is recognized in both provider
+shapes: a `turn.completed` carrying `failed`, and a completion followed by a
+trailing failed `error` event (grace-drained, then settled by the session's
+own status). Exit codes: 0 success, 1 failure (RPC error / failed turn),
+2 usage, 3 timeout.
 
 ## Envelope
 

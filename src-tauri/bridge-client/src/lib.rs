@@ -2,16 +2,19 @@
 //!
 //! [`DaemonClient`] speaks the newline-delimited JSON-RPC contract over the
 //! daemon's Unix socket: it performs the token handshake, sends requests
-//! sequentially (matching the daemon's per-connection model), and hands
-//! interleaved notifications to the consumer over a channel.
+//! sequentially (matching the daemon's per-connection model), and fans
+//! interleaved notifications out to any number of subscribers over bounded
+//! queues — a subscriber that falls behind is told with a locally
+//! synthesized `stream-lagged` marker, exactly the signal the daemon itself
+//! uses, so recovery is one code path.
 //!
 //! Recovery follows the event contract: the live channel is notify-only, so
-//! after a disconnect or a `stream-lagged` marker the client replays durable
-//! history from its last cursor via `sessions/replay_session_events` —
-//! [`DaemonClient::replay_session_events`] and [`resilient` stream helpers
-//! below wrap that. Every client of the daemon (the exec one-shot today, the
-//! Tauri proxy and TUI next) shares this crate rather than restating the
-//! reconnect rules.
+//! after a disconnect or a lag marker the client replays durable history from
+//! its last cursor via `sessions/replay_session_events`.
+//! [`SessionEventStream`] encodes those rules once; its cursor reflects what
+//! the consumer has actually been handed, never what is merely queued. Every
+//! client of the daemon (the exec one-shot today, the Tauri proxy and TUI
+//! next) shares this crate rather than restating the reconnect rules.
 
 use bridge_protocol::{
     ClientInfo, HandshakeRequest, HandshakeResponse, MethodName, Params, RequestId, RpcError,
@@ -22,17 +25,27 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const SOCKET_FILE_NAME: &str = "bridged.sock";
 pub const TOKEN_FILE_NAME: &str = "daemon.token";
 
-/// How long [`DaemonClient::call`] waits for its response before declaring
-/// the connection dead. Generous: requests are handled sequentially behind
-/// possibly-slow runtime work (Git scans, adapter teardown).
+/// Default budget for [`DaemonClient::call`]. Generous: requests are handled
+/// sequentially behind possibly-slow runtime work (Git scans, adapter
+/// teardown). Callers with an end-to-end deadline use
+/// [`DaemonClient::call_with_timeout`].
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default budget for [`DaemonClient::connect`] to finish the handshake — a
+/// wedged daemon must not park the client forever.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bounded per-subscriber queue, mirroring the daemon's own sink capacity. A
+/// subscriber that stops draining loses live frames and gets a lag marker —
+/// never unbounded client memory.
+const SUBSCRIBER_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -44,6 +57,9 @@ pub enum ClientError {
     Handshake(RpcError),
     /// The connection died mid-conversation; reconnect and replay.
     Disconnected,
+    /// The call's deadline passed. The connection stays usable — a late
+    /// response is discarded by id when the next call runs.
+    Timeout,
     /// The server answered a request with an error.
     Rpc(RpcError),
     /// The response arrived but did not match what was asked.
@@ -63,6 +79,7 @@ impl std::fmt::Display for ClientError {
                 write!(formatter, "handshake rejected ({}): {}", error.code, error.message)
             }
             ClientError::Disconnected => write!(formatter, "the daemon connection closed"),
+            ClientError::Timeout => write!(formatter, "the call timed out"),
             ClientError::Rpc(error) => write!(formatter, "{} ({})", error.message, error.code),
             ClientError::Protocol(message) => write!(formatter, "protocol violation: {message}"),
         }
@@ -90,13 +107,20 @@ impl Endpoint {
     }
 }
 
+/// One notification subscriber's queue, plus the lag debt owed to it.
+struct Subscriber {
+    sender: SyncSender<RpcNotification>,
+    lagged: bool,
+}
+
 /// A connected, handshaken client. Requests are sequential (the daemon's
-/// model); notifications arrive on [`DaemonClient::notifications`] as the
-/// reader thread receives them, including between a request and its response.
+/// model); notifications fan out to every [`DaemonClient::subscribe`]d
+/// receiver as the reader thread receives them, including between a request
+/// and its response.
 pub struct DaemonClient {
-    writer: Mutex<UnixStream>,
+    stream: Mutex<UnixStream>,
     responses: Mutex<Receiver<RpcResponse>>,
-    notifications: Receiver<RpcNotification>,
+    subscribers: Arc<Mutex<Vec<Subscriber>>>,
     next_id: AtomicI64,
     handshake: HandshakeResponse,
     call_timeout: Duration,
@@ -104,9 +128,19 @@ pub struct DaemonClient {
 
 impl DaemonClient {
     pub fn connect(endpoint: &Endpoint) -> Result<DaemonClient, ClientError> {
+        DaemonClient::connect_with_timeout(endpoint, DEFAULT_CONNECT_TIMEOUT)
+    }
+
+    /// Connect and handshake within `timeout` — a daemon that accepts but
+    /// never answers cannot park the caller.
+    pub fn connect_with_timeout(
+        endpoint: &Endpoint,
+        timeout: Duration,
+    ) -> Result<DaemonClient, ClientError> {
         let stream = UnixStream::connect(&endpoint.socket_path).map_err(ClientError::Connect)?;
+        stream.set_read_timeout(Some(timeout)).map_err(ClientError::Connect)?;
         let mut writer = stream.try_clone().map_err(ClientError::Connect)?;
-        let mut reader = BufReader::new(stream);
+        let mut reader = BufReader::new(stream.try_clone().map_err(ClientError::Connect)?);
 
         // Handshake first — the server answers nothing else.
         let handshake_params = serde_json::to_value(HandshakeRequest {
@@ -128,7 +162,14 @@ impl DaemonClient {
         )
         .map_err(ClientError::Connect)?;
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(ClientError::Connect)?;
+        reader.read_line(&mut line).map_err(|error| {
+            if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+            {
+                ClientError::Timeout
+            } else {
+                ClientError::Connect(error)
+            }
+        })?;
         let response: RpcResponse = serde_json::from_str(&line)
             .map_err(|error| ClientError::Protocol(format!("handshake reply: {error}")))?;
         let handshake: HandshakeResponse = match response {
@@ -136,21 +177,25 @@ impl DaemonClient {
                 .map_err(|error| ClientError::Protocol(format!("handshake result: {error}")))?,
             RpcResponse::Failure(failure) => return Err(ClientError::Handshake(failure.error)),
         };
+        // Post-handshake reads block indefinitely; deadlines live on `call`
+        // and on the subscribers, not on the socket.
+        stream.set_read_timeout(None).map_err(ClientError::Connect)?;
 
         // The reader thread splits the stream: responses (frames with an id)
-        // answer `call`; notifications flow to the consumer. It exits when
-        // the socket closes, closing both channels behind it.
+        // answer `call`; notifications fan out to subscribers. It exits when
+        // the socket closes, closing the channels behind it.
         let (response_sender, responses) = std::sync::mpsc::channel::<RpcResponse>();
-        let (notification_sender, notifications) = std::sync::mpsc::channel::<RpcNotification>();
+        let subscribers: Arc<Mutex<Vec<Subscriber>>> = Arc::new(Mutex::new(Vec::new()));
+        let reader_subscribers = subscribers.clone();
         std::thread::Builder::new()
             .name("bridge-client-reader".into())
-            .spawn(move || read_frames(reader, response_sender, notification_sender))
+            .spawn(move || read_frames(reader, response_sender, reader_subscribers))
             .expect("client reader thread spawns");
 
         Ok(DaemonClient {
-            writer: Mutex::new(writer),
+            stream: Mutex::new(stream),
             responses: Mutex::new(responses),
-            notifications,
+            subscribers,
             next_id: AtomicI64::new(1),
             handshake,
             call_timeout: DEFAULT_CALL_TIMEOUT,
@@ -165,19 +210,38 @@ impl DaemonClient {
         self.call_timeout = timeout;
     }
 
-    /// The live notification stream. Bounded only by process memory; consume
-    /// it or drop the client.
-    pub fn notifications(&self) -> &Receiver<RpcNotification> {
-        &self.notifications
+    /// Subscribe to the notification stream. Every subscriber gets every
+    /// notification from now on; one that stops draining loses live frames
+    /// and receives a `stream-lagged` marker when it resumes — replay durable
+    /// history, exactly as for daemon-side lag.
+    pub fn subscribe(&self) -> Receiver<RpcNotification> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
+        self.subscribers.lock().unwrap().push(Subscriber { sender, lagged: false });
+        receiver
     }
 
-    /// Call a registry method and wait for its result.
+    /// Call a registry method with the client's default timeout.
     pub fn call(&self, method: MethodName, params: Option<Value>) -> Result<Value, ClientError> {
-        self.call_raw(method.as_str(), params)
+        self.call_raw(method.as_str(), params, self.call_timeout)
+    }
+
+    /// Call a registry method within an explicit deadline budget.
+    pub fn call_with_timeout(
+        &self,
+        method: MethodName,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value, ClientError> {
+        self.call_raw(method.as_str(), params, timeout)
     }
 
     /// Call by wire name — for reserved methods and forward-compat tooling.
-    pub fn call_raw(&self, method: &str, params: Option<Value>) -> Result<Value, ClientError> {
+    pub fn call_raw(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value, ClientError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let params = match params {
             Some(value) => Some(
@@ -187,23 +251,38 @@ impl DaemonClient {
             None => None,
         };
         let request = RpcRequest::new(RequestId::Number(id), method, params);
-        write_frame(&mut *self.writer.lock().unwrap(), &request)
+        write_frame(&mut *self.stream.lock().unwrap(), &request)
             .map_err(|_| ClientError::Disconnected)?;
         let responses = self.responses.lock().unwrap();
-        let response = responses
-            .recv_timeout(self.call_timeout)
-            .map_err(|_| ClientError::Disconnected)?;
-        let (response_id, outcome) = match response {
-            RpcResponse::Success(success) => (success.id, Ok(success.result)),
-            RpcResponse::Failure(failure) => (failure.id, Err(ClientError::Rpc(failure.error))),
-        };
-        let expected = serde_json::to_value(RequestId::Number(id)).unwrap();
-        if serde_json::to_value(&response_id).unwrap() != expected {
-            return Err(ClientError::Protocol(format!(
-                "response for id {response_id:?} arrived while awaiting {id}"
-            )));
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ClientError::Timeout);
+            }
+            let response = match responses.recv_timeout(remaining) {
+                Ok(response) => response,
+                Err(RecvTimeoutError::Timeout) => return Err(ClientError::Timeout),
+                Err(RecvTimeoutError::Disconnected) => return Err(ClientError::Disconnected),
+            };
+            let (response_id, outcome) = match response {
+                RpcResponse::Success(success) => (success.id, Ok(success.result)),
+                RpcResponse::Failure(failure) => {
+                    (failure.id, Err(ClientError::Rpc(failure.error)))
+                }
+            };
+            match serde_json::to_value(&response_id).unwrap().as_i64() {
+                // A response to an earlier call whose deadline passed: stale,
+                // discard so this call pairs with its own response.
+                Some(stale) if stale < id => continue,
+                Some(matched) if matched == id => return outcome,
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "response for id {other:?} arrived while awaiting {id}"
+                    )))
+                }
+            }
         }
-        outcome
     }
 
     /// Replay durable events strictly after `after_sequence`, page by page,
@@ -239,6 +318,15 @@ impl DaemonClient {
     }
 }
 
+impl Drop for DaemonClient {
+    fn drop(&mut self) {
+        // The reader thread owns a clone of this socket; shutting the socket
+        // down (not merely closing this handle) unblocks its read with EOF so
+        // the thread exits and the daemon's connection slot is released.
+        let _ = self.stream.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+}
+
 fn write_frame<T: serde::Serialize>(writer: &mut impl Write, frame: &T) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(frame)?;
     line.push(b'\n');
@@ -249,8 +337,17 @@ fn write_frame<T: serde::Serialize>(writer: &mut impl Write, frame: &T) -> std::
 fn read_frames(
     mut reader: BufReader<UnixStream>,
     responses: Sender<RpcResponse>,
-    notifications: Sender<RpcNotification>,
+    subscribers: Arc<Mutex<Vec<Subscriber>>>,
 ) {
+    // On exit, drop every subscriber's sender so their receivers observe
+    // `Disconnected` — a dead connection must be visible, not a silent stall.
+    struct ClearOnExit(Arc<Mutex<Vec<Subscriber>>>);
+    impl Drop for ClearOnExit {
+        fn drop(&mut self) {
+            self.0.lock().unwrap().clear();
+        }
+    }
+    let _clear = ClearOnExit(subscribers.clone());
     let mut line = String::new();
     loop {
         line.clear();
@@ -268,13 +365,43 @@ fn read_frames(
             continue;
         }
         if let Ok(notification) = serde_json::from_str::<RpcNotification>(&line) {
-            if notifications.send(notification).is_err() {
-                return;
-            }
+            fan_out(&subscribers, &notification);
         }
         // Unknown frames are skipped: additive servers may send shapes a
         // minor-older client does not know.
     }
+}
+
+/// Deliver to every subscriber; a full queue marks the subscriber lagged and
+/// drops the frame, and the owed `stream-lagged` marker is delivered first
+/// once the queue has room — the same recovery signal the daemon sends, so
+/// consumers have one lag path. A dropped receiver unregisters its sender.
+fn fan_out(subscribers: &Arc<Mutex<Vec<Subscriber>>>, notification: &RpcNotification) {
+    let mut registered = subscribers.lock().unwrap();
+    registered.retain_mut(|subscriber| {
+        if subscriber.lagged {
+            match subscriber.sender.try_send(local_lag_marker()) {
+                Ok(()) => subscriber.lagged = false,
+                Err(TrySendError::Full(_)) => return true, // marker stays owed
+                Err(TrySendError::Disconnected(_)) => return false,
+            }
+        }
+        match subscriber.sender.try_send(notification.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                subscriber.lagged = true;
+                true
+            }
+            Err(TrySendError::Disconnected(_)) => false,
+        }
+    });
+}
+
+fn local_lag_marker() -> RpcNotification {
+    RpcNotification::new(
+        "stream-lagged",
+        Params::new(serde_json::json!({})).ok(),
+    )
 }
 
 /// One durable agent event observed on a session, live or replayed.
@@ -285,47 +412,57 @@ pub struct SessionEvent {
 }
 
 /// A gap-free stream of one session's durable events across disconnects and
-/// live-channel lag. It consumes the client's notification stream, tracks the
+/// live-channel lag. It owns its notification subscription, tracks the
 /// durable cursor, and replays whenever the live channel proves unreliable —
 /// exactly the notify-then-replay contract. Transient frames (sequence zero)
 /// pass through live and are never replayed.
 pub struct SessionEventStream<'client> {
     client: &'client DaemonClient,
+    subscription: Receiver<RpcNotification>,
     session_id: String,
+    /// The last sequence handed to the consumer — safe to resume from after
+    /// a reconnect. Only delivery advances it.
     cursor: i64,
+    /// The highest sequence fetched into `pending` (dedup/gap watermark).
+    fetched: i64,
     /// Replayed events not yet handed to the consumer.
     pending: std::collections::VecDeque<SessionEvent>,
 }
 
 impl<'client> SessionEventStream<'client> {
-    /// Start a stream from a durable cursor (0 for the beginning). Replays
-    /// immediately, closing the subscribe-before-replay race: live durable
-    /// events at or below the replayed cursor are discarded as duplicates.
+    /// Start a stream from a durable cursor (0 for the beginning). Subscribes
+    /// first, then replays, closing the subscribe-before-replay race: live
+    /// durable events at or below the replayed watermark are discarded as
+    /// duplicates.
     pub fn new(
         client: &'client DaemonClient,
         session_id: impl Into<String>,
         after_sequence: i64,
     ) -> Result<SessionEventStream<'client>, ClientError> {
-        let session_id = session_id.into();
+        let subscription = client.subscribe();
         let mut stream = SessionEventStream {
             client,
-            session_id,
+            subscription,
+            session_id: session_id.into(),
             cursor: after_sequence,
+            fetched: after_sequence,
             pending: Default::default(),
         };
         stream.replay()?;
         Ok(stream)
     }
 
+    /// The consumer's resume point: the last sequence actually delivered by
+    /// [`SessionEventStream::next`], never one that is merely queued.
     pub fn cursor(&self) -> i64 {
         self.cursor
     }
 
     fn replay(&mut self) -> Result<(), ClientError> {
-        for event in self.client.replay_session_events(&self.session_id, self.cursor)? {
+        for event in self.client.replay_session_events(&self.session_id, self.fetched)? {
             let sequence = event["sequence"].as_i64().unwrap_or(0);
-            if sequence > self.cursor {
-                self.cursor = sequence;
+            if sequence > self.fetched {
+                self.fetched = sequence;
                 self.pending.push_back(SessionEvent { sequence, payload: event });
             }
         }
@@ -334,10 +471,14 @@ impl<'client> SessionEventStream<'client> {
 
     /// The next event for this session: replayed backlog first, then live.
     /// `Ok(None)` when `deadline` passes with nothing relevant. A
-    /// `stream-lagged` marker triggers a replay instead of surfacing.
+    /// `stream-lagged` marker (daemon- or client-side) triggers a replay
+    /// instead of surfacing.
     pub fn next(&mut self, deadline: Instant) -> Result<Option<SessionEvent>, ClientError> {
         loop {
             if let Some(event) = self.pending.pop_front() {
+                if event.sequence > 0 {
+                    self.cursor = event.sequence;
+                }
                 return Ok(Some(event));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -345,8 +486,7 @@ impl<'client> SessionEventStream<'client> {
                 return Ok(None);
             }
             let notification = match self
-                .client
-                .notifications()
+                .subscription
                 .recv_timeout(remaining.min(Duration::from_millis(200)))
             {
                 Ok(notification) => notification,
@@ -367,23 +507,77 @@ impl<'client> SessionEventStream<'client> {
                         // Transient streaming frame: deliver, never track.
                         return Ok(Some(SessionEvent { sequence: 0, payload }));
                     }
-                    if sequence <= self.cursor {
+                    if sequence <= self.fetched {
                         continue; // Duplicate of a replayed event.
                     }
-                    if sequence > self.cursor + 1 {
+                    if sequence > self.fetched + 1 {
                         // A gap in durable sequences: the live channel missed
                         // events. Recover from the store, not the channel.
                         self.replay()?;
                         continue;
                     }
+                    self.fetched = sequence;
                     self.cursor = sequence;
                     return Ok(Some(SessionEvent { sequence, payload }));
                 }
-                // The host says this connection lagged: durable history is
-                // intact in the store — replay from the cursor.
+                // The live channel dropped frames (daemon-side or in this
+                // client): durable history is intact — replay from the
+                // watermark.
                 "stream-lagged" => self.replay()?,
                 _ => continue,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notification(method: &str) -> RpcNotification {
+        RpcNotification::new(method, Params::new(serde_json::json!({})).ok())
+    }
+
+    #[test]
+    fn every_subscriber_receives_every_notification() {
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
+        let (sender_a, receiver_a) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
+        let (sender_b, receiver_b) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
+        subscribers.lock().unwrap().push(Subscriber { sender: sender_a, lagged: false });
+        subscribers.lock().unwrap().push(Subscriber { sender: sender_b, lagged: false });
+        fan_out(&subscribers, &notification("state-changed"));
+        fan_out(&subscribers, &notification("adapters-changed"));
+        for receiver in [&receiver_a, &receiver_b] {
+            assert_eq!(receiver.try_recv().unwrap().method, "state-changed");
+            assert_eq!(receiver.try_recv().unwrap().method, "adapters-changed");
+        }
+    }
+
+    #[test]
+    fn an_overflowed_subscriber_gets_a_lag_marker_when_it_drains() {
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
+        subscribers.lock().unwrap().push(Subscriber { sender, lagged: false });
+        for _ in 0..(SUBSCRIBER_CAPACITY + 8) {
+            fan_out(&subscribers, &notification("session-output"));
+        }
+        // Drain the full queue: every frame is pre-lag.
+        for _ in 0..SUBSCRIBER_CAPACITY {
+            assert_eq!(receiver.try_recv().unwrap().method, "session-output");
+        }
+        // The next delivery owes the marker first.
+        fan_out(&subscribers, &notification("state-changed"));
+        assert_eq!(receiver.try_recv().unwrap().method, "stream-lagged");
+        assert_eq!(receiver.try_recv().unwrap().method, "state-changed");
+    }
+
+    #[test]
+    fn dropped_subscribers_unregister() {
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
+        subscribers.lock().unwrap().push(Subscriber { sender, lagged: false });
+        drop(receiver);
+        fan_out(&subscribers, &notification("state-changed"));
+        assert!(subscribers.lock().unwrap().is_empty());
     }
 }

@@ -64,10 +64,25 @@ fn connect(data_dir: &Path) -> DaemonClient {
 }
 
 fn create_chat(client: &DaemonClient) -> String {
+    // Identify the NEW session by state difference — array position and
+    // recency are both unreliable (the reviewer's finding on exec, equally
+    // true here).
+    let ids = |state: &serde_json::Value| -> std::collections::HashSet<String> {
+        state["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let before = ids(&client.call(MethodName::GetState, None).unwrap());
     let state = client
         .call(MethodName::CreateChat, Some(json!({"harness": "shell"})))
         .unwrap();
-    state["sessions"][0]["id"].as_str().unwrap().to_owned()
+    ids(&state)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("create_chat added a session")
 }
 
 /// Persist a durable event and publish it on the bus, as a live mutation does.
@@ -426,4 +441,129 @@ fn exec_refuses_a_directory_owned_by_another_process_with_identity() {
     assert!(!status.success());
     assert!(stderr.contains("desktop app"), "stderr: {stderr}");
     assert!(stderr.contains(&std::process::id().to_string()), "stderr: {stderr}");
+}
+
+#[test]
+fn the_cursor_reflects_delivery_not_queueing() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+    let client = connect(data_dir);
+    let session_id = create_chat(&client);
+    for text in ["one", "two", "three"] {
+        publish_durable(&running.daemon, &session_id, text);
+    }
+
+    // The stream replays all three on subscribe, but has delivered nothing:
+    // resuming from cursor() must not skip the queued backlog.
+    let mut stream = SessionEventStream::new(&client, session_id.clone(), 0).unwrap();
+    assert_eq!(stream.cursor(), 0, "nothing delivered yet");
+    let first = stream.next(Instant::now() + Duration::from_secs(10)).unwrap().unwrap();
+    assert_eq!(first.sequence, 1);
+    assert_eq!(stream.cursor(), 1, "the cursor is the last DELIVERED sequence");
+
+    // A consumer that reconnects from that cursor sees two and three — the
+    // queued-but-undelivered events are not lost.
+    let mut resumed = SessionEventStream::new(&client, session_id.clone(), stream.cursor()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let texts: Vec<String> = (0..2)
+        .map(|_| {
+            resumed.next(deadline).unwrap().unwrap().payload["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(texts, ["two", "three"]);
+
+    running.stop();
+}
+
+#[test]
+fn concurrent_session_streams_do_not_steal_each_others_events() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+    let client = connect(data_dir);
+    let session_a = create_chat(&client);
+    let session_b = create_chat(&client);
+
+    let mut stream_a = SessionEventStream::new(&client, session_a.clone(), 0).unwrap();
+    let mut stream_b = SessionEventStream::new(&client, session_b.clone(), 0).unwrap();
+    // Interleave events across both sessions on one connection.
+    publish_durable(&running.daemon, &session_a, "a1");
+    publish_durable(&running.daemon, &session_b, "b1");
+    publish_durable(&running.daemon, &session_a, "a2");
+    publish_durable(&running.daemon, &session_b, "b2");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let drain = |stream: &mut SessionEventStream| -> Vec<String> {
+        (0..2)
+            .map(|_| {
+                stream.next(deadline).unwrap().expect("both streams see their events").payload
+                    ["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    };
+    // Order matters: stream A drains first — with a shared consumer it would
+    // have discarded B's frames while searching for its own.
+    assert_eq!(drain(&mut stream_a), ["a1", "a2"]);
+    assert_eq!(drain(&mut stream_b), ["b1", "b2"]);
+
+    running.stop();
+}
+
+#[test]
+fn dropped_clients_release_their_daemon_connection_slots() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+
+    // More connect/drop cycles than the daemon has slots: if dropping a
+    // client leaked its reader-side socket, the daemon would refuse long
+    // before the end.
+    for round in 0..(bridged::MAX_CONNECTIONS + 8) {
+        let client = connect(data_dir);
+        let health = client.call(MethodName::Health, None);
+        assert!(health.is_ok(), "round {round}: {health:?}");
+        drop(client);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running.daemon.state.connections.load(Ordering::SeqCst) > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "{} slot(s) still occupied after every client dropped",
+            running.daemon.state.connections.load(Ordering::SeqCst)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    running.stop();
+}
+
+#[test]
+fn a_timed_out_call_does_not_desynchronize_the_next_one() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+    let client = connect(data_dir);
+
+    // A zero budget times out before the (fast) response arrives...
+    let timed_out = client.call_with_timeout(MethodName::GetState, None, Duration::ZERO);
+    assert!(matches!(timed_out, Err(ClientError::Timeout)), "{timed_out:?}");
+    // ...and the stale response is discarded by id: the next call pairs with
+    // its own response instead of the leftover one.
+    let health = client.call(MethodName::Health, None).unwrap();
+    assert_eq!(health["ok"], json!(true));
+    let state = client.call(MethodName::GetState, None).unwrap();
+    assert!(state["sessions"].is_array());
+
+    running.stop();
 }
