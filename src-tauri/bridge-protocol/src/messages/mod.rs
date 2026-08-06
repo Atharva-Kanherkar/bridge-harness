@@ -233,6 +233,18 @@ impl TypedMethod {
     /// when the method is contracted parameterless. Hosts use this to check
     /// their command signatures still match the contract.
     pub fn params_fields(method: MethodName) -> Option<Vec<String>> {
+        Some(
+            Self::params_schema_fields(method)?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
+        )
+    }
+
+    /// The wire fields and JSON Schema fragments for a method's params,
+    /// sorted by field name. The shell's drift gate uses the fragments to
+    /// compare both argument names and their Rust/JSON types.
+    pub fn params_schema_fields(method: MethodName) -> Option<Vec<(String, Value)>> {
         let typed = TypedMethod::for_method(method);
         let name = typed.params?;
         let (_, schema) = payload_schemas()
@@ -243,7 +255,12 @@ impl TypedMethod {
             .get("properties")
             .and_then(Value::as_object)
             .unwrap_or_else(|| panic!("{name} is a params type but describes no properties"));
-        Some(properties.keys().cloned().collect())
+        Some(
+            properties
+                .iter()
+                .map(|(field, schema)| (field.clone(), schema.clone()))
+                .collect(),
+        )
     }
 }
 
