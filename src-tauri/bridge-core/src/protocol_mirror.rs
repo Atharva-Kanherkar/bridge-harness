@@ -416,10 +416,22 @@ fn browser_payloads_mirror_core() {
 
 // --- snapshot DTOs (#125) ----------------------------------------------------
 
-fn mirror_session_status(status: &str) -> Option<wire::SessionStatus> {
-    // Core SessionStatus serializes lowercase; drive the mirror through the
-    // wire value so both spellings are asserted at once.
-    serde_json::from_value(serde_json::json!(status)).ok()
+fn mirror_session_status(status: &model::SessionStatus) -> wire::SessionStatus {
+    match status {
+        model::SessionStatus::Idle => wire::SessionStatus::Idle,
+        model::SessionStatus::Starting => wire::SessionStatus::Starting,
+        model::SessionStatus::Working => wire::SessionStatus::Working,
+        model::SessionStatus::Waiting => wire::SessionStatus::Waiting,
+        model::SessionStatus::Warm => wire::SessionStatus::Warm,
+        model::SessionStatus::Checkpointing => wire::SessionStatus::Checkpointing,
+        model::SessionStatus::Ready => wire::SessionStatus::Ready,
+        model::SessionStatus::Stopped => wire::SessionStatus::Stopped,
+        model::SessionStatus::Resuming => wire::SessionStatus::Resuming,
+        model::SessionStatus::Restored => wire::SessionStatus::Restored,
+        model::SessionStatus::Failed => wire::SessionStatus::Failed,
+        model::SessionStatus::Completed => wire::SessionStatus::Completed,
+        model::SessionStatus::Cancelled => wire::SessionStatus::Cancelled,
+    }
 }
 
 #[test]
@@ -439,9 +451,7 @@ fn snapshot_enums_share_their_wire_values() {
         model::SessionStatus::Completed,
         model::SessionStatus::Cancelled,
     ] {
-        let value = serde_json::to_value(&status).unwrap();
-        let mirrored = mirror_session_status(value.as_str().unwrap())
-            .unwrap_or_else(|| panic!("wire::SessionStatus is missing {value}"));
+        let mirrored = mirror_session_status(&status);
         assert_same_wire_value(&status, &mirrored);
     }
     for tier in [

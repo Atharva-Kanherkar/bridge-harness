@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::common::{JsSafeI64, JsSafeU64};
 use super::completion::CheckRun;
 use super::state::{BridgeEvent, ResumeEligibility, RestorationMode};
 
@@ -20,13 +21,13 @@ pub struct SessionEntry {
     pub id: String,
     pub session_id: String,
     pub parent_entry_id: Option<String>,
-    pub sequence: i64,
-    pub semantic_schema_version: i64,
+    pub sequence: JsSafeI64,
+    pub semantic_schema_version: JsSafeI64,
     pub kind: String,
     pub payload: Value,
     pub provider_event_id: Option<String>,
     pub context_visibility: String,
-    pub token_estimate: Option<i64>,
+    pub token_estimate: Option<JsSafeI64>,
     pub created_at: String,
 }
 
@@ -70,7 +71,7 @@ pub struct WorkerRuntimeRecord {
     pub task_family: String,
     pub compatibility_key: String,
     pub result_status: String,
-    pub retry_count: i64,
+    pub retry_count: JsSafeI64,
     pub warm_until: Option<String>,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
@@ -90,9 +91,9 @@ pub struct QueuedWorkerRequest {
     pub request: Value,
     pub actual_model: String,
     pub queue_status: String,
-    pub sequence: i64,
+    pub sequence: JsSafeI64,
     pub dispatched_session_id: Option<String>,
-    pub attempt_count: i64,
+    pub attempt_count: JsSafeI64,
     pub expires_at: String,
     pub blocked_at: Option<String>,
     pub claimed_at: Option<String>,
@@ -105,24 +106,24 @@ pub struct QueuedWorkerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLedgerRow {
-    pub id: i64,
+    pub id: JsSafeI64,
     pub workspace_id: String,
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
-    pub input_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
-    pub cache_read_tokens: Option<i64>,
-    pub cache_write_tokens: Option<i64>,
-    pub uncached_input_tokens: Option<i64>,
-    pub context_percent: Option<i64>,
-    pub capability_units: i64,
-    pub runtime_ms: Option<i64>,
-    pub cost_microusd: Option<i64>,
+    pub input_tokens: Option<JsSafeI64>,
+    pub output_tokens: Option<JsSafeI64>,
+    pub cache_read_tokens: Option<JsSafeI64>,
+    pub cache_write_tokens: Option<JsSafeI64>,
+    pub uncached_input_tokens: Option<JsSafeI64>,
+    pub context_percent: Option<JsSafeI64>,
+    pub capability_units: JsSafeI64,
+    pub runtime_ms: Option<JsSafeI64>,
+    pub cost_microusd: Option<JsSafeI64>,
     pub cost_source: Option<String>,
     pub stable_prefix_id: Option<String>,
     pub stable_prefix_hash: Option<String>,
-    pub prompt_schema_version: Option<i64>,
-    pub prefix_token_estimate: Option<i64>,
+    pub prompt_schema_version: Option<JsSafeI64>,
+    pub prefix_token_estimate: Option<JsSafeI64>,
     pub harness: Option<String>,
     pub model: Option<String>,
     pub role: Option<String>,
@@ -137,9 +138,9 @@ pub struct UsageLedgerRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyLimits {
-    pub max_workers_per_turn: i64,
-    pub max_strong_workers_per_turn: i64,
-    pub max_capability_units_per_turn: i64,
+    pub max_workers_per_turn: JsSafeI64,
+    pub max_strong_workers_per_turn: JsSafeI64,
+    pub max_capability_units_per_turn: JsSafeI64,
 }
 
 /// Mirrors `bridge_core::model::RepositoryDivergence`.
@@ -180,8 +181,8 @@ pub struct CompletionSummary {
     pub contract_id: String,
     pub verdict: CompletionVerdict,
     pub repository: RepositoryStamp,
-    pub passed_required: u64,
-    pub total_required: u64,
+    pub passed_required: JsSafeU64,
+    pub total_required: JsSafeU64,
     pub checks: Vec<CheckRun>,
     pub markdown_committed: bool,
     pub waiver_reason: Option<String>,
@@ -212,18 +213,26 @@ mod tests {
     use crate::messages::completion::{CheckStatus, EvalKind};
     use serde_json::json;
 
+    fn safe_i64(value: i64) -> JsSafeI64 {
+        JsSafeI64::new(value).unwrap()
+    }
+
+    fn safe_u64(value: u64) -> JsSafeU64 {
+        JsSafeU64::new(value).unwrap()
+    }
+
     fn entry(sequence: i64) -> SessionEntry {
         SessionEntry {
             id: format!("e-{sequence}"),
             session_id: "s-1".into(),
             parent_entry_id: (sequence > 1).then(|| format!("e-{}", sequence - 1)),
-            sequence,
-            semantic_schema_version: 2,
+            sequence: safe_i64(sequence),
+            semantic_schema_version: safe_i64(2),
             kind: "assistant.message".into(),
             payload: json!({"text": "hello"}),
             provider_event_id: None,
             context_visibility: "visible".into(),
-            token_estimate: Some(12),
+            token_estimate: Some(safe_i64(12)),
             created_at: "now".into(),
         }
     }
@@ -263,7 +272,7 @@ mod tests {
                 task_family: "rust".into(),
                 compatibility_key: "codex:gpt-5".into(),
                 result_status: "pending".into(),
-                retry_count: 0,
+                retry_count: safe_i64(0),
                 warm_until: None,
                 worktree_path: Some("/worktrees/w".into()),
                 worktree_branch: Some("bridge/w".into()),
@@ -279,9 +288,9 @@ mod tests {
                 request: json!({"objective": "fix tests"}),
                 actual_model: "gpt-5".into(),
                 queue_status: "queued".into(),
-                sequence: 1,
+                sequence: safe_i64(1),
                 dispatched_session_id: None,
-                attempt_count: 0,
+                attempt_count: safe_i64(0),
                 expires_at: "later".into(),
                 blocked_at: None,
                 claimed_at: None,
@@ -290,24 +299,24 @@ mod tests {
                 updated_at: "now".into(),
             }],
             usage: vec![UsageLedgerRow {
-                id: 1,
+                id: safe_i64(1),
                 workspace_id: "w-1".into(),
                 session_id: Some("s-1".into()),
                 turn_id: Some("turn-1".into()),
-                input_tokens: Some(1000),
-                output_tokens: Some(200),
-                cache_read_tokens: Some(800),
-                cache_write_tokens: Some(0),
-                uncached_input_tokens: Some(200),
-                context_percent: Some(30),
-                capability_units: 2,
-                runtime_ms: Some(1200),
-                cost_microusd: Some(310),
+                input_tokens: Some(safe_i64(1000)),
+                output_tokens: Some(safe_i64(200)),
+                cache_read_tokens: Some(safe_i64(800)),
+                cache_write_tokens: Some(safe_i64(0)),
+                uncached_input_tokens: Some(safe_i64(200)),
+                context_percent: Some(safe_i64(30)),
+                capability_units: safe_i64(2),
+                runtime_ms: Some(safe_i64(1200)),
+                cost_microusd: Some(safe_i64(310)),
                 cost_source: Some("reported".into()),
                 stable_prefix_id: Some("prefix-1".into()),
                 stable_prefix_hash: Some("hash".into()),
-                prompt_schema_version: Some(1),
-                prefix_token_estimate: Some(700),
+                prompt_schema_version: Some(safe_i64(1)),
+                prefix_token_estimate: Some(safe_i64(700)),
                 harness: Some("codex".into()),
                 model: Some("gpt-5".into()),
                 role: Some("orchestrator".into()),
@@ -318,7 +327,7 @@ mod tests {
                 created_at: "now".into(),
             }],
             reasons: vec![BridgeEvent {
-                id: 4,
+                id: safe_i64(4),
                 source: "policy".into(),
                 kind: "delegation.approved".into(),
                 entity_id: "s-1".into(),
@@ -326,9 +335,9 @@ mod tests {
                 created_at: "now".into(),
             }],
             policy_limits: PolicyLimits {
-                max_workers_per_turn: 4,
-                max_strong_workers_per_turn: 1,
-                max_capability_units_per_turn: 8,
+                max_workers_per_turn: safe_i64(4),
+                max_strong_workers_per_turn: safe_i64(1),
+                max_capability_units_per_turn: safe_i64(8),
             },
             repository_divergence: RepositoryDivergence {
                 status: "clean".into(),
@@ -343,8 +352,8 @@ mod tests {
                     head: "abc123".into(),
                     dirty_digest: "sha256:d".into(),
                 },
-                passed_required: 1,
-                total_required: 3,
+                passed_required: safe_u64(1),
+                total_required: safe_u64(3),
                 checks: vec![CheckRun {
                     check_id: "cargo-test".into(),
                     kind: EvalKind::Deterministic,

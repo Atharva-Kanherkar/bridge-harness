@@ -6,6 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::common::JsSafeI64;
 use super::sessions::HarnessId;
 
 /// Mirrors `bridge_core::model::SessionStatus`.
@@ -85,9 +86,9 @@ pub struct Workspace {
     pub branch: Option<String>,
     pub path: Option<String>,
     pub status: SessionStatus,
-    pub dirty_files: i64,
-    pub additions: i64,
-    pub deletions: i64,
+    pub dirty_files: JsSafeI64,
+    pub additions: JsSafeI64,
+    pub deletions: JsSafeI64,
     pub created_at: String,
 }
 
@@ -102,8 +103,8 @@ pub struct Session {
     pub status: SessionStatus,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
-    pub context_percent: Option<i64>,
-    pub usage_percent: Option<i64>,
+    pub context_percent: Option<JsSafeI64>,
+    pub usage_percent: Option<JsSafeI64>,
     pub metric_source: String,
     pub provider_session_id: Option<String>,
     pub active_turn_id: Option<String>,
@@ -111,7 +112,7 @@ pub struct Session {
     pub requested_tier: Option<CapabilityTier>,
     pub effort: Option<String>,
     pub parent_session_id: Option<String>,
-    pub depth: Option<i64>,
+    pub depth: Option<JsSafeI64>,
     pub restoration_mode: RestorationMode,
     pub continuation_fidelity: ContinuationFidelity,
     pub title: Option<String>,
@@ -123,7 +124,7 @@ pub struct Session {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeEvent {
-    pub id: i64,
+    pub id: JsSafeI64,
     pub source: String,
     pub kind: String,
     pub entity_id: String,
@@ -175,7 +176,9 @@ pub struct HealthResult {
     /// Harness id → binary availability.
     pub harnesses: std::collections::BTreeMap<String, bool>,
     pub database: String,
+    #[serde(rename = "telemetry_database")]
     pub telemetry_database: String,
+    #[serde(rename = "snapshot_directory")]
     pub snapshot_directory: String,
     pub adapters: Vec<AdapterDescriptor>,
 }
@@ -203,9 +206,9 @@ mod tests {
                 branch: Some("bridge/payments".into()),
                 path: Some("/repos/demo".into()),
                 status: SessionStatus::Working,
-                dirty_files: 2,
-                additions: 40,
-                deletions: 3,
+                dirty_files: JsSafeI64::new(2).unwrap(),
+                additions: JsSafeI64::new(40).unwrap(),
+                deletions: JsSafeI64::new(3).unwrap(),
                 created_at: "now".into(),
             }],
             sessions: vec![Session {
@@ -216,8 +219,8 @@ mod tests {
                 status: SessionStatus::Waiting,
                 started_at: Some("now".into()),
                 ended_at: None,
-                context_percent: Some(41),
-                usage_percent: Some(12),
+                context_percent: Some(JsSafeI64::new(41).unwrap()),
+                usage_percent: Some(JsSafeI64::new(12).unwrap()),
                 metric_source: "reported".into(),
                 provider_session_id: Some("prov-1".into()),
                 active_turn_id: Some("turn-1".into()),
@@ -225,7 +228,7 @@ mod tests {
                 requested_tier: Some(CapabilityTier::Standard),
                 effort: Some("high".into()),
                 parent_session_id: None,
-                depth: Some(0),
+                depth: Some(JsSafeI64::new(0).unwrap()),
                 restoration_mode: RestorationMode::Fresh,
                 continuation_fidelity: ContinuationFidelity::Native,
                 title: None,
@@ -233,7 +236,7 @@ mod tests {
                 cwd: Some("/repos/demo".into()),
             }],
             events: vec![BridgeEvent {
-                id: 9,
+                id: JsSafeI64::new(9).unwrap(),
                 source: "supervisor".into(),
                 kind: "workspace.created".into(),
                 entity_id: "w-1".into(),
@@ -302,6 +305,10 @@ mod tests {
         let wire = serde_json::to_value(&health).unwrap();
         assert_eq!(wire["adapters"][0]["models"][0]["defaultForTier"], json!(true));
         assert_eq!(wire["harnesses"]["claude"], json!(true));
+        assert_eq!(wire["telemetry_database"], json!("/data/bridge-telemetry.db"));
+        assert_eq!(wire["snapshot_directory"], json!("/data/history-snapshots"));
+        assert!(wire.get("telemetryDatabase").is_none());
+        assert!(wire.get("snapshotDirectory").is_none());
         assert_eq!(round_trip(&health), health);
     }
 }
