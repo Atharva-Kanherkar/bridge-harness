@@ -96,6 +96,11 @@
       ],
       "type": "string"
     },
+    "JsSafeU64": {
+      "maximum": 9007199254740991.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "RepositoryStamp": {
       "description": "Mirrors `bridge_core::completion::RepositoryStamp`.",
       "properties": {
@@ -131,17 +136,13 @@
       "type": "boolean"
     },
     "passedRequired": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
+      "$ref": "#/definitions/JsSafeU64"
     },
     "repository": {
       "$ref": "#/definitions/RepositoryStamp"
     },
     "totalRequired": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
+      "$ref": "#/definitions/JsSafeU64"
     },
     "verdict": {
       "$ref": "#/definitions/CompletionVerdict"

@@ -1,4 +1,43 @@
-use serde::{Deserialize, Serialize};
+use serde::ser::Error as _;
+use serde::{Deserialize, Serialize, Serializer};
+
+pub(crate) fn serialize_js_safe_i64<S: Serializer>(
+    value: &i64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if (-bridge_protocol::MAX_SAFE_INTEGER..=bridge_protocol::MAX_SAFE_INTEGER).contains(value) {
+        serializer.serialize_i64(*value)
+    } else {
+        Err(S::Error::custom("integer exceeds JavaScript's safe integer range"))
+    }
+}
+
+pub(crate) fn serialize_optional_js_safe_i64<S: Serializer>(
+    value: &Option<i64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(value)
+            if !(-bridge_protocol::MAX_SAFE_INTEGER..=bridge_protocol::MAX_SAFE_INTEGER)
+                .contains(value) =>
+        {
+            Err(S::Error::custom("integer exceeds JavaScript's safe integer range"))
+        }
+        Some(value) => serializer.serialize_some(value),
+        None => serializer.serialize_none(),
+    }
+}
+
+pub(crate) fn serialize_js_safe_usize<S: Serializer>(
+    value: &usize,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if (*value as u64) <= bridge_protocol::MAX_SAFE_INTEGER as u64 {
+        serializer.serialize_u64(*value as u64)
+    } else {
+        Err(S::Error::custom("integer exceeds JavaScript's safe integer range"))
+    }
+}
 
 pub const SEMANTIC_EVENT_SCHEMA_VERSION: i64 = 2;
 pub const MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION: i64 = 1;
@@ -137,8 +176,11 @@ pub struct Workspace {
     pub branch: Option<String>,
     pub path: Option<String>,
     pub status: SessionStatus,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub dirty_files: i64,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub additions: i64,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub deletions: i64,
     pub created_at: String,
 }
@@ -175,7 +217,9 @@ pub struct Session {
     pub status: SessionStatus,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub context_percent: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub usage_percent: Option<i64>,
     pub metric_source: String,
     pub provider_session_id: Option<String>,
@@ -184,6 +228,7 @@ pub struct Session {
     pub requested_tier: Option<CapabilityTier>,
     pub effort: Option<String>,
     pub parent_session_id: Option<String>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub depth: Option<i64>,
     pub restoration_mode: RestorationMode,
     pub continuation_fidelity: ContinuationFidelity,
@@ -195,6 +240,7 @@ pub struct Session {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeEvent {
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub id: i64,
     pub source: String,
     pub kind: String,
@@ -236,12 +282,15 @@ pub struct SessionEntry {
     pub id: String,
     pub session_id: String,
     pub parent_entry_id: Option<String>,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub sequence: i64,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub semantic_schema_version: i64,
     pub kind: String,
     pub payload: serde_json::Value,
     pub provider_event_id: Option<String>,
     pub context_visibility: String,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub token_estimate: Option<i64>,
     pub created_at: String,
 }
@@ -296,6 +345,7 @@ pub struct WorkerRuntimeRecord {
     pub task_family: String,
     pub compatibility_key: String,
     pub result_status: String,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub retry_count: i64,
     pub warm_until: Option<String>,
     pub worktree_path: Option<String>,
@@ -315,8 +365,10 @@ pub struct QueuedWorkerRequest {
     pub request: serde_json::Value,
     pub actual_model: String,
     pub queue_status: String,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub sequence: i64,
     pub dispatched_session_id: Option<String>,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub attempt_count: i64,
     pub expires_at: String,
     pub blocked_at: Option<String>,
@@ -337,23 +389,35 @@ pub struct OutboxMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLedgerRow {
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub id: i64,
     pub workspace_id: String,
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub input_tokens: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub output_tokens: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub cache_read_tokens: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub cache_write_tokens: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub uncached_input_tokens: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub context_percent: Option<i64>,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub capability_units: i64,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub runtime_ms: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub cost_microusd: Option<i64>,
     pub cost_source: Option<String>,
     pub stable_prefix_id: Option<String>,
     pub stable_prefix_hash: Option<String>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub prompt_schema_version: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub prefix_token_estimate: Option<i64>,
     pub harness: Option<String>,
     pub model: Option<String>,
@@ -388,8 +452,11 @@ pub struct PromptCompilationRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyLimits {
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub max_workers_per_turn: i64,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub max_strong_workers_per_turn: i64,
+    #[serde(serialize_with = "serialize_js_safe_i64")]
     pub max_capability_units_per_turn: i64,
 }
 
@@ -416,4 +483,56 @@ pub struct RepositoryDivergence {
     pub status: String,
     pub selected_state: Option<serde_json::Value>,
     pub current_state: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct SnapshotNumbers {
+        #[serde(serialize_with = "serialize_js_safe_i64")]
+        signed: i64,
+        #[serde(serialize_with = "serialize_optional_js_safe_i64")]
+        optional: Option<i64>,
+        #[serde(serialize_with = "serialize_js_safe_usize")]
+        count: usize,
+    }
+
+    #[test]
+    fn snapshot_serialization_rejects_javascript_unsafe_integers() {
+        let safe = SnapshotNumbers {
+            signed: bridge_protocol::MAX_SAFE_INTEGER,
+            optional: Some(-bridge_protocol::MAX_SAFE_INTEGER),
+            count: 3,
+        };
+        assert!(serde_json::to_value(safe).is_ok());
+
+        for unsafe_number in [
+            bridge_protocol::MAX_SAFE_INTEGER + 1,
+            -(bridge_protocol::MAX_SAFE_INTEGER + 1),
+        ] {
+            let value = SnapshotNumbers { signed: unsafe_number, optional: None, count: 0 };
+            let error = serde_json::to_value(value).unwrap_err();
+            assert!(error.to_string().contains("safe integer"), "{error}");
+        }
+
+        let value = SnapshotNumbers {
+            signed: 0,
+            optional: Some(bridge_protocol::MAX_SAFE_INTEGER + 1),
+            count: 0,
+        };
+        let error = serde_json::to_value(value).unwrap_err();
+        assert!(error.to_string().contains("safe integer"), "{error}");
+
+        if usize::BITS > 53 {
+            let value = SnapshotNumbers {
+                signed: 0,
+                optional: None,
+                count: bridge_protocol::MAX_SAFE_INTEGER as usize + 1,
+            };
+            let error = serde_json::to_value(value).unwrap_err();
+            assert!(error.to_string().contains("safe integer"), "{error}");
+        }
+    }
 }

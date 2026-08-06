@@ -15,8 +15,7 @@
           "type": "string"
         },
         "id": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "kind": {
           "type": "string"
@@ -63,6 +62,11 @@
       ],
       "type": "string"
     },
+    "JsSafeI64": {
+      "maximum": 9007199254740991.0,
+      "minimum": -9007199254740991.0,
+      "type": "integer"
+    },
     "Project": {
       "description": "Mirrors `bridge_core::model::Project`.",
       "properties": {
@@ -107,10 +111,13 @@
           ]
         },
         "contextPercent": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "continuationFidelity": {
@@ -123,10 +130,13 @@
           ]
         },
         "depth": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "effort": {
@@ -203,10 +213,13 @@
           ]
         },
         "usagePercent": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "workspaceId": {
@@ -251,8 +264,7 @@
       "description": "Mirrors `bridge_core::model::Workspace`.",
       "properties": {
         "additions": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "branch": {
           "type": [
@@ -270,12 +282,10 @@
           "type": "string"
         },
         "deletions": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "dirtyFiles": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "id": {
           "type": "string"

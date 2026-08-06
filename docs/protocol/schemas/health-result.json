@@ -109,10 +109,10 @@
     "ok": {
       "type": "boolean"
     },
-    "snapshotDirectory": {
+    "snapshot_directory": {
       "type": "string"
     },
-    "telemetryDatabase": {
+    "telemetry_database": {
       "type": "string"
     },
     "version": {
@@ -124,8 +124,8 @@
     "database",
     "harnesses",
     "ok",
-    "snapshotDirectory",
-    "telemetryDatabase",
+    "snapshot_directory",
+    "telemetry_database",
     "version"
   ],
   "title": "HealthResult",

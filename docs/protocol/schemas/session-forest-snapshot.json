@@ -15,8 +15,7 @@
           "type": "string"
         },
         "id": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "kind": {
           "type": "string"
@@ -127,17 +126,13 @@
           "type": "boolean"
         },
         "passedRequired": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeU64"
         },
         "repository": {
           "$ref": "#/definitions/RepositoryStamp"
         },
         "totalRequired": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeU64"
         },
         "verdict": {
           "$ref": "#/definitions/CompletionVerdict"
@@ -182,20 +177,27 @@
       ],
       "type": "string"
     },
+    "JsSafeI64": {
+      "maximum": 9007199254740991.0,
+      "minimum": -9007199254740991.0,
+      "type": "integer"
+    },
+    "JsSafeU64": {
+      "maximum": 9007199254740991.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "PolicyLimits": {
       "description": "Mirrors `bridge_core::model::PolicyLimits`.",
       "properties": {
         "maxCapabilityUnitsPerTurn": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "maxStrongWorkersPerTurn": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "maxWorkersPerTurn": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         }
       },
       "required": [
@@ -212,8 +214,7 @@
           "type": "string"
         },
         "attemptCount": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "blockedAt": {
           "type": [
@@ -256,8 +257,7 @@
         },
         "request": true,
         "sequence": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "turnId": {
           "type": "string"
@@ -364,21 +364,22 @@
           ]
         },
         "semanticSchemaVersion": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "sequence": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "sessionId": {
           "type": "string"
         },
         "tokenEstimate": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -440,35 +441,46 @@
       "description": "Mirrors `bridge_core::model::UsageLedgerRow`.",
       "properties": {
         "cacheReadTokens": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "cacheWriteTokens": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "capabilityUnits": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "contextPercent": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "costMicrousd": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "costSource": {
@@ -493,14 +505,16 @@
           ]
         },
         "id": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "inputTokens": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "model": {
@@ -510,24 +524,33 @@
           ]
         },
         "outputTokens": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "prefixTokenEstimate": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "promptSchemaVersion": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "restorationMode": {
@@ -543,10 +566,13 @@
           ]
         },
         "runtimeMs": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "sessionId": {
@@ -583,10 +609,13 @@
           ]
         },
         "uncachedInputTokens": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "workspaceId": {
@@ -677,8 +706,7 @@
           "type": "string"
         },
         "retryCount": {
-          "format": "int64",
-          "type": "integer"
+          "$ref": "#/definitions/JsSafeI64"
         },
         "sessionId": {
           "type": "string"

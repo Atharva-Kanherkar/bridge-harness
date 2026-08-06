@@ -281,7 +281,7 @@ export interface BridgeMethodParams {
   "skills/execute_skill_change": ExecuteSkillChangeParams;
 }
 
-/** Result types for contracted methods that do not return the BridgeState snapshot. */
+/** Result types for every registered method. */
 export interface BridgeMethodResults {
   "health/health": HealthResult;
   "state/get_state": BridgeState;
@@ -318,18 +318,30 @@ export interface BridgeMethodResults {
   "completion/verifier_candidates": VerifierCandidatesResult;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
+  "routing/rollback_routing_policy": unknown;
+  "models/get_model_setup": unknown;
   "models/recommended_model_profiles": RecommendedModelProfilesResult;
+  "models/save_model_profiles": unknown;
+  "models/reset_model_profiles": unknown;
   "config/get_config_state": ConfigState;
   "config/save_harness_config": ConfigState;
   "config/reset_harness_config": ConfigState;
+  "config/refresh_opencode_catalog": unknown;
+  "config/set_opencode_provider_api_key": unknown;
+  "config/remove_opencode_provider_auth": unknown;
   "config/save_agent_config": ConfigState;
   "config/delete_agent_config": ConfigState;
   "config/set_default_agent": ConfigState;
   "config/reset_all_config": ConfigState;
+  "learning/get_learning_state": unknown;
+  "learning/run_learning": unknown;
+  "learning/cancel_learning_run": unknown;
   "learning/update_learning_schedule": LearningSchedule;
   "learning/register_learning_trigger": UnitResult;
   "learning/get_learning_trigger_instructions": LearningTriggerInstructionsResult;
   "learning/enable_learning_trigger": UnitResult;
+  "learning/approve_learning_run": unknown;
+  "browser/browser_bridge_state": unknown;
   "browser/install_browser_native_host": InstallBrowserNativeHostResult;
   "browser/browser_action": BrowserActionResult;
   "browser/set_browser_permission": UnitResult;
@@ -339,6 +351,14 @@ export interface BridgeMethodResults {
   "browser/route_browser": BrowserRouteDecision;
   "browser/browser_skills": BrowserSkillsResult;
   "browser/configure_remote_browser": UnitResult;
+  "browser/start_remote_browser": unknown;
+  "marketplace/marketplace_catalog": unknown;
+  "marketplace/marketplace_app_auth_states": unknown;
+  "marketplace/marketplace_action": unknown;
+  "skills/skill_catalog": unknown;
+  "skills/skill_suggestions": unknown;
+  "skills/preview_skill_change": unknown;
+  "skills/execute_skill_change": unknown;
 }
 
 export interface AdapterDescriptor {
@@ -374,7 +394,7 @@ export interface BridgeEvent {
   body: string;
   createdAt: string;
   entityId: string;
-  id: number;
+  id: JsSafeI64;
   kind: string;
   source: string;
 }
@@ -441,9 +461,9 @@ export interface CompletionSummary {
   checks: CheckRun[];
   contractId: string;
   markdownCommitted: boolean;
-  passedRequired: number;
+  passedRequired: JsSafeU64;
   repository: RepositoryStamp;
-  totalRequired: number;
+  totalRequired: JsSafeU64;
   verdict: CompletionVerdict;
   waiverReason?: string | null;
 }
@@ -470,6 +490,10 @@ export interface HarnessConfig {
 }
 
 export type HarnessId = "claude" | "codex" | "opencode" | "shell";
+
+export type JsSafeI64 = number;
+
+export type JsSafeU64 = number;
 
 export type JsonRpcVersion = "2.0";
 
@@ -511,9 +535,9 @@ export interface ModelProfileDraft {
 export type Params = Record<string, unknown> | unknown[];
 
 export interface PolicyLimits {
-  maxCapabilityUnitsPerTurn: number;
-  maxStrongWorkersPerTurn: number;
-  maxWorkersPerTurn: number;
+  maxCapabilityUnitsPerTurn: JsSafeI64;
+  maxStrongWorkersPerTurn: JsSafeI64;
+  maxWorkersPerTurn: JsSafeI64;
 }
 
 export type ProfilePurpose = "standard_orchestrator" | "premium_orchestrator" | "planner" | "implementer" | "verifier" | "reviewer" | "research" | "documentation" | "evaluator";
@@ -532,7 +556,7 @@ export interface ProtocolVersion {
 
 export interface QueuedWorkerRequest {
   actualModel: string;
-  attemptCount: number;
+  attemptCount: JsSafeI64;
   blockedAt?: string | null;
   claimedAt?: string | null;
   createdAt: string;
@@ -543,7 +567,7 @@ export interface QueuedWorkerRequest {
   parentSessionId: string;
   queueStatus: string;
   request: unknown;
-  sequence: number;
+  sequence: JsSafeI64;
   turnId: string;
   updatedAt: string;
   workspaceId: string;
@@ -631,10 +655,10 @@ export interface ServerInfo {
 
 export interface Session {
   activeTurnId?: string | null;
-  contextPercent?: number | null;
+  contextPercent?: JsSafeI64 | null;
   continuationFidelity: ContinuationFidelity;
   cwd?: string | null;
-  depth?: number | null;
+  depth?: JsSafeI64 | null;
   effort?: string | null;
   endedAt?: string | null;
   harness: HarnessId;
@@ -650,7 +674,7 @@ export interface Session {
   startedAt?: string | null;
   status: SessionStatus;
   title?: string | null;
-  usagePercent?: number | null;
+  usagePercent?: JsSafeI64 | null;
   workspaceId?: string | null;
 }
 
@@ -662,10 +686,10 @@ export interface SessionEntry {
   parentEntryId?: string | null;
   payload: unknown;
   providerEventId?: string | null;
-  semanticSchemaVersion: number;
-  sequence: number;
+  semanticSchemaVersion: JsSafeI64;
+  sequence: JsSafeI64;
   sessionId: string;
-  tokenEstimate?: number | null;
+  tokenEstimate?: JsSafeI64 | null;
 }
 
 export interface SessionHead {
@@ -701,31 +725,31 @@ export interface SlashCommandResolve {
 export type StructuredJson = Record<string, unknown> | unknown[];
 
 export interface UsageLedgerRow {
-  cacheReadTokens?: number | null;
-  cacheWriteTokens?: number | null;
-  capabilityUnits: number;
-  contextPercent?: number | null;
-  costMicrousd?: number | null;
+  cacheReadTokens?: JsSafeI64 | null;
+  cacheWriteTokens?: JsSafeI64 | null;
+  capabilityUnits: JsSafeI64;
+  contextPercent?: JsSafeI64 | null;
+  costMicrousd?: JsSafeI64 | null;
   costSource?: string | null;
   createdAt: string;
   crossHarnessReuse?: string | null;
   harness?: string | null;
-  id: number;
-  inputTokens?: number | null;
+  id: JsSafeI64;
+  inputTokens?: JsSafeI64 | null;
   model?: string | null;
-  outputTokens?: number | null;
-  prefixTokenEstimate?: number | null;
-  promptSchemaVersion?: number | null;
+  outputTokens?: JsSafeI64 | null;
+  prefixTokenEstimate?: JsSafeI64 | null;
+  promptSchemaVersion?: JsSafeI64 | null;
   restorationMode?: string | null;
   role?: string | null;
-  runtimeMs?: number | null;
+  runtimeMs?: JsSafeI64 | null;
   sessionId?: string | null;
   source: string;
   stablePrefixHash?: string | null;
   stablePrefixId?: string | null;
   taskFamily?: string | null;
   turnId?: string | null;
-  uncachedInputTokens?: number | null;
+  uncachedInputTokens?: JsSafeI64 | null;
   workspaceId: string;
 }
 
@@ -766,7 +790,7 @@ export interface WorkerRuntimeRecord {
   lifecycleState: string;
   parentSessionId: string;
   resultStatus: string;
-  retryCount: number;
+  retryCount: JsSafeI64;
   sessionId: string;
   taskFamily: string;
   updatedAt: string;
@@ -776,12 +800,12 @@ export interface WorkerRuntimeRecord {
 }
 
 export interface Workspace {
-  additions: number;
+  additions: JsSafeI64;
   branch?: string | null;
   city?: string | null;
   createdAt: string;
-  deletions: number;
-  dirtyFiles: number;
+  deletions: JsSafeI64;
+  dirtyFiles: JsSafeI64;
   id: string;
   path?: string | null;
   projectId?: string | null;
@@ -823,10 +847,10 @@ export interface HandshakeResponse {
 export interface HealthResult {
   adapters: AdapterDescriptor[];
   database: string;
-  harnesses: Record<string, unknown>;
+  harnesses: Record<string, boolean>;
   ok: boolean;
-  snapshotDirectory: string;
-  telemetryDatabase: string;
+  snapshot_directory: string;
+  telemetry_database: string;
   version: string;
 }
 
@@ -991,18 +1015,6 @@ export interface CreateCompletionPlanParams {
   sessionId: string;
 }
 
-export interface CompletionSummary {
-  attemptId: string;
-  checks: CheckRun[];
-  contractId: string;
-  markdownCommitted: boolean;
-  passedRequired: number;
-  repository: RepositoryStamp;
-  totalRequired: number;
-  verdict: CompletionVerdict;
-  waiverReason?: string | null;
-}
-
 export interface RecordCompletionCheckParams {
   attemptId: string;
   run: CheckRun;
@@ -1028,15 +1040,6 @@ export type VerifierCandidatesResult = VerifierCandidate[];
 
 export interface GetRouterPreferencesParams {
   workspaceId: string;
-}
-
-export interface RouterPreferences {
-  excludedHarnesses?: string[];
-  excludedModels?: string[];
-  minimumPassBps: number;
-  mode: RouterMode;
-  pinnedHarness?: string | null;
-  pinnedModel?: string | null;
 }
 
 export interface UpdateRouterPreferencesParams {
@@ -1106,16 +1109,6 @@ export interface CancelLearningRunParams {
 
 export interface UpdateLearningScheduleParams {
   schedule: LearningSchedule;
-}
-
-export interface LearningSchedule {
-  cadenceMinutes: number;
-  enabled: boolean;
-  jobId: string;
-  mode: string;
-  nextRunAt?: string | null;
-  runBudgetMicrousd: number;
-  runBudgetTokens: number;
 }
 
 export interface RegisterLearningTriggerParams {
