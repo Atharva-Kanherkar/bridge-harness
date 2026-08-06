@@ -33,6 +33,9 @@ pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
 pub mod prompt_compiler;
+/// Test-only: asserts core DTOs and their bridge-protocol mirrors agree.
+#[cfg(test)]
+mod protocol_mirror;
 pub mod restoration;
 pub mod router_replay;
 pub mod routing_policy;
@@ -147,24 +150,6 @@ mod tests {
             let mapped = ErrorCode::from(&error);
             assert_eq!(mapped, expected, "{error}");
             assert_eq!(mapped.code(), expected_code, "{error}");
-        }
-    }
-
-    #[test]
-    fn harness_ids_round_trip_with_identical_wire_values() {
-        for harness in [
-            model::Harness::Claude,
-            model::Harness::Codex,
-            model::Harness::OpenCode,
-            model::Harness::Shell,
-        ] {
-            let id = bridge_protocol::messages::HarnessId::from(&harness);
-            assert_eq!(
-                serde_json::to_string(&harness).unwrap(),
-                serde_json::to_string(&id).unwrap(),
-                "protocol and core harness wire values must match"
-            );
-            assert_eq!(model::Harness::from(id), harness);
         }
     }
 }

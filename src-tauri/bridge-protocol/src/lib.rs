@@ -29,5 +29,6 @@ pub use handshake::{
     negotiate, ClientInfo, HandshakeRequest, HandshakeResponse, ProtocolVersion, ServerInfo,
     HANDSHAKE_METHOD, PROTOCOL_VERSION,
 };
+pub use messages::{TypedMethod, TYPED_METHODS};
 pub use methods::MethodName;
 pub use notifications::{DeliveryClass, NotificationName};

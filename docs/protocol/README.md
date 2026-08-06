@@ -48,7 +48,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.3**),
+- its `protocolVersion` (this document describes **0.5**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -69,19 +69,39 @@ Domains: `approvals`, `browser`, `completion`, `config`, `health`,
 `learning`, `marketplace`, `models`, `projects`, `routing`, `sessions`,
 `skills`, `slash`, `state`, `terminal`, `workspaces`.
 
-Per-method typed params/results land domain by domain as command bodies move
-onto `BridgeCore`; until a domain is typed, params mirror the command's
-current serde signature. Typed so far: **projects**, **workspaces**, and the
-**entire sessions domain** — with the live-turn extraction, `start_session`,
-`start_chat`, `prepare_turn`, `send_turn`, and `stop_session` joined the
-management and control methods, and the test-enforced pending list is empty.
-Parameterless methods are contracted with `"paramsSchema": null` (a
-validator rejects any params), distinct from an absent key which means
-not-yet-contracted. See `BridgeMethodParams` / `BridgeMethodResults` in the
+### Params
+
+**Every** method in the registry carries a `paramsSchema`: a schema file, or an
+explicit `null` meaning contracted to take no parameters (a validator rejects
+any params sent to it). There is no "not yet contracted" state left — a method
+without a params contract fails `cargo test`. See `BridgeMethodParams` in the
 generated TypeScript.
-Methods returning the aggregate `BridgeState` snapshot keep untyped results
-until the snapshot DTO itself is contracted — that is its own slice. Commands
-returning no value use the explicit `UnitResult` contract (`result: null`).
+
+Params fields are camelCase, matching Tauri's invoke-argument conversion, and
+mirror the command's signature argument for argument — a test in the shell
+crate parses each `#[tauri::command]` signature and compares it against the
+contracted field names, so renaming an argument without renaming the field
+fails the build.
+
+Params objects **reject unknown fields**. The handshake already refuses a client
+whose minor is newer than the server's, so no compatible client can send a field
+the server does not know; an unknown field is a client bug, and `invalid_params`
+is a better answer than silently ignoring it.
+
+Payload types that mirror a `bridge-core` DTO (`CheckRun`, `RouterPreferences`,
+`HarnessConfig`, `LearningSchedule`, the browser payloads, and the closed enums
+alongside them) exist twice on purpose: the contract does not depend on the
+runtime it describes. A test-only module in bridge-core
+(`src/protocol_mirror.rs`) is the drift gate — exhaustive matches so a new core
+enum variant fails to compile, and JSON round-trips so a renamed or added struct
+field fails the test.
+
+### Results
+
+Results are contracted where the shape is the method's own. Methods returning
+the aggregate `BridgeState` snapshot or a domain snapshot keep untyped results
+until those DTOs are contracted — that is its own slice. Commands returning no
+value use the explicit `UnitResult` contract (`result: null`).
 
 ## Cancellation
 

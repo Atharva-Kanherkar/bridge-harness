@@ -1721,6 +1721,85 @@ mod tests {
     }
 
     #[test]
+    fn every_command_signature_matches_its_contracted_params() {
+        // The contract's params structs are hand-written mirrors of these
+        // signatures, and nothing makes the compiler compare them — so compare
+        // them here. Renaming a command argument without renaming the field
+        // fails this test instead of failing at runtime in a daemon that
+        // validates params against the registry.
+        let source = include_str!("lib.rs");
+        for method in bridge_protocol::MethodName::ALL.iter().copied() {
+            assert_eq!(
+                command_argument_names(source, method.command_name()),
+                bridge_protocol::TypedMethod::params_fields(method),
+                "{} takes different arguments than its contract names",
+                method.as_str()
+            );
+        }
+    }
+
+    /// The camelCase argument names a Tauri command accepts, sorted, or `None`
+    /// when it takes nothing but injected state. Tauri converts snake_case
+    /// parameters to camelCase, so these are the field names a client sends.
+    fn command_argument_names(source: &str, command: &str) -> Option<Vec<String>> {
+        let needle = format!("async fn {command}(");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no async fn named {command} in the shell"))
+            + needle.len();
+        // Split the parameter list on top-level commas: generic arguments
+        // (`State<'_, Arc<BridgeCore>>`) carry commas of their own.
+        let mut depth = 0usize;
+        let mut parameters: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for character in source[start..].chars() {
+            match character {
+                ')' if depth == 0 => break,
+                ',' if depth == 0 => parameters.push(std::mem::take(&mut current)),
+                _ => {
+                    match character {
+                        '(' | '<' => depth += 1,
+                        ')' | '>' => depth -= 1,
+                        _ => {}
+                    }
+                    current.push(character);
+                }
+            }
+        }
+        parameters.push(current);
+
+        let mut names: Vec<String> = parameters
+            .iter()
+            .filter_map(|parameter| {
+                let (name, kind) = parameter.split_once(':')?;
+                // Tauri injects these; a client never sends them.
+                if kind.contains("State<") || kind.contains("AppHandle") {
+                    return None;
+                }
+                Some(camel_case(name.trim()))
+            })
+            .collect();
+        names.sort();
+        (!names.is_empty()).then_some(names)
+    }
+
+    fn camel_case(snake: &str) -> String {
+        let mut out = String::with_capacity(snake.len());
+        let mut capitalize = false;
+        for character in snake.chars() {
+            if character == '_' {
+                capitalize = true;
+            } else if capitalize {
+                out.push(character.to_ascii_uppercase());
+                capitalize = false;
+            } else {
+                out.push(character);
+            }
+        }
+        out
+    }
+
+    #[test]
     fn evidence_recording_failure_is_not_load_bearing_for_worker_launch() {
         let db = Connection::open_in_memory().unwrap();
         record_actual_execution_best_effort(
