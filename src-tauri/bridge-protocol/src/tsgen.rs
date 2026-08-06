@@ -248,9 +248,15 @@ fn scalar(kind: &str, object: &Map<String, Value>) -> String {
 }
 
 fn object_literal(object: &Map<String, Value>) -> String {
-    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
-        return "Record<string, unknown>".into();
-    };
+    let properties = object.get("properties").and_then(Value::as_object);
+    if properties.map_or(true, Map::is_empty) {
+        let value = object
+            .get("additionalProperties")
+            .map(ts_type)
+            .unwrap_or_else(|| "unknown".into());
+        return format!("Record<string, {value}>");
+    }
+    let properties = properties.unwrap();
     let required: Vec<&str> = object
         .get("required")
         .and_then(Value::as_array)
@@ -379,14 +385,15 @@ pub fn typescript() -> String {
         ));
     }
     out.push_str("}\n\n");
-    out.push_str(
-        "/** Result types for contracted methods that do not return the BridgeState snapshot. */\n",
-    );
+    out.push_str("/** Result types for every registered method. */\n");
     out.push_str("export interface BridgeMethodResults {\n");
-    for entry in TYPED_METHODS {
-        if let Some(result) = entry.result {
-            out.push_str(&format!("  \"{}\": {};\n", entry.method.as_str(), result));
-        }
+    for method in MethodName::ALL {
+        let entry = TypedMethod::for_method(*method);
+        out.push_str(&format!(
+            "  \"{}\": {};\n",
+            method.as_str(),
+            entry.result.unwrap_or("unknown")
+        ));
     }
     out.push_str("}\n");
 
@@ -396,6 +403,14 @@ pub fn typescript() -> String {
         out.push('\n');
     }
     for (name, schema) in &roots {
+        if let Some(definition) = definitions.get(name) {
+            assert_eq!(
+                declaration(name, schema),
+                declaration(name, definition),
+                "root and nested schema disagree for {name}"
+            );
+            continue;
+        }
         out.push('\n');
         out.push_str(&declaration(name, schema));
         out.push('\n');
@@ -433,6 +448,10 @@ mod tests {
             "(string | null)[]"
         );
         assert_eq!(ts_type(&json!({"enum": ["a", "b"]})), "\"a\" | \"b\"");
+        assert_eq!(
+            ts_type(&json!({"type": "object", "additionalProperties": {"type": "boolean"}})),
+            "Record<string, boolean>"
+        );
     }
 
     #[test]
@@ -481,9 +500,32 @@ mod tests {
         assert!(typescript.contains("export type UnitResult = null;"));
         for method in MethodName::ALL {
             assert!(
-                typescript.contains(method.as_str()),
-                "TypeScript union is missing {}",
+                typescript.contains(&format!(
+                    "\"{}\": {};",
+                    method.as_str(),
+                    TypedMethod::for_method(*method).result.unwrap_or("unknown")
+                )),
+                "BridgeMethodResults is missing {}",
                 method.as_str()
+            );
+        }
+        assert!(typescript.contains("harnesses: Record<string, boolean>;"));
+    }
+
+    #[test]
+    fn generated_typescript_exports_each_declaration_once() {
+        let typescript = typescript();
+        let mut declarations = std::collections::BTreeSet::new();
+        for line in typescript.lines() {
+            let tail = line
+                .strip_prefix("export interface ")
+                .or_else(|| line.strip_prefix("export type "));
+            let Some(name) = tail.and_then(|tail| tail.split([' ', '=']).next()) else {
+                continue;
+            };
+            assert!(
+                declarations.insert(name.to_owned()),
+                "duplicate TypeScript declaration for {name}"
             );
         }
     }
