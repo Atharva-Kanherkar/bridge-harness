@@ -68,7 +68,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
   useEffect(() => {
     if (!config || selectedAgentId === "") return;
     const selected = config.agents.find(item => item.id === selectedAgentId) ?? config.agents[0];
-    if (selected) { setSelectedAgentId(selected.id); setAgentDraft(structuredClone(selected)); }
+    if (selected) { setSelectedAgentId(selected.id ?? ""); setAgentDraft(structuredClone(selected)); }
   }, [config, selectedAgentId]);
 
   const modelOptions = useMemo(() => {
@@ -95,7 +95,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
       const next = await bridgeApi.saveAgentConfig(agentDraft);
       acceptConfig(next);
       const savedAgent = next.agents.find(item => item.id === agentDraft.id) ?? next.agents.find(item => item.name === agentDraft.name);
-      if (savedAgent) setSelectedAgentId(savedAgent.id);
+      if (savedAgent) setSelectedAgentId(savedAgent.id ?? "");
       flashSaved();
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
@@ -106,14 +106,14 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
     const verb = agentDraft.isBuiltIn ? "Reset" : "Delete";
     if (!window.confirm(`${verb} ${agentDraft.name}?`)) return;
     setBusy(true);
-    try { const next = await bridgeApi.deleteAgentConfig(agentDraft.id); acceptConfig(next); setSelectedAgentId(next.defaultAgentId); flashSaved(); }
+    try { const next = await bridgeApi.deleteAgentConfig(agentDraft.id ?? ""); acceptConfig(next); setSelectedAgentId(next.defaultAgentId); flashSaved(); }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
   const makeDefault = async () => {
     if (!agentDraft) return;
     setBusy(true);
-    try { acceptConfig(await bridgeApi.setDefaultAgent(agentDraft.id)); flashSaved(); }
+    try { acceptConfig(await bridgeApi.setDefaultAgent(agentDraft.id ?? "")); flashSaved(); }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
@@ -185,7 +185,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
         {section === "agents" && config && <div className="mx-auto flex max-w-5xl gap-5">
           <section className="w-64 shrink-0">
             <div className="mb-3 flex items-center justify-between"><div><h2 className="font-display text-base font-semibold">Agents</h2><p className="text-[11px] text-muted-foreground">{config.agents.length} presets</p></div><button type="button" onClick={() => { const draft = newAgent(); setSelectedAgentId(""); setAgentDraft(draft); }} className="grid h-8 w-8 place-items-center rounded-xl bg-foreground text-background hover:opacity-90" aria-label="Create agent"><Plus size={14}/></button></div>
-            <div className="space-y-1">{config.agents.map(agent => <button type="button" key={agent.id} onClick={() => { setSelectedAgentId(agent.id); setAgentDraft(structuredClone(agent)); }} className={cn("w-full rounded-2xl border p-3 text-left transition-colors", agentDraft?.id === agent.id ? "border-foreground/15 bg-foreground/[0.07]" : "border-transparent hover:bg-foreground/[0.04]")}><div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", agent.enabled ? "bg-emerald-400" : "bg-muted-foreground/30")}/><span className="min-w-0 flex-1 truncate text-[13px] font-medium">{agent.name}</span>{agent.isDefault && <span className="rounded-full bg-violet-400/10 px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-violet-300">default</span>}</div><p className="mt-1 pl-4 text-[10px] capitalize text-muted-foreground">{agent.role} · {agent.harness}</p></button>)}</div>
+            <div className="space-y-1">{config.agents.map(agent => <button type="button" key={agent.id} onClick={() => { setSelectedAgentId(agent.id ?? ""); setAgentDraft(structuredClone(agent)); }} className={cn("w-full rounded-2xl border p-3 text-left transition-colors", agentDraft?.id === agent.id ? "border-foreground/15 bg-foreground/[0.07]" : "border-transparent hover:bg-foreground/[0.04]")}><div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", agent.enabled ? "bg-emerald-400" : "bg-muted-foreground/30")}/><span className="min-w-0 flex-1 truncate text-[13px] font-medium">{agent.name}</span>{agent.isDefault && <span className="rounded-full bg-violet-400/10 px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-violet-300">default</span>}</div><p className="mt-1 pl-4 text-[10px] capitalize text-muted-foreground">{agent.role} · {agent.harness}</p></button>)}</div>
           </section>
           {agentDraft && <section className="min-w-0 flex-1 rounded-3xl border border-border/80 bg-card/45 p-5">
             <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-semibold">{agentDraft.id ? agentDraft.name : "Create agent"}</h2><p className="mt-1 text-xs text-muted-foreground">{agentDraft.isBuiltIn ? "Built-in preset · reset restores Bridge defaults" : "Custom preset · safe to delete at any time"}</p></div><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={agentDraft.enabled} onChange={event => setAgentDraft(value => value && ({ ...value, enabled: event.target.checked }))}/>Enabled</label></div>

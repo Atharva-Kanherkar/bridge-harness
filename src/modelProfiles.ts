@@ -95,7 +95,7 @@ export function resolveProfileOption(
     if (!profile) break;
     const selected = options.find(option => option.adapter.id === profile.provider && option.model.id === profile.model);
     if (selected) return selected;
-    current = profile.fallbackPurpose;
+    current = profile.fallbackPurpose ?? null;
   }
   const tier = purposeTier[purpose];
   return options.find(option => option.model.tier === tier && option.model.defaultForTier)

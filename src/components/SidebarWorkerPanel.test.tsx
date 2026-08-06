@@ -15,7 +15,7 @@ const worker: Session = {
   usagePercent: null,
   metricSource: "reported",
   parentSessionId: "parent-1",
-  restorationMode: "fresh",
+  restorationMode: "fresh", continuationFidelity: "native", kind: "worker",
 };
 
 const runtime: WorkerRuntimeRecord = {

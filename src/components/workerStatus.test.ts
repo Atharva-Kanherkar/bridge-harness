@@ -5,7 +5,7 @@ import type { Session, WorkerRuntimeRecord } from "../types";
 const session = (over: Partial<Session> = {}): Session => ({
   id: "w1", workspaceId: "ws", harness: "codex", label: "Implementation", status: "working",
   startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated",
-  restorationMode: "fresh", parentSessionId: "p", ...over,
+  restorationMode: "fresh", continuationFidelity: "native", kind: "worker", parentSessionId: "p", ...over,
 });
 const runtime = (over: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRecord => ({
   sessionId: "w1", parentSessionId: "p", lifecycleState: "working", taskFamily: "implementation",
