@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.bridge.deck",
   "build": {
-    "beforeDevCommand": "bun run prepare:browser-host:dev && bun run dev",
+    "beforeDevCommand": "bun run prepare:browser-host:dev && bun run prepare:daemon:dev && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build && bun run prepare:browser-host",
+    "beforeBuildCommand": "bun run build && bun run prepare:browser-host && bun run prepare:daemon",
     "frontendDist": "../dist"
   },
   "app": {
@@ -32,7 +32,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
-    "externalBin": ["binaries/bridge-browser-host"],
+    "externalBin": ["binaries/bridge-browser-host", "binaries/bridged"],
     "resources": {
       "../browser-extension/": "browser-extension/",
       "../browser-skills/": "browser-skills/"

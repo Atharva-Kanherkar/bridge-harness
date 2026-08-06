@@ -42,6 +42,7 @@ impl RunningDaemon {
             // a fixed port. The health surface has its own unit coverage.
             health_addr: None,
             browser_extension_path: data_dir.join("no-extension"),
+            handshake_timeout: Duration::from_millis(400),
         })
         .expect("daemon starts");
         let daemon = std::sync::Arc::new(daemon);
@@ -59,7 +60,7 @@ impl RunningDaemon {
         if let Some(handle) = self.accept_loop.take() {
             handle.join().unwrap();
         }
-        self.daemon.shutdown();
+        self.daemon.shutdown(Duration::from_secs(5));
     }
 }
 
@@ -318,6 +319,7 @@ fn a_second_owner_of_the_data_directory_is_refused_with_identity() {
         socket_path: Some(fixture.path().join("second.sock")),
         health_addr: None,
         browser_extension_path: fixture.path().join("no-extension"),
+        handshake_timeout: Duration::from_millis(400),
     });
     match refused {
         Err(StartupError::Ownership(error)) => {
@@ -366,6 +368,7 @@ fn a_killed_daemons_interrupted_turn_is_surfaced_after_restart() {
         socket_path: None,
         health_addr: None,
         browser_extension_path: data_dir.join("no-extension"),
+        handshake_timeout: Duration::from_millis(400),
     })
     .expect("restart acquires the dead owner's directory");
     let daemon = std::sync::Arc::new(daemon);
@@ -393,7 +396,7 @@ fn a_killed_daemons_interrupted_turn_is_surfaced_after_restart() {
 
     daemon.state.shutting_down.store(true, Ordering::SeqCst);
     accept_loop.join().unwrap();
-    daemon.shutdown();
+    daemon.shutdown(Duration::from_secs(5));
 }
 
 #[test]
@@ -435,4 +438,299 @@ fn shutdown_stops_accepting_and_removes_the_socket() {
             Ok(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     }
+}
+
+#[test]
+fn connection_slots_are_released_after_clean_disconnects() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+
+    // Churn more clean connections than the daemon has slots; each must give
+    // its slot back promptly even though the event bus stays quiet.
+    for round in 0..(bridged::MAX_CONNECTIONS + 4) {
+        let mut client = Client::connect(&running.socket_path);
+        let handshake = client.handshake(&running.token);
+        assert!(handshake["result"].is_object(), "round {round}: {handshake}");
+        drop(client);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running.daemon.state.connections.load(Ordering::SeqCst) > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "{} slot(s) still occupied after every client disconnected",
+            running.daemon.state.connections.load(Ordering::SeqCst)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // And the daemon still serves.
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+    let (health, _) = client.call(1, "health/health", None);
+    assert_eq!(health["result"]["ok"], json!(true));
+
+    running.stop();
+}
+
+#[test]
+fn a_silent_connection_is_reclaimed_at_the_handshake_deadline() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+
+    // Connect and say nothing. The daemon (400ms handshake deadline in
+    // tests) must reject and close rather than let the slot be parked on.
+    let mut client = Client::connect(&running.socket_path);
+    let started = Instant::now();
+    let rejection = client.recv();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(rejection["error"]["code"], json!(-32600));
+    assert!(rejection["error"]["message"].as_str().unwrap().contains("deadline"));
+    let mut end = String::new();
+    client.reader.read_line(&mut end).unwrap();
+    assert!(end.is_empty(), "the connection closes after the deadline rejection");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while running.daemon.state.connections.load(Ordering::SeqCst) > 0 {
+        assert!(Instant::now() < deadline, "the silent connection's slot never freed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    running.stop();
+}
+
+#[test]
+fn cancellation_and_envelope_semantics_follow_json_rpc() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+
+    // Request-form $/cancel is a malformed use of a notification: the daemon
+    // must not claim success for a cancellation that cannot happen.
+    let (response, _) = client.call(1, "$/cancel", Some(json!({"id": 99})));
+    assert_eq!(response["error"]["code"], json!(-32600));
+    assert!(response["error"]["message"].as_str().unwrap().contains("interrupt_turn"));
+
+    // Notification-form $/cancel gets no response; the connection moves on.
+    client.send(json!({"jsonrpc": "2.0", "method": "$/cancel", "params": {"id": 99}}));
+    let (health, notifications) = client.call(2, "health/health", None);
+    assert_eq!(health["result"]["ok"], json!(true));
+    assert!(notifications.is_empty(), "cancel produced frames: {notifications:?}");
+
+    // A structurally invalid request echoes its id with invalid_request —
+    // not a parse error with a null id.
+    client.send(json!({"jsonrpc": "2.0", "id": 7, "params": {}}));
+    let response = client.recv();
+    assert_eq!(response["id"], json!(7));
+    assert_eq!(response["error"]["code"], json!(-32600));
+
+    // Non-JSON is the parse-error case, with the null id the spec requires.
+    client.writer.write_all(b"not json at all\n").unwrap();
+    client.writer.flush().unwrap();
+    let response = client.recv();
+    assert_eq!(response["id"], Value::Null);
+    assert_eq!(response["error"]["code"], json!(-32700));
+
+    running.stop();
+}
+
+#[test]
+fn requests_after_shutdown_are_refused_with_their_own_id() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+
+    running.daemon.state.shutting_down.store(true, Ordering::SeqCst);
+    client.send(json!({"jsonrpc": "2.0", "id": 41, "method": "health/health"}));
+    // The read loop may close the connection on an idle poll before reading
+    // the frame; a refusal, when one arrives, must carry the request's id.
+    let mut line = String::new();
+    if client.reader.read_line(&mut line).is_ok() && !line.is_empty() {
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["id"], json!(41));
+        assert_eq!(response["error"]["code"], json!(2003));
+    }
+
+    running.stop();
+}
+
+/// An adapter runtime that records approval responses, standing in for a live
+/// provider process.
+struct RecordingRuntime {
+    responded: std::sync::Arc<std::sync::Mutex<Vec<(Value, String)>>>,
+}
+
+impl bridge_core::adapters::AdapterRuntime for RecordingRuntime {
+    fn process_id(&self) -> u32 {
+        0
+    }
+    fn provider_session_id(&self) -> &str {
+        "recording"
+    }
+    fn current_turn(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+        std::sync::Arc::new(std::sync::Mutex::new(None))
+    }
+    fn send_turn(&self, _text: &str) -> Result<(), bridge_core::BridgeError> {
+        Ok(())
+    }
+    fn interrupt(&self) -> Result<(), bridge_core::BridgeError> {
+        Ok(())
+    }
+    fn respond(&self, request_id: Value, decision: &str) -> Result<(), bridge_core::BridgeError> {
+        self.responded.lock().unwrap().push((request_id, decision.to_owned()));
+        Ok(())
+    }
+    fn stop(&mut self, _reason: bridge_core::adapters::ShutdownReason) {}
+}
+
+#[test]
+fn an_approval_is_resolved_end_to_end_over_the_socket() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+
+    // Create the chat over the socket, then wire a recording adapter and a
+    // pending approval into the runtime — the shape a live provider leaves
+    // when it asks for permission mid-turn.
+    let (created, _) = client.call(1, "sessions/create_chat", Some(json!({"harness": "shell"})));
+    let session_id = created["result"]["sessions"][0]["id"].as_str().unwrap().to_owned();
+    let responded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    running.daemon.core.adapters.lock().unwrap().insert(
+        session_id.clone(),
+        Box::new(RecordingRuntime { responded: responded.clone() }),
+    );
+    let approval_sequence = {
+        let db = running.daemon.core.db.lock().unwrap();
+        let event = bridge_core::store::session_event(
+            &db,
+            &session_id,
+            &bridge_core::agent::NormalizedEvent {
+                kind: "approval.requested".into(),
+                item_id: Some("tool-1".into()),
+                role: Some("tool".into()),
+                status: Some("pending".into()),
+                title: Some("Run cargo test".into()),
+                text: None,
+                data: json!({"requestId": "approval-1"}),
+            },
+            &json!({"adapter": "shell"}),
+        )
+        .unwrap();
+        event.sequence
+    };
+
+    // Approve over the socket.
+    let (resolved, mut notifications) = client.call(
+        2,
+        "approvals/resolve_approval",
+        Some(json!({
+            "sessionId": session_id,
+            "eventId": approval_sequence,
+            "decision": "accept",
+        })),
+    );
+    assert!(
+        resolved.get("error").is_none() && resolved.get("result").is_some(),
+        "resolve_approval must succeed: {resolved}"
+    );
+
+    // The decision reached the adapter…
+    let responses = responded.lock().unwrap().clone();
+    assert_eq!(responses, vec![(json!("approval-1"), "accept".to_owned())]);
+
+    // …the resolution is durable and replayable from the cursor…
+    let (replayed, more) = client.call(
+        3,
+        "sessions/replay_session_events",
+        Some(json!({"sessionId": session_id, "afterSequence": approval_sequence})),
+    );
+    notifications.extend(more);
+    let events = replayed["result"].as_array().unwrap();
+    assert!(
+        events.iter().any(|event| event["kind"] == json!("approval.resolved")
+            && event["status"] == json!("accept")),
+        "replay must include the resolution: {events:?}"
+    );
+
+    // …and the durable agent event was pushed to this connection live (it
+    // may already have interleaved with the responses above).
+    let resolution_pushed = |frame: &Value| {
+        frame["method"] == json!("agent-event")
+            && frame["params"]["kind"] == json!("approval.resolved")
+            && frame["params"]["sessionId"] == json!(session_id)
+    };
+    while !notifications.iter().any(resolution_pushed) {
+        // recv() panics via the read timeout if the notification never comes.
+        notifications.push(client.recv());
+    }
+
+    running.stop();
+}
+
+#[test]
+fn sigkill_of_a_live_daemon_frees_the_directory_and_preserves_state() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+
+    // A real daemon process, killed for real: no in-process shortcuts.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_bridged"))
+        .args(["--data-dir", data_dir.to_str().unwrap(), "--health-addr", "none"])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let socket_path = data_dir.join(bridged::SOCKET_FILE_NAME);
+    let token_path = data_dir.join(TOKEN_FILE_NAME);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !socket_path.exists() || !token_path.exists() {
+        assert!(Instant::now() < deadline, "the daemon process never came up");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let token = std::fs::read_to_string(&token_path).unwrap().trim().to_owned();
+
+    let mut client = Client::connect(&socket_path);
+    let handshake = client.handshake(&token);
+    assert!(handshake["result"].is_object(), "{handshake}");
+    let (created, _) = client.call(1, "sessions/create_chat", Some(json!({"harness": "shell"})));
+    let session_id = created["result"]["sessions"][0]["id"].as_str().unwrap().to_owned();
+
+    // SIGKILL: no graceful path runs — no drain, no adapter teardown, no
+    // socket cleanup, no lease release code.
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    // The lease died with the process: a successor starts immediately, and
+    // the killed daemon's committed state is intact.
+    let running = RunningDaemon::start(data_dir);
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+    let (state, _) = client.call(1, "state/get_state", None);
+    let sessions = state["result"]["sessions"].as_array().unwrap();
+    assert!(
+        sessions.iter().any(|session| session["id"] == json!(session_id)),
+        "the chat created through the killed daemon survives: {sessions:?}"
+    );
+
+    running.stop();
+}
+
+#[test]
+fn shutdown_drains_open_connections_before_completing() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+
+    // An idle-but-open connection: the drain must not need the client's
+    // cooperation — the read loop notices the flag on its next poll.
+    let daemon = running.daemon.clone();
+    daemon.state.shutting_down.store(true, Ordering::SeqCst);
+    let drained_by = Instant::now() + Duration::from_secs(5);
+    while daemon.state.connections.load(Ordering::SeqCst) > 0 {
+        assert!(Instant::now() < drained_by, "the idle connection never drained");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    running.stop();
 }

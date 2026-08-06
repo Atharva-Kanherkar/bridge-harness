@@ -282,7 +282,17 @@ pub fn resolve_approval(
     )?;
     let data: Value = serde_json::from_str(&data)
         .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
-    if data.get("approvalType").and_then(Value::as_str) == Some("delegation_path_scope") {
+    // Two storage shapes reach this reader: adapter approvals persist through
+    // the agent-event envelope (details nested under `data`), while policy
+    // approvals are typed forest entries with top-level fields. Look in the
+    // envelope's `data` first and fall back to the top level.
+    let detail = |name: &str| {
+        data.get("data")
+            .and_then(|nested| nested.get(name))
+            .or_else(|| data.get(name))
+            .cloned()
+    };
+    if detail("approvalType").as_ref().and_then(Value::as_str) == Some("delegation_path_scope") {
         let launch = live_turn::resolve_policy_delegation_approval(
             &db, session_id, event_id, decision, &data,
         )?;
@@ -305,9 +315,7 @@ pub fn resolve_approval(
         core.events.publish(CoreEvent::StateChanged);
         return Ok(());
     }
-    let request_id = data
-        .get("requestId")
-        .cloned()
+    let request_id = detail("requestId")
         .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
     let is_worker = store::worker_runtime(&db, session_id)?.is_some();
     if is_worker {
@@ -345,8 +353,8 @@ pub fn resolve_approval(
         text: None,
         data: serde_json::json!({"requestEventId":event_id,"decision":decision}),
     };
-    normalized.item_id = data
-        .get("itemId")
+    normalized.item_id = detail("itemId")
+        .as_ref()
         .and_then(Value::as_str)
         .map(str::to_owned);
     let db = core.db.lock().unwrap();
@@ -380,6 +388,10 @@ pub fn resolve_approval(
 
 pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<(), BridgeError> {
     let runtime_id = format!("terminal:{workspace_id}");
+    // Exclusive across the whole check → spawn → insert window: two
+    // concurrent opens would otherwise both pass the check, and the second
+    // insert would overwrite the first entry and orphan its PTY child.
+    let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal open")?;
     if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
         return Ok(());
     }

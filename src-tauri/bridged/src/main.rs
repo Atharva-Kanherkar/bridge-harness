@@ -35,7 +35,8 @@ fn main() -> ExitCode {
     };
 
     // SIGINT/SIGTERM request a graceful shutdown; the accept loop polls the
-    // flag and exits, after which the daemon stops adapters and cleans up.
+    // flag and exits, after which the daemon drains in-flight connections,
+    // stops adapters, and cleans up.
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         let state = daemon.state.clone();
         unsafe {
@@ -51,7 +52,7 @@ fn main() -> ExitCode {
         daemon.core.database_path.parent().unwrap_or(&daemon.socket_path).display()
     );
     let served = bridged::serve(&daemon, listener);
-    daemon.shutdown();
+    daemon.shutdown(bridged::DEFAULT_DRAIN_TIMEOUT);
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -93,17 +94,39 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConf
                 .map_err(|_| format!("--health-addr must be ip:port or none, got {addr}"))?,
         ),
     };
-    let browser_extension_path = browser_extension.unwrap_or_else(|| {
-        // The bundled extension sits next to the desktop app's resources in
-        // production; in a repo checkout, use the in-tree copy.
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../browser-extension")
-    });
+    let browser_extension_path =
+        browser_extension.unwrap_or_else(default_browser_extension_path);
     Ok(bridged::DaemonConfig {
         data_dir,
         socket_path,
         health_addr,
         browser_extension_path,
+        handshake_timeout: bridged::DEFAULT_HANDSHAKE_TIMEOUT,
     })
+}
+
+/// The bundled browser extension, resolved at runtime. `bridged` ships as a
+/// Tauri external binary in `Contents/MacOS/`, next to the app binary and one
+/// step from `Contents/Resources/` where the extension is bundled; a source
+/// checkout falls back to the in-tree copy. The compile-time path is a last
+/// resort for `cargo run` from an uninstalled build.
+fn default_browser_extension_path() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("BRIDGE_BROWSER_EXTENSION") {
+        return PathBuf::from(explicit);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            for candidate in [
+                bin_dir.join("../Resources/browser-extension"), // macOS app bundle
+                bin_dir.join("browser-extension"),              // flat layouts
+            ] {
+                if candidate.is_dir() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../browser-extension")
 }
 
 /// The desktop app's data directory, so `bridged` with no flags owns the same

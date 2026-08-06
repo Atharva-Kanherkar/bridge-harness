@@ -169,7 +169,8 @@ export type BridgeNotification =
   | "adapters-changed"
   | "learning-job-changed"
   | "session-output"
-  | "account-usage";
+  | "account-usage"
+  | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
   { notification: "agent-event", delivery: "mixed" },
@@ -178,6 +179,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "learning-job-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
+  { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
 export const ERROR_CODES = {
