@@ -1,10 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// The typed protocol boundary. Every Tauri round-trip goes through these two
+// helpers, so params, results, and event names all come from the generated
+// contract: renaming a wire field breaks `bun run check`, not a user session.
+const COMMAND_BY_METHOD = Object.fromEntries(
+  BRIDGE_METHODS.map(entry => [entry.method, entry.command]),
+) as Record<BridgeMethod, string>;
+
+function call<M extends BridgeMethod>(
+  method: M,
+  ...params: BridgeMethodParams[M] extends undefined ? [] : [BridgeMethodParams[M]]
+): Promise<BridgeMethodResults[M]> {
+  return invoke(COMMAND_BY_METHOD[method], params[0] as Record<string, unknown> | undefined);
+}
+
+const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) => void): Promise<UnlistenFn> =>
+  listen<T>(notification, event => handler(event.payload));
+
+/** Adapt a contract `UnitResult` (null) to the `Promise<void>` the app uses. */
+const unit = (result: Promise<null>): Promise<void> => result.then(() => undefined);
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
@@ -61,10 +82,10 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     { id: "demo-3", projectId: "demo-project", city: "Reykjavik", title: "Add event ledger", branch: "bridge/event-ledger", path: "/Users/you/bridge/Reykjavik", status: "ready", dirtyFiles: 0, additions: 148, deletions: 12, createdAt: now }
   ],
   sessions: [
-    { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Orchestrator", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1", model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "hot" },
-    { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native" },
-    { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored" },
-    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh" }
+    { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Orchestrator", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1", model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "hot", continuationFidelity: "native", kind: "orchestrator" },
+    { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
+    { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", kind: "worker" },
+    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" }
   ],
   events: [
     { id: 2, source: "git", kind: "workspace.changed", entityId: "demo-1", body: "4 files changed · +284 −31", createdAt: now },
@@ -114,7 +135,7 @@ const mockForests: Record<string, SessionForestSnapshot> = {
       { sessionId: "session-1w", parentSessionId: "session-1", lifecycleState: "working", taskFamily: "implementation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: "/tmp/bridge/worker-1w", worktreeBranch: "bridge/worker-1w", lastResult: null, lastActivityAt: now, updatedAt: now },
       { sessionId: "session-1w2", parentSessionId: "session-1", lifecycleState: "completed", taskFamily: "verification", compatibilityKey: "demo", resultStatus: "reported", retryCount: 0, warmUntil: null, worktreePath: null, worktreeBranch: null, lastResult: { status: "completed", summary: "All 42 auth tests pass", tests: ["auth suite"] }, lastActivityAt: now, updatedAt: now }
     ],
-    workerQueue: [{ id: "queue-1", parentSessionId: "session-1", workspaceId: "demo-1", turnId: "mock-turn-1", request: { role: "implementation", objective: "Update the auth serializer", ownedPaths: ["src/auth/**"], writeMode: "isolated", reason: "owned_path_conflict" }, actualModel: "gpt-5.6-terra", queueStatus: "queued", sequence: 1, dispatchedSessionId: null, createdAt: now, updatedAt: now }],
+    workerQueue: [{ id: "queue-1", parentSessionId: "session-1", workspaceId: "demo-1", turnId: "mock-turn-1", request: { role: "implementation", objective: "Update the auth serializer", ownedPaths: ["src/auth/**"], writeMode: "isolated", reason: "owned_path_conflict" }, actualModel: "gpt-5.6-terra", queueStatus: "queued", sequence: 1, attemptCount: 0, dispatchedSessionId: null, expiresAt: now, createdAt: now, updatedAt: now }],
     usage: [
       { id: 1, workspaceId: "demo-1", sessionId: "session-1", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, uncachedInputTokens: null, contextPercent: 38, capabilityUnits: 0, runtimeMs: null, costMicrousd: 12_500, costSource: "provider_reported", stablePrefixId: null, stablePrefixHash: null, promptSchemaVersion: null, prefixTokenEstimate: null, harness: "codex", model: null, role: null, taskFamily: null, restorationMode: null, crossHarnessReuse: null, source: "provider.codex", createdAt: now },
       { id: 2, workspaceId: "demo-1", sessionId: "session-1w", turnId: "mock-turn-1", inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, uncachedInputTokens: null, contextPercent: null, capabilityUnits: 8, runtimeMs: null, costMicrousd: null, costSource: null, stablePrefixId: null, stablePrefixHash: null, promptSchemaVersion: null, prefixTokenEstimate: null, harness: null, model: null, role: null, taskFamily: null, restorationMode: null, crossHarnessReuse: null, source: "policy.spawn.strong", createdAt: now }
@@ -147,7 +168,7 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   if (existing) return structuredClone(existing);
   const session = mockState.sessions.find(item => item.id === sessionId);
   const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
-  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "none", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null };
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null };
   mockForests[sessionId] = created;
   return structuredClone(created);
 }
@@ -160,7 +181,7 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 }
 
 const mockHealth: Health = {
-  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, opencode: true, shell: true }, database: "demo",
+  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", telemetry_database: "demo-telemetry",
   adapters: [
     { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
     { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
@@ -207,14 +228,14 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
 }
 
 export const bridgeApi = {
-  browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? invoke("browser_bridge_state") : Promise.resolve(structuredClone(mockBrowserBridge)),
+  browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   installBrowserNativeHost: async (): Promise<string> => {
-    if (isTauri()) return invoke("install_browser_native_host");
+    if (isTauri()) return call("browser/install_browser_native_host");
     mockBrowserBridge.nativeHostInstalled = true; mockBrowserBridge.nativeHostManifestPath = "/mock/dev.bridge.deck.browser.json";
     return mockBrowserBridge.nativeHostManifestPath;
   },
   browserAction: async (request: BrowserActionRequest): Promise<string> => {
-    if (isTauri()) return invoke("browser_action", { request });
+    if (isTauri()) return call("browser/browser_action", { request });
     if (request.kind === "list_tabs") mockBrowserBridge.tabs = [{ id: 1, title: "Bridge test tab", url: "https://example.com", domain: "example.com", favIconUrl: null, attached: false }];
     if (request.kind === "attach" && request.tabId) {
       mockBrowserBridge.transportConnected = true; mockBrowserBridge.tabs = mockBrowserBridge.tabs.map(tab => ({ ...tab, attached: tab.id === request.tabId }));
@@ -224,41 +245,41 @@ export const bridgeApi = {
     return crypto.randomUUID();
   },
   setBrowserPermission: async (permission: "read_only" | "interact"): Promise<void> => {
-    if (isTauri()) return invoke("set_browser_permission", { permission });
+    if (isTauri()) return unit(call("browser/set_browser_permission", { permission }));
     if (mockBrowserBridge.lease) mockBrowserBridge.lease.permission = permission;
   },
   resolveBrowserApproval: async (approvalId: string, allow: boolean): Promise<void> => {
-    if (isTauri()) return invoke("resolve_browser_approval", { approvalId, allow });
+    if (isTauri()) return unit(call("browser/resolve_browser_approval", { approvalId, allow }));
     mockBrowserBridge.pendingApproval = null; mockBrowserBridge.status = allow ? "acting" : "paused";
   },
-  takeoverBrowser: async (): Promise<void> => { if (isTauri()) return invoke("takeover_browser"); mockBrowserBridge.status = "paused"; },
-  detachBrowser: async (): Promise<string> => { if (isTauri()) return invoke("detach_browser"); mockBrowserBridge.lease = null; mockBrowserBridge.status = "not_attached"; return crypto.randomUUID(); },
+  takeoverBrowser: async (): Promise<void> => { if (isTauri()) return unit(call("browser/takeover_browser")); mockBrowserBridge.status = "paused"; },
+  detachBrowser: async (): Promise<string> => { if (isTauri()) return call("browser/detach_browser"); mockBrowserBridge.lease = null; mockBrowserBridge.status = "not_attached"; return crypto.randomUUID(); },
   routeBrowser: (request: BrowserRouteRequest): Promise<BrowserRouteDecision> => {
-    if (isTauri()) return invoke("route_browser", { request });
+    if (isTauri()) return call("browser/route_browser", { request });
     const route: BrowserRouteDecision["route"] = request.structuredApiAvailable ? "mcp_api" : request.needsGeoOrProxy || request.unattended || request.needsParallelism && request.remoteProviderConfigured ? "remote_browser" : request.needsUserAuth ? "attached_tab" : request.needsIsolation || request.needsParallelism ? "local_headless" : request.domControlAvailable ? "attached_tab" : "computer_use";
     return Promise.resolve({ route, reason: "Mock routing decision", requiresUserGrant: route === "attached_tab" || route === "computer_use" });
   },
-  browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? invoke("browser_skills") : Promise.resolve([]),
-  configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return invoke("configure_remote_browser", { config }); mockBrowserBridge.remoteProvider = config; },
-  startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? invoke("start_remote_browser", { initialUrl }) : Promise.resolve({ id: "mock-remote", initialUrl }),
-  skillCatalog: (): Promise<SkillCatalog> => isTauri() ? invoke("skill_catalog") : Promise.resolve(structuredClone(mockSkills)),
-  skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? invoke("skill_suggestions", { query, provider }) : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
+  browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? call("browser/browser_skills") : Promise.resolve([]),
+  configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
+  startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
+  skillCatalog: (): Promise<SkillCatalog> => isTauri() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
+  skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
   previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {
-    if (isTauri()) return invoke("preview_skill_change", { skillId, action, targets });
+    if (isTauri()) return call("skills/preview_skill_change", { skillId, action, targets }) as Promise<SkillPreview>;
     const skill = mockSkills.community.find(item => item.id === skillId); if (!skill) throw new Error("Skill not found");
     const confirmationId = crypto.randomUUID(); mockSkillConsents.set(confirmationId, { skillId, action, targets });
     return { confirmationId, expiresAt: new Date(Date.now() + 300_000).toISOString(), action, skill: structuredClone(skill), targets, changes: targets.map(provider => `${action} ${skill.name} for ${provider}`), installer: mockSkills.installer };
   },
   executeSkillChange: async (confirmationId: string): Promise<SkillActionResult[]> => {
-    if (isTauri()) return invoke("execute_skill_change", { confirmationId });
+    if (isTauri()) return call("skills/execute_skill_change", { confirmationId }) as Promise<SkillActionResult[]>;
     const consent = mockSkillConsents.get(confirmationId); if (!consent) throw new Error("Confirmation is invalid or already used"); mockSkillConsents.delete(confirmationId);
     const skill = mockSkills.community.find(item => item.id === consent.skillId)!;
     for (const target of consent.targets) { const state = skill.providerStates.find(item => item.provider === target)!; state.installed = consent.action === "install"; state.managed = consent.action === "install"; state.installedRef = consent.action === "install" ? skill.pinnedRef : null; }
     return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
   },
-  marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? invoke("marketplace_catalog") : Promise.resolve(structuredClone(mockMarketplace)),
+  marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? call("marketplace/marketplace_catalog") as Promise<MarketplaceCatalog> : Promise.resolve(structuredClone(mockMarketplace)),
   marketplaceAppAuthStates: (): Promise<MarketplaceAppAuthState[]> => {
-    if (isTauri()) return invoke("marketplace_app_auth_states");
+    if (isTauri()) return call("marketplace/marketplace_app_auth_states") as Promise<MarketplaceAppAuthState[]>;
     const variant = mockMarketplace.providers.find(item => item.provider === "codex")?.variants.find(item => item.appConnectorIds.includes("connector_vercel"));
     const authenticationState = variant?.authenticationState === "connected" ? "connected" : "required";
     return Promise.resolve([
@@ -268,7 +289,7 @@ export const bridgeApi = {
     ]);
   },
   marketplaceAction: async (provider: MarketplaceProvider, pluginId: string, marketplace: string | null, action: MarketplaceAction): Promise<MarketplaceActionResult> => {
-    if (isTauri()) return invoke("marketplace_action", { provider, pluginId, marketplace, action });
+    if (isTauri()) return call("marketplace/marketplace_action", { provider, pluginId, marketplace, action }) as Promise<MarketplaceActionResult>;
     const entry = mockMarketplace.providers.find(item => item.provider === provider)?.variants.find(item => item.pluginId === pluginId);
     if (!entry) throw new Error(`${provider} plugin not found`);
     if (action === "install") entry.installed = true;
@@ -278,47 +299,47 @@ export const bridgeApi = {
     if (action === "authenticate") entry.authenticationState = "connected";
     return { provider, pluginId, action, success: true, message: `${action} completed`, error: null };
   },
-  health: (): Promise<Health> => isTauri() ? invoke("health") : Promise.resolve(structuredClone(mockHealth)),
-  state: (): Promise<BridgeState> => isTauri() ? invoke("get_state") : Promise.resolve(snapshot()),
-  modelSetup: (): Promise<ModelSetupState> => isTauri() ? invoke("get_model_setup") : Promise.resolve(structuredClone(mockModelSetup)),
-  recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? invoke("recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
-  saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? invoke("save_model_profiles", { profiles }) : Promise.resolve(saveMockProfiles(profiles)),
-  resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? invoke("reset_model_profiles") : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
-  configState: (): Promise<ConfigState> => isTauri() ? invoke("get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
+  health: (): Promise<Health> => isTauri() ? call("health/health") : Promise.resolve(structuredClone(mockHealth)),
+  state: (): Promise<BridgeState> => isTauri() ? call("state/get_state") : Promise.resolve(snapshot()),
+  modelSetup: (): Promise<ModelSetupState> => isTauri() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
+  recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
+  saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
+  resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? call("models/reset_model_profiles") as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  configState: (): Promise<ConfigState> => isTauri() ? call("config/get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
   saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
-    if (isTauri()) return invoke("save_harness_config", { config });
+    if (isTauri()) return call("config/save_harness_config", { config });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === config.id ? { ...structuredClone(config), isOverride: true } : item);
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetHarnessConfig: (id: HarnessConfig["id"]): Promise<ConfigState> => {
-    if (isTauri()) return invoke("reset_harness_config", { id });
+    if (isTauri()) return call("config/reset_harness_config", { id });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
     return Promise.resolve(structuredClone(mockConfigState));
   },
   refreshOpenCodeCatalog: (directory?: string): Promise<OpenCodeCatalog> => {
-    if (isTauri()) return invoke("refresh_opencode_catalog", { directory: directory || null });
+    if (isTauri()) return call("config/refresh_opencode_catalog", { directory: directory || null }) as Promise<OpenCodeCatalog>;
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (isTauri()) return invoke("set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null });
+    if (isTauri()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null }) as Promise<OpenCodeCatalog>;
     void apiKey;
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (isTauri()) return invoke("remove_opencode_provider_auth", { providerId, directory: directory || null });
+    if (isTauri()) return call("config/remove_opencode_provider_auth", { providerId, directory: directory || null }) as Promise<OpenCodeCatalog>;
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: false, models: [] } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   saveAgentConfig: (agent: AgentDefinition): Promise<ConfigState> => {
-    if (isTauri()) return invoke("save_agent_config", { agent });
+    if (isTauri()) return call("config/save_agent_config", { agent });
     const value = { ...structuredClone(agent), id: agent.id || `custom-${crypto.randomUUID()}`, isDefault: false, updatedAt: new Date().toISOString() };
     const index = mockConfigState.agents.findIndex(item => item.id === value.id);
     if (index >= 0) mockConfigState.agents[index] = value; else mockConfigState.agents.push(value);
     return Promise.resolve(structuredClone(mockConfigState));
   },
   deleteAgentConfig: (id: string): Promise<ConfigState> => {
-    if (isTauri()) return invoke("delete_agent_config", { id });
+    if (isTauri()) return call("config/delete_agent_config", { id });
     const original = mockConfigState.agents.find(item => item.id === id);
     if (original?.isBuiltIn) mockConfigState.agents = mockConfigState.agents.map(item => item.id === id ? { ...item, systemPrompt: "", enabled: true, model: null } : item);
     else mockConfigState.agents = mockConfigState.agents.filter(item => item.id !== id);
@@ -327,21 +348,21 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(mockConfigState));
   },
   setDefaultAgent: (id: string): Promise<ConfigState> => {
-    if (isTauri()) return invoke("set_default_agent", { id });
+    if (isTauri()) return call("config/set_default_agent", { id });
     mockConfigState.defaultAgentId = id;
     mockConfigState.agents = mockConfigState.agents.map(item => ({ ...item, isDefault: item.id === id }));
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetAllConfig: (): Promise<ConfigState> => {
-    if (isTauri()) return invoke("reset_all_config");
+    if (isTauri()) return call("config/reset_all_config");
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => ({ ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false }));
     mockConfigState.agents = mockConfigState.agents.filter(item => item.isBuiltIn).map(item => ({ ...item, enabled: true, model: null, systemPrompt: "", isDefault: item.id === "bridge-orchestrator" }));
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     return Promise.resolve(structuredClone(mockConfigState));
   },
-  learningState: (): Promise<LearningState> => isTauri() ? invoke("get_learning_state") : Promise.resolve(structuredClone(mockLearningState)),
-  runLearning: (triggerKind: LearningTriggerKind = "manual"): Promise<LearningRun> => {
-    if (isTauri()) return invoke("run_learning", { triggerKind });
+  learningState: (): Promise<LearningState> => isTauri() ? call("learning/get_learning_state") as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
+  runLearning: (triggerKind: LocalLearningTriggerKind = "manual"): Promise<LearningRun> => {
+    if (isTauri()) return call("learning/run_learning", { triggerKind }) as Promise<LearningRun>;
     if (mockLearningState.latestRun) {
       const duplicate = { ...structuredClone(mockLearningState.latestRun), triggerKind, duplicate: true };
       return Promise.resolve(duplicate);
@@ -352,77 +373,77 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(run));
   },
   cancelLearningRun: (runId: string): Promise<LearningRun> => {
-    if (isTauri()) return invoke("cancel_learning_run", { runId });
+    if (isTauri()) return call("learning/cancel_learning_run", { runId }) as Promise<LearningRun>;
     if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId) return Promise.reject(new Error("Learning run not found"));
     mockLearningState.latestRun = { ...mockLearningState.latestRun, status: "cancelled", cancellationRequested: true, promotionStatus: "cancelled", completedAt: new Date().toISOString() };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
   updateLearningSchedule: (schedule: LearningSchedule): Promise<LearningSchedule> => {
-    if (isTauri()) return invoke("update_learning_schedule", { schedule });
+    if (isTauri()) return call("learning/update_learning_schedule", { schedule });
     mockLearningState.schedule = structuredClone(schedule);
     return Promise.resolve(structuredClone(schedule));
   },
   approveLearningRun: (runId: string): Promise<LearningRun> => {
-    if (isTauri()) return invoke("approve_learning_run", { runId });
+    if (isTauri()) return call("learning/approve_learning_run", { runId }) as Promise<LearningRun>;
     if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId || mockLearningState.latestRun.promotionStatus !== "awaiting_approval") return Promise.reject(new Error("Learning run is not awaiting approval"));
     mockLearningState.activePolicyVersion = mockLearningState.latestRun.candidatePolicyVersion ?? mockLearningState.activePolicyVersion;
     mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
   rollbackRoutingPolicy: (targetVersion: number, explanation: string): Promise<LearningState> => {
-    if (isTauri()) return invoke("rollback_routing_policy", { targetVersion, explanation });
+    if (isTauri()) return call("routing/rollback_routing_policy", { targetVersion, explanation }) as Promise<LearningState>;
     void targetVersion;
     void explanation;
     mockLearningState.activePolicyVersion += 1;
     mockLearningState.canaryPolicyVersion = null;
     return Promise.resolve(structuredClone(mockLearningState));
   },
-  registerLearningTrigger: (kind: "codex" | "claude" | "opencode", registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
-    ? invoke("register_learning_trigger", { kind, registrationId, credentialRef, expiresAt })
+  registerLearningTrigger: (kind: ExternalLearningTriggerKind, registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
+    ? unit(call("learning/register_learning_trigger", { kind, registrationId, credentialRef, expiresAt }))
     : Promise.resolve(),
-  learningTriggerInstructions: (kind: "codex" | "claude" | "opencode", databasePath: string, registrationId: string): Promise<string> => isTauri()
-    ? invoke("get_learning_trigger_instructions", { kind, databasePath, registrationId })
-    : Promise.resolve(`Run \`bridge learning run --database "${databasePath}" --trigger ${kind}:${registrationId}\` locally as a wake-up trigger only. Bridge owns replay, approval, promotion, and rollback.`),
-  enableLearningTrigger: (kind: "codex" | "claude" | "opencode", registrationId: string): Promise<void> => isTauri()
-    ? invoke("enable_learning_trigger", { kind, registrationId })
+  learningTriggerInstructions: (kind: ExternalLearningTriggerKind, databasePath: string, registrationId: string): Promise<string> => isTauri()
+    ? call("learning/get_learning_trigger_instructions", { kind, databasePath, registrationId })
+    : Promise.resolve(`Run \`bridge learning run --database "${databasePath}" --trigger ${kind === "open_code" ? "opencode" : kind}:${registrationId}\` locally as a wake-up trigger only. Bridge owns replay, approval, promotion, and rollback.`),
+  enableLearningTrigger: (kind: ExternalLearningTriggerKind, registrationId: string): Promise<void> => isTauri()
+    ? unit(call("learning/enable_learning_trigger", { kind, registrationId }))
     : Promise.resolve(),
   routerPreferences: (workspaceId: string): Promise<RouterPreferences> => isTauri()
-    ? invoke("get_router_preferences", { workspaceId })
+    ? call("routing/get_router_preferences", { workspaceId })
     : Promise.resolve(structuredClone(mockRouterPreferences.get(workspaceId) ?? { mode: "shadow", minimumPassBps: 6500, pinnedHarness: null, pinnedModel: null, excludedHarnesses: [], excludedModels: [] })),
   updateRouterPreferences: (workspaceId: string, preferences: RouterPreferences): Promise<RouterPreferences> => {
-    if (isTauri()) return invoke("update_router_preferences", { workspaceId, preferences });
+    if (isTauri()) return call("routing/update_router_preferences", { workspaceId, preferences });
     mockRouterPreferences.set(workspaceId, structuredClone(preferences));
     return Promise.resolve(structuredClone(preferences));
   },
-  sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? invoke("get_session_forest", { sessionId }) : Promise.resolve(mockForest(sessionId)),
+  sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? call("sessions/get_session_forest", { sessionId }) as Promise<SessionForestSnapshot> : Promise.resolve(mockForest(sessionId)),
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
-    if (isTauri()) return invoke("create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
+    if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;
   },
   recordCompletionCheck: async (attemptId: string, run: CompletionCheckRun): Promise<CompletionSummary> => {
-    if (isTauri()) return invoke("record_completion_check", { attemptId, run });
+    if (isTauri()) return call("completion/record_completion_check", { attemptId, run });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found");
     const index = forest.completion.checks.findIndex(check => check.checkId === run.checkId); if (index < 0) throw new Error("Completion check not found"); forest.completion.checks[index] = structuredClone(run); forest.completion.passedRequired = forest.completion.checks.filter(check => check.required && check.status === "passed").length; return structuredClone(forest.completion);
   },
   waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
-    if (isTauri()) return invoke("waive_completion", { attemptId, checkIds, reason });
+    if (isTauri()) return call("completion/waive_completion", { attemptId, checkIds, reason });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); const unresolved = forest.completion.checks.filter(check => check.required && check.status !== "passed").map(check => check.checkId); if (!unresolved.every(checkId => checkIds.includes(checkId))) throw new Error("Waiver must cover every unresolved required check"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
   },
   registerVerifierManifest: async (source: string, manifest: VerifierManifest): Promise<void> => {
-    if (isTauri()) return invoke("register_verifier_manifest", { source, manifest });
+    if (isTauri()) return unit(call("completion/register_verifier_manifest", { source, manifest }));
     mockVerifierManifests.set(manifest.id, structuredClone(manifest));
   },
   verifierCandidates: async (changeLabels: string[], availableCapabilities: string[]): Promise<VerifierCandidate[]> => {
-    if (isTauri()) return invoke("verifier_candidates", { changeLabels, availableCapabilities });
+    if (isTauri()) return call("completion/verifier_candidates", { changeLabels, availableCapabilities });
     return [...mockVerifierManifests.values()].map(manifest => {
-      const triggerMatch = !manifest.triggers.length || manifest.triggers.some(trigger => changeLabels.includes(trigger));
-      const missing = manifest.requiredCapabilities.filter(capability => !availableCapabilities.includes(capability));
+      const triggerMatch = !manifest.triggers?.length || manifest.triggers.some(trigger => changeLabels.includes(trigger));
+      const missing = (manifest.requiredCapabilities ?? []).filter(capability => !availableCapabilities.includes(capability));
       const exclusionReasons = [...(!triggerMatch ? ["change triggers do not match"] : []), ...(missing.length ? [`missing capabilities: ${missing.join(", ")}`] : [])];
       return { manifest: structuredClone(manifest), eligible: exclusionReasons.length === 0, exclusionReasons };
     });
   },
   activateSessionEntry: async (sessionId: string, entryId: string): Promise<SessionForestSnapshot> => {
-    if (isTauri()) return invoke("activate_session_entry", { sessionId, entryId });
+    if (isTauri()) return call("sessions/activate_session_entry", { sessionId, entryId }) as Promise<SessionForestSnapshot>;
     if (!mockForests[sessionId]) mockForest(sessionId);
     const forest = mockForests[sessionId];
     if (!forest.entries.some(entry => entry.id === entryId)) throw new Error("Entry is not in this session");
@@ -431,7 +452,7 @@ export const bridgeApi = {
     emitState(); return structuredClone(forest);
   },
   compactSession: async (sessionId: string): Promise<void> => {
-    if (isTauri()) return invoke("compact_session", { sessionId });
+    if (isTauri()) return unit(call("sessions/compact_session", { sessionId }));
     if (!mockForests[sessionId]) mockForest(sessionId);
     const forest = mockForests[sessionId];
     const parent = forest.head?.activeEntryId ?? null;
@@ -450,77 +471,77 @@ export const bridgeApi = {
     emitState();
   },
   addProject: async (path: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("add_project", { path });
+    if (isTauri()) return call("projects/add_project", { path });
     const name = path.split("/").filter(Boolean).at(-1) || "Repository";
     mockState.projects.push({ id: crypto.randomUUID(), name, path, createdAt: new Date().toISOString() }); emitState(); return snapshot();
   },
   createWorkspace: async (title: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("create_workspace", { title });
+    if (isTauri()) return call("workspaces/create_workspace", { title });
     const id = crypto.randomUUID();
     mockState.workspaces.push({ id, projectId: null, city: null, title, branch: null, path: null, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
     emitState(); return snapshot();
   },
   createChat: async (harness: Harness, model: string | null, title: string | null): Promise<BridgeState> => {
-    if (isTauri()) return invoke("create_chat", { harness, model, title });
+    if (isTauri()) return call("sessions/create_chat", { harness, model, title });
     const id = crypto.randomUUID();
-    mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", title, kind: "direct", cwd: null }); emitState(); return snapshot();
+    mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title, kind: "direct", cwd: null }); emitState(); return snapshot();
   },
   createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
-    if (isTauri()) return invoke("create_workspace_session", { workspaceId, createWorktree });
+    if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree });
     const id = crypto.randomUUID();
     const workspace = mockState.workspaces.find(item => item.id === workspaceId);
     if (createWorktree && !workspace?.projectId) throw new Error("Connect a Git repository before creating an isolated worktree");
     const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
-    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", title: null, kind: "orchestrator", cwd }); emitState(); return snapshot();
+    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind: "orchestrator", cwd }); emitState(); return snapshot();
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null): Promise<BridgeState> => {
-    if (isTauri()) return invoke("update_chat_model", { sessionId, harness, model });
+    if (isTauri()) return call("sessions/update_chat_model", { sessionId, harness, model });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
     if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
     emitState(); return snapshot();
   },
   listSlashCommands: async (): Promise<SlashCommand[]> => {
-    if (isTauri()) return invoke("list_slash_commands");
+    if (isTauri()) return call("slash/list_slash_commands");
     return [];
   },
-  resolveSlashCommand: async (sessionId: string, text: string): Promise<{ name: string; harness: Harness; kind: string; switchHarness: boolean } | null> => {
-    if (isTauri()) return invoke("resolve_slash_command", { sessionId, text });
+  resolveSlashCommand: async (sessionId: string, text: string): Promise<SlashCommandResolve | null> => {
+    if (isTauri()) return call("slash/resolve_slash_command", { sessionId, text });
     return null;
   },
   listWorkspaceFiles: (sessionId: string): Promise<string[]> => isTauri()
-    ? invoke("list_workspace_files", { sessionId })
+    ? call("workspaces/list_workspace_files", { sessionId })
     : Promise.resolve(["src/App.tsx", "src/api.ts", "src/types.ts", "src-tauri/src/lib.rs", "README.md"]),
   connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("connect_workspace_folder", { workspaceId, path });
+    if (isTauri()) return call("workspaces/connect_workspace_folder", { workspaceId, path });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
     emitState(); return snapshot();
   },
   startChat: async (sessionId: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("start_chat", { sessionId });
+    if (isTauri()) return call("sessions/start_chat", { sessionId });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session) { session.status = "working"; session.startedAt = new Date().toISOString(); session.endedAt = null; session.providerSessionId = session.providerSessionId ?? `mock-${crypto.randomUUID()}`; session.restorationMode = "fresh"; appendAgent(session.id, "session.started", { status: "working" }); }
     emitState(); return snapshot();
   },
   startSession: async (workspaceId: string, harness?: Harness | null, model?: string | null): Promise<BridgeState> => {
-    if (isTauri()) return invoke("start_session", { workspaceId, harness: harness ?? null, model: model ?? null });
+    if (isTauri()) return call("sessions/start_session", { workspaceId, harness: harness ?? null, model: model ?? null });
     const resolvedHarness = harness ?? "codex";
     let session = mockState.sessions.find(item => item.workspaceId === workspaceId && item.harness === resolvedHarness);
-    if (!session) { session = { id: crypto.randomUUID(), workspaceId, harness: resolvedHarness, label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", model: model ?? "gpt-5.6-luna", requestedTier: "fast", restorationMode: "fresh" }; mockState.sessions.push(session); }
+    if (!session) { session = { id: crypto.randomUUID(), workspaceId, harness: resolvedHarness, label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", model: model ?? "gpt-5.6-luna", requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" }; mockState.sessions.push(session); }
     session.restorationMode = session.providerSessionId ? "native" : "fresh"; session.status = "working"; session.startedAt = new Date().toISOString(); session.endedAt = null; session.providerSessionId = session.providerSessionId ?? `mock-${crypto.randomUUID()}`; session.model = model ?? session.model ?? "gpt-5.6-luna"; session.label = "Orchestrator";
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) workspace.status = "working";
     appendAgent(session.id, "session.started", { status: "working" }); emitState(); return snapshot();
   },
   stopSession: async (sessionId: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("stop_session", { sessionId });
+    if (isTauri()) return call("sessions/stop_session", { sessionId });
     const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.status = "stopped"; session.endedAt = new Date().toISOString(); session.activeTurnId = null; }
     emitState(); return snapshot();
   },
   prepareTurn: (sessionId: string, text: string): Promise<SanitizedTurn> => isTauri()
-    ? invoke("prepare_turn", { sessionId, text })
+    ? call("sessions/prepare_turn", { sessionId, text })
     : Promise.resolve({ text, interceptions: [] }),
   sendTurn: async (sessionId: string, text: string): Promise<void> => {
-    if (isTauri()) return invoke("send_turn", { sessionId, text });
+    if (isTauri()) return unit(call("sessions/send_turn", { sessionId, text }));
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
     session.status = "working"; session.activeTurnId = `mock-turn-${nextEventId}`;
     appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text });
@@ -529,34 +550,34 @@ export const bridgeApi = {
     appendAgent(sessionId, "message.completed", { itemId: assistantItemId, role: "assistant", status: "completed", text: "I’ll handle that through the normalized adapter layer. The GUI remains provider-neutral, and no agent TUI is rendered." });
     session.status = "ready"; session.activeTurnId = null; emitState();
   },
-  interruptTurn: (sessionId: string): Promise<void> => isTauri() ? invoke("interrupt_turn", { sessionId }) : Promise.resolve(),
-  refreshAccountUsage: (): Promise<void> => isTauri() ? invoke("refresh_account_usage") : Promise.resolve(),
-  resolveApproval: async (sessionId: string, eventId: number, decision: string): Promise<void> => {
-    if (isTauri()) return invoke("resolve_approval", { sessionId, eventId, decision });
+  interruptTurn: (sessionId: string): Promise<void> => isTauri() ? unit(call("sessions/interrupt_turn", { sessionId })) : Promise.resolve(),
+  refreshAccountUsage: (): Promise<void> => isTauri() ? unit(call("sessions/refresh_account_usage")) : Promise.resolve(),
+  resolveApproval: async (sessionId: string, eventId: number, decision: ApprovalDecision): Promise<void> => {
+    if (isTauri()) return unit(call("approvals/resolve_approval", { sessionId, eventId, decision }));
     const request = mockState.agentEvents.find(item => item.id === eventId); if (request) appendAgent(request.sessionId, "approval.resolved", { status: decision, data: { requestEventId: eventId, decision } }); emitState();
   },
-  openTerminal: (workspaceId: string): Promise<void> => isTauri() ? invoke("open_terminal", { workspaceId }) : Promise.resolve(),
-  writeTerminal: (workspaceId: string, data: string): Promise<void> => isTauri() ? invoke("write_terminal", { workspaceId, data }) : Promise.resolve(),
-  resizeTerminal: (workspaceId: string, rows: number, cols: number): Promise<void> => isTauri() ? invoke("resize_terminal", { workspaceId, rows, cols }) : Promise.resolve(),
-  refreshWorkspace: (workspaceId: string): Promise<BridgeState> => isTauri() ? invoke("refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
+  openTerminal: (workspaceId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId })) : Promise.resolve(),
+  writeTerminal: (workspaceId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, data })) : Promise.resolve(),
+  resizeTerminal: (workspaceId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, rows, cols })) : Promise.resolve(),
+  refreshWorkspace: (workspaceId: string): Promise<BridgeState> => isTauri() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
   archiveWorkspace: async (workspaceId: string): Promise<BridgeState> => {
-    if (isTauri()) return invoke("archive_workspace", { workspaceId });
+    if (isTauri()) return call("workspaces/archive_workspace", { workspaceId });
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();
   },
-  onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? listen<TerminalChunk>("session-output", event => handler(event.payload)) : () => undefined,
+  onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return listen<AgentEvent>("agent-event", event => handler(event.payload)); 
+    if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);
     return () => undefined;
   },
   onAccountUsage: async (handler: (payload: AccountUsagePayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return listen<AccountUsagePayload>("account-usage", event => handler(event.payload));
+    if (isTauri()) return subscribe<AccountUsagePayload>("account-usage", handler);
     return () => undefined;
   },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {
-    if (isTauri()) return listen("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
+    if (isTauri()) return subscribe("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
   },
   onAdaptersChanged: async (handler: () => void): Promise<UnlistenFn> => {
-    if (isTauri()) return listen("adapters-changed", handler);
+    if (isTauri()) return subscribe("adapters-changed", handler);
     return () => undefined;
   }
 };

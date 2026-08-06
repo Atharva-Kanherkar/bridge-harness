@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
-import type { AgentEvent, CompletionSummary, ContinuationFidelity, Session, SessionEntry } from "../types";
+import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { highlightDiff, looksLikeDiff } from "./highlight";
@@ -257,7 +257,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: "aligned" | "diverged" | "unknown"; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -359,7 +359,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, onResolve, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, onResolve, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{item.text}</div></div>;
     return <div className="chat-message-enter flex w-full justify-start"><div className="relative max-w-[min(100%,44rem)] py-1 pl-1 text-neutral-300">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div></div>;
@@ -446,7 +446,7 @@ function PlanCard({ item }: { item: ConversationItem }) {
   </div>;
 }
 
-function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: string) => void }) {
+function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void }) {
   const pending = item.status === "pending";
   const accepted = item.status === "accept" || item.status === "acceptForSession";
   return <div className="my-4 border border-warning/30 rounded-lg bg-warning/5 overflow-hidden">

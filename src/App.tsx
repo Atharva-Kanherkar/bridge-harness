@@ -4,7 +4,7 @@ import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileM
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, Workspace } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { isVisibleWorker } from "./components/workerStatus";
@@ -188,7 +188,7 @@ export function App() {
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
   const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
   const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
-  const latestContextSource = session?.contextPercent != null ? session.metricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
+  const latestContextSource = session?.contextPercent != null ? session.metricSource as import("./usage").MetricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
@@ -444,7 +444,7 @@ export function App() {
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
-        const next = await bridgeApi.updateChatModel(target.id, resolved.harness, adapter?.defaultModel ?? null);
+        const next = await bridgeApi.updateChatModel(target.id, resolved.harness as Harness, adapter?.defaultModel ?? null);
         setState(next);
         target = next.sessions.find(item => item.id === target.id) ?? target;
       }
@@ -461,7 +461,7 @@ export function App() {
     }
     catch (e) { setComposer(retryText); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
-  const resolveApproval = useCallback(async (eventId: number, decision: string) => {
+  const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision) => {
     if (!session?.id) return;
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
@@ -473,7 +473,7 @@ export function App() {
   async function applySlash(command: import("./types").SlashCommand) {
     if (session?.kind === "direct" && command.harness !== session.harness) {
       const adapter = adapters.find(item => item.id === command.harness);
-      try { setState(await bridgeApi.updateChatModel(session.id, command.harness, adapter?.defaultModel ?? null)); }
+      try { setState(await bridgeApi.updateChatModel(session.id, command.harness as Harness, adapter?.defaultModel ?? null)); }
       catch (e) { setError(errorMessage(e)); return; }
     }
     setComposer(`/${command.name} `);

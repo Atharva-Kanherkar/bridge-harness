@@ -1,129 +1,143 @@
-export type Harness = "claude" | "codex" | "opencode" | "shell";
-export type SessionStatus = "idle" | "starting" | "working" | "waiting" | "warm" | "checkpointing" | "ready" | "stopped" | "resuming" | "restored" | "failed" | "completed" | "cancelled";
-export type CapabilityTier = "fast" | "standard" | "strong";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
-export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
-export type ResumeEligibility = "none" | "native" | "checkpoint_restored";
+// The frontend's type vocabulary. Protocol shapes come from the GENERATED
+// contract (`src/protocol/generated/protocol.ts`) — never restate one here;
+// regenerate with:
+//   cargo run --manifest-path src-tauri/Cargo.toml -p bridge-protocol --bin generate-protocol-artifacts
+//
+// What legitimately lives in this file:
+// 1. Renames of generated types to the names the app grew up with.
+// 2. Documented *refinements* derived from generated types (never restated).
+// 3. Result shapes the contract still defers (`resultDeferred` in
+//    methods.json) and notification payloads without a schema yet. These are
+//    the only hand-written shapes left; each will move to the generated file
+//    when its slice of the contract lands.
+
+import type {
+  QueuedWorkerRequest as WireQueuedWorkerRequest,
+  SessionEntry as WireSessionEntry,
+  SessionForestSnapshot as WireSessionForestSnapshot,
+  WorkerLease as WireWorkerLease,
+  WorkerRuntimeRecord as WireWorkerRuntimeRecord,
+  ExternalLearningTriggerKind,
+  LearningSchedule,
+  LocalLearningTriggerKind,
+  MarketplaceAction,
+  MarketplaceProvider,
+  ModelProfileDraft,
+  RemoteBrowserConfig,
+  ReplaySessionEvent,
+  SkillAction,
+  SkillProvider,
+} from "./protocol/generated/protocol";
+
+// ---------------------------------------------------------------------------
+// Contracted shapes, re-exported under their app names.
+// ---------------------------------------------------------------------------
+
+export type {
+  AdapterDescriptor,
+  AgentDefinition,
+  ApprovalDecision,
+  BridgeEvent,
+  BridgeState,
+  BrowserActionRequest,
+  BrowserRouteDecision,
+  BrowserRouteRequest,
+  BrowserSkill,
+  CapabilityTier,
+  CheckStatus,
+  CompletionSummary,
+  CompletionVerdict,
+  ConfigState,
+  ContinuationFidelity,
+  EvalKind,
+  ExternalLearningTriggerKind,
+  HarnessConfig,
+  LearningSchedule,
+  LocalLearningTriggerKind,
+  ModelOption,
+  ModelProfileDraft,
+  PolicyLimits,
+  ProfilePurpose,
+  Project,
+  RemoteBrowserConfig,
+  RepositoryDivergence,
+  RestorationMode,
+  ResumeEligibility,
+  RouterMode,
+  RouterPreferences,
+  SanitizedTurn,
+  SecretInterception,
+  Session,
+  SessionHead,
+  SessionStatus,
+  SkillAction,
+  SkillProvider,
+  SlashCommand,
+  SlashCommandResolve,
+  UsageLedgerRow,
+  VerifierCandidate,
+  VerifierManifest,
+  Workspace,
+  MarketplaceAction,
+  MarketplaceProvider,
+} from "./protocol/generated/protocol";
+
+export type {
+  HarnessId as Harness,
+  Effort as ReasoningEffort,
+  CheckRun as CompletionCheckRun,
+  HealthResult as Health,
+} from "./protocol/generated/protocol";
+
+// ---------------------------------------------------------------------------
+// Refinements derived from contracted shapes.
+// ---------------------------------------------------------------------------
+
+/** A durable/live agent event. The contract types `data`/`providerMeta` as
+ * arbitrary structured JSON; every producer emits objects, and the
+ * conversation UI reads them as objects, so the frontend narrows here. */
+export type AgentEvent = Omit<ReplaySessionEvent, "data" | "providerMeta"> & {
+  data: Record<string, unknown>;
+  providerMeta: Record<string, unknown>;
+};
+
+/** Structured-JSON fields the contract leaves open (`unknown`) but every
+ * core serializer emits in one shape; the frontend narrows to that shape. */
+export type SessionEntry = Omit<WireSessionEntry, "payload"> & { payload: Record<string, unknown> };
+export type QueuedWorkerRequest = Omit<WireQueuedWorkerRequest, "request"> & { request: Record<string, unknown> };
+export type WorkerLease = Omit<WireWorkerLease, "ownedPaths"> & { ownedPaths: string[] };
+export type WorkerRuntimeRecord = Omit<WireWorkerRuntimeRecord, "lastResult"> & { lastResult: Record<string, unknown> | null };
+export type SessionForestSnapshot = Omit<WireSessionForestSnapshot, "entries" | "leaves" | "workerLeases" | "workerRuntimes" | "workerQueue"> & {
+  entries: SessionEntry[]; leaves: SessionEntry[];
+  workerLeases: WorkerLease[]; workerRuntimes: WorkerRuntimeRecord[]; workerQueue: QueuedWorkerRequest[];
+};
+
+/** UI narrowing of `AgentDefinition.role` (a contract string). */
+export type AgentRole = "orchestrator" | "research" | "implementation" | "verification" | "planning" | "documentation";
+
+/** UI narrowing of `QueuedWorkerRequest.queueStatus` (a contract string). */
 export type WorkerQueueStatus = "queued" | "blocked_on_human" | "dispatching" | "dispatched" | "expired" | "cancelled" | "rejected" | "dead_letter";
 
-export interface Project { id: string; name: string; path: string; createdAt: string }
-export interface Workspace {
-  id: string; projectId: string | null; city: string | null; title: string; branch: string | null; path: string | null;
-  status: SessionStatus; dirtyFiles: number; additions: number; deletions: number; createdAt: string;
-}
-export interface Session {
-  id: string; workspaceId: string | null; harness: Harness; label: string; status: SessionStatus;
-  startedAt: string | null; endedAt: string | null; contextPercent: number | null;
-  usagePercent: number | null; metricSource: "reported" | "measured" | "estimated";
-  providerSessionId?: string | null; activeTurnId?: string | null; model?: string | null;
-  requestedTier?: CapabilityTier | null;
-  effort?: string | null; parentSessionId?: string | null; depth?: number | null;
-  restorationMode: RestorationMode;
-  continuationFidelity?: ContinuationFidelity;
-  title?: string | null; kind?: string; cwd?: string | null;
-}
-export interface BridgeEvent { id: number; source: string; kind: string; entityId: string; body: string; createdAt: string }
-export interface AgentEvent {
-  id: number; sessionId: string; sequence: number; protocolVersion: number; kind: string;
-  itemId: string | null; role: string | null; status: string | null; title: string | null;
-  text: string | null; data: Record<string, unknown>; providerMeta: Record<string, unknown>; createdAt: string;
-}
-export interface SessionEntry {
-  id: string; sessionId: string; parentEntryId: string | null; sequence: number; semanticSchemaVersion: number; kind: string;
-  payload: Record<string, unknown>; providerEventId: string | null; contextVisibility: string;
-  tokenEstimate: number | null; createdAt: string;
-}
-export interface SessionHead {
-  sessionId: string; activeEntryId: string | null; nativeProviderSessionId: string | null;
-  restorationMode: RestorationMode; resumeEligibility: ResumeEligibility;
-  latestCheckpointEntryId: string | null; updatedAt: string;
-}
-export interface WorkerLease {
-  sessionId: string; workspaceId: string; role: string; capabilityTier: string; taskFamily: string;
-  ownedPaths: string[]; writeMode: string; leaseStatus: string; expiresAt: string | null;
-  createdAt: string; updatedAt: string;
-}
-export interface WorkerRuntimeRecord {
-  sessionId: string; parentSessionId: string; lifecycleState: string; taskFamily: string;
-  compatibilityKey: string; resultStatus: string; retryCount: number; warmUntil: string | null;
-  worktreePath: string | null; worktreeBranch: string | null; lastResult: Record<string, unknown> | null;
-  lastActivityAt: string | null; updatedAt: string;
-}
-export interface QueuedWorkerRequest {
-  id: string; parentSessionId: string; workspaceId: string; turnId: string;
-  request: Record<string, unknown>; actualModel: string; queueStatus: WorkerQueueStatus; sequence: number;
-  dispatchedSessionId: string | null; expiresAt?: string; blockedAt?: string | null;
-  claimedAt?: string | null; lastError?: string | null; createdAt: string; updatedAt: string;
-}
-export interface UsageLedgerRow {
-  id: number; workspaceId: string; sessionId: string | null; turnId: string | null;
-  inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null;
-  cacheWriteTokens: number | null; uncachedInputTokens: number | null; contextPercent: number | null; capabilityUnits: number;
-  runtimeMs: number | null; costMicrousd: number | null; costSource: string | null;
-  stablePrefixId: string | null; stablePrefixHash: string | null; promptSchemaVersion: number | null;
-  prefixTokenEstimate: number | null; harness: string | null; model: string | null; role: string | null;
-  taskFamily: string | null; restorationMode: string | null; crossHarnessReuse: string | null;
-  source: string; createdAt: string;
-}
-export interface PolicyLimits {
-  maxWorkersPerTurn: number; maxStrongWorkersPerTurn: number; maxCapabilityUnitsPerTurn: number;
-}
-export interface SessionForestSnapshot {
-  sessionId: string; entries: SessionEntry[]; head: SessionHead | null; leaves: SessionEntry[];
-  workerLeases: WorkerLease[]; workerRuntimes: WorkerRuntimeRecord[];
-  workerQueue: QueuedWorkerRequest[]; usage: UsageLedgerRow[]; reasons: BridgeEvent[];
-  policyLimits: PolicyLimits;
-  repositoryDivergence: { status: "aligned" | "diverged" | "unknown"; selectedState: Record<string, unknown> | null; currentState: Record<string, unknown> };
-  completion: CompletionSummary | null;
-}
-export type CompletionVerdict = "verifying" | "changes_requested" | "verified" | "waived" | "failed" | "superseded";
-export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
-export type CheckStatus = "pending" | "running" | "passed" | "failed" | "skipped" | "blocked" | "stale";
-export interface CompletionCheckRun {
-  checkId: string; kind: EvalKind; required: boolean; status: CheckStatus; executor: string;
-  command: string | null; verifierFamily: string | null; detail: string | null;
-  outputDigest: string | null; artifactRefs: string[];
-}
-export interface CompletionSummary {
-  attemptId: string; contractId: string; verdict: CompletionVerdict;
-  repository: { head: string; dirtyDigest: string };
-  passedRequired: number; totalRequired: number; checks: CompletionCheckRun[];
-  markdownCommitted: boolean; waiverReason: string | null;
-}
-export interface VerifierManifest {
-  id: string; kind: EvalKind; triggers: string[]; requiredCapabilities: string[];
-  differentModelFamily: boolean; checks: string[]; evidenceRequired: string[];
-}
-export interface VerifierCandidate { manifest: VerifierManifest; eligible: boolean; exclusionReasons: string[] }
-export interface ModelOption { id: string; label: string; tier: CapabilityTier; defaultForTier: boolean }
-export interface AdapterDescriptor {
-  id: string; label: string; available: boolean; version: string | null; capabilities: string[];
-  unavailableReason: string | null; models: ModelOption[]; defaultModel: string | null;
-}
-export interface BridgeState { projects: Project[]; workspaces: Workspace[]; sessions: Session[]; events: BridgeEvent[] }
-export interface Health { ok: boolean; version: string; harnesses: Record<Harness, boolean>; database: string; adapters: AdapterDescriptor[] }
-export type RouterMode = "disabled" | "shadow" | "autonomous";
-export interface RouterPreferences {
-  mode: RouterMode; minimumPassBps: number; pinnedHarness: string | null; pinnedModel: string | null;
-  excludedHarnesses: string[]; excludedModels: string[];
-}
-export type ProfilePurpose = "standard_orchestrator" | "premium_orchestrator" | "planner" | "implementer" | "verifier" | "reviewer" | "research" | "documentation" | "evaluator";
+/** Every trigger a learning run can report, local and external. */
+export type LearningTriggerKind = LocalLearningTriggerKind | ExternalLearningTriggerKind;
+
+// ---------------------------------------------------------------------------
+// Notification payloads without a contracted schema yet.
+// ---------------------------------------------------------------------------
+
+export interface TerminalChunk { sessionId: string; data: string }
+
+// ---------------------------------------------------------------------------
+// Deferred result shapes (`resultDeferred` methods). Hand-written until their
+// contract slice lands; keep field-for-field with the core serializers.
+// ---------------------------------------------------------------------------
+
 export type CanonicalWorkerRole = "research" | "implementation" | "verification" | "planning" | "documentation";
-export interface ModelProfileDraft {
-  purpose: ProfilePurpose; provider: string; model: string; effort: ReasoningEffort;
-  fallbackPurpose: ProfilePurpose | null; pinned: boolean; learningEnabled: boolean;
-  budgetPreference: string | null; latencyPreference: string | null;
-}
 export interface ModelProfile extends ModelProfileDraft {
   schemaVersion: number; version: number; profileId: string; canonicalRole: CanonicalWorkerRole; createdAt: string;
 }
 export interface ModelSetupState { complete: boolean; activeVersion: number | null; profiles: ModelProfile[] }
-export interface HarnessConfig {
-  id: "bridge" | "codex" | "claude" | "opencode"; label: string; enabled: boolean;
-  defaultModel: string | null; effort: ReasoningEffort | null; systemPrompt: string;
-  advanced: Record<string, unknown>; isOverride: boolean;
-}
+
 export interface OpenCodeAuthMethod { kind: string; label: string }
 export interface OpenCodeModel {
   id: string; providerId: string; modelId: string; label: string;
@@ -137,14 +151,7 @@ export interface OpenCodeProvider {
   authMethods: OpenCodeAuthMethod[]; models: OpenCodeModel[];
 }
 export interface OpenCodeCatalog { executablePath: string; version: string; providers: OpenCodeProvider[] }
-export type AgentRole = "orchestrator" | "research" | "implementation" | "verification" | "planning" | "documentation";
-export interface AgentDefinition {
-  id: string; name: string; description: string; role: AgentRole; harness: "bridge" | "codex" | "claude" | "opencode";
-  model: string | null; effort: ReasoningEffort; systemPrompt: string; enabled: boolean;
-  isDefault: boolean; isBuiltIn: boolean; createdAt: string; updatedAt: string;
-}
-export interface ConfigState { harnesses: HarnessConfig[]; agents: AgentDefinition[]; defaultAgentId: string }
-export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude" | "opencode";
+
 export type LearningRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "noop";
 export interface LearningReport {
   reason: string; evidenceBoundary: number; evidenceCount: number; basePolicyVersion: number;
@@ -161,20 +168,11 @@ export interface LearningRun {
   leaseExpiresAt: string | null; replayPassed: boolean | null; promotionStatus: string;
   duplicate: boolean; createdAt: string; completedAt: string | null;
 }
-export interface LearningSchedule {
-  jobId: string; enabled: boolean; cadenceMinutes: number; nextRunAt: string | null;
-  runBudgetMicrousd: number; runBudgetTokens: number; mode: "manual" | "ask" | "automatic";
-}
 export interface LearningState {
   schedule: LearningSchedule; latestRun: LearningRun | null;
   activePolicyVersion: number; canaryPolicyVersion: number | null;
 }
-export interface TerminalChunk { sessionId: string; data: string }
-export interface SlashCommand { name: string; description: string; harness: Harness; kind: "command" | "skill" | "prompt" | "builtin" }
-export interface SecretInterception { reference: string; detector: string }
-export interface SanitizedTurn { text: string; interceptions: SecretInterception[] }
-export type MarketplaceProvider = "codex" | "claude";
-export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
+
 export interface MarketplaceVariant {
   provider: MarketplaceProvider; pluginId: string; name: string; description: string | null;
   marketplace: string | null; version: string | null; source: string | null; repository: string | null; iconDataUrl: string | null;
@@ -195,8 +193,7 @@ export interface MarketplaceActionResult {
   provider: MarketplaceProvider; pluginId: string; action: MarketplaceAction;
   success: boolean; message: string; error: string | null;
 }
-export type SkillProvider = "codex" | "claude" | "opencode";
-export type SkillAction = "install" | "rollback" | "uninstall";
+
 export interface SkillProviderState {
   provider: SkillProvider; installed: boolean; managed: boolean; installedRef: string | null;
   updateAvailable: boolean; rollbackAvailable: boolean; receiptError: string | null;
@@ -211,6 +208,13 @@ export interface SkillCatalog { community: CommunitySkill[]; personal: PersonalS
 export interface CapabilitySuggestion {
   id: string; name: string; command: string; relevance: string; source: string; providers: SkillProvider[];
   permissions: string[]; risk: string; installed: boolean;
+}
+export interface SkillPreview {
+  confirmationId: string; expiresAt: string; action: SkillAction; skill: CommunitySkill;
+  targets: SkillProvider[]; changes: string[]; installer: string;
+}
+export interface SkillActionResult {
+  provider: SkillProvider; action: SkillAction; success: boolean; message: string; error: string | null;
 }
 
 export interface BrowserTab {
@@ -239,7 +243,6 @@ export interface BrowserSiteMetric {
   domain: string; actions: number; successes: number; failures: number; totalLatencyMs: number;
   inputTokens: number; screenshots: number; interventions: number; approvals: number; duplicateSideEffects: number;
 }
-export interface RemoteBrowserConfig { endpoint: string; bearerTokenEnv: string; enabled: boolean }
 export interface BrowserBridgeSnapshot {
   transportConnected: boolean; extensionId: string; extensionPath: string; nativeHostInstalled: boolean;
   nativeHostManifestPath: string | null; tabs: BrowserTab[]; lease: BrowserLease | null; status: string;
@@ -249,23 +252,4 @@ export interface BrowserBridgeSnapshot {
   promptInjectionSuspected: boolean; promptInjectionSignals: string[]; tokenAccounting: BrowserTokenAccounting; pendingApproval: BrowserApproval | null;
   audit: BrowserAuditEvent[]; debugEvents: Record<string, unknown>[]; siteMetrics: BrowserSiteMetric[];
   remoteProvider: RemoteBrowserConfig | null;
-}
-export interface BrowserActionRequest {
-  kind: string; elementId?: string; text?: string; url?: string; x?: number; y?: number;
-  tabId?: number; sensitiveKind?: string; expectedDomain?: string;
-  actor?: "agent" | "user";
-}
-export interface BrowserRouteRequest {
-  structuredApiAvailable: boolean; needsUserAuth: boolean; needsIsolation: boolean; needsParallelism: boolean;
-  needsGeoOrProxy: boolean; unattended: boolean; domControlAvailable: boolean; remoteProviderConfigured: boolean;
-  taskClass: string | null;
-}
-export interface BrowserRouteDecision { route: "mcp_api" | "attached_tab" | "local_headless" | "remote_browser" | "computer_use"; reason: string; requiresUserGrant: boolean }
-export interface BrowserSkill { id: string; name: string; domains: string[]; description: string; steps: Record<string, unknown>[] }
-export interface SkillPreview {
-  confirmationId: string; expiresAt: string; action: SkillAction; skill: CommunitySkill;
-  targets: SkillProvider[]; changes: string[]; installer: string;
-}
-export interface SkillActionResult {
-  provider: SkillProvider; action: SkillAction; success: boolean; message: string; error: string | null;
 }
