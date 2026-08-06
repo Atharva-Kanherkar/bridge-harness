@@ -119,6 +119,39 @@ fn the_proxy_attaches_and_serves_calls_like_the_embedded_host() {
 }
 
 #[test]
+fn more_calls_than_pool_connections_keep_their_responses() {
+    const CALLS: usize = 13;
+    let fixture = tempfile::tempdir().unwrap();
+    let daemon = RunningDaemon::start(fixture.path());
+    let host = ProxyHost::start(fixture.path());
+    host.wait_attached(true);
+
+    let barrier = Arc::new(std::sync::Barrier::new(CALLS));
+    let calls = (0..CALLS)
+        .map(|index| {
+            let proxy = host.proxy.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let (method, expected) = if index % 2 == 0 {
+                    (MethodName::GetState, "sessions")
+                } else {
+                    (MethodName::Health, "adapters")
+                };
+                let response = proxy.call(method, None).unwrap();
+                assert!(response.get(expected).is_some(), "{method:?}: {response}");
+            })
+        })
+        .collect::<Vec<_>>();
+    for call in calls {
+        call.join().unwrap();
+    }
+
+    host.shutdown();
+    daemon.stop();
+}
+
+#[test]
 fn a_daemon_side_error_arrives_as_its_message_and_the_link_survives() {
     let fixture = tempfile::tempdir().unwrap();
     let daemon = RunningDaemon::start(fixture.path());

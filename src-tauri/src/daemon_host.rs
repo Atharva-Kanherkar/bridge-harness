@@ -15,13 +15,15 @@
 //! the frontend recovers durable history from the session forest exactly as
 //! it always has.
 
-use bridge_client::{ClientError, DaemonClient, Endpoint};
-use bridge_protocol::{MethodName, Params, RpcNotification, TypedMethod};
+use bridge_client::{ClientError, DaemonClient, Endpoint, NotificationSubscription};
+use bridge_protocol::{ErrorCode, MethodName, Params, RpcNotification, TypedMethod};
 use serde_json::Value;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,11 @@ use std::time::{Duration, Instant};
 /// stall every other panel of the UI; a small pool restores the concurrency
 /// the embedded host had. Bounded well below the daemon's connection cap.
 const POOL_SIZE: usize = 4;
+
+/// Bound the blocking-runtime work retained by an invoke burst. A short queue
+/// absorbs normal UI fan-out; requests beyond it fail promptly instead of
+/// retaining arbitrary payloads and blocking threads for minutes.
+const MAX_INVOKE_JOBS: usize = POOL_SIZE * 4;
 
 /// How long an invoke waits for a live connection before failing. Covers the
 /// small window while the supervisor is reconnecting after a daemon restart.
@@ -57,14 +64,32 @@ pub enum HostPreference {
     EmbeddedOnly,
 }
 
-pub fn host_preference() -> HostPreference {
-    match std::env::var("BRIDGE_DESKTOP_HOST").as_deref() {
-        Ok("embedded") => HostPreference::EmbeddedOnly,
-        Ok("daemon") => HostPreference::DaemonOnly,
-        // Unknown values fall back to the default rather than failing app
-        // startup over a typo; the chosen host is logged either way.
-        _ => HostPreference::Auto,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPreferenceError(String);
+
+impl std::fmt::Display for HostPreferenceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid BRIDGE_DESKTOP_HOST value {:?}; expected auto, daemon, or embedded",
+            self.0
+        )
     }
+}
+
+impl std::error::Error for HostPreferenceError {}
+
+fn parse_host_preference(value: Option<&str>) -> Result<HostPreference, HostPreferenceError> {
+    match value {
+        None | Some("auto") => Ok(HostPreference::Auto),
+        Some("embedded") => Ok(HostPreference::EmbeddedOnly),
+        Some("daemon") => Ok(HostPreference::DaemonOnly),
+        Some(other) => Err(HostPreferenceError(other.to_owned())),
+    }
+}
+
+pub fn host_preference() -> Result<HostPreference, HostPreferenceError> {
+    parse_host_preference(std::env::var("BRIDGE_DESKTOP_HOST").ok().as_deref())
 }
 
 /// The wire params for a proxied command payload. Parameterless methods send
@@ -88,7 +113,9 @@ pub fn proxy_invoke<R: tauri::Runtime>(
     let Some(method) = MethodName::from_command(&command) else {
         // The registry and generate_handler! are tested 1:1, so this is a
         // frontend bug, not a routing gap.
-        invoke.resolver.reject(format!("unknown command: {command}"));
+        invoke
+            .resolver
+            .reject(format!("unknown command: {command}"));
         return true;
     };
     let payload = match invoke.message.payload() {
@@ -96,16 +123,26 @@ pub fn proxy_invoke<R: tauri::Runtime>(
         tauri::ipc::InvokeBody::Raw(bytes) => match serde_json::from_slice(bytes) {
             Ok(value) => value,
             Err(error) => {
-                invoke.resolver.reject(format!("invalid {command} payload: {error}"));
+                invoke
+                    .resolver
+                    .reject(format!("invalid {command} payload: {error}"));
                 return true;
             }
         },
     };
     let params = wire_params(method, payload);
     let resolver = invoke.resolver;
-    tauri::async_runtime::spawn_blocking(move || match proxy.call(method, params) {
-        Ok(result) => resolver.resolve(result),
-        Err(message) => resolver.reject(message),
+    let Some(permit) = proxy.reserve_invoke() else {
+        resolver.reject("The Bridge daemon is busy; try again");
+        return true;
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = proxy.call(method, params);
+        drop(permit);
+        match result {
+            Ok(value) => resolver.resolve(value),
+            Err(message) => resolver.reject(message),
+        }
     });
     true
 }
@@ -122,9 +159,31 @@ struct Link {
 pub struct DaemonProxy {
     link: RwLock<Option<Arc<Link>>>,
     next: AtomicUsize,
+    active_invokes: AtomicUsize,
+}
+
+struct InvokePermit {
+    proxy: Arc<DaemonProxy>,
+}
+
+impl Drop for InvokePermit {
+    fn drop(&mut self) {
+        self.proxy.active_invokes.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl DaemonProxy {
+    fn reserve_invoke(self: &Arc<Self>) -> Option<InvokePermit> {
+        self.active_invokes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_INVOKE_JOBS).then_some(active + 1)
+            })
+            .ok()?;
+        Some(InvokePermit {
+            proxy: self.clone(),
+        })
+    }
+
     /// Call a protocol method, waiting briefly for a connection if the
     /// supervisor is mid-reconnect. Errors are the strings the webview
     /// already understands: a daemon-side `BridgeError` arrives as its
@@ -141,9 +200,9 @@ impl DaemonProxy {
         params: Option<Value>,
         link_wait: Duration,
     ) -> Result<Value, String> {
-        let link = self.wait_for_link(link_wait).ok_or_else(|| {
-            "The Bridge daemon is not reachable; still reconnecting".to_owned()
-        })?;
+        let link = self
+            .wait_for_link(link_wait)
+            .ok_or_else(|| "The Bridge daemon is not reachable; still reconnecting".to_owned())?;
         let client =
             link.clients[self.next.fetch_add(1, Ordering::Relaxed) % link.clients.len()].clone();
         match client.call(method, params) {
@@ -153,9 +212,7 @@ impl DaemonProxy {
                 self.invalidate(&link);
                 Err("The Bridge daemon connection was lost; reconnecting".into())
             }
-            Err(ClientError::Timeout) => {
-                Err(format!("{} did not answer in time", method.as_str()))
-            }
+            Err(ClientError::Timeout) => Err(format!("{} did not answer in time", method.as_str())),
             Err(other) => Err(other.to_string()),
         }
     }
@@ -185,7 +242,10 @@ impl DaemonProxy {
     /// replaced it, in which case the newer link stays.
     fn invalidate(&self, seen: &Arc<Link>) {
         let mut link = self.link.write().unwrap();
-        if link.as_ref().is_some_and(|current| Arc::ptr_eq(current, seen)) {
+        if link
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, seen))
+        {
             *link = None;
         }
     }
@@ -207,7 +267,12 @@ pub struct Launcher {
 
 impl Launcher {
     pub fn new(data_dir: PathBuf, browser_extension: PathBuf, binary: Option<PathBuf>) -> Launcher {
-        Launcher { data_dir, browser_extension, binary, child: None }
+        Launcher {
+            data_dir,
+            browser_extension,
+            binary,
+            child: None,
+        }
     }
 
     /// A connection pool to a daemon serving the data directory, attaching to
@@ -215,12 +280,13 @@ impl Launcher {
     /// actionable message — including the daemon's own words when it refused
     /// us or exited during startup.
     pub fn ensure(&mut self) -> Result<Vec<Arc<DaemonClient>>, String> {
-        match self.attach() {
+        let initial = self.attach();
+        match initial {
             Ok(clients) => return Ok(clients),
             // A live daemon answered and said no (bad token, incompatible
             // protocol). Starting a second one cannot help — the socket is
             // owned. Surface its refusal verbatim.
-            Err(ClientError::Handshake(error)) => {
+            Err(ClientError::Handshake(error)) if !retryable_handshake(&error) => {
                 return Err(format!(
                     "a running bridged daemon refused this app ({}): {}",
                     error.code, error.message
@@ -228,25 +294,31 @@ impl Launcher {
             }
             Err(_) => {}
         }
-        let Some(binary) = self.binary.clone() else {
-            return Err(format!(
-                "no bridged daemon is serving {} and no daemon binary is available to start",
-                self.data_dir.display()
-            ));
-        };
-        let already_running = matches!(
-            self.child.as_mut().map(Child::try_wait),
-            Some(Ok(None))
+        let retrying_live_daemon = matches!(
+            initial,
+            Err(ClientError::Handshake(ref error)) if retryable_handshake(error)
         );
-        if !already_running {
-            self.spawn(&binary)?;
+        let binary = match (self.binary.clone(), retrying_live_daemon) {
+            (Some(binary), _) => Some(binary),
+            (None, true) => None,
+            (None, false) => {
+                return Err(format!(
+                    "no bridged daemon is serving {} and no daemon binary is available to start",
+                    self.data_dir.display()
+                ));
+            }
+        };
+        let already_running = matches!(self.child.as_mut().map(Child::try_wait), Some(Ok(None)));
+        if !already_running && !retrying_live_daemon {
+            self.spawn(binary.as_deref().expect("binary checked above"))?;
         }
         let deadline = Instant::now() + START_DEADLINE;
         loop {
             std::thread::sleep(Duration::from_millis(200));
             match self.attach() {
                 Ok(clients) => return Ok(clients),
-                Err(ClientError::Handshake(error)) => {
+                Err(ClientError::Handshake(error)) if !retryable_handshake(&error) => {
+                    self.terminate_child();
                     return Err(format!(
                         "the bridged daemon refused this app ({}): {}",
                         error.code, error.message
@@ -258,12 +330,14 @@ impl Launcher {
             // lease) exits the child; report its last words instead of
             // timing out in silence.
             if let Some(Ok(Some(status))) = self.child.as_mut().map(Child::try_wait) {
+                self.reap_child();
                 return Err(format!(
                     "bridged exited during startup ({status}): {}",
                     self.log_tail()
                 ));
             }
             if Instant::now() >= deadline {
+                self.terminate_child();
                 return Err(format!(
                     "bridged did not become reachable within {START_DEADLINE:?}: {}",
                     self.log_tail()
@@ -293,22 +367,33 @@ impl Launcher {
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(self.log_path())
             .map_err(|error| format!("could not open the daemon log: {error}"))?;
+        if !log
+            .metadata()
+            .map_err(|error| format!("could not inspect the daemon log: {error}"))?
+            .is_file()
+        {
+            return Err("the daemon log is not a regular file".into());
+        }
+        std::fs::set_permissions(self.log_path(), std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("could not secure the daemon log: {error}"))?;
         let log_err = log
             .try_clone()
             .map_err(|error| format!("could not open the daemon log: {error}"))?;
-        let child = Command::new(binary)
-            .arg("--data-dir")
-            .arg(&self.data_dir)
-            .arg("--browser-extension")
-            .arg(&self.browser_extension)
+        let child = daemon_command(binary, &self.data_dir, &self.browser_extension)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", binary.display()))?;
-        eprintln!("bridge: started bridged (pid {}) for {}", child.id(), self.data_dir.display());
+        eprintln!(
+            "bridge: started bridged (pid {}) for {}",
+            child.id(),
+            self.data_dir.display()
+        );
         // Reap the previous child, if any, now that it has provably exited
         // (already_running was false) — never leave zombies behind.
         if let Some(mut old) = self.child.replace(child) {
@@ -317,14 +402,37 @@ impl Launcher {
         Ok(())
     }
 
+    fn terminate_child(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn reap_child(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
+        }
+    }
+
     fn log_path(&self) -> PathBuf {
         self.data_dir.join(DAEMON_LOG_FILE)
     }
 
     fn log_tail(&self) -> String {
-        let Ok(contents) = std::fs::read_to_string(self.log_path()) else {
+        const TAIL_BYTES: u64 = 64 * 1024;
+        let Ok(mut file) = std::fs::File::open(self.log_path()) else {
             return format!("no daemon log at {}", self.log_path().display());
         };
+        let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        let start = length.saturating_sub(TAIL_BYTES);
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            return format!("could not seek daemon log {}", self.log_path().display());
+        }
+        let mut contents = String::new();
+        if file.read_to_string(&mut contents).is_err() {
+            return format!("could not read daemon log {}", self.log_path().display());
+        }
         let lines: Vec<&str> = contents.lines().rev().take(5).collect();
         if lines.is_empty() {
             return format!("daemon log {} is empty", self.log_path().display());
@@ -333,6 +441,33 @@ impl Launcher {
         tail.insert(0, "last daemon log lines:");
         tail.join("\n")
     }
+}
+
+impl Drop for Launcher {
+    fn drop(&mut self) {
+        // A desktop-owned daemon is intentionally process-scoped. Do not
+        // leave it behind when setup falls back or the app exits.
+        self.terminate_child();
+    }
+}
+
+fn retryable_handshake(error: &bridge_protocol::RpcError) -> bool {
+    matches!(
+        ErrorCode::from_code(error.code),
+        Some(ErrorCode::Overloaded | ErrorCode::ShuttingDown)
+    )
+}
+
+fn daemon_command(binary: &Path, data_dir: &Path, browser_extension: &Path) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .arg("--data-dir")
+        .arg(data_dir)
+        .arg("--health-addr")
+        .arg("none")
+        .arg("--browser-extension")
+        .arg(browser_extension);
+    command
 }
 
 /// The bundled `bridged` binary. In a bundle Tauri places external binaries
@@ -350,21 +485,16 @@ pub fn find_bridged_binary() -> Option<PathBuf> {
             }
         }
     }
-    let staged = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(staged)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("bridged-"))
-        })
-        .collect();
-    candidates.sort();
-    candidates.into_iter().next()
+    staged_binary(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .as_path(),
+    )
+}
+
+fn staged_binary(directory: &Path) -> Option<PathBuf> {
+    let candidate = directory.join(format!("bridged-{}", env!("TAURI_ENV_TARGET_TRIPLE")));
+    candidate.is_file().then_some(candidate)
 }
 
 /// Own the daemon connection for the life of the app: keep the proxy linked,
@@ -412,7 +542,7 @@ pub fn supervise<E: Fn(&str, Value)>(
 /// call observes the loss first (link cleared), or `stop` is set.
 fn pump<E: Fn(&str, Value)>(
     proxy: &Arc<DaemonProxy>,
-    subscription: &Receiver<RpcNotification>,
+    subscription: &NotificationSubscription,
     stop: &AtomicBool,
     emit: &E,
 ) {
@@ -432,12 +562,16 @@ fn pump<E: Fn(&str, Value)>(
 /// synthesized by the client's own bounded queue — become refetch hints
 /// instead of surfacing a transport detail the frontend does not know.
 fn deliver<E: Fn(&str, Value)>(notification: RpcNotification, emit: &E) {
-    if notification.method == bridge_protocol::notifications::NotificationName::StreamLagged.as_str()
+    if notification.method
+        == bridge_protocol::notifications::NotificationName::StreamLagged.as_str()
     {
         emit_reconciliation(emit);
         return;
     }
-    let payload = notification.params.map(Params::into_value).unwrap_or(Value::Null);
+    let payload = notification
+        .params
+        .map(Params::into_value)
+        .unwrap_or(Value::Null);
     emit(&notification.method, payload);
 }
 
@@ -455,7 +589,10 @@ mod tests {
     fn parameterless_methods_send_no_params() {
         // The JS invoke helper sends `{}` for argument-free calls; the daemon
         // contract requires their absence.
-        assert_eq!(wire_params(MethodName::GetState, serde_json::json!({})), None);
+        assert_eq!(
+            wire_params(MethodName::GetState, serde_json::json!({})),
+            None
+        );
         assert_eq!(wire_params(MethodName::Health, serde_json::json!({})), None);
     }
 
@@ -495,7 +632,10 @@ mod tests {
             seen.lock().unwrap().push((kind.to_owned(), payload));
         };
         deliver(
-            RpcNotification::new("stream-lagged", Params::new(serde_json::json!({"missed": 3})).ok()),
+            RpcNotification::new(
+                "stream-lagged",
+                Params::new(serde_json::json!({"missed": 3})).ok(),
+            ),
             &emit,
         );
         deliver(
@@ -507,7 +647,9 @@ mod tests {
         );
         let seen = seen.into_inner().unwrap();
         assert_eq!(
-            seen.iter().map(|(kind, _)| kind.as_str()).collect::<Vec<_>>(),
+            seen.iter()
+                .map(|(kind, _)| kind.as_str())
+                .collect::<Vec<_>>(),
             vec!["state-changed", "adapters-changed", "session-output"],
         );
         assert_eq!(seen[0].1, Value::Null);
@@ -529,8 +671,82 @@ mod tests {
 
     #[test]
     fn host_preference_defaults_to_auto() {
-        // Do not read the real env here (tests run in parallel); the parsing
-        // rule is what matters and it is exercised through the match arms.
-        assert_eq!(host_preference(), HostPreference::Auto);
+        assert_eq!(parse_host_preference(None), Ok(HostPreference::Auto));
+        assert_eq!(
+            parse_host_preference(Some("auto")),
+            Ok(HostPreference::Auto)
+        );
+        assert_eq!(
+            parse_host_preference(Some("daemon")),
+            Ok(HostPreference::DaemonOnly)
+        );
+        assert_eq!(
+            parse_host_preference(Some("embedded")),
+            Ok(HostPreference::EmbeddedOnly)
+        );
+        assert!(parse_host_preference(Some("deamon")).is_err());
+    }
+
+    #[test]
+    fn daemon_command_disables_the_global_health_listener() {
+        let command = daemon_command(
+            Path::new("bridged"),
+            Path::new("data"),
+            Path::new("extension"),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "--data-dir",
+                "data",
+                "--health-addr",
+                "none",
+                "--browser-extension",
+                "extension"
+            ]
+        );
+    }
+
+    #[test]
+    fn staged_binary_requires_the_current_target_triple() {
+        let fixture = tempfile::tempdir().unwrap();
+        let expected = fixture
+            .path()
+            .join(format!("bridged-{}", env!("TAURI_ENV_TARGET_TRIPLE")));
+        let stale = fixture.path().join("bridged-aarch64-stale-target");
+        std::fs::write(&stale, b"stale").unwrap();
+        assert_eq!(staged_binary(fixture.path()), None);
+        std::fs::write(&expected, b"current").unwrap();
+        assert_eq!(staged_binary(fixture.path()), Some(expected));
+    }
+
+    #[test]
+    fn invoke_jobs_are_bounded() {
+        let proxy = Arc::new(DaemonProxy::default());
+        let permits = (0..MAX_INVOKE_JOBS)
+            .map(|_| proxy.reserve_invoke().expect("slot available"))
+            .collect::<Vec<_>>();
+        assert!(proxy.reserve_invoke().is_none());
+        drop(permits);
+        assert!(proxy.reserve_invoke().is_some());
+    }
+
+    #[test]
+    fn launcher_drop_kills_and_reaps_an_owned_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut launcher = Launcher::new(
+            fixture.path().join("data"),
+            fixture.path().join("extension"),
+            None,
+        );
+        launcher.child = Some(Command::new("sleep").arg("30").spawn().unwrap());
+        let pid = launcher.child.as_ref().unwrap().id();
+        drop(launcher);
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        assert!(!alive, "owned child {pid} survived launcher drop");
     }
 }

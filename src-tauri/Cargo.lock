@@ -235,6 +235,7 @@ dependencies = [
  "bridge-protocol",
  "bridged",
  "chrono",
+ "libc",
  "portable-pty",
  "rusqlite",
  "serde",

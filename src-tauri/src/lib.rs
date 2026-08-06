@@ -770,7 +770,7 @@ fn select_host(
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
     };
-    let mode = match daemon_host::host_preference() {
+    let mode = match daemon_host::host_preference()? {
         daemon_host::HostPreference::EmbeddedOnly => {
             setup_embedded(app, data, extension_path)?;
             HostMode::Embedded
@@ -1188,6 +1188,12 @@ mod tests {
             .filter(|entry| !entry.is_empty())
             .collect();
         assert!(!commands.is_empty());
+        let command_set: std::collections::HashSet<&str> = commands.iter().copied().collect();
+        assert_eq!(
+            command_set.len(),
+            commands.len(),
+            "generate_handler![...] contains duplicate commands"
+        );
         for command in &commands {
             assert!(
                 bridge_protocol::MethodName::from_command(command).is_some(),
@@ -1196,8 +1202,11 @@ mod tests {
             );
         }
         assert_eq!(
-            commands.len(),
-            bridge_protocol::MethodName::ALL.len(),
+            command_set,
+            bridge_protocol::MethodName::ALL
+                .iter()
+                .map(|method| method.command_name())
+                .collect(),
             "bridge-protocol declares methods for commands that are not registered; \
              the registry and generate_handler![...] must stay 1:1"
         );
