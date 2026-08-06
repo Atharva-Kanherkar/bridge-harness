@@ -753,6 +753,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data = app.path().app_data_dir()?;
+            // Embedded mode is one of the two allowed owners of a data
+            // directory (the other is the bridged daemon), never both at
+            // once. Acquire the exclusive lease before touching any store;
+            // the lease lives as managed state until the process exits.
+            let lease = bridge_core::ownership::DataDirLease::acquire(
+                &data,
+                bridge_core::ownership::OwnerKind::Embedded,
+            )
+            .map_err(|error| {
+                eprintln!("bridge: {error}");
+                Box::<dyn std::error::Error>::from(error.to_string())
+            })?;
+            app.manage(lease);
             let bundled_extension = app.path().resource_dir()?.join("browser-extension");
             let extension_path = if bundled_extension.exists() {
                 bundled_extension

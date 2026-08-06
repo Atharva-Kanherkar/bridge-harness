@@ -30,6 +30,7 @@ pub mod model;
 pub mod model_profiles;
 pub mod opencode_adapter;
 pub mod orchestrator;
+pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
