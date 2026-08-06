@@ -9,6 +9,7 @@
 pub mod adapters;
 pub mod agent;
 pub mod agent_config;
+pub mod api;
 pub mod binary;
 pub mod browser_bridge;
 pub mod claude_adapter;

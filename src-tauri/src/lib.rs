@@ -3,108 +3,53 @@ pub use bridge_core::{
     routing_policy,
 };
 
-use bridge_core::events::CoreEvent;
+use bridge_core::api;
 use bridge_core::live_turn;
 use bridge_core::model::*;
 use bridge_core::{
-    adapters, agent, agent_config, binary, browser_bridge, git, marketplace, opencode_adapter,
-    secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    worker_lifecycle, workspace_files,
+    agent_config, browser_bridge, marketplace, opencode_adapter, secret_interception,
+    skill_marketplace, slash,
 };
-use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError, RuntimeSession};
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
-use serde_json::Value;
+use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use std::{
-    collections::HashMap,
-    io::{Read, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
-    thread,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
-use uuid::Uuid;
 
-/// Every UI notification flows through the core event bus; the setup
-/// forwarder is the only code that touches Tauri's event system. The shell
-/// publishes, it never emits.
-fn publish(app: &AppHandle, event: CoreEvent) {
-    app.state::<Arc<BridgeCore>>().events.publish(event);
-}
+// Every command below delegates to `bridge_core::api` — the host-agnostic body
+// of each protocol method, shared with the `bridged` daemon. The shell's only
+// concerns are Tauri argument decoding and blocking-pool placement: anything
+// that can touch Git, processes, PTYs, or the network runs via
+// `spawn_blocking` so native work never lands on the macOS UI thread.
 
-#[derive(Serialize)]
-struct Health {
-    ok: bool,
-    version: &'static str,
-    harnesses: HashMap<&'static str, bool>,
-    database: String,
-    telemetry_database: String,
-    snapshot_directory: String,
-    adapters: Vec<AdapterDescriptor>,
+/// Run a blocking api call on the blocking pool with a labeled failure.
+async fn blocking<T, F>(task_label: &'static str, work: F) -> Result<T, BridgeError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, BridgeError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("{task_label} task failed: {error}")))?
 }
 
 #[tauri::command]
-async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<Health, BridgeError> {
-    let adapters = state.adapter_registry.descriptors();
-    let opencode_available = adapters
-        .iter()
-        .find(|adapter| adapter.id == "opencode")
-        .is_some_and(|adapter| adapter.available);
-    Ok(Health {
-        ok: true,
-        version: env!("CARGO_PKG_VERSION"),
-        harnesses: HashMap::from([
-            ("claude", binary::resolve("claude").is_some()),
-            ("codex", binary::resolve("codex").is_some()),
-            ("opencode", opencode_available),
-            ("shell", true),
-        ]),
-        database: state.database_path.to_string_lossy().into(),
-        telemetry_database: state.telemetry_database_path.to_string_lossy().into(),
-        snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
-        adapters,
-    })
+async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
+    api::health(state.inner())
 }
 
 #[tauri::command]
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
-    Ok(state.browser_bridge.snapshot())
+    api::browser_bridge_state(state.inner())
 }
 
 #[tauri::command]
-async fn install_browser_native_host(
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<String, BridgeError> {
-    let supervisor = Arc::clone(&state.browser_bridge);
-    tauri::async_runtime::spawn_blocking(move || {
-        let executable = std::env::var_os("BRIDGE_BROWSER_HOST")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().and_then(find_browser_host)))
-            .ok_or_else(|| BridgeError::Invalid("Could not locate bridge-browser-host".into()))?;
-        if !executable.exists() {
-            return Err(BridgeError::Invalid(format!("Native host executable is missing at {}. Build the bridge-browser-host binary first.", executable.display())));
-        }
-        supervisor.install_native_host(&executable).map(|path| path.to_string_lossy().into_owned())
-    }).await.map_err(|error| BridgeError::Invalid(format!("Native host registration task failed: {error}")))?
-}
-
-fn find_browser_host(directory: &Path) -> Option<PathBuf> {
-    let direct = directory.join("bridge-browser-host");
-    if direct.exists() {
-        return Some(direct);
-    }
-    std::fs::read_dir(directory)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("bridge-browser-host-"))
-        })
+async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Native host registration", move || api::install_browser_native_host(&core)).await
 }
 
 #[tauri::command]
@@ -112,7 +57,7 @@ async fn browser_action(
     request: browser_bridge::BrowserActionRequest,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<String, BridgeError> {
-    state.browser_bridge.issue(request)
+    api::browser_action(state.inner(), request)
 }
 
 #[tauri::command]
@@ -120,7 +65,7 @@ async fn set_browser_permission(
     permission: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    state.browser_bridge.set_permission(&permission)
+    api::set_browser_permission(state.inner(), &permission)
 }
 
 #[tauri::command]
@@ -129,29 +74,29 @@ async fn resolve_browser_approval(
     allow: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    state.browser_bridge.resolve_approval(&approval_id, allow)
+    api::resolve_browser_approval(state.inner(), &approval_id, allow)
 }
 
 #[tauri::command]
 async fn takeover_browser(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    state.browser_bridge.takeover()
+    api::takeover_browser(state.inner())
 }
 
 #[tauri::command]
 async fn detach_browser(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
-    state.browser_bridge.detach()
+    api::detach_browser(state.inner())
 }
 
 #[tauri::command]
 async fn route_browser(
     request: browser_bridge::BrowserRouteRequest,
 ) -> browser_bridge::BrowserRouteDecision {
-    browser_bridge::route_browser(request)
+    api::route_browser(request)
 }
 
 #[tauri::command]
 async fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
-    browser_bridge::bundled_skills()
+    api::browser_skills()
 }
 
 #[tauri::command]
@@ -159,72 +104,39 @@ async fn configure_remote_browser(
     config: Option<browser_bridge::RemoteBrowserConfig>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let supervisor = Arc::clone(&state.browser_bridge);
-    tauri::async_runtime::spawn_blocking(move || supervisor.configure_remote(config))
-        .await
-        .map_err(|error| {
-            BridgeError::Invalid(format!("Remote browser configuration task failed: {error}"))
-        })?
+    let core = state.inner().clone();
+    blocking("Remote browser configuration", move || {
+        api::configure_remote_browser(&core, config)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn start_remote_browser(
     initial_url: String,
     state: State<'_, Arc<BridgeCore>>,
-) -> Result<Value, BridgeError> {
-    let supervisor = Arc::clone(&state.browser_bridge);
-    tauri::async_runtime::spawn_blocking(move || supervisor.start_remote_session(&initial_url))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Remote browser task failed: {error}")))?
+) -> Result<serde_json::Value, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Remote browser", move || api::start_remote_browser(&core, &initial_url)).await
 }
 
 #[tauri::command]
 async fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
-    marketplace::catalog()
+    api::marketplace_catalog()
 }
 
 #[tauri::command]
 async fn marketplace_app_auth_states(
 ) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
-    marketplace::app_auth_states()
-}
-
-fn user_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-async fn live_available_capabilities(state: &BridgeCore) -> std::collections::HashSet<String> {
-    let mut capabilities = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .flat_map(|descriptor| descriptor.capabilities)
-        .collect::<std::collections::HashSet<_>>();
-    let home = user_home();
-    let store = state.skill_store.clone();
-    if let Ok(Ok(skills)) = tauri::async_runtime::spawn_blocking(move || {
-        skill_marketplace::available_capabilities(&home, &store)
-    })
-    .await
-    {
-        capabilities.extend(skills);
-    }
-    capabilities
+    api::marketplace_app_auth_states()
 }
 
 #[tauri::command]
 async fn skill_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::catalog(&home, &store))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Skill discovery task failed: {error}")))?
+    let core = state.inner().clone();
+    blocking("Skill discovery", move || api::skill_catalog(&core)).await
 }
 
 #[tauri::command]
@@ -233,13 +145,8 @@ async fn skill_suggestions(
     provider: skill_marketplace::SkillProvider,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        skill_marketplace::suggestions(&query, provider, &home, &store)
-    })
-    .await
-    .map_err(|error| BridgeError::Invalid(format!("Skill suggestion task failed: {error}")))?
+    let core = state.inner().clone();
+    blocking("Skill suggestion", move || api::skill_suggestions(&core, &query, provider)).await
 }
 
 #[tauri::command]
@@ -249,39 +156,20 @@ async fn preview_skill_change(
     targets: Vec<skill_marketplace::SkillProvider>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillPreview, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    let consents = Arc::clone(&state.skill_consents);
-    tauri::async_runtime::spawn_blocking(move || {
-        skill_marketplace::preview(
-            &skill_id,
-            action,
-            &targets,
-            &home,
-            &store,
-            consents.as_ref(),
-        )
+    let core = state.inner().clone();
+    blocking("Skill preview", move || {
+        api::preview_skill_change(&core, &skill_id, action, &targets)
     })
     .await
-    .map_err(|error| BridgeError::Invalid(format!("Skill preview task failed: {error}")))?
 }
 
 #[tauri::command]
 async fn execute_skill_change(
     confirmation_id: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<skill_marketplace::SkillActionResult>, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    let consents = Arc::clone(&state.skill_consents);
-    let results = tauri::async_runtime::spawn_blocking(move || {
-        skill_marketplace::execute(&confirmation_id, &home, &store, consents.as_ref())
-    })
-    .await
-    .map_err(|error| BridgeError::Invalid(format!("Skill installer task failed: {error}")))??;
-    publish(&app, CoreEvent::StateChanged);
-    Ok(results)
+    let core = state.inner().clone();
+    blocking("Skill installer", move || api::execute_skill_change(&core, &confirmation_id)).await
 }
 
 #[tauri::command]
@@ -291,11 +179,12 @@ async fn marketplace_action(
     marketplace: Option<String>,
     action: marketplace::MarketplaceAction,
 ) -> Result<marketplace::MarketplaceActionResult, BridgeError> {
-    marketplace::execute_action(provider, &plugin_id, marketplace.as_deref(), action)
+    api::marketplace_action(provider, &plugin_id, marketplace.as_deref(), action)
 }
+
 #[tauri::command]
 async fn get_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
-    store::state(&state.db.lock().unwrap())
+    api::get_state(state.inner())
 }
 
 #[tauri::command]
@@ -305,70 +194,8 @@ async fn get_session_forest(
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // run it on the macOS event loop or while holding the global SQLite lock.
-    let repository_path = state.session_repository_path(&session_id)?;
-    let repository_state = match repository_path {
-        Some(path) => {
-            tauri::async_runtime::spawn_blocking(move || store::repository_state_for_path(&path))
-                .await
-                .map_err(|error| {
-                    BridgeError::Invalid(format!("Repository refresh task failed: {error}"))
-                })?
-        }
-        None => serde_json::json!({"status":"unavailable"}),
-    };
-    state.session_forest_snapshot_with_repository_state(&session_id, repository_state)
-}
-
-fn completion_repository_stamp(
-    db: &Connection,
-    session_id: &str,
-) -> Result<completion::RepositoryStamp, BridgeError> {
-    let state = store::repository_state_for_session(db, session_id)?;
-    let head = state
-        .get("head")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
-        })?;
-    let dirty = state
-        .get("dirtyHash")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid(
-                "completion proof requires a deterministic dirty-tree digest".into(),
-            )
-        })?;
-    Ok(completion::RepositoryStamp {
-        head: head.into(),
-        dirty_digest: dirty.into(),
-    })
-}
-
-fn completion_attempt_repository(
-    db: &Connection,
-    attempt_id: &str,
-) -> Result<(String, completion::RepositoryStamp), BridgeError> {
-    let (session_id, repository_path, stored_head, stored_dirty): (String, String, String, String) = db.query_row(
-        "SELECT session_id,repository_path,repository_head,dirty_digest FROM eval_attempts WHERE id=?1",
-        params![attempt_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    )?;
-    let state = store::repository_state_for_path(std::path::Path::new(&repository_path));
-    let head = state
-        .get("head")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(&stored_head);
-    let dirty = state
-        .get("dirtyHash")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(&stored_dirty);
-    Ok((
-        session_id,
-        completion::RepositoryStamp {
-            head: head.into(),
-            dirty_digest: dirty.into(),
-        },
-    ))
+    let core = state.inner().clone();
+    blocking("Repository refresh", move || api::get_session_forest(&core, &session_id)).await
 }
 
 #[tauri::command]
@@ -379,79 +206,30 @@ async fn create_completion_plan(
     repository_commands: Vec<String>,
     markdown_projection: Option<String>,
     markdown_committed: bool,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let (workspace_id, implementer_family): (String, Option<String>) = {
-        let db = state.db.lock().unwrap();
-        let workspace_id = db.query_row(
-            "SELECT workspace_id FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        let implementer_family = db.query_row(
-            "SELECT s.harness FROM worker_runtime r JOIN worker_leases l ON l.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.parent_session_id=?1 AND l.role='implementation' ORDER BY r.updated_at DESC LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        ).optional()?;
-        (workspace_id, implementer_family)
-    };
-    let contract = completion::CompletionContract {
-        id: Uuid::new_v4().to_string(),
-        workspace_id,
-        session_id: session_id.clone(),
-        schema_version: completion::COMPLETION_SCHEMA_VERSION,
-        acceptance_criteria: acceptance_criteria.clone(),
-        markdown_projection,
-        markdown_committed,
-    };
-    let available_capabilities = live_available_capabilities(&state).await;
-    let change_labels = completion::labels_for_paths(&changed_paths);
-    let db = state.db.lock().unwrap();
-    let plan = completion::plan_with_registered_manifests(
-        &db,
-        completion::PlanInput {
-            contract_id: contract.id.clone(),
+    let core = state.inner().clone();
+    blocking("Completion planning", move || {
+        api::create_completion_plan(
+            &core,
+            &session_id,
             acceptance_criteria,
             changed_paths,
             repository_commands,
-        },
-        &change_labels,
-        &available_capabilities,
-    )?;
-    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
-    let repository = completion_repository_stamp(&db, &session_id)?;
-    completion::create_flow(
-        &db,
-        &contract,
-        &plan,
-        &session_id,
-        &repository_path,
-        &repository,
-        implementer_family.as_deref(),
-    )?;
-    let summary = completion::latest_summary(&db, &session_id)?
-        .ok_or_else(|| BridgeError::Invalid("completion plan was not persisted".into()))?;
-    publish(&app, CoreEvent::StateChanged);
-    Ok(summary)
+            markdown_projection,
+            markdown_committed,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
 async fn record_completion_check(
     attempt_id: String,
     run: completion::CheckRun,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
-    completion::record_check(&db, &attempt_id, &run)?;
-    completion::finalize(&db, &attempt_id, &repository)?;
-    completion::reconcile_parent_readiness(&db, &session_id)?;
-    let summary = completion::latest_summary(&db, &session_id)?
-        .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
-    publish(&app, CoreEvent::StateChanged);
-    Ok(summary)
+    api::record_completion_check(state.inner(), &attempt_id, &run)
 }
 
 #[tauri::command]
@@ -459,25 +237,9 @@ async fn waive_completion(
     attempt_id: String,
     check_ids: Vec<String>,
     reason: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
-    completion::waive(
-        &db,
-        &attempt_id,
-        &check_ids,
-        &reason,
-        "local_user",
-        &repository,
-    )?;
-    completion::finalize(&db, &attempt_id, &repository)?;
-    completion::reconcile_parent_readiness(&db, &session_id)?;
-    let summary = completion::latest_summary(&db, &session_id)?
-        .ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
-    publish(&app, CoreEvent::StateChanged);
-    Ok(summary)
+    api::waive_completion(state.inner(), &attempt_id, &check_ids, &reason)
 }
 
 #[tauri::command]
@@ -486,7 +248,7 @@ async fn register_verifier_manifest(
     manifest: completion::VerifierManifest,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    completion::register_verifier_manifest(&state.db.lock().unwrap(), &source, &manifest)
+    api::register_verifier_manifest(state.inner(), &source, &manifest)
 }
 
 #[tauri::command]
@@ -495,11 +257,7 @@ async fn verifier_candidates(
     available_capabilities: Vec<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<completion::VerifierCandidate>, BridgeError> {
-    completion::verifier_candidates(
-        &state.db.lock().unwrap(),
-        &change_labels,
-        &available_capabilities.into_iter().collect(),
-    )
+    api::verifier_candidates(state.inner(), &change_labels, available_capabilities)
 }
 
 #[tauri::command]
@@ -507,7 +265,7 @@ async fn get_router_preferences(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
-    learning_router::load_preferences(&state.db.lock().unwrap(), &workspace_id)
+    api::get_router_preferences(state.inner(), &workspace_id)
 }
 
 #[tauri::command]
@@ -516,23 +274,21 @@ async fn update_router_preferences(
     preferences: learning_router::RouterPreferences,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
-    let db = state.db.lock().unwrap();
-    learning_router::save_preferences(&db, &workspace_id, &preferences)?;
-    learning_router::load_preferences(&db, &workspace_id)
+    api::update_router_preferences(state.inner(), &workspace_id, &preferences)
 }
 
 #[tauri::command]
 async fn get_model_setup(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
-    model_profiles::setup_state(&state.db.lock().unwrap())
+    api::get_model_setup(state.inner())
 }
 
 #[tauri::command]
 async fn recommended_model_profiles(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<model_profiles::ModelProfileDraft>, BridgeError> {
-    model_profiles::recommended_profiles(&state.adapter_registry.descriptors())
+    api::recommended_model_profiles(state.inner())
 }
 
 #[tauri::command]
@@ -540,28 +296,21 @@ async fn save_model_profiles(
     profiles: Vec<model_profiles::ModelProfileDraft>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
-    model_profiles::save_profiles(
-        &state.db.lock().unwrap(),
-        &state.adapter_registry.descriptors(),
-        &profiles,
-    )
+    api::save_model_profiles(state.inner(), &profiles)
 }
 
 #[tauri::command]
 async fn reset_model_profiles(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
-    model_profiles::reset_profiles(
-        &state.db.lock().unwrap(),
-        &state.adapter_registry.descriptors(),
-    )
+    api::reset_model_profiles(state.inner())
 }
 
 #[tauri::command]
 async fn get_config_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::state(&state.db.lock().unwrap())
+    api::get_config_state(state.inner())
 }
 
 #[tauri::command]
@@ -569,19 +318,8 @@ async fn save_harness_config(
     config: agent_config::HarnessConfig,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    let opencode_settings = (config.id == "opencode")
-        .then(|| agent_config::opencode_settings(Some(&config)))
-        .transpose()?;
-    let next = agent_config::save_harness(&state.db.lock().unwrap(), config)?;
-    if let Some(settings) = opencode_settings {
-        let registry = state.adapter_registry.clone();
-        let directory = opencode_directory(None)?;
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            registry.refresh_opencode(settings, &directory)
-        })
-        .await;
-    }
-    Ok(next)
+    let core = state.inner().clone();
+    blocking("Harness configuration", move || api::save_harness_config(&core, config)).await
 }
 
 #[tauri::command]
@@ -589,31 +327,8 @@ async fn reset_harness_config(
     id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    let next = agent_config::reset_harness(&state.db.lock().unwrap(), &id)?;
-    if id == "opencode" {
-        let registry = state.adapter_registry.clone();
-        let directory = opencode_directory(None)?;
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
-        })
-        .await;
-    }
-    Ok(next)
-}
-
-fn opencode_directory(directory: Option<String>) -> Result<String, BridgeError> {
-    let path = directory
-        .map(|value| PathBuf::from(value.trim()))
-        .filter(|path| !path.as_os_str().is_empty())
-        .map(Ok)
-        .unwrap_or_else(std::env::current_dir)?;
-    if !path.is_dir() {
-        return Err(BridgeError::Invalid(format!(
-            "OpenCode directory does not exist: {}",
-            path.display()
-        )));
-    }
-    Ok(path.to_string_lossy().into_owned())
+    let core = state.inner().clone();
+    blocking("Harness reset", move || api::reset_harness_config(&core, &id)).await
 }
 
 #[tauri::command]
@@ -621,12 +336,8 @@ async fn refresh_opencode_catalog(
     directory: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-    let directory = opencode_directory(directory)?;
-    let registry = state.adapter_registry.clone();
-    let settings = registry.opencode_settings()?;
-    tauri::async_runtime::spawn_blocking(move || registry.refresh_opencode(settings, &directory))
-        .await
-        .map_err(|error| BridgeError::Adapter(format!("OpenCode discovery task failed: {error}")))?
+    let core = state.inner().clone();
+    blocking("OpenCode discovery", move || api::refresh_opencode_catalog(&core, directory)).await
 }
 
 #[tauri::command]
@@ -636,15 +347,11 @@ async fn set_opencode_provider_api_key(
     directory: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-    let directory = opencode_directory(directory)?;
-    let registry = state.adapter_registry.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        registry.set_opencode_provider_api_key(&directory, &provider_id, &api_key)
+    let core = state.inner().clone();
+    blocking("OpenCode authentication", move || {
+        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory)
     })
     .await
-    .map_err(|error| {
-        BridgeError::Adapter(format!("OpenCode authentication task failed: {error}"))
-    })?
 }
 
 #[tauri::command]
@@ -653,15 +360,11 @@ async fn remove_opencode_provider_auth(
     directory: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-    let directory = opencode_directory(directory)?;
-    let registry = state.adapter_registry.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        registry.remove_opencode_provider_auth(&directory, &provider_id)
+    let core = state.inner().clone();
+    blocking("OpenCode authentication", move || {
+        api::remove_opencode_provider_auth(&core, &provider_id, directory)
     })
     .await
-    .map_err(|error| {
-        BridgeError::Adapter(format!("OpenCode authentication task failed: {error}"))
-    })?
 }
 
 #[tauri::command]
@@ -669,7 +372,7 @@ async fn save_agent_config(
     agent: agent_config::AgentDefinition,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::save_agent(&state.db.lock().unwrap(), agent)
+    api::save_agent_config(state.inner(), agent)
 }
 
 #[tauri::command]
@@ -677,7 +380,7 @@ async fn delete_agent_config(
     id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::delete_agent(&state.db.lock().unwrap(), &id)
+    api::delete_agent_config(state.inner(), &id)
 }
 
 #[tauri::command]
@@ -685,71 +388,39 @@ async fn set_default_agent(
     id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::set_default(&state.db.lock().unwrap(), &id)
+    api::set_default_agent(state.inner(), &id)
 }
 
 #[tauri::command]
 async fn reset_all_config(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
-    let next = agent_config::reset_all(&state.db.lock().unwrap())?;
-    let registry = state.adapter_registry.clone();
-    let directory = opencode_directory(None)?;
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
-    })
-    .await;
-    Ok(next)
+    let core = state.inner().clone();
+    blocking("Configuration reset", move || api::reset_all_config(&core)).await
 }
 
 #[tauri::command]
 async fn get_learning_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::learning_state(&state.db.lock().unwrap())
+    api::get_learning_state(state.inner())
 }
 
 #[tauri::command]
 async fn run_learning(
     trigger_kind: learning_job::LearningTriggerKind,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
-    if matches!(
-        trigger_kind,
-        learning_job::LearningTriggerKind::Codex
-            | learning_job::LearningTriggerKind::Claude
-            | learning_job::LearningTriggerKind::OpenCode
-    ) {
-        return Err(BridgeError::Invalid(
-            "external learning triggers must use a registered narrow command".into(),
-        ));
-    }
-    let database_path = state.database_path.clone();
-    let run = tauri::async_runtime::spawn_blocking(move || {
-        learning_job::run_local_database(&database_path, trigger_kind)
-    })
-    .await
-    .map_err(|error| BridgeError::Invalid(format!("Learning task failed: {error}")))??;
-    publish(
-        &app,
-        CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()),
-    );
-    Ok(run)
+    let core = state.inner().clone();
+    blocking("Learning", move || api::run_learning(&core, trigger_kind)).await
 }
 
 #[tauri::command]
 async fn cancel_learning_run(
     run_id: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
-    let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
-    publish(
-        &app,
-        CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()),
-    );
-    Ok(run)
+    api::cancel_learning_run(state.inner(), &run_id)
 }
 
 #[tauri::command]
@@ -757,7 +428,7 @@ async fn update_learning_schedule(
     schedule: learning_job::LearningSchedule,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningSchedule, BridgeError> {
-    learning_job::update_schedule(&state.db.lock().unwrap(), &schedule)
+    api::update_learning_schedule(state.inner(), &schedule)
 }
 
 #[tauri::command]
@@ -768,8 +439,8 @@ async fn register_learning_trigger(
     expires_at: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    learning_job::register_trigger_with_expiry(
-        &state.db.lock().unwrap(),
+    api::register_learning_trigger(
+        state.inner(),
         kind,
         &registration_id,
         credential_ref.as_deref(),
@@ -783,7 +454,7 @@ async fn get_learning_trigger_instructions(
     database_path: String,
     registration_id: String,
 ) -> Result<String, BridgeError> {
-    learning_job::trigger_instructions(kind, &database_path, &registration_id)
+    api::get_learning_trigger_instructions(kind, &database_path, &registration_id)
 }
 
 #[tauri::command]
@@ -792,37 +463,24 @@ async fn enable_learning_trigger(
     registration_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    learning_job::enable_trigger(&state.db.lock().unwrap(), kind, &registration_id)
+    api::enable_learning_trigger(state.inner(), kind, &registration_id)
 }
 
 #[tauri::command]
 async fn approve_learning_run(
     run_id: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
-    let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
-    publish(
-        &app,
-        CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()),
-    );
-    Ok(run)
+    api::approve_learning_run(state.inner(), &run_id)
 }
 
 #[tauri::command]
 async fn rollback_routing_policy(
     target_version: i64,
     explanation: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
-    let result = learning_job::learning_state(&state.db.lock().unwrap())?;
-    publish(
-        &app,
-        CoreEvent::LearningJobChanged(serde_json::to_value(&result).unwrap_or_default()),
-    );
-    Ok(result)
+    api::rollback_routing_policy(state.inner(), target_version, &explanation)
 }
 
 #[tauri::command]
@@ -831,16 +489,12 @@ async fn activate_session_entry(
     entry_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    // The core publishes state-changed once the head move is recorded.
-    state.activate_session_entry(&session_id, &entry_id)
+    api::activate_session_entry(state.inner(), &session_id, &entry_id)
 }
 
 #[tauri::command]
-async fn add_project(
-    path: String,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<BridgeState, BridgeError> {
-    state.add_project(&path)
+async fn add_project(path: String, state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    api::add_project(state.inner(), &path)
 }
 
 /// Create a repo-less workspace. A folder/git repo can be connected later.
@@ -849,7 +503,7 @@ async fn create_workspace(
     title: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    state.create_workspace(&title)
+    api::create_workspace(state.inner(), &title)
 }
 
 /// Create a standalone direct chat (no workspace). Runs in a private scratch dir.
@@ -860,7 +514,7 @@ async fn create_chat(
     title: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    state.create_chat(&harness, model.as_deref(), title.as_deref())
+    api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
 }
 
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
@@ -871,32 +525,12 @@ async fn create_workspace_session(
     create_worktree: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let plan = state.plan_workspace_session(&workspace_id, create_worktree.unwrap_or(false))?;
-    let worktree = match plan.worktree_source().map(str::to_owned) {
-        // Worktree creation shells out to Git; only its blocking-pool
-        // placement is the shell's concern.
-        Some(source) => {
-            let namespace = state.worktrees.clone();
-            let title = plan.workspace_title().to_owned();
-            let session_id = plan.session_id().to_owned();
-            Some(
-                tauri::async_runtime::spawn_blocking(move || {
-                    sessions::prepare_orchestrator_worktree(
-                        &namespace,
-                        &title,
-                        Path::new(&source),
-                        &session_id,
-                    )
-                })
-                .await
-                .map_err(|error| {
-                    BridgeError::Invalid(format!("Worktree creation task failed: {error}"))
-                })??,
-            )
-        }
-        None => None,
-    };
-    state.persist_workspace_session(plan, worktree)
+    // Worktree creation shells out to Git; keep it on the blocking pool.
+    let core = state.inner().clone();
+    blocking("Worktree creation", move || {
+        api::create_workspace_session(&core, &workspace_id, create_worktree.unwrap_or(false))
+    })
+    .await
 }
 
 /// Change a root chat's provider/model. Stops any running adapter so the next
@@ -906,41 +540,15 @@ async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    // Exclusive for the whole plan -> teardown -> commit window: a concurrent
-    // start would otherwise slip in after teardown and be orphaned by the
-    // commit clearing its process and turn state.
-    let _lifecycle = state.claim_session_lifecycle(&session_id, "model switch")?;
-    let Some(change) = state.plan_chat_model_change(&session_id, &harness, model.as_deref())?
-    else {
-        return state.state_snapshot();
-    };
-    // Stopping the old adapter can block on process teardown; run it on the
-    // blocking pool rather than the macOS event loop.
-    let stop_session_id = session_id.clone();
-    let shutdown_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        shutdown_app
-            .state::<Arc<BridgeCore>>()
-            .stop_session_adapter(&stop_session_id, adapters::ShutdownReason::Replaced);
+    // Stopping the old adapter can block on process teardown; run the whole
+    // claim -> teardown -> commit window on the blocking pool.
+    let core = state.inner().clone();
+    blocking("Adapter shutdown", move || {
+        api::update_chat_model(&core, &session_id, &harness, model.as_deref())
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
-    // The core publishes the durable agent event when the commit lands.
-    state.commit_chat_model_change(change)?;
-    state.state_snapshot()
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SlashCommandResolve {
-    name: String,
-    harness: String,
-    kind: String,
-    /// When true, the frontend should switch the direct chat to `harness` before sending.
-    switch_harness: bool,
 }
 
 /// Enumerate slash commands + skills from every signed-in provider, so the UI
@@ -949,14 +557,7 @@ struct SlashCommandResolve {
 async fn list_slash_commands(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
-    Ok(slash::list_commands(&available))
+    api::list_slash_commands(state.inner())
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -966,60 +567,8 @@ async fn resolve_slash_command(
     text: String,
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
-) -> Result<Option<SlashCommandResolve>, BridgeError> {
-    let trimmed = text.trim();
-    let Some(rest) = trimmed.strip_prefix('/') else {
-        return Ok(None);
-    };
-    let name = rest
-        .split_whitespace()
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
-    let (kind, session_harness): (String, String) = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT kind, harness FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?
-    };
-    let catalog = slash::list_commands(&available);
-    let matches: Vec<_> = catalog
-        .iter()
-        .filter(|command| command.name.eq_ignore_ascii_case(name))
-        .collect();
-    if matches.is_empty() {
-        return Ok(None);
-    }
-    let chosen = matches
-        .iter()
-        .find(|command| command.harness == session_harness)
-        .or_else(|| {
-            // Prefer the command's own harness when the name is unique to one provider.
-            if matches.len() == 1 {
-                matches.first()
-            } else {
-                None
-            }
-        })
-        .or_else(|| matches.first())
-        .map(|command| (*command).clone())
-        .expect("matches non-empty");
-    let switch_harness = kind == "direct" && chosen.harness != session_harness;
-    Ok(Some(SlashCommandResolve {
-        name: chosen.name.clone(),
-        harness: chosen.harness.clone(),
-        kind: chosen.kind.clone(),
-        switch_harness,
-    }))
+) -> Result<Option<api::SlashCommandResolve>, BridgeError> {
+    api::resolve_slash_command(state.inner(), &text, &session_id)
 }
 
 /// Attach a folder (optionally a git repo) to a workspace as its working directory.
@@ -1029,7 +578,7 @@ async fn connect_workspace_folder(
     path: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    state.connect_workspace_folder(&workspace_id, &path)
+    api::connect_workspace_folder(state.inner(), &workspace_id, &path)
 }
 
 #[tauri::command]
@@ -1040,11 +589,8 @@ async fn start_session(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     let core = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        live_turn::start_session(&core, workspace_id, harness, model)
-    })
-    .await
-    .map_err(|error| BridgeError::Adapter(format!("Session start task failed: {error}")))?
+    blocking("Session start", move || api::start_session(&core, workspace_id, harness, model))
+        .await
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
@@ -1056,86 +602,16 @@ async fn start_chat(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     let core = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || live_turn::start_chat(&core, session_id))
-        .await
-        .map_err(|error| BridgeError::Adapter(format!("Chat start task failed: {error}")))?
+    blocking("Chat start", move || api::start_chat(&core, session_id)).await
 }
 
 #[tauri::command]
 async fn open_terminal(
     workspace_id: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let runtime_id = format!("terminal:{workspace_id}");
-    if state.runtimes.lock().unwrap().contains_key(&runtime_id) {
-        return Ok(());
-    }
-    let db = state.db.lock().unwrap();
-    let path: String = db.query_row(
-        "SELECT path FROM workspaces WHERE id=?1",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    drop(db);
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 32,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let mut command = CommandBuilder::new("zsh");
-    command.args(["-l"]);
-    command.cwd(&path);
-    command.env("TERM", "xterm-256color");
-    command.env("BRIDGE_WORKSPACE_ID", &workspace_id);
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    state.runtimes.lock().unwrap().insert(
-        runtime_id.clone(),
-        RuntimeSession {
-            writer,
-            master: pair.master,
-            child,
-        },
-    );
-    let app_reader = app.clone();
-    let workspace_reader = workspace_id.clone();
-    let runtime_reader = runtime_id.clone();
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    publish(
-                        &app_reader,
-                        CoreEvent::SessionOutput {
-                            session_id: workspace_reader.clone(),
-                            data,
-                        },
-                    );
-                }
-            }
-        }
-        let state = app_reader.state::<Arc<BridgeCore>>();
-        state.runtimes.lock().unwrap().remove(&runtime_reader);
-    });
-    Ok(())
+    let core = state.inner().clone();
+    blocking("Terminal open", move || api::open_terminal(&core, &workspace_id)).await
 }
 
 #[tauri::command]
@@ -1144,13 +620,7 @@ async fn write_terminal(
     data: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let mut sessions = state.runtimes.lock().unwrap();
-    let runtime = sessions
-        .get_mut(&format!("terminal:{workspace_id}"))
-        .ok_or_else(|| BridgeError::Invalid("Workspace terminal is not open".into()))?;
-    runtime.writer.write_all(data.as_bytes())?;
-    runtime.writer.flush()?;
-    Ok(())
+    api::write_terminal(state.inner(), &workspace_id, &data)
 }
 
 #[tauri::command]
@@ -1160,9 +630,7 @@ async fn prepare_turn(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     let core = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || live_turn::prepare_turn(&core, session_id, text))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Turn preparation task failed: {error}")))?
+    blocking("Turn preparation", move || api::prepare_turn(&core, session_id, text)).await
 }
 
 #[tauri::command]
@@ -1172,9 +640,7 @@ async fn send_turn(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
     let core = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || live_turn::send_turn(&core, session_id, text))
-        .await
-        .map_err(|error| BridgeError::Adapter(format!("Turn delivery task failed: {error}")))?
+    blocking("Turn delivery", move || api::send_turn(&core, session_id, text)).await
 }
 
 /// List the current chat's workspace files for the composer's `@file`
@@ -1184,18 +650,10 @@ async fn list_workspace_files(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<String>, BridgeError> {
-    match state.session_workspace_root(&session_id) {
-        // Listing is pure filesystem work; only the blocking-pool placement
-        // is the shell's concern.
-        Some(root) => {
-            tauri::async_runtime::spawn_blocking(move || workspace_files::list_files(&root))
-                .await
-                .map_err(|error| {
-                    BridgeError::Invalid(format!("Workspace file listing failed: {error}"))
-                })?
-        }
-        None => Ok(Vec::new()),
-    }
+    // Listing is pure filesystem work; keep it off the async runtime.
+    let core = state.inner().clone();
+    blocking("Workspace file listing", move || api::list_workspace_files(&core, &session_id))
+        .await
 }
 
 #[tauri::command]
@@ -1203,10 +661,7 @@ async fn compact_session(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let prompt = state.begin_manual_compaction(&session_id)?;
-    // Delivering the checkpoint prompt is turn machinery; it moves with the
-    // live-turn slice.
-    live_turn::send_internal_checkpoint_turn(state.inner(), &session_id, &prompt)
+    api::compact_session(state.inner(), &session_id)
 }
 
 /// Replay durable session events after a cursor — the recovery half of the
@@ -1218,20 +673,20 @@ async fn replay_session_events(
     limit: Option<u32>,
     app: AppHandle,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Arc<BridgeCore>>()
-            .replay_session_events(&session_id, after_sequence, limit)
+    blocking("Session replay", move || {
+        api::replay_session_events(
+            &app.state::<Arc<BridgeCore>>(),
+            &session_id,
+            after_sequence,
+            limit,
+        )
     })
     .await
-    .map_err(|error| BridgeError::Invalid(format!("Session replay task failed: {error}")))?
 }
 
 #[tauri::command]
-async fn interrupt_turn(
-    session_id: String,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<(), BridgeError> {
-    state.interrupt_turn(&session_id)
+async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::interrupt_turn(state.inner(), &session_id)
 }
 
 /// Refresh subscription usage for every provider, independent of which session
@@ -1239,8 +694,10 @@ async fn interrupt_turn(
 /// command; Codex is asked on a live session and answers on its event stream.
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
-async fn refresh_account_usage(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    state.refresh_account_usage()
+async fn refresh_account_usage(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::refresh_account_usage(state.inner())
 }
 
 #[tauri::command]
@@ -1248,131 +705,9 @@ async fn resolve_approval(
     session_id: String,
     event_id: i64,
     decision: String,
-    app: AppHandle,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    if !matches!(
-        decision.as_str(),
-        "accept" | "acceptForSession" | "decline" | "cancel"
-    ) {
-        return Err(BridgeError::Invalid("Unsupported approval decision".into()));
-    }
-    let db = state.db.lock().unwrap();
-    let (data, adapter_id): (String, String) = db.query_row(
-        "SELECT e.payload,s.harness FROM session_entries e
-         JOIN sessions s ON s.id=e.session_id
-         WHERE e.session_id=?1 AND e.sequence=?2 AND e.kind='approval.requested'",
-        params![session_id, event_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let data: serde_json::Value = serde_json::from_str(&data)
-        .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
-    if data.get("approvalType").and_then(serde_json::Value::as_str) == Some("delegation_path_scope")
-    {
-        let launch = live_turn::resolve_policy_delegation_approval(
-            &db,
-            &session_id,
-            event_id,
-            &decision,
-            &data,
-        )?;
-        drop(db);
-        if let Some((turn_id, request)) = launch {
-            match live_turn::launch_worker_outcome(
-                state.inner(),
-                &session_id,
-                &turn_id,
-                &request,
-                true,
-            ) {
-                live_turn::WorkerLaunchOutcome::Launched(_)
-                | live_turn::WorkerLaunchOutcome::Queued => {}
-                live_turn::WorkerLaunchOutcome::Failed => {
-                    let db = state.db.lock().unwrap();
-                    live_turn::record_approved_launch_failure(
-                        &db,
-                        &session_id,
-                        &turn_id,
-                        &request,
-                    )?;
-                    publish(&app, CoreEvent::StateChanged);
-                    return Err(BridgeError::Invalid(
-                        "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
-                    ));
-                }
-            }
-        }
-        publish(&app, CoreEvent::StateChanged);
-        return Ok(());
-    }
-    let request_id = data
-        .get("requestId")
-        .cloned()
-        .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
-    let is_worker = store::worker_runtime(&db, &session_id)?.is_some();
-    if is_worker {
-        session_supervisor::SessionSupervisor::transition(
-            &db,
-            &session_id,
-            worker_lifecycle::WorkerLifecycleState::Working,
-            Some("approval_resolved"),
-        )?;
-    }
-    drop(db);
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(&session_id)
-        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    if let Err(error) = runtime.respond(request_id, &decision) {
-        drop(adapters);
-        if is_worker {
-            let _ = session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Waiting,
-                Some("approval_delivery_failed"),
-            );
-        }
-        return Err(error);
-    }
-    drop(adapters);
-    let mut normalized = agent::NormalizedEvent {
-        kind: "approval.resolved".into(),
-        item_id: None,
-        role: None,
-        status: Some(decision.clone()),
-        title: Some("Approval resolved".into()),
-        text: None,
-        data: serde_json::json!({"requestEventId":event_id,"decision":decision}),
-    };
-    normalized.item_id = data
-        .get("itemId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    let db = state.db.lock().unwrap();
-    let event = store::session_event(
-        &db,
-        &session_id,
-        &normalized,
-        &serde_json::json!({"adapter":adapter_id}),
-    )?;
-    if !is_worker {
-        db.execute(
-            "UPDATE sessions SET status='working' WHERE id=?1",
-            params![session_id],
-        )?;
-    }
-    db.execute(
-        "UPDATE workspaces SET status=CASE
-            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
-            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
-            ELSE 'ready' END
-         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
-        params![session_id],
-    )?;
-    publish(&app, CoreEvent::Agent(event));
-    publish(&app, CoreEvent::StateChanged);
-    Ok(())
+    api::resolve_approval(state.inner(), &session_id, event_id, &decision)
 }
 
 #[tauri::command]
@@ -1382,48 +717,27 @@ async fn resize_terminal(
     cols: u16,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    if let Some(runtime) = state
-        .runtimes
-        .lock()
-        .unwrap()
-        .get_mut(&format!("terminal:{workspace_id}"))
-    {
-        runtime
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| BridgeError::Pty(e.to_string()))?
-    }
-    Ok(())
+    api::resize_terminal(state.inner(), &workspace_id, rows, cols)
 }
+
 #[tauri::command]
 async fn stop_session(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     let core = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || live_turn::stop_session(&core, session_id))
-        .await
-        .map_err(|error| BridgeError::Adapter(format!("Session stop task failed: {error}")))?
+    blocking("Session stop", move || api::stop_session(&core, session_id)).await
 }
+
 #[tauri::command]
 async fn refresh_workspace(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    // Resolve the path under the lock, but run Git entirely outside it so a
-    // slow status scan cannot delay message submission or streaming writes.
-    let path = state.workspace_path(&workspace_id)?;
-    let stats = tauri::async_runtime::spawn_blocking(move || git::stats(Path::new(&path)))
-        .await
-        .map_err(|error| {
-            BridgeError::Invalid(format!("Workspace refresh task failed: {error}"))
-        })??;
-    state.record_workspace_git_stats(&workspace_id, stats)
+    // Git status scans run entirely off the async runtime so a slow scan
+    // cannot delay message submission or streaming writes.
+    let core = state.inner().clone();
+    blocking("Workspace refresh", move || api::refresh_workspace(&core, &workspace_id)).await
 }
 
 #[tauri::command]
@@ -1431,10 +745,7 @@ async fn archive_workspace(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    // The core publishes state-changed as soon as the archive commits, so a
-    // snapshot failure below cannot leave listeners unaware of it.
-    state.archive_workspace(&workspace_id)?;
-    state.state_snapshot()
+    api::archive_workspace(state.inner(), &workspace_id)
 }
 
 pub fn run() {
@@ -1586,7 +897,13 @@ mod tests {
         resolve_policy_delegation_approval, WorkerReservationOutcome, HISTORY_SNAPSHOT_INTERVAL,
     };
     use bridge_core::workspaces;
-    use bridge_core::{compaction_controller, delegation, policy, prompt_compiler, session_forest};
+    use bridge_core::{
+        adapters, agent, compaction_controller, delegation, git, policy, prompt_compiler,
+        session_forest, session_supervisor, sessions, store, worker_lifecycle,
+    };
+    use rusqlite::{params, Connection};
+    use std::collections::HashMap;
+    use std::path::Path;
     use std::process::Command;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1717,14 +1034,21 @@ mod tests {
             !source.contains("#[tauri::command]\nfn "),
             "Tauri commands must be async so native work never runs on the macOS UI thread"
         );
-        assert!(source.contains("learning_job::run_local_database(&database_path, trigger_kind)"));
-        let locked_learning_call = [
-            "learning_job::run_learning(",
-            "&state.db.lock().unwrap()",
-            ", trigger_kind)",
-        ]
-        .concat();
-        assert!(!source.contains(&locked_learning_call));
+        // Method bodies live in bridge_core::api (shared with the daemon);
+        // the shell adds transport wiring only. A command that does not call
+        // through the api seam means logic leaked back into the shell.
+        let command_region = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("lib.rs has a test module");
+        let attribute = format!("#[tauri::{}]", "command"); // dodge this literal
+        let stray: Vec<&str> = command_region
+            .split(&attribute)
+            .skip(1)
+            .filter(|body| !body.contains("api::"))
+            .map(|body| body.trim_start().lines().next().unwrap_or_default())
+            .collect();
+        assert!(stray.is_empty(), "commands not delegating to bridge_core::api: {stray:?}");
     }
 
     #[test]
