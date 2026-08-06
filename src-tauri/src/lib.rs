@@ -3,6 +3,8 @@ pub use bridge_core::{
     routing_policy,
 };
 
+pub mod daemon_host;
+
 use bridge_core::api;
 use bridge_core::live_turn;
 use bridge_core::model::*;
@@ -748,75 +750,185 @@ async fn archive_workspace(
     api::archive_workspace(state.inner(), &workspace_id)
 }
 
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let data = app.path().app_data_dir()?;
-            // Embedded mode is one of the two allowed owners of a data
-            // directory (the other is the bridged daemon), never both at
-            // once. Acquire the exclusive lease before touching any store;
-            // the lease lives as managed state until the process exits.
-            let lease = bridge_core::ownership::DataDirLease::acquire(
-                &data,
-                bridge_core::ownership::OwnerKind::Embedded,
-            )
-            .map_err(|error| {
+/// Which runtime host this app process runs behind, decided once in setup.
+/// The invoke handler reads it on every command: embedded commands run the
+/// `bridge_core::api` bodies in-process; daemon mode proxies the same wire
+/// contract to `bridged` and the webview cannot tell the difference.
+pub enum HostMode {
+    Embedded,
+    Daemon(Arc<DaemonHostRuntime>),
+}
+
+pub struct DaemonHostRuntime {
+    proxy: Arc<daemon_host::DaemonProxy>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    supervisor: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl DaemonHostRuntime {
+    fn shutdown(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.proxy.disconnect();
+        if let Some(supervisor) = self.supervisor.lock().unwrap().take() {
+            let _ = supervisor.join();
+        }
+    }
+}
+
+impl Drop for DaemonHostRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn select_host(
+    app: &tauri::App,
+    host: &std::sync::OnceLock<HostMode>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = app.path().app_data_dir()?;
+    let bundled_extension = app.path().resource_dir()?.join("browser-extension");
+    let extension_path = if bundled_extension.exists() {
+        bundled_extension
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
+    };
+    let mode = match daemon_host::host_preference()? {
+        daemon_host::HostPreference::EmbeddedOnly => {
+            setup_embedded(app, data, extension_path)?;
+            HostMode::Embedded
+        }
+        preference => match start_daemon_host(app.handle().clone(), data.clone(), extension_path.clone()) {
+            Ok(proxy) => HostMode::Daemon(proxy),
+            // Auto keeps the migration promise: a machine where the daemon
+            // cannot run still gets a working app on the embedded runtime.
+            Err(error) if preference == daemon_host::HostPreference::Auto => {
+                eprintln!("bridge: daemon host unavailable ({error}); running embedded");
+                setup_embedded(app, data, extension_path)?;
+                HostMode::Embedded
+            }
+            Err(error) => {
                 eprintln!("bridge: {error}");
-                Box::<dyn std::error::Error>::from(error.to_string())
-            })?;
-            app.manage(lease);
-            let bundled_extension = app.path().resource_dir()?.join("browser-extension");
-            let extension_path = if bundled_extension.exists() {
-                bundled_extension
-            } else {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
-            };
-            // The Tauri compatibility adapter: subscribe BEFORE boot so
-            // boot-time events (adapter discovery) cannot be missed, then
-            // forward every core event to the webview with unchanged names
-            // and payloads.
-            let events = bridge_core::events::EventBus::new();
-            let mut receiver = events.subscribe();
-            let forwarder = app.handle().clone();
-            std::thread::Builder::new()
-                .name("core-event-forwarder".into())
-                .spawn(move || loop {
-                    match receiver.blocking_recv() {
-                        Ok(event) => {
-                            let _ = forwarder.emit(event.kind().as_str(), event.payload());
-                        }
-                        // The compatibility UI already reconciles durable
-                        // history from the session forest. Skip stale live
-                        // frames here; daemon clients use cursor replay.
-                        Err(bridge_core::events::ReceiveError::Lagged(_)) => {
-                            for event in receiver.reconciliation_events() {
-                                let _ = forwarder.emit(event.kind().as_str(), event.payload());
-                            }
-                            continue;
-                        }
-                        Err(bridge_core::events::ReceiveError::Closed) => break,
-                    }
-                })?;
-            let core = BridgeCore::boot(BootConfig {
-                data_dir: data,
-                browser_extension_path: extension_path,
-                events: Some(events),
-            })
-            .map_err(Box::<dyn std::error::Error>::from)?;
-            start_health_server(
-                core.database_path.clone(),
-                core.adapter_registry.descriptors(),
-                core.credential_broker.clone(),
+                return Err(error.into());
+            }
+        },
+    };
+    let _ = host.set(mode);
+    Ok(())
+}
+
+/// Attach to (or start) a `bridged` serving the app's data directory, then
+/// hand the connection to a supervisor thread that keeps it alive for the
+/// process lifetime and forwards every daemon notification to the webview
+/// with unchanged names and payloads.
+fn start_daemon_host(
+    app: AppHandle,
+    data_dir: PathBuf,
+    browser_extension: PathBuf,
+) -> Result<Arc<DaemonHostRuntime>, String> {
+    let mut launcher = daemon_host::Launcher::new(
+        data_dir,
+        browser_extension,
+        daemon_host::find_bridged_binary(),
+    );
+    let clients = launcher.ensure()?;
+    eprintln!("bridge: attached to bridged (desktop runs as a daemon client)");
+    let proxy = Arc::new(daemon_host::DaemonProxy::default());
+    let supervisor_proxy = proxy.clone();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let supervisor_stop = stop.clone();
+    let supervisor = std::thread::Builder::new()
+        .name("daemon-host-supervisor".into())
+        .spawn(move || {
+            daemon_host::supervise(
+                &supervisor_proxy,
+                launcher,
+                Some(clients),
+                &supervisor_stop,
+                |kind, payload| {
+                    let _ = app.emit(kind, payload);
+                },
             );
-            let core = Arc::new(core);
-            app.manage(core.clone());
-            live_turn::start_worker_maintenance(core.clone());
-            live_turn::start_learning_maintenance(core.clone());
-            live_turn::start_history_snapshot_maintenance(core);
-            Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .map_err(|error| format!("could not start the daemon supervisor: {error}"))?;
+    Ok(Arc::new(DaemonHostRuntime {
+        proxy,
+        stop,
+        supervisor: std::sync::Mutex::new(Some(supervisor)),
+    }))
+}
+
+/// The in-process runtime, unchanged from before the daemon existed. Still
+/// the fallback while the migration is in flight; never runs concurrently
+/// with a daemon on the same data directory (the lease enforces that).
+fn setup_embedded(
+    app: &tauri::App,
+    data: PathBuf,
+    extension_path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Embedded mode is one of the two allowed owners of a data
+    // directory (the other is the bridged daemon), never both at
+    // once. Acquire the exclusive lease before touching any store;
+    // the lease lives as managed state until the process exits.
+    let lease = bridge_core::ownership::DataDirLease::acquire(
+        &data,
+        bridge_core::ownership::OwnerKind::Embedded,
+    )
+    .map_err(|error| {
+        eprintln!("bridge: {error}");
+        Box::<dyn std::error::Error>::from(error.to_string())
+    })?;
+    app.manage(lease);
+    // The Tauri compatibility adapter: subscribe BEFORE boot so
+    // boot-time events (adapter discovery) cannot be missed, then
+    // forward every core event to the webview with unchanged names
+    // and payloads.
+    let events = bridge_core::events::EventBus::new();
+    let mut receiver = events.subscribe();
+    let forwarder = app.handle().clone();
+    std::thread::Builder::new()
+        .name("core-event-forwarder".into())
+        .spawn(move || loop {
+            match receiver.blocking_recv() {
+                Ok(event) => {
+                    let _ = forwarder.emit(event.kind().as_str(), event.payload());
+                }
+                // The compatibility UI already reconciles durable
+                // history from the session forest. Skip stale live
+                // frames here; daemon clients use cursor replay.
+                Err(bridge_core::events::ReceiveError::Lagged(_)) => {
+                    for event in receiver.reconciliation_events() {
+                        let _ = forwarder.emit(event.kind().as_str(), event.payload());
+                    }
+                    continue;
+                }
+                Err(bridge_core::events::ReceiveError::Closed) => break,
+            }
+        })?;
+    let core = BridgeCore::boot(BootConfig {
+        data_dir: data,
+        browser_extension_path: extension_path,
+        events: Some(events),
+    })
+    .map_err(Box::<dyn std::error::Error>::from)?;
+    start_health_server(
+        core.database_path.clone(),
+        core.adapter_registry.descriptors(),
+        core.credential_broker.clone(),
+    );
+    let core = Arc::new(core);
+    app.manage(core.clone());
+    live_turn::start_worker_maintenance(core.clone());
+    live_turn::start_learning_maintenance(core.clone());
+    live_turn::start_history_snapshot_maintenance(core);
+    Ok(())
+}
+
+pub fn run() {
+    let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
+    let setup_slot = host.clone();
+    let exit_host = host.clone();
+    let embedded_commands: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
+        Box::new(tauri::generate_handler![
             health,
             browser_bridge_state,
             install_browser_native_host,
@@ -893,9 +1005,31 @@ pub fn run() {
             stop_session,
             refresh_workspace,
             archive_workspace
-        ])
-        .run(tauri::generate_context!())
+        ]);
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| select_host(app, &setup_slot))
+        .invoke_handler(move |invoke| match host.get() {
+            Some(HostMode::Daemon(runtime)) => {
+                daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
+            }
+            Some(HostMode::Embedded) => embedded_commands(invoke),
+            // Invokes cannot arrive before setup finishes; refuse rather
+            // than panic if that assumption ever breaks.
+            None => {
+                invoke.resolver.reject("Bridge is still starting");
+                true
+            }
+        })
+        .build(tauri::generate_context!())
         .expect("Bridge failed to start")
+        .run(move |_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
+                    runtime.shutdown();
+                }
+            }
+        })
 }
 
 #[cfg(test)]
@@ -920,6 +1054,25 @@ mod tests {
     use std::process::Command;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[test]
+    fn daemon_runtime_shutdown_stops_and_joins_its_supervisor() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let supervisor = std::thread::spawn(move || {
+            while !worker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let runtime = DaemonHostRuntime {
+            proxy: Arc::new(daemon_host::DaemonProxy::default()),
+            stop,
+            supervisor: std::sync::Mutex::new(Some(supervisor)),
+        };
+        runtime.shutdown();
+        assert!(runtime.stop.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(runtime.supervisor.lock().unwrap().is_none());
+    }
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {
@@ -1091,6 +1244,12 @@ mod tests {
             .filter(|entry| !entry.is_empty())
             .collect();
         assert!(!commands.is_empty());
+        let command_set: std::collections::HashSet<&str> = commands.iter().copied().collect();
+        assert_eq!(
+            command_set.len(),
+            commands.len(),
+            "generate_handler![...] contains duplicate commands"
+        );
         for command in &commands {
             assert!(
                 bridge_protocol::MethodName::from_command(command).is_some(),
@@ -1099,8 +1258,11 @@ mod tests {
             );
         }
         assert_eq!(
-            commands.len(),
-            bridge_protocol::MethodName::ALL.len(),
+            command_set,
+            bridge_protocol::MethodName::ALL
+                .iter()
+                .map(|method| method.command_name())
+                .collect(),
             "bridge-protocol declares methods for commands that are not registered; \
              the registry and generate_handler![...] must stay 1:1"
         );

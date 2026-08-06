@@ -230,9 +230,12 @@ dependencies = [
 name = "bridge-deck"
 version = "0.1.0"
 dependencies = [
+ "bridge-client",
  "bridge-core",
  "bridge-protocol",
+ "bridged",
  "chrono",
+ "libc",
  "portable-pty",
  "rusqlite",
  "serde",

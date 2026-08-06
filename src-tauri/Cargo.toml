@@ -34,6 +34,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 bridge-core = { path = "bridge-core" }
 bridge-protocol = { path = "bridge-protocol" }
+bridge-client = { path = "bridge-client" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }
@@ -42,9 +43,12 @@ rusqlite = { workspace = true }
 portable-pty = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# In-process daemon hosting for the proxy integration tests.
+bridged = { path = "bridged" }
 
 [profile.dev]
 debug = 0

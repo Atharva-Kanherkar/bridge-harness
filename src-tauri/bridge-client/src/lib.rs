@@ -21,12 +21,12 @@ use bridge_protocol::{
     RpcNotification, RpcRequest, RpcResponse, HANDSHAKE_METHOD, PROTOCOL_VERSION,
 };
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub const SOCKET_FILE_NAME: &str = "bridged.sock";
@@ -46,6 +46,11 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// subscriber that stops draining loses live frames and gets a lag marker —
 /// never unbounded client memory.
 const SUBSCRIBER_CAPACITY: usize = 1024;
+
+/// Server frames include state snapshots and replay pages, so they need a
+/// separate ceiling from the daemon's 1 MiB request limit. This remains a
+/// hard memory bound without rejecting normal large workspace responses.
+const MAX_SERVER_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -110,7 +115,78 @@ impl Endpoint {
 /// One notification subscriber's queue, plus the lag debt owed to it.
 struct Subscriber {
     sender: SyncSender<RpcNotification>,
-    lagged: bool,
+    lagged: Arc<AtomicBool>,
+}
+
+/// A bounded subscription whose lag debt is independent of its full queue.
+pub struct NotificationSubscription {
+    receiver: Receiver<RpcNotification>,
+    lagged: Arc<AtomicBool>,
+}
+
+impl NotificationSubscription {
+    fn take_lag_marker(&self) -> Option<RpcNotification> {
+        if !self.lagged.swap(false, Ordering::SeqCst) {
+            return None;
+        }
+        // Everything already queued predates the overflow. Drop that epoch
+        // before reconciliation so stale transient frames cannot follow it.
+        for _ in 0..SUBSCRIBER_CAPACITY {
+            if self.receiver.try_recv().is_err() {
+                break;
+            }
+        }
+        Some(local_lag_marker())
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<RpcNotification, RecvTimeoutError> {
+        if let Some(marker) = self.take_lag_marker() {
+            return Ok(marker);
+        }
+        self.receiver.recv_timeout(timeout)
+    }
+
+    pub fn try_recv(&self) -> Result<RpcNotification, TryRecvError> {
+        if let Some(marker) = self.take_lag_marker() {
+            return Ok(marker);
+        }
+        self.receiver.try_recv()
+    }
+}
+
+/// One complete request/response transaction at a time per connection.
+#[derive(Default)]
+struct CallGate {
+    busy: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl CallGate {
+    fn acquire(&self, deadline: Instant) -> Result<CallPermit<'_>, ClientError> {
+        let mut busy = self.busy.lock().unwrap();
+        while *busy {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ClientError::Timeout);
+            }
+            let (next, result) = self.ready.wait_timeout(busy, remaining).unwrap();
+            busy = next;
+            if result.timed_out() && *busy {
+                return Err(ClientError::Timeout);
+            }
+        }
+        *busy = true;
+        Ok(CallPermit(self))
+    }
+}
+
+struct CallPermit<'a>(&'a CallGate);
+
+impl Drop for CallPermit<'_> {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap() = false;
+        self.0.ready.notify_one();
+    }
 }
 
 /// A connected, handshaken client. Requests are sequential (the daemon's
@@ -121,6 +197,7 @@ pub struct DaemonClient {
     stream: Mutex<UnixStream>,
     responses: Mutex<Receiver<RpcResponse>>,
     subscribers: Arc<Mutex<Vec<Subscriber>>>,
+    call_gate: CallGate,
     next_id: AtomicI64,
     handshake: HandshakeResponse,
     call_timeout: Duration,
@@ -161,16 +238,17 @@ impl DaemonClient {
             ),
         )
         .map_err(ClientError::Connect)?;
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|error| {
+        let line = read_frame(&mut reader).map_err(|error| {
             if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
             {
                 ClientError::Timeout
+            } else if error.kind() == std::io::ErrorKind::InvalidData {
+                ClientError::Protocol(error.to_string())
             } else {
                 ClientError::Connect(error)
             }
-        })?;
-        let response: RpcResponse = serde_json::from_str(&line)
+        })?.ok_or(ClientError::Disconnected)?;
+        let response: RpcResponse = serde_json::from_slice(&line)
             .map_err(|error| ClientError::Protocol(format!("handshake reply: {error}")))?;
         let handshake: HandshakeResponse = match response {
             RpcResponse::Success(success) => serde_json::from_value(success.result)
@@ -196,6 +274,7 @@ impl DaemonClient {
             stream: Mutex::new(stream),
             responses: Mutex::new(responses),
             subscribers,
+            call_gate: CallGate::default(),
             next_id: AtomicI64::new(1),
             handshake,
             call_timeout: DEFAULT_CALL_TIMEOUT,
@@ -214,10 +293,11 @@ impl DaemonClient {
     /// notification from now on; one that stops draining loses live frames
     /// and receives a `stream-lagged` marker when it resumes — replay durable
     /// history, exactly as for daemon-side lag.
-    pub fn subscribe(&self) -> Receiver<RpcNotification> {
+    pub fn subscribe(&self) -> NotificationSubscription {
         let (sender, receiver) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
-        self.subscribers.lock().unwrap().push(Subscriber { sender, lagged: false });
-        receiver
+        let lagged = Arc::new(AtomicBool::new(false));
+        self.subscribers.lock().unwrap().push(Subscriber { sender, lagged: lagged.clone() });
+        NotificationSubscription { receiver, lagged }
     }
 
     /// Call a registry method with the client's default timeout.
@@ -242,6 +322,8 @@ impl DaemonClient {
         params: Option<Value>,
         timeout: Duration,
     ) -> Result<Value, ClientError> {
+        let deadline = Instant::now().checked_add(timeout).ok_or(ClientError::Timeout)?;
+        let _permit = self.call_gate.acquire(deadline)?;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let params = match params {
             Some(value) => Some(
@@ -251,10 +333,27 @@ impl DaemonClient {
             None => None,
         };
         let request = RpcRequest::new(RequestId::Number(id), method, params);
-        write_frame(&mut *self.stream.lock().unwrap(), &request)
-            .map_err(|_| ClientError::Disconnected)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ClientError::Timeout);
+        }
+        let mut stream = self.stream.lock().unwrap();
+        stream.set_write_timeout(Some(remaining)).map_err(|_| ClientError::Disconnected)?;
+        let written = write_frame(&mut *stream, &request);
+        let _ = stream.set_write_timeout(None);
+        drop(stream);
+        if let Err(error) = written {
+            return Err(match error.kind() {
+                std::io::ErrorKind::InvalidData => ClientError::Protocol(error.to_string()),
+                _ => {
+                    // write_all may have emitted a prefix. Reusing this socket
+                    // would append the next request to a corrupt JSON frame.
+                    let _ = self.stream.lock().unwrap().shutdown(std::net::Shutdown::Both);
+                    ClientError::Disconnected
+                }
+            });
+        }
         let responses = self.responses.lock().unwrap();
-        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -330,8 +429,30 @@ impl Drop for DaemonClient {
 fn write_frame<T: serde::Serialize>(writer: &mut impl Write, frame: &T) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(frame)?;
     line.push(b'\n');
+    if line.len() > bridged::MAX_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("request frame exceeds {} bytes", bridged::MAX_FRAME_BYTES),
+        ));
+    }
     writer.write_all(&line)?;
     writer.flush()
+}
+
+fn read_frame(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let mut bounded = reader.take((MAX_SERVER_FRAME_BYTES + 1) as u64);
+    let read = bounded.read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.len() > MAX_SERVER_FRAME_BYTES || line.last() != Some(&b'\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("daemon frame exceeds {MAX_SERVER_FRAME_BYTES} bytes"),
+        ));
+    }
+    Ok(Some(line))
 }
 
 fn read_frames(
@@ -348,23 +469,21 @@ fn read_frames(
         }
     }
     let _clear = ClearOnExit(subscribers.clone());
-    let mut line = String::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-        if line.trim().is_empty() {
+        let line = match read_frame(&mut reader) {
+            Ok(Some(line)) => line,
+            Ok(None) | Err(_) => return,
+        };
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        if let Ok(response) = serde_json::from_str::<RpcResponse>(&line) {
+        if let Ok(response) = serde_json::from_slice::<RpcResponse>(&line) {
             if responses.send(response).is_err() {
                 return;
             }
             continue;
         }
-        if let Ok(notification) = serde_json::from_str::<RpcNotification>(&line) {
+        if let Ok(notification) = serde_json::from_slice::<RpcNotification>(&line) {
             fan_out(&subscribers, &notification);
         }
         // Unknown frames are skipped: additive servers may send shapes a
@@ -372,24 +491,15 @@ fn read_frames(
     }
 }
 
-/// Deliver to every subscriber; a full queue marks the subscriber lagged and
-/// drops the frame, and the owed `stream-lagged` marker is delivered first
-/// once the queue has room — the same recovery signal the daemon sends, so
-/// consumers have one lag path. A dropped receiver unregisters its sender.
+/// Deliver to every subscriber; lag debt is stored outside the bounded queue
+/// so it remains observable even if the producer goes quiet after overflow.
 fn fan_out(subscribers: &Arc<Mutex<Vec<Subscriber>>>, notification: &RpcNotification) {
     let mut registered = subscribers.lock().unwrap();
     registered.retain_mut(|subscriber| {
-        if subscriber.lagged {
-            match subscriber.sender.try_send(local_lag_marker()) {
-                Ok(()) => subscriber.lagged = false,
-                Err(TrySendError::Full(_)) => return true, // marker stays owed
-                Err(TrySendError::Disconnected(_)) => return false,
-            }
-        }
         match subscriber.sender.try_send(notification.clone()) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                subscriber.lagged = true;
+                subscriber.lagged.store(true, Ordering::SeqCst);
                 true
             }
             Err(TrySendError::Disconnected(_)) => false,
@@ -418,7 +528,7 @@ pub struct SessionEvent {
 /// pass through live and are never replayed.
 pub struct SessionEventStream<'client> {
     client: &'client DaemonClient,
-    subscription: Receiver<RpcNotification>,
+    subscription: NotificationSubscription,
     session_id: String,
     /// The last sequence handed to the consumer — safe to resume from after
     /// a reconnect. Only delivery advances it.
@@ -543,8 +653,12 @@ mod tests {
         let subscribers = Arc::new(Mutex::new(Vec::new()));
         let (sender_a, receiver_a) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
         let (sender_b, receiver_b) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
-        subscribers.lock().unwrap().push(Subscriber { sender: sender_a, lagged: false });
-        subscribers.lock().unwrap().push(Subscriber { sender: sender_b, lagged: false });
+        let lagged_a = Arc::new(AtomicBool::new(false));
+        let lagged_b = Arc::new(AtomicBool::new(false));
+        subscribers.lock().unwrap().push(Subscriber { sender: sender_a, lagged: lagged_a.clone() });
+        subscribers.lock().unwrap().push(Subscriber { sender: sender_b, lagged: lagged_b.clone() });
+        let receiver_a = NotificationSubscription { receiver: receiver_a, lagged: lagged_a };
+        let receiver_b = NotificationSubscription { receiver: receiver_b, lagged: lagged_b };
         fan_out(&subscribers, &notification("state-changed"));
         fan_out(&subscribers, &notification("adapters-changed"));
         for receiver in [&receiver_a, &receiver_b] {
@@ -557,27 +671,54 @@ mod tests {
     fn an_overflowed_subscriber_gets_a_lag_marker_when_it_drains() {
         let subscribers = Arc::new(Mutex::new(Vec::new()));
         let (sender, receiver) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
-        subscribers.lock().unwrap().push(Subscriber { sender, lagged: false });
+        let lagged = Arc::new(AtomicBool::new(false));
+        subscribers.lock().unwrap().push(Subscriber { sender, lagged: lagged.clone() });
+        let receiver = NotificationSubscription { receiver, lagged };
         for _ in 0..(SUBSCRIBER_CAPACITY + 8) {
             fan_out(&subscribers, &notification("session-output"));
         }
-        // Drain the full queue: every frame is pre-lag.
-        for _ in 0..SUBSCRIBER_CAPACITY {
-            assert_eq!(receiver.try_recv().unwrap().method, "session-output");
-        }
-        // The next delivery owes the marker first.
-        fan_out(&subscribers, &notification("state-changed"));
+        // No later delivery is needed to make the lag marker observable.
         assert_eq!(receiver.try_recv().unwrap().method, "stream-lagged");
-        assert_eq!(receiver.try_recv().unwrap().method, "state-changed");
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
     }
 
     #[test]
     fn dropped_subscribers_unregister() {
         let subscribers = Arc::new(Mutex::new(Vec::new()));
         let (sender, receiver) = std::sync::mpsc::sync_channel(SUBSCRIBER_CAPACITY);
-        subscribers.lock().unwrap().push(Subscriber { sender, lagged: false });
+        subscribers.lock().unwrap().push(Subscriber {
+            sender,
+            lagged: Arc::new(AtomicBool::new(false)),
+        });
         drop(receiver);
         fan_out(&subscribers, &notification("state-changed"));
         assert!(subscribers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn call_gate_is_single_flight_and_waiting_consumes_the_deadline() {
+        let gate = CallGate::default();
+        let first = gate.acquire(Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            gate.acquire(Instant::now() + Duration::from_millis(10)),
+            Err(ClientError::Timeout)
+        ));
+        drop(first);
+        assert!(gate.acquire(Instant::now() + Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn outbound_and_inbound_frames_are_bounded() {
+        let oversized = "x".repeat(bridged::MAX_FRAME_BYTES + 1);
+        let mut sink = Vec::new();
+        assert_eq!(write_frame(&mut sink, &oversized).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        let mut large_valid = vec![b'x'; 2 * 1024 * 1024];
+        large_valid.push(b'\n');
+        assert_eq!(
+            read_frame(&mut std::io::Cursor::new(large_valid)).unwrap().unwrap().len(),
+            2 * 1024 * 1024 + 1
+        );
+        let mut input = std::io::Cursor::new(vec![b'x'; MAX_SERVER_FRAME_BYTES + 1]);
+        assert_eq!(read_frame(&mut input).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 }
