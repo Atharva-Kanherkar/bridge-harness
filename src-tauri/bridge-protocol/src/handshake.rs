@@ -20,7 +20,7 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// upgrade); a **minor** bump means additive changes (new methods,
 /// notifications, or optional fields). A server accepts a client when the
 /// majors match and the client's minor is not newer than the server's.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 5 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 6 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +55,12 @@ pub struct ServerInfo {
 pub struct HandshakeRequest {
     pub protocol_version: ProtocolVersion,
     pub client: ClientInfo,
+    /// The per-install authentication token, required by hosts that serve
+    /// remote-capable transports (the `bridged` daemon). Clients read it from
+    /// the token file in the data directory; it never appears in any response.
+    /// Version negotiation itself ignores it — enforcement is the host's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -107,6 +113,7 @@ mod tests {
         HandshakeRequest {
             protocol_version: ProtocolVersion { major, minor },
             client: ClientInfo { name: "test-client".into(), version: "1.2.3".into() },
+            auth_token: None,
         }
     }
 
@@ -145,8 +152,28 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<HandshakeRequest>(&encoded).unwrap(), request);
         assert!(encoded.contains("protocolVersion"), "wire fields are camelCase");
+        assert!(
+            !encoded.contains("authToken"),
+            "an absent token stays off the wire — pre-0.6 requests are still valid"
+        );
         let response = negotiate(&request).unwrap();
         let encoded = serde_json::to_string(&response).unwrap();
         assert_eq!(serde_json::from_str::<HandshakeResponse>(&encoded).unwrap(), response);
+    }
+
+    #[test]
+    fn the_auth_token_rides_the_request_and_never_the_response() {
+        let mut authenticated = request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor);
+        authenticated.auth_token = Some("secret-token".into());
+        let encoded = serde_json::to_string(&authenticated).unwrap();
+        assert!(encoded.contains("\"authToken\":\"secret-token\""));
+        assert_eq!(
+            serde_json::from_str::<HandshakeRequest>(&encoded).unwrap(),
+            authenticated
+        );
+        // Negotiation ignores the token entirely — hosts enforce it — and no
+        // response field can ever echo it.
+        let response = negotiate(&authenticated).unwrap();
+        assert!(!serde_json::to_string(&response).unwrap().contains("secret-token"));
     }
 }
