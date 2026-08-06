@@ -1,5 +1,5 @@
 [workspace]
-members = ["bridge-core", "bridge-protocol", "bridged"]
+members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
 
 # Single version for every crate in the workspace: bridge-core reports
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must

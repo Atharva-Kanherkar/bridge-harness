@@ -71,6 +71,34 @@ directory's sessions, stores, PTYs, and provider processes:
 bridged --data-dir ~/Library/Application\ Support/dev.bridge.deck
 ```
 
+## Clients
+
+**`bridge-client`** (`src-tauri/bridge-client/`) is the shared Rust client:
+token handshake, sequential calls with interleaved notifications, and the
+recovery rules encoded once — `SessionEventStream` yields a session's durable
+events gap-free across disconnects, live-channel lag (`stream-lagged` →
+cursor replay), and sequence gaps. The Tauri proxy and TUI build on it.
+
+**`bridge exec --json`** is the CI one-shot. It attaches to a running daemon
+when one owns the data directory, and otherwise hosts the runtime itself for
+exactly the duration of the command — CI never keeps a user daemon alive, and
+an embedded desktop owner is reported by identity instead of failing opaquely.
+
+```bash
+bridge exec --json --data-dir "$DIR" --method state/get_state            # one call
+bridge exec --json --data-dir "$DIR" --harness codex "run the tests"     # one turn, JSONL events
+```
+
+Prompt mode requires `--harness` naming an available structured adapter
+(checked against `health/health` before any session is created). The
+`--timeout` budget covers the whole command — connect, setup calls, and the
+event stream; on timeout the turn is interrupted via
+`sessions/interrupt_turn`. Turn failure is recognized in both provider
+shapes: a `turn.completed` carrying `failed`, and a completion followed by a
+trailing failed `error` event (grace-drained, then settled by the session's
+own status). Exit codes: 0 success, 1 failure (RPC error / failed turn),
+2 usage, 3 timeout.
+
 ## Envelope
 
 Requests, responses, and notifications follow JSON-RPC 2.0

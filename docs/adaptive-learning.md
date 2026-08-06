@@ -23,7 +23,7 @@ External schedulers wake the same local runner; they do not receive the evidence
 Register the trigger from Bridge's settings first. Only one external provider is enabled by default. Disabled, expired, unregistered, or credential-reference-mismatched invocations are audited and do not start a learning run.
 
 ```bash
-cargo run --manifest-path src-tauri/Cargo.toml --bin bridge -- \
+cargo run --manifest-path src-tauri/Cargo.toml -p bridge-client --bin bridge -- \
   learning run \
   --database "/path/to/bridge.db" \
   --trigger codex:daily-learning

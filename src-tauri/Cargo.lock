@@ -190,6 +190,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-client"
+version = "0.1.0"
+dependencies = [
+ "bridge-core",
+ "bridge-protocol",
+ "bridged",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bridge-core"
 version = "0.1.0"
 dependencies = [
