@@ -161,6 +161,26 @@ pub struct CompactSessionParams {
     pub session_id: String,
 }
 
+/// Mirrors `bridge_core::secret_interception::SecretInterception` — one
+/// secret replaced by a broker reference before the turn left the machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretInterception {
+    /// The broker reference substituted into the text; the secret itself
+    /// never crosses the wire.
+    pub reference: String,
+    pub detector: String,
+}
+
+/// `sessions/prepare_turn`'s result. Mirrors
+/// `bridge_core::secret_interception::SanitizedTurn`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SanitizedTurn {
+    pub text: String,
+    pub interceptions: Vec<SecretInterception>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

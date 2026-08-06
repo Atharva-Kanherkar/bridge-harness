@@ -107,6 +107,12 @@ pub struct ApproveLearningRunParams {
     pub run_id: String,
 }
 
+/// `learning/get_learning_trigger_instructions`' result: the scheduled-task
+/// instructions text, a bare string on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct LearningTriggerInstructionsResult(pub String);
+
 #[cfg(test)]
 mod tests {
     use super::*;

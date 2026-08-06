@@ -96,7 +96,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.6**),
+- its `protocolVersion` (this document describes **0.7**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -152,10 +152,16 @@ field additions cannot slip through a one-way deserialization check.
 
 ### Results
 
-Results are contracted where the shape is the method's own. Methods returning
-the aggregate `BridgeState` snapshot or a domain snapshot keep untyped results
-until those DTOs are contracted — that is its own slice. Commands returning no
-value use the explicit `UnitResult` contract (`result: null`).
+Every method's result is contracted or a **documented exception** — never
+silently absent. Registry rows carry either `resultSchema` (a schema file,
+with a matching type in the generated TypeScript `BridgeMethodResults` map) or
+`resultDeferred` (the named core DTO a future slice must mirror). The
+aggregate `BridgeState` and `SessionForestSnapshot` trees are fully
+contracted, including the nested completion summary; the deferred set is the
+remaining domain snapshots (learning runs/state, model setup, the OpenCode
+catalog, the browser bridge snapshot, and the marketplace/skill catalogs).
+Commands returning no value use the explicit `UnitResult` contract
+(`result: null`).
 
 ## Cancellation
 

@@ -445,7 +445,9 @@ pub struct CompletionSummary {
     pub contract_id: String,
     pub verdict: CompletionVerdict,
     pub repository: RepositoryStamp,
+    #[serde(serialize_with = "crate::model::serialize_js_safe_usize")]
     pub passed_required: usize,
+    #[serde(serialize_with = "crate::model::serialize_js_safe_usize")]
     pub total_required: usize,
     pub checks: Vec<CheckRun>,
     pub markdown_committed: bool,
