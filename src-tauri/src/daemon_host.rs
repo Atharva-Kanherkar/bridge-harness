@@ -280,6 +280,13 @@ impl Launcher {
     /// actionable message — including the daemon's own words when it refused
     /// us or exited during startup.
     pub fn ensure(&mut self) -> Result<Vec<Arc<DaemonClient>>, String> {
+        self.ensure_with_deadline(START_DEADLINE)
+    }
+
+    fn ensure_with_deadline(
+        &mut self,
+        start_deadline: Duration,
+    ) -> Result<Vec<Arc<DaemonClient>>, String> {
         let initial = self.attach();
         match initial {
             Ok(clients) => return Ok(clients),
@@ -312,7 +319,7 @@ impl Launcher {
         if !already_running && !retrying_live_daemon {
             self.spawn(binary.as_deref().expect("binary checked above"))?;
         }
-        let deadline = Instant::now() + START_DEADLINE;
+        let deadline = Instant::now() + start_deadline;
         loop {
             std::thread::sleep(Duration::from_millis(200));
             match self.attach() {
@@ -339,7 +346,7 @@ impl Launcher {
             if Instant::now() >= deadline {
                 self.terminate_child();
                 return Err(format!(
-                    "bridged did not become reachable within {START_DEADLINE:?}: {}",
+                    "bridged did not become reachable within {start_deadline:?}: {}",
                     self.log_tail()
                 ));
             }
@@ -748,5 +755,33 @@ mod tests {
         drop(launcher);
         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
         assert!(!alive, "owned child {pid} survived launcher drop");
+    }
+
+    #[test]
+    fn startup_timeout_kills_and_reaps_an_unreachable_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        let binary = fixture.path().join("fake-bridged");
+        std::fs::write(
+            &binary,
+            b"#!/bin/sh\nexec sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let data_dir = fixture.path().join("data");
+        let mut launcher = Launcher::new(
+            data_dir.clone(),
+            fixture.path().join("extension"),
+            Some(binary),
+        );
+        let binary = launcher.binary.clone().unwrap();
+        launcher.spawn(&binary).unwrap();
+        let pid = launcher.child.as_ref().unwrap().id() as libc::pid_t;
+        let error = match launcher.ensure_with_deadline(Duration::from_millis(250)) {
+            Ok(_) => panic!("unreachable child unexpectedly accepted connections"),
+            Err(error) => error,
+        };
+        assert!(error.contains("did not become reachable"), "{error}");
+        assert!(launcher.child.is_none());
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child {pid} survived timeout");
     }
 }
