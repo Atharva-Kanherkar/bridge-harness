@@ -68,6 +68,12 @@ notifications![
     // Explicitly transient streams: worthless once stale, never replayed.
     (SessionOutput, "session-output", Transient),
     (AccountUsage, "account-usage", Transient),
+    // Host-synthesized: the live channel dropped events for this connection.
+    // Durable history is intact — replay every watched session from its last
+    // cursor via `sessions/replay_session_events`; refetch hints are resent
+    // alongside this marker. The payload carries `{"missed": n}` when the
+    // host knows how many frames were dropped, `{}` when it does not.
+    (StreamLagged, "stream-lagged", Transient),
 ];
 
 impl NotificationName {
@@ -117,6 +123,7 @@ mod tests {
             NotificationName::LearningJobChanged,
             NotificationName::SessionOutput,
             NotificationName::AccountUsage,
+            NotificationName::StreamLagged,
         ] {
             assert_eq!(
                 transient.delivery(),

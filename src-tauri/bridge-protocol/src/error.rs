@@ -28,10 +28,11 @@ pub enum ErrorCode {
     Unauthorized,
     Cancelled,
     ShuttingDown,
+    Overloaded,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 15] = [
+    pub const ALL: [ErrorCode; 16] = [
         ErrorCode::ParseError,
         ErrorCode::InvalidRequest,
         ErrorCode::MethodNotFound,
@@ -47,6 +48,7 @@ impl ErrorCode {
         ErrorCode::Unauthorized,
         ErrorCode::Cancelled,
         ErrorCode::ShuttingDown,
+        ErrorCode::Overloaded,
     ];
 
     pub const fn code(self) -> i64 {
@@ -66,6 +68,7 @@ impl ErrorCode {
             ErrorCode::Unauthorized => 2001,
             ErrorCode::Cancelled => 2002,
             ErrorCode::ShuttingDown => 2003,
+            ErrorCode::Overloaded => 2004,
         }
     }
 
@@ -91,6 +94,7 @@ impl ErrorCode {
             ErrorCode::Unauthorized => "unauthorized",
             ErrorCode::Cancelled => "cancelled",
             ErrorCode::ShuttingDown => "shutting_down",
+            ErrorCode::Overloaded => "overloaded",
         }
     }
 
@@ -114,6 +118,7 @@ impl ErrorCode {
             ErrorCode::Unauthorized => "The connection has not authenticated",
             ErrorCode::Cancelled => "The request was cancelled via $/cancel",
             ErrorCode::ShuttingDown => "The server is shutting down and refused the request",
+            ErrorCode::Overloaded => "The server is at capacity and refused the connection or request",
         }
     }
 }

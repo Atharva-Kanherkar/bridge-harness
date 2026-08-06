@@ -38,6 +38,13 @@
     }
   },
   "properties": {
+    "authToken": {
+      "description": "The per-install authentication token, required by hosts that serve remote-capable transports (the `bridged` daemon). Clients read it from the token file in the data directory; it never appears in any response. Version negotiation itself ignores it — enforcement is the host's.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "client": {
       "$ref": "#/definitions/ClientInfo"
     },

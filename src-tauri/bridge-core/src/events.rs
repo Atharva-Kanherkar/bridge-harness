@@ -245,11 +245,23 @@ mod tests {
             );
         }
         let kinds: std::collections::HashSet<_> = events.iter().map(|event| event.kind()).collect();
+        // Every registry entry is either produced by a CoreEvent variant or
+        // synthesized by a host about its own delivery channel. Listing the
+        // host-synthesized set here keeps the two exhaustive together: a new
+        // registry entry fails this test until it is claimed by one side.
+        let host_synthesized = [NotificationName::StreamLagged];
         assert_eq!(
-            kinds.len(),
+            kinds.len() + host_synthesized.len(),
             NotificationName::ALL.len(),
             "every notification kind is covered"
         );
+        for synthesized in host_synthesized {
+            assert!(
+                !kinds.contains(&synthesized),
+                "{} is host-synthesized, never published on the core bus",
+                synthesized.as_str()
+            );
+        }
         let transient_agent = CoreEvent::Agent(agent_event(0));
         assert_eq!(transient_agent.kind().delivery(), DeliveryClass::Mixed);
         assert_eq!(transient_agent.durable_cursor(), None);

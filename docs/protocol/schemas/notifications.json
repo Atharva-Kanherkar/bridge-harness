@@ -24,6 +24,10 @@
     {
       "delivery": "transient",
       "notification": "account-usage"
+    },
+    {
+      "delivery": "transient",
+      "notification": "stream-lagged"
     }
   ]
 }

@@ -75,6 +75,11 @@
       "code": 2003,
       "name": "shutting_down",
       "summary": "The server is shutting down and refused the request"
+    },
+    {
+      "code": 2004,
+      "name": "overloaded",
+      "summary": "The server is at capacity and refused the connection or request"
     }
   ]
 }

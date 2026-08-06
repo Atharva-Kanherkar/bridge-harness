@@ -9,6 +9,7 @@
 pub mod adapters;
 pub mod agent;
 pub mod agent_config;
+pub mod api;
 pub mod binary;
 pub mod browser_bridge;
 pub mod claude_adapter;
@@ -29,6 +30,7 @@ pub mod model;
 pub mod model_profiles;
 pub mod opencode_adapter;
 pub mod orchestrator;
+pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
