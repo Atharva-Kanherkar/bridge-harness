@@ -196,6 +196,7 @@ export const ERROR_CODES = {
   unauthorized: 2001,
   cancelled: 2002,
   shutting_down: 2003,
+  overloaded: 2004,
 } as const;
 
 /** Params types for methods whose payloads are contracted so far. */

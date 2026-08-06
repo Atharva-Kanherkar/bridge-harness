@@ -18,10 +18,44 @@ bidirectional events — is RPC-shaped, so REST+SSE was considered and rejected.
 
 | Transport | Audience |
 | --- | --- |
-| Unix-domain socket | Local clients (Tauri shell, TUI, `bridge exec`) |
-| WebSocket | Browser and remote clients |
+| Unix-domain socket | Local clients (Tauri shell, TUI, `bridge exec`) — served by `bridged` today |
+| WebSocket | Browser and remote clients (follow-on; the auth token and origin rules are designed for it) |
 | Tauri invoke/event adapter | Migration compatibility while the shell still hosts the runtime in-process |
 | Plain HTTP | `/healthz` and `/readyz` only |
+
+## The `bridged` daemon
+
+`bridged` (`src-tauri/bridged/`) is the single local owner of a data
+directory's sessions, stores, PTYs, and provider processes:
+
+- **Ownership.** An exclusive OS file lease on `<data_dir>/owner.lock`
+  (`bridge_core::ownership`). Exactly one owner per data directory — daemon or
+  the desktop app in embedded mode — and the loser fails fast with the
+  holder's identity. The lock dies with its process, so `kill -9` needs no
+  stale-lock recovery; boot-time recovery handles what the dead owner left.
+- **Framing.** Newline-delimited JSON-RPC 2.0 over `<data_dir>/bridged.sock`
+  (mode 0600). One frame per line in both directions; notifications
+  interleave between responses.
+- **Auth.** The handshake must carry `authToken` from `<data_dir>/daemon.token`
+  (created 0600 on first start). A wrong or missing token is rejected with
+  **2001 `unauthorized`** before the server reveals anything, version included.
+- **Dispatch.** An exhaustive match over the method registry: params are
+  validated against the contracted types (wrong casing, unknown fields, and
+  out-of-set enum values fail with `invalid_params`), then routed to
+  `bridge_core::api` — the same bodies the Tauri shell calls.
+- **Limits.** Frames over 1 MiB → `invalid_request`, connection closed.
+  Connections beyond the cap → one **2004 `overloaded`** frame, closed.
+  Requests per connection are sequential; backpressure is the socket.
+- **Events.** Every core event is pushed post-handshake as a notification;
+  on live-channel lag the idempotent refetch hints are resent and durable
+  history recovers via `sessions/replay_session_events`.
+- **Health.** `/healthz` and `/readyz` on `127.0.0.1:4318` by default
+  (`--health-addr none` disables). Bind and startup failures are fatal and
+  printed — never a silent no-op. Port 4317 stays private and unextended.
+
+```bash
+bridged --data-dir ~/Library/Application\ Support/dev.bridge.deck
+```
 
 ## Envelope
 
@@ -48,7 +82,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.5**),
+- its `protocolVersion` (this document describes **0.6**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -57,6 +91,9 @@ request is answered with `invalid_request`. The server advertises:
 when majors match and the client's minor is not newer than the server's.
 Incompatible clients are rejected with the stable code **2000
 `incompatible_protocol`**, with both versions in `error.data`.
+
+Since 0.6 the request carries an optional `authToken`; hosts serving
+remote-capable transports (the daemon) require it, and nothing ever echoes it.
 
 ## Methods
 
