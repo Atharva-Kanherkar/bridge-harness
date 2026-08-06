@@ -17,6 +17,16 @@ pub enum LearningTriggerKind {
     OpenCode,
 }
 
+/// A trigger backed by an external harness registration. Manual and in-app
+/// runs never have credentials, enablement, or scheduled-task instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalLearningTriggerKind {
+    Codex,
+    Claude,
+    OpenCode,
+}
+
 /// The learning job's cadence and per-run budget. Mirrors
 /// `bridge_core::learning_job::LearningSchedule`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -55,7 +65,7 @@ pub struct UpdateLearningScheduleParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegisterLearningTriggerParams {
     /// Only the external harness triggers may be registered.
-    pub kind: LearningTriggerKind,
+    pub kind: ExternalLearningTriggerKind,
     pub registration_id: String,
     /// Reference to a stored credential; the credential itself never crosses
     /// the wire.
@@ -68,7 +78,7 @@ pub struct RegisterLearningTriggerParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetLearningTriggerInstructionsParams {
-    pub kind: LearningTriggerKind,
+    pub kind: ExternalLearningTriggerKind,
     /// The database the external trigger should wake, quoted into the
     /// instructions verbatim.
     pub database_path: String,
@@ -78,7 +88,7 @@ pub struct GetLearningTriggerInstructionsParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnableLearningTriggerParams {
-    pub kind: LearningTriggerKind,
+    pub kind: ExternalLearningTriggerKind,
     pub registration_id: String,
 }
 
@@ -103,6 +113,10 @@ mod tests {
             serde_json::to_value(LearningTriggerKind::OpenCode).unwrap(),
             json!("open_code"),
             "the contract carries the harness's wire spelling, not its display name"
+        );
+        assert_eq!(
+            serde_json::to_value(ExternalLearningTriggerKind::OpenCode).unwrap(),
+            json!("open_code")
         );
     }
 
@@ -139,7 +153,7 @@ mod tests {
     #[test]
     fn trigger_registration_round_trips() {
         let register = RegisterLearningTriggerParams {
-            kind: LearningTriggerKind::Codex,
+            kind: ExternalLearningTriggerKind::Codex,
             registration_id: "codex-scheduled".into(),
             credential_ref: None,
             expires_at: None,
@@ -163,7 +177,7 @@ mod tests {
         );
 
         let instructions = GetLearningTriggerInstructionsParams {
-            kind: LearningTriggerKind::Claude,
+            kind: ExternalLearningTriggerKind::Claude,
             database_path: "/data/bridge.db".into(),
             registration_id: "claude-desktop".into(),
         };
@@ -178,7 +192,7 @@ mod tests {
         assert_eq!(round_trip(&instructions), instructions);
 
         let enable = EnableLearningTriggerParams {
-            kind: LearningTriggerKind::Claude,
+            kind: ExternalLearningTriggerKind::Claude,
             registration_id: "claude-desktop".into(),
         };
         assert_eq!(round_trip(&enable), enable);
@@ -218,6 +232,33 @@ mod tests {
         );
         assert!(serde_json::from_value::<RegisterLearningTriggerParams>(json!({"kind": "codex"}))
             .is_err());
+        for internal in ["manual", "in_app"] {
+            assert!(
+                serde_json::from_value::<RegisterLearningTriggerParams>(json!({
+                    "kind": internal,
+                    "registrationId": "r",
+                }))
+                .is_err(),
+                "internal trigger {internal} cannot be registered"
+            );
+            assert!(
+                serde_json::from_value::<GetLearningTriggerInstructionsParams>(json!({
+                    "kind": internal,
+                    "databasePath": "/tmp/bridge.db",
+                    "registrationId": "r",
+                }))
+                .is_err(),
+                "internal trigger {internal} has no scheduled-task instructions"
+            );
+            assert!(
+                serde_json::from_value::<EnableLearningTriggerParams>(json!({
+                    "kind": internal,
+                    "registrationId": "r",
+                }))
+                .is_err(),
+                "internal trigger {internal} cannot be enabled"
+            );
+        }
         assert!(serde_json::from_value::<GetLearningTriggerInstructionsParams>(
             json!({"kind": "codex", "registrationId": "r"})
         )

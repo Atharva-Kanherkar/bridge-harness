@@ -228,6 +228,22 @@ fn learning_trigger_kinds_share_their_wire_values() {
     ] {
         assert_same_wire_value(&kind, &mirror_trigger_kind(kind));
     }
+    for (core, external) in [
+        (
+            learning_job::LearningTriggerKind::Codex,
+            wire::ExternalLearningTriggerKind::Codex,
+        ),
+        (
+            learning_job::LearningTriggerKind::Claude,
+            wire::ExternalLearningTriggerKind::Claude,
+        ),
+        (
+            learning_job::LearningTriggerKind::OpenCode,
+            wire::ExternalLearningTriggerKind::OpenCode,
+        ),
+    ] {
+        assert_same_wire_value(&core, &external);
+    }
 }
 
 #[test]

@@ -368,6 +368,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 
 export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
 
+export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
+
 export interface HarnessConfig {
   advanced?: unknown;
   defaultModel?: string | null;
@@ -745,18 +747,18 @@ export interface UpdateLearningScheduleParams {
 export interface RegisterLearningTriggerParams {
   credentialRef?: string | null;
   expiresAt?: string | null;
-  kind: LearningTriggerKind;
+  kind: ExternalLearningTriggerKind;
   registrationId: string;
 }
 
 export interface GetLearningTriggerInstructionsParams {
   databasePath: string;
-  kind: LearningTriggerKind;
+  kind: ExternalLearningTriggerKind;
   registrationId: string;
 }
 
 export interface EnableLearningTriggerParams {
-  kind: LearningTriggerKind;
+  kind: ExternalLearningTriggerKind;
   registrationId: string;
 }
 

@@ -3,11 +3,9 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
-    "LearningTriggerKind": {
-      "description": "What woke a learning run. Mirrors `bridge_core::learning_job::LearningTriggerKind` — including its wire spelling, so `OpenCode` is `open_code` here as it is there.",
+    "ExternalLearningTriggerKind": {
+      "description": "A trigger backed by an external harness registration. Manual and in-app runs never have credentials, enablement, or scheduled-task instructions.",
       "enum": [
-        "manual",
-        "in_app",
         "codex",
         "claude",
         "open_code"
@@ -21,7 +19,7 @@
       "type": "string"
     },
     "kind": {
-      "$ref": "#/definitions/LearningTriggerKind"
+      "$ref": "#/definitions/ExternalLearningTriggerKind"
     },
     "registrationId": {
       "type": "string"
