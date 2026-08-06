@@ -1,0 +1,307 @@
+//! The aggregate application snapshot: `state/get_state`'s result, and the
+//! result of every mutation that returns the refreshed state. Mirrors the
+//! `bridge_core::model` DTOs field for field; the drift gate in bridge-core's
+//! `protocol_mirror` keeps the two in wire-value lockstep.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::sessions::HarnessId;
+
+/// Mirrors `bridge_core::model::SessionStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionStatus {
+    Idle,
+    Starting,
+    Working,
+    Waiting,
+    Warm,
+    Checkpointing,
+    Ready,
+    Stopped,
+    Resuming,
+    Restored,
+    Failed,
+    Completed,
+    Cancelled,
+}
+
+/// Mirrors `bridge_core::model::CapabilityTier`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CapabilityTier {
+    Fast,
+    Standard,
+    Strong,
+}
+
+/// Mirrors `bridge_core::model::RestorationMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RestorationMode {
+    Hot,
+    Native,
+    CheckpointRestored,
+    Fresh,
+}
+
+/// Mirrors `bridge_core::model::ContinuationFidelity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationFidelity {
+    Native,
+    ProjectedAtBoundary,
+    ProjectedMidTurn,
+}
+
+/// Mirrors `bridge_core::model::ResumeEligibility`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeEligibility {
+    Native,
+    CheckpointRestored,
+    Fresh,
+}
+
+/// Mirrors `bridge_core::model::Project`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub created_at: String,
+}
+
+/// Mirrors `bridge_core::model::Workspace`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub city: Option<String>,
+    pub title: String,
+    pub branch: Option<String>,
+    pub path: Option<String>,
+    pub status: SessionStatus,
+    pub dirty_files: i64,
+    pub additions: i64,
+    pub deletions: i64,
+    pub created_at: String,
+}
+
+/// Mirrors `bridge_core::model::Session`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub harness: HarnessId,
+    pub label: String,
+    pub status: SessionStatus,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub context_percent: Option<i64>,
+    pub usage_percent: Option<i64>,
+    pub metric_source: String,
+    pub provider_session_id: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub model: Option<String>,
+    pub requested_tier: Option<CapabilityTier>,
+    pub effort: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub depth: Option<i64>,
+    pub restoration_mode: RestorationMode,
+    pub continuation_fidelity: ContinuationFidelity,
+    pub title: Option<String>,
+    pub kind: String,
+    pub cwd: Option<String>,
+}
+
+/// Mirrors `bridge_core::model::BridgeEvent` — the audit/event feed rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeEvent {
+    pub id: i64,
+    pub source: String,
+    pub kind: String,
+    pub entity_id: String,
+    pub body: String,
+    pub created_at: String,
+}
+
+/// Mirrors `bridge_core::model::BridgeState` — the aggregate snapshot most
+/// mutations return so clients render without a follow-up read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeState {
+    pub projects: Vec<Project>,
+    pub workspaces: Vec<Workspace>,
+    pub sessions: Vec<Session>,
+    pub events: Vec<BridgeEvent>,
+}
+
+/// Mirrors `bridge_core::model::ModelOption`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub id: String,
+    pub label: String,
+    pub tier: CapabilityTier,
+    pub default_for_tier: bool,
+}
+
+/// Mirrors `bridge_core::model::AdapterDescriptor`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterDescriptor {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub capabilities: Vec<String>,
+    pub unavailable_reason: Option<String>,
+    pub models: Vec<ModelOption>,
+    pub default_model: Option<String>,
+}
+
+/// `health/health`'s result. Mirrors `bridge_core::api::Health`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthResult {
+    pub ok: bool,
+    pub version: String,
+    /// Harness id → binary availability.
+    pub harnesses: std::collections::BTreeMap<String, bool>,
+    pub database: String,
+    pub telemetry_database: String,
+    pub snapshot_directory: String,
+    pub adapters: Vec<AdapterDescriptor>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::common::round_trip;
+    use serde_json::json;
+
+    #[test]
+    fn the_state_snapshot_round_trips_with_camel_case_wire_names() {
+        let state = BridgeState {
+            projects: vec![Project {
+                id: "p-1".into(),
+                name: "Demo".into(),
+                path: "/repos/demo".into(),
+                created_at: "now".into(),
+            }],
+            workspaces: vec![Workspace {
+                id: "w-1".into(),
+                project_id: Some("p-1".into()),
+                city: Some("Kyoto".into()),
+                title: "Payments".into(),
+                branch: Some("bridge/payments".into()),
+                path: Some("/repos/demo".into()),
+                status: SessionStatus::Working,
+                dirty_files: 2,
+                additions: 40,
+                deletions: 3,
+                created_at: "now".into(),
+            }],
+            sessions: vec![Session {
+                id: "s-1".into(),
+                workspace_id: Some("w-1".into()),
+                harness: HarnessId::Codex,
+                label: "Orchestrator".into(),
+                status: SessionStatus::Waiting,
+                started_at: Some("now".into()),
+                ended_at: None,
+                context_percent: Some(41),
+                usage_percent: Some(12),
+                metric_source: "reported".into(),
+                provider_session_id: Some("prov-1".into()),
+                active_turn_id: Some("turn-1".into()),
+                model: Some("gpt-5".into()),
+                requested_tier: Some(CapabilityTier::Standard),
+                effort: Some("high".into()),
+                parent_session_id: None,
+                depth: Some(0),
+                restoration_mode: RestorationMode::Fresh,
+                continuation_fidelity: ContinuationFidelity::Native,
+                title: None,
+                kind: "orchestrator".into(),
+                cwd: Some("/repos/demo".into()),
+            }],
+            events: vec![BridgeEvent {
+                id: 9,
+                source: "supervisor".into(),
+                kind: "workspace.created".into(),
+                entity_id: "w-1".into(),
+                body: "Created workspace Payments".into(),
+                created_at: "now".into(),
+            }],
+        };
+        let wire = serde_json::to_value(&state).unwrap();
+        assert_eq!(wire["workspaces"][0]["projectId"], json!("p-1"));
+        assert_eq!(wire["workspaces"][0]["dirtyFiles"], json!(2));
+        assert_eq!(wire["sessions"][0]["harness"], json!("codex"));
+        assert_eq!(wire["sessions"][0]["status"], json!("waiting"));
+        assert_eq!(wire["sessions"][0]["restorationMode"], json!("fresh"));
+        assert_eq!(wire["sessions"][0]["continuationFidelity"], json!("native"));
+        assert_eq!(wire["events"][0]["entityId"], json!("w-1"));
+        assert_eq!(round_trip(&state), state);
+    }
+
+    #[test]
+    fn snapshot_enums_carry_their_pinned_wire_values() {
+        assert_eq!(
+            serde_json::to_value(SessionStatus::Checkpointing).unwrap(),
+            json!("checkpointing")
+        );
+        assert_eq!(
+            serde_json::to_value(RestorationMode::CheckpointRestored).unwrap(),
+            json!("checkpoint_restored")
+        );
+        assert_eq!(
+            serde_json::to_value(ContinuationFidelity::ProjectedMidTurn).unwrap(),
+            json!("projected_mid_turn")
+        );
+        assert_eq!(
+            serde_json::to_value(ResumeEligibility::Native).unwrap(),
+            json!("native")
+        );
+        assert!(serde_json::from_value::<SessionStatus>(json!("Working")).is_err());
+        assert!(serde_json::from_value::<CapabilityTier>(json!("premium")).is_err());
+    }
+
+    #[test]
+    fn health_results_round_trip() {
+        let health = HealthResult {
+            ok: true,
+            version: "0.1.0".into(),
+            harnesses: [("claude".to_owned(), true), ("shell".to_owned(), true)].into(),
+            database: "/data/bridge.db".into(),
+            telemetry_database: "/data/bridge-telemetry.db".into(),
+            snapshot_directory: "/data/history-snapshots".into(),
+            adapters: vec![AdapterDescriptor {
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: true,
+                version: Some("1.0".into()),
+                capabilities: vec!["shell".into()],
+                unavailable_reason: None,
+                models: vec![ModelOption {
+                    id: "gpt-5".into(),
+                    label: "GPT-5".into(),
+                    tier: CapabilityTier::Strong,
+                    default_for_tier: true,
+                }],
+                default_model: Some("gpt-5".into()),
+            }],
+        };
+        let wire = serde_json::to_value(&health).unwrap();
+        assert_eq!(wire["adapters"][0]["models"][0]["defaultForTier"], json!(true));
+        assert_eq!(wire["harnesses"]["claude"], json!(true));
+        assert_eq!(round_trip(&health), health);
+    }
+}

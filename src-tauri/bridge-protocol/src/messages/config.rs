@@ -120,6 +120,16 @@ pub struct SetDefaultAgentParams {
     pub id: String,
 }
 
+/// The configuration snapshot every config mutation returns. Mirrors
+/// `bridge_core::agent_config::ConfigState`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigState {
+    pub harnesses: Vec<HarnessConfig>,
+    pub agents: Vec<AgentDefinition>,
+    pub default_agent_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

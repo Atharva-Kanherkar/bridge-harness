@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::envelope::{CancelParams, RpcNotification, RpcRequest, RpcResponse};
 use crate::error::ErrorCode;
 use crate::handshake::{HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION};
-use crate::messages::{payload_schemas, TypedMethod, TYPED_METHODS};
+use crate::messages::{payload_schemas, TypedMethod, DEFERRED_RESULTS, TYPED_METHODS};
 use crate::methods::MethodName;
 use crate::notifications::NotificationName;
 use crate::{CANCEL_METHOD, HANDSHAKE_METHOD, JSONRPC_VERSION};
@@ -107,8 +107,18 @@ fn methods_table() -> Value {
                 Some(params) => json!(schema_file(params)),
                 None => Value::Null,
             };
-            if let Some(result) = typed.result {
-                entry["resultSchema"] = json!(schema_file(result));
+            // Every result is a schema reference or a documented exception
+            // naming the core DTO still to be mirrored — never silently
+            // absent.
+            match typed.result {
+                Some(result) => entry["resultSchema"] = json!(schema_file(result)),
+                None => {
+                    let (_, deferred) = DEFERRED_RESULTS
+                        .iter()
+                        .find(|(deferred, _)| deferred == method)
+                        .expect("coverage test: untyped results are documented exceptions");
+                    entry["resultDeferred"] = json!(deferred);
+                }
             }
             entry
         }).collect::<Vec<_>>(),

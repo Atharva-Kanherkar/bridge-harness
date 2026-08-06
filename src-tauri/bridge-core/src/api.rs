@@ -34,6 +34,7 @@ use uuid::Uuid;
 // --- health / state ----------------------------------------------------------
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Health {
     pub ok: bool,
     pub version: &'static str,

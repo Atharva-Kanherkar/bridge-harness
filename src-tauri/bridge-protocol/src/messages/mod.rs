@@ -13,16 +13,18 @@
 //! version: minor versions are additive, so a 0.5 server must continue to
 //! accept every document the 0.4 schemas allowed.
 //!
-//! Results are contracted where the shape is the method's own. Methods that
-//! return the aggregate application snapshot (`BridgeState`) or a domain
-//! snapshot still stay uncontracted: those DTOs are shared by many methods and
-//! land in their own slice.
+//! Results are contracted wherever a wire DTO exists — including the
+//! aggregate `BridgeState` and `SessionForestSnapshot` trees. The remaining
+//! domain snapshots are **documented exceptions** in [`DEFERRED_RESULTS`],
+//! each naming the core type still to be mirrored; a method missing from both
+//! tables fails the coverage test below.
 
 mod approvals;
 mod browser;
 mod common;
 mod completion;
 mod config;
+mod forest;
 mod learning;
 mod marketplace;
 mod models;
@@ -31,6 +33,7 @@ mod routing;
 mod sessions;
 mod skills;
 mod slash;
+mod state;
 mod terminal;
 mod workspaces;
 
@@ -39,6 +42,7 @@ pub use browser::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
+pub use forest::*;
 pub use learning::*;
 pub use marketplace::*;
 pub use models::*;
@@ -47,6 +51,7 @@ pub use routing::*;
 pub use sessions::*;
 pub use skills::*;
 pub use slash::*;
+pub use state::*;
 pub use terminal::*;
 pub use workspaces::*;
 
@@ -126,32 +131,32 @@ fn push_payload(schemas: &mut Vec<(&'static str, Value)>, name: &'static str, sc
 
 typed_methods![
     // health
-    (Health, _, _),
+    (Health, _, HealthResult),
     // state — the aggregate application snapshot
-    (GetState, _, _),
+    (GetState, _, BridgeState),
     // projects
-    (AddProject, AddProjectParams, _),
+    (AddProject, AddProjectParams, BridgeState),
     // workspaces
-    (CreateWorkspace, CreateWorkspaceParams, _),
-    (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, _),
+    (CreateWorkspace, CreateWorkspaceParams, BridgeState),
+    (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),
     (ListWorkspaceFiles, ListWorkspaceFilesParams, ListWorkspaceFilesResult),
-    (RefreshWorkspace, RefreshWorkspaceParams, _),
-    (ArchiveWorkspace, ArchiveWorkspaceParams, _),
+    (RefreshWorkspace, RefreshWorkspaceParams, BridgeState),
+    (ArchiveWorkspace, ArchiveWorkspaceParams, BridgeState),
     // sessions
-    (GetSessionForest, GetSessionForestParams, _),
+    (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
-    (ActivateSessionEntry, ActivateSessionEntryParams, _),
-    (CreateChat, CreateChatParams, _),
-    (CreateWorkspaceSession, CreateWorkspaceSessionParams, _),
-    (StartSession, StartSessionParams, _),
-    (StartChat, StartChatParams, _),
-    (UpdateChatModel, UpdateChatModelParams, _),
-    (PrepareTurn, PrepareTurnParams, _),
+    (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
+    (CreateChat, CreateChatParams, BridgeState),
+    (CreateWorkspaceSession, CreateWorkspaceSessionParams, BridgeState),
+    (StartSession, StartSessionParams, BridgeState),
+    (StartChat, StartChatParams, BridgeState),
+    (UpdateChatModel, UpdateChatModelParams, BridgeState),
+    (PrepareTurn, PrepareTurnParams, SanitizedTurn),
     (SendTurn, SendTurnParams, UnitResult),
     (CompactSession, CompactSessionParams, UnitResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
-    (StopSession, StopSessionParams, _),
+    (StopSession, StopSessionParams, BridgeState),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
@@ -159,53 +164,53 @@ typed_methods![
     (WriteTerminal, WriteTerminalParams, UnitResult),
     (ResizeTerminal, ResizeTerminalParams, UnitResult),
     // slash commands
-    (ListSlashCommands, _, _),
-    (ResolveSlashCommand, ResolveSlashCommandParams, _),
+    (ListSlashCommands, _, SlashCommandsResult),
+    (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),
     // completion / verification
-    (CreateCompletionPlan, CreateCompletionPlanParams, _),
-    (RecordCompletionCheck, RecordCompletionCheckParams, _),
-    (WaiveCompletion, WaiveCompletionParams, _),
+    (CreateCompletionPlan, CreateCompletionPlanParams, CompletionSummary),
+    (RecordCompletionCheck, RecordCompletionCheckParams, CompletionSummary),
+    (WaiveCompletion, WaiveCompletionParams, CompletionSummary),
     (RegisterVerifierManifest, RegisterVerifierManifestParams, UnitResult),
-    (VerifierCandidates, VerifierCandidatesParams, _),
+    (VerifierCandidates, VerifierCandidatesParams, VerifierCandidatesResult),
     // routing
-    (GetRouterPreferences, GetRouterPreferencesParams, _),
-    (UpdateRouterPreferences, UpdateRouterPreferencesParams, _),
+    (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
+    (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),
     (RollbackRoutingPolicy, RollbackRoutingPolicyParams, _),
     // model profiles
     (GetModelSetup, _, _),
-    (RecommendedModelProfiles, _, _),
+    (RecommendedModelProfiles, _, RecommendedModelProfilesResult),
     (SaveModelProfiles, SaveModelProfilesParams, _),
     (ResetModelProfiles, _, _),
     // configuration
-    (GetConfigState, _, _),
-    (SaveHarnessConfig, SaveHarnessConfigParams, _),
-    (ResetHarnessConfig, ResetHarnessConfigParams, _),
+    (GetConfigState, _, ConfigState),
+    (SaveHarnessConfig, SaveHarnessConfigParams, ConfigState),
+    (ResetHarnessConfig, ResetHarnessConfigParams, ConfigState),
     (RefreshOpencodeCatalog, RefreshOpencodeCatalogParams, _),
     (SetOpencodeProviderApiKey, SetOpencodeProviderApiKeyParams, _),
     (RemoveOpencodeProviderAuth, RemoveOpencodeProviderAuthParams, _),
-    (SaveAgentConfig, SaveAgentConfigParams, _),
-    (DeleteAgentConfig, DeleteAgentConfigParams, _),
-    (SetDefaultAgent, SetDefaultAgentParams, _),
-    (ResetAllConfig, _, _),
+    (SaveAgentConfig, SaveAgentConfigParams, ConfigState),
+    (DeleteAgentConfig, DeleteAgentConfigParams, ConfigState),
+    (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
+    (ResetAllConfig, _, ConfigState),
     // adaptive learning
     (GetLearningState, _, _),
     (RunLearning, RunLearningParams, _),
     (CancelLearningRun, CancelLearningRunParams, _),
-    (UpdateLearningSchedule, UpdateLearningScheduleParams, _),
+    (UpdateLearningSchedule, UpdateLearningScheduleParams, LearningSchedule),
     (RegisterLearningTrigger, RegisterLearningTriggerParams, UnitResult),
-    (GetLearningTriggerInstructions, GetLearningTriggerInstructionsParams, _),
+    (GetLearningTriggerInstructions, GetLearningTriggerInstructionsParams, LearningTriggerInstructionsResult),
     (EnableLearningTrigger, EnableLearningTriggerParams, UnitResult),
     (ApproveLearningRun, ApproveLearningRunParams, _),
     // browser bridge
     (BrowserBridgeState, _, _),
-    (InstallBrowserNativeHost, _, _),
-    (BrowserAction, BrowserActionParams, _),
+    (InstallBrowserNativeHost, _, InstallBrowserNativeHostResult),
+    (BrowserAction, BrowserActionParams, BrowserActionResult),
     (SetBrowserPermission, SetBrowserPermissionParams, UnitResult),
     (ResolveBrowserApproval, ResolveBrowserApprovalParams, UnitResult),
     (TakeoverBrowser, _, UnitResult),
-    (DetachBrowser, _, _),
-    (RouteBrowser, RouteBrowserParams, _),
-    (BrowserSkills, _, _),
+    (DetachBrowser, _, DetachBrowserResult),
+    (RouteBrowser, RouteBrowserParams, BrowserRouteDecision),
+    (BrowserSkills, _, BrowserSkillsResult),
     (ConfigureRemoteBrowser, ConfigureRemoteBrowserParams, UnitResult),
     (StartRemoteBrowser, StartRemoteBrowserParams, _),
     // marketplace
@@ -217,6 +222,35 @@ typed_methods![
     (SkillSuggestions, SkillSuggestionsParams, _),
     (PreviewSkillChange, PreviewSkillChangeParams, _),
     (ExecuteSkillChange, ExecuteSkillChangeParams, _),
+];
+
+/// The documented exceptions to result typing: every method whose result is
+/// deliberately not yet contracted, with the core type a future slice must
+/// mirror. The registry publishes these as `resultDeferred`, so non-TypeScript
+/// clients can tell "intentionally untyped, shape is this named core DTO"
+/// apart from "someone forgot". A method appearing in neither this table nor
+/// with a typed result fails the coverage test.
+pub const DEFERRED_RESULTS: &[(MethodName, &str)] = &[
+    (MethodName::RollbackRoutingPolicy, "bridge_core::learning_job::LearningState"),
+    (MethodName::GetModelSetup, "bridge_core::model_profiles::ModelSetupState"),
+    (MethodName::SaveModelProfiles, "bridge_core::model_profiles::ModelSetupState"),
+    (MethodName::ResetModelProfiles, "bridge_core::model_profiles::ModelSetupState"),
+    (MethodName::RefreshOpencodeCatalog, "bridge_core::opencode_adapter::OpenCodeCatalog"),
+    (MethodName::SetOpencodeProviderApiKey, "bridge_core::opencode_adapter::OpenCodeCatalog"),
+    (MethodName::RemoveOpencodeProviderAuth, "bridge_core::opencode_adapter::OpenCodeCatalog"),
+    (MethodName::GetLearningState, "bridge_core::learning_job::LearningState"),
+    (MethodName::RunLearning, "bridge_core::learning_job::LearningRun"),
+    (MethodName::CancelLearningRun, "bridge_core::learning_job::LearningRun"),
+    (MethodName::ApproveLearningRun, "bridge_core::learning_job::LearningRun"),
+    (MethodName::BrowserBridgeState, "bridge_core::browser_bridge::BrowserBridgeSnapshot"),
+    (MethodName::StartRemoteBrowser, "provider-defined remote browser session descriptor"),
+    (MethodName::MarketplaceCatalog, "bridge_core::marketplace::MarketplaceCatalog"),
+    (MethodName::MarketplaceAppAuthStates, "Vec<bridge_core::marketplace::MarketplaceAppAuthState>"),
+    (MethodName::MarketplaceAction, "bridge_core::marketplace::MarketplaceActionResult"),
+    (MethodName::SkillCatalog, "bridge_core::skill_marketplace::SkillCatalog"),
+    (MethodName::SkillSuggestions, "Vec<bridge_core::skill_marketplace::CapabilitySuggestion>"),
+    (MethodName::PreviewSkillChange, "bridge_core::skill_marketplace::SkillPreview"),
+    (MethodName::ExecuteSkillChange, "Vec<bridge_core::skill_marketplace::SkillActionResult>"),
 ];
 
 impl TypedMethod {
@@ -309,6 +343,35 @@ mod tests {
             MethodName::ALL.len(),
             "the payload contract and the method registry must stay 1:1"
         );
+    }
+
+    #[test]
+    fn every_result_is_typed_or_a_documented_exception() {
+        let deferred: HashSet<&str> = DEFERRED_RESULTS
+            .iter()
+            .map(|(method, _)| method.as_str())
+            .collect();
+        assert_eq!(
+            deferred.len(),
+            DEFERRED_RESULTS.len(),
+            "a method may be deferred only once"
+        );
+        for entry in TYPED_METHODS {
+            let typed = entry.result.is_some();
+            let excused = deferred.contains(entry.method.as_str());
+            assert!(
+                typed != excused,
+                "{} must have exactly one of a typed result or a documented \
+                 exception in DEFERRED_RESULTS (typed: {typed}, deferred: {excused})",
+                entry.method.as_str()
+            );
+        }
+        for (_, reason) in DEFERRED_RESULTS {
+            assert!(
+                !reason.trim().is_empty(),
+                "every deferred result names the core type still to be mirrored"
+            );
+        }
     }
 
     #[test]

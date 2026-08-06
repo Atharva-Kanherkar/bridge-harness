@@ -98,6 +98,49 @@ pub struct StartRemoteBrowserParams {
     pub initial_url: String,
 }
 
+/// `browser/route_browser`'s result. Mirrors
+/// `bridge_core::browser_bridge::BrowserRouteDecision`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRouteDecision {
+    pub route: String,
+    pub reason: String,
+    pub requires_user_grant: bool,
+}
+
+/// Mirrors `bridge_core::browser_bridge::BrowserSkill` — a bundled scripted
+/// flow; `steps` is the skill's own script format, not contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserSkill {
+    pub id: String,
+    pub name: String,
+    pub domains: Vec<String>,
+    pub description: String,
+    pub steps: Vec<serde_json::Value>,
+}
+
+/// `browser/browser_skills`' result: a bare array on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct BrowserSkillsResult(pub Vec<BrowserSkill>);
+
+/// `browser/browser_action`'s result: the queued command's id, a bare string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct BrowserActionResult(pub String);
+
+/// `browser/install_browser_native_host`'s result: the installed manifest
+/// path, a bare string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct InstallBrowserNativeHostResult(pub String);
+
+/// `browser/detach_browser`'s result: the detach grant id, a bare string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct DetachBrowserResult(pub String);
+
 #[cfg(test)]
 mod tests {
     use super::*;

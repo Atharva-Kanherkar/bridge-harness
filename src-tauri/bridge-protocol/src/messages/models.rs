@@ -51,6 +51,11 @@ pub struct SaveModelProfilesParams {
     pub profiles: Vec<ModelProfileDraft>,
 }
 
+/// `models/recommended_model_profiles`' result: a bare array on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct RecommendedModelProfilesResult(pub Vec<ModelProfileDraft>);
+
 #[cfg(test)]
 mod tests {
     use super::*;

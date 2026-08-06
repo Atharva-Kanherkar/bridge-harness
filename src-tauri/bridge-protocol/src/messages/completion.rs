@@ -108,6 +108,21 @@ pub struct VerifierCandidatesParams {
     pub available_capabilities: Vec<String>,
 }
 
+/// Mirrors `bridge_core::completion::VerifierCandidate` — a registered
+/// verifier's eligibility for a change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifierCandidate {
+    pub manifest: VerifierManifest,
+    pub eligible: bool,
+    pub exclusion_reasons: Vec<String>,
+}
+
+/// `completion/verifier_candidates`' result: a bare array on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct VerifierCandidatesResult(pub Vec<VerifierCandidate>);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -413,3 +413,427 @@ fn browser_payloads_mirror_core() {
         enabled: true,
     });
 }
+
+// --- snapshot DTOs (#125) ----------------------------------------------------
+
+fn mirror_session_status(status: &str) -> Option<wire::SessionStatus> {
+    // Core SessionStatus serializes lowercase; drive the mirror through the
+    // wire value so both spellings are asserted at once.
+    serde_json::from_value(serde_json::json!(status)).ok()
+}
+
+#[test]
+fn snapshot_enums_share_their_wire_values() {
+    for status in [
+        model::SessionStatus::Idle,
+        model::SessionStatus::Starting,
+        model::SessionStatus::Working,
+        model::SessionStatus::Waiting,
+        model::SessionStatus::Warm,
+        model::SessionStatus::Checkpointing,
+        model::SessionStatus::Ready,
+        model::SessionStatus::Stopped,
+        model::SessionStatus::Resuming,
+        model::SessionStatus::Restored,
+        model::SessionStatus::Failed,
+        model::SessionStatus::Completed,
+        model::SessionStatus::Cancelled,
+    ] {
+        let value = serde_json::to_value(&status).unwrap();
+        let mirrored = mirror_session_status(value.as_str().unwrap())
+            .unwrap_or_else(|| panic!("wire::SessionStatus is missing {value}"));
+        assert_same_wire_value(&status, &mirrored);
+    }
+    for tier in [
+        model::CapabilityTier::Fast,
+        model::CapabilityTier::Standard,
+        model::CapabilityTier::Strong,
+    ] {
+        let mirrored = match tier {
+            model::CapabilityTier::Fast => wire::CapabilityTier::Fast,
+            model::CapabilityTier::Standard => wire::CapabilityTier::Standard,
+            model::CapabilityTier::Strong => wire::CapabilityTier::Strong,
+        };
+        assert_same_wire_value(&tier, &mirrored);
+    }
+    for mode in [
+        model::RestorationMode::Hot,
+        model::RestorationMode::Native,
+        model::RestorationMode::CheckpointRestored,
+        model::RestorationMode::Fresh,
+    ] {
+        let mirrored = match mode {
+            model::RestorationMode::Hot => wire::RestorationMode::Hot,
+            model::RestorationMode::Native => wire::RestorationMode::Native,
+            model::RestorationMode::CheckpointRestored => {
+                wire::RestorationMode::CheckpointRestored
+            }
+            model::RestorationMode::Fresh => wire::RestorationMode::Fresh,
+        };
+        assert_same_wire_value(&mode, &mirrored);
+    }
+    for fidelity in [
+        model::ContinuationFidelity::Native,
+        model::ContinuationFidelity::ProjectedAtBoundary,
+        model::ContinuationFidelity::ProjectedMidTurn,
+    ] {
+        let mirrored = match fidelity {
+            model::ContinuationFidelity::Native => wire::ContinuationFidelity::Native,
+            model::ContinuationFidelity::ProjectedAtBoundary => {
+                wire::ContinuationFidelity::ProjectedAtBoundary
+            }
+            model::ContinuationFidelity::ProjectedMidTurn => {
+                wire::ContinuationFidelity::ProjectedMidTurn
+            }
+        };
+        assert_same_wire_value(&fidelity, &mirrored);
+    }
+    for eligibility in [
+        model::ResumeEligibility::Native,
+        model::ResumeEligibility::CheckpointRestored,
+        model::ResumeEligibility::Fresh,
+    ] {
+        let mirrored = match eligibility {
+            model::ResumeEligibility::Native => wire::ResumeEligibility::Native,
+            model::ResumeEligibility::CheckpointRestored => {
+                wire::ResumeEligibility::CheckpointRestored
+            }
+            model::ResumeEligibility::Fresh => wire::ResumeEligibility::Fresh,
+        };
+        assert_same_wire_value(&eligibility, &mirrored);
+    }
+    for verdict in [
+        completion::CompletionVerdict::Verifying,
+        completion::CompletionVerdict::ChangesRequested,
+        completion::CompletionVerdict::Verified,
+        completion::CompletionVerdict::Waived,
+        completion::CompletionVerdict::Failed,
+        completion::CompletionVerdict::Superseded,
+    ] {
+        let mirrored = match verdict {
+            completion::CompletionVerdict::Verifying => wire::CompletionVerdict::Verifying,
+            completion::CompletionVerdict::ChangesRequested => {
+                wire::CompletionVerdict::ChangesRequested
+            }
+            completion::CompletionVerdict::Verified => wire::CompletionVerdict::Verified,
+            completion::CompletionVerdict::Waived => wire::CompletionVerdict::Waived,
+            completion::CompletionVerdict::Failed => wire::CompletionVerdict::Failed,
+            completion::CompletionVerdict::Superseded => wire::CompletionVerdict::Superseded,
+        };
+        assert_same_wire_value(&verdict, &mirrored);
+    }
+}
+
+fn populated_session() -> model::Session {
+    model::Session {
+        id: "s-1".into(),
+        workspace_id: Some("w-1".into()),
+        harness: model::Harness::Codex,
+        label: "Orchestrator".into(),
+        status: model::SessionStatus::Waiting,
+        started_at: Some("now".into()),
+        ended_at: Some("later".into()),
+        context_percent: Some(41),
+        usage_percent: Some(12),
+        metric_source: "reported".into(),
+        provider_session_id: Some("prov-1".into()),
+        active_turn_id: Some("turn-1".into()),
+        model: Some("gpt-5".into()),
+        requested_tier: Some(model::CapabilityTier::Standard),
+        effort: Some("high".into()),
+        parent_session_id: Some("parent".into()),
+        depth: Some(1),
+        restoration_mode: model::RestorationMode::CheckpointRestored,
+        continuation_fidelity: model::ContinuationFidelity::ProjectedAtBoundary,
+        title: Some("Fix tests".into()),
+        kind: "orchestrator".into(),
+        cwd: Some("/repos/demo".into()),
+    }
+}
+
+#[test]
+fn the_bridge_state_snapshot_mirrors_core() {
+    // Every field populated with Some(...) so a renamed, retyped, or removed
+    // field on either side breaks JSON equality.
+    assert_mirrors::<wire::BridgeState>(&model::BridgeState {
+        projects: vec![model::Project {
+            id: "p-1".into(),
+            name: "Demo".into(),
+            path: "/repos/demo".into(),
+            created_at: "now".into(),
+        }],
+        workspaces: vec![model::Workspace {
+            id: "w-1".into(),
+            project_id: Some("p-1".into()),
+            city: Some("Kyoto".into()),
+            title: "Payments".into(),
+            branch: Some("bridge/payments".into()),
+            path: Some("/repos/demo".into()),
+            status: model::SessionStatus::Working,
+            dirty_files: 2,
+            additions: 40,
+            deletions: 3,
+            created_at: "now".into(),
+        }],
+        sessions: vec![populated_session()],
+        events: vec![model::BridgeEvent {
+            id: 9,
+            source: "supervisor".into(),
+            kind: "workspace.created".into(),
+            entity_id: "w-1".into(),
+            body: "Created workspace".into(),
+            created_at: "now".into(),
+        }],
+    });
+}
+
+#[test]
+fn the_session_forest_snapshot_mirrors_core() {
+    let entry = model::SessionEntry {
+        id: "e-1".into(),
+        session_id: "s-1".into(),
+        parent_entry_id: Some("e-0".into()),
+        sequence: 1,
+        semantic_schema_version: 2,
+        kind: "assistant.message".into(),
+        payload: serde_json::json!({"text": "hello"}),
+        provider_event_id: Some("prov-e".into()),
+        context_visibility: "visible".into(),
+        token_estimate: Some(12),
+        created_at: "now".into(),
+    };
+    assert_mirrors::<wire::SessionForestSnapshot>(&model::SessionForestSnapshot {
+        session_id: "s-1".into(),
+        entries: vec![entry.clone()],
+        head: Some(model::SessionHead {
+            session_id: "s-1".into(),
+            active_entry_id: Some("e-1".into()),
+            native_provider_session_id: Some("prov-1".into()),
+            restoration_mode: model::RestorationMode::Native,
+            resume_eligibility: model::ResumeEligibility::CheckpointRestored,
+            latest_checkpoint_entry_id: Some("e-0".into()),
+            updated_at: "now".into(),
+        }),
+        leaves: vec![entry],
+        worker_leases: vec![model::WorkerLease {
+            session_id: "worker-1".into(),
+            workspace_id: "w-1".into(),
+            role: "implementation".into(),
+            capability_tier: "standard".into(),
+            task_family: "rust".into(),
+            owned_paths: serde_json::json!(["src/"]),
+            write_mode: "exclusive".into(),
+            lease_status: "active".into(),
+            expires_at: Some("later".into()),
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }],
+        worker_runtimes: vec![model::WorkerRuntimeRecord {
+            session_id: "worker-1".into(),
+            parent_session_id: "s-1".into(),
+            lifecycle_state: "working".into(),
+            task_family: "rust".into(),
+            compatibility_key: "codex:gpt-5".into(),
+            result_status: "pending".into(),
+            retry_count: 1,
+            warm_until: Some("later".into()),
+            worktree_path: Some("/worktrees/w".into()),
+            worktree_branch: Some("bridge/w".into()),
+            last_result: Some(serde_json::json!({"ok": true})),
+            last_activity_at: Some("now".into()),
+            updated_at: "now".into(),
+        }],
+        worker_queue: vec![model::QueuedWorkerRequest {
+            id: "q-1".into(),
+            parent_session_id: "s-1".into(),
+            workspace_id: "w-1".into(),
+            turn_id: "turn-1".into(),
+            request: serde_json::json!({"objective": "fix"}),
+            actual_model: "gpt-5".into(),
+            queue_status: "queued".into(),
+            sequence: 1,
+            dispatched_session_id: Some("worker-1".into()),
+            attempt_count: 1,
+            expires_at: "later".into(),
+            blocked_at: Some("now".into()),
+            claimed_at: Some("now".into()),
+            last_error: Some("busy".into()),
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }],
+        usage: vec![model::UsageLedgerRow {
+            id: 1,
+            workspace_id: "w-1".into(),
+            session_id: Some("s-1".into()),
+            turn_id: Some("turn-1".into()),
+            input_tokens: Some(1000),
+            output_tokens: Some(200),
+            cache_read_tokens: Some(800),
+            cache_write_tokens: Some(10),
+            uncached_input_tokens: Some(200),
+            context_percent: Some(30),
+            capability_units: 2,
+            runtime_ms: Some(1200),
+            cost_microusd: Some(310),
+            cost_source: Some("reported".into()),
+            stable_prefix_id: Some("prefix-1".into()),
+            stable_prefix_hash: Some("hash".into()),
+            prompt_schema_version: Some(1),
+            prefix_token_estimate: Some(700),
+            harness: Some("codex".into()),
+            model: Some("gpt-5".into()),
+            role: Some("orchestrator".into()),
+            task_family: Some("rust".into()),
+            restoration_mode: Some("fresh".into()),
+            cross_harness_reuse: Some("same_harness".into()),
+            source: "provider".into(),
+            created_at: "now".into(),
+        }],
+        reasons: vec![model::BridgeEvent {
+            id: 4,
+            source: "policy".into(),
+            kind: "delegation.approved".into(),
+            entity_id: "s-1".into(),
+            body: "approved".into(),
+            created_at: "now".into(),
+        }],
+        policy_limits: model::PolicyLimits {
+            max_workers_per_turn: 4,
+            max_strong_workers_per_turn: 1,
+            max_capability_units_per_turn: 8,
+        },
+        repository_divergence: model::RepositoryDivergence {
+            status: "diverged".into(),
+            selected_state: Some(serde_json::json!({"head": "old"})),
+            current_state: serde_json::json!({"head": "new"}),
+        },
+        completion: Some(completion::CompletionSummary {
+            attempt_id: "a-1".into(),
+            contract_id: "c-1".into(),
+            verdict: completion::CompletionVerdict::ChangesRequested,
+            repository: completion::RepositoryStamp {
+                head: "abc".into(),
+                dirty_digest: "sha256:d".into(),
+            },
+            passed_required: 1,
+            total_required: 3,
+            checks: vec![completion::CheckRun {
+                check_id: "cargo-test".into(),
+                kind: completion::EvalKind::Deterministic,
+                required: true,
+                status: completion::CheckStatus::Failed,
+                executor: "shell".into(),
+                command: Some("cargo test".into()),
+                verifier_family: Some("rust".into()),
+                detail: Some("2 failed".into()),
+                output_digest: Some("sha256:o".into()),
+                artifact_refs: vec!["artifact-1".into()],
+            }],
+            markdown_committed: true,
+            waiver_reason: Some("flake".into()),
+        }),
+    });
+}
+
+#[test]
+fn result_payloads_mirror_core() {
+    assert_mirrors::<wire::HealthResult>(&crate::api::Health {
+        ok: true,
+        version: "0.1.0",
+        harnesses: std::collections::HashMap::from([("claude", true), ("shell", true)]),
+        database: "/data/bridge.db".into(),
+        telemetry_database: "/data/bridge-telemetry.db".into(),
+        snapshot_directory: "/data/history-snapshots".into(),
+        adapters: vec![model::AdapterDescriptor {
+            id: "codex".into(),
+            label: "Codex".into(),
+            available: true,
+            version: Some("1.0".into()),
+            capabilities: vec!["shell".into()],
+            unavailable_reason: Some("offline".into()),
+            models: vec![model::ModelOption {
+                id: "gpt-5".into(),
+                label: "GPT-5".into(),
+                tier: model::CapabilityTier::Strong,
+                default_for_tier: true,
+            }],
+            default_model: Some("gpt-5".into()),
+        }],
+    });
+    assert_mirrors::<wire::SanitizedTurn>(&crate::secret_interception::SanitizedTurn {
+        text: "use {{bridge:secret:ref-1}}".into(),
+        interceptions: vec![crate::secret_interception::SecretInterception {
+            reference: "ref-1".into(),
+            detector: "openai_api_key".into(),
+        }],
+    });
+    assert_mirrors::<wire::SlashCommand>(&crate::slash::SlashCommand {
+        name: "review".into(),
+        description: "Review the diff".into(),
+        harness: "claude".into(),
+        kind: "skill".into(),
+    });
+    assert_mirrors::<wire::SlashCommandResolve>(&crate::api::SlashCommandResolve {
+        name: "review".into(),
+        harness: "claude".into(),
+        kind: "skill".into(),
+        switch_harness: true,
+    });
+    assert_mirrors::<wire::VerifierCandidate>(&completion::VerifierCandidate {
+        manifest: completion::VerifierManifest {
+            id: "rust-tests".into(),
+            kind: completion::EvalKind::Deterministic,
+            triggers: vec!["rust".into()],
+            required_capabilities: vec!["shell".into()],
+            different_model_family: false,
+            checks: vec!["cargo-test".into()],
+            evidence_required: vec!["digest".into()],
+        },
+        eligible: false,
+        exclusion_reasons: vec!["missing capabilities: browser".into()],
+    });
+    assert_mirrors::<wire::ConfigState>(&agent_config::ConfigState {
+        harnesses: vec![agent_config::HarnessConfig {
+            id: "codex".into(),
+            label: "Codex".into(),
+            enabled: true,
+            default_model: Some("gpt-5".into()),
+            effort: Some(delegation::Effort::High),
+            system_prompt: "Be exacting.".into(),
+            advanced: serde_json::json!({"sandbox": "workspace-write"}),
+            is_override: true,
+        }],
+        agents: vec![agent_config::AgentDefinition {
+            id: "reviewer".into(),
+            name: "Reviewer".into(),
+            description: "Reviews diffs".into(),
+            role: "review".into(),
+            harness: "claude".into(),
+            model: Some("sonnet".into()),
+            effort: delegation::Effort::Medium,
+            system_prompt: "Be exacting.".into(),
+            enabled: true,
+            is_default: true,
+            is_built_in: false,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }],
+        default_agent_id: "reviewer".into(),
+    });
+    assert_mirrors::<wire::BrowserRouteDecision>(&browser_bridge::route_browser(
+        browser_bridge::BrowserRouteRequest {
+            structured_api_available: false,
+            needs_user_auth: true,
+            needs_isolation: false,
+            needs_parallelism: false,
+            needs_geo_or_proxy: false,
+            unattended: false,
+            dom_control_available: true,
+            remote_provider_configured: false,
+            task_class: Some("checkout".into()),
+        },
+    ));
+    for skill in browser_bridge::bundled_skills() {
+        assert_mirrors::<wire::BrowserSkill>(&skill);
+    }
+}

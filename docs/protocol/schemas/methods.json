@@ -5,31 +5,36 @@
       "command": "health",
       "domain": "health",
       "method": "health/health",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "health-result.json"
     },
     {
       "command": "get_state",
       "domain": "state",
       "method": "state/get_state",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "add_project",
       "domain": "projects",
       "method": "projects/add_project",
-      "paramsSchema": "add-project-params.json"
+      "paramsSchema": "add-project-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",
-      "paramsSchema": "create-workspace-params.json"
+      "paramsSchema": "create-workspace-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "connect_workspace_folder",
       "domain": "workspaces",
       "method": "workspaces/connect_workspace_folder",
-      "paramsSchema": "connect-workspace-folder-params.json"
+      "paramsSchema": "connect-workspace-folder-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "list_workspace_files",
@@ -42,19 +47,22 @@
       "command": "refresh_workspace",
       "domain": "workspaces",
       "method": "workspaces/refresh_workspace",
-      "paramsSchema": "refresh-workspace-params.json"
+      "paramsSchema": "refresh-workspace-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "archive_workspace",
       "domain": "workspaces",
       "method": "workspaces/archive_workspace",
-      "paramsSchema": "archive-workspace-params.json"
+      "paramsSchema": "archive-workspace-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "get_session_forest",
       "domain": "sessions",
       "method": "sessions/get_session_forest",
-      "paramsSchema": "get-session-forest-params.json"
+      "paramsSchema": "get-session-forest-params.json",
+      "resultSchema": "session-forest-snapshot.json"
     },
     {
       "command": "replay_session_events",
@@ -67,43 +75,50 @@
       "command": "activate_session_entry",
       "domain": "sessions",
       "method": "sessions/activate_session_entry",
-      "paramsSchema": "activate-session-entry-params.json"
+      "paramsSchema": "activate-session-entry-params.json",
+      "resultSchema": "session-forest-snapshot.json"
     },
     {
       "command": "create_chat",
       "domain": "sessions",
       "method": "sessions/create_chat",
-      "paramsSchema": "create-chat-params.json"
+      "paramsSchema": "create-chat-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "create_workspace_session",
       "domain": "sessions",
       "method": "sessions/create_workspace_session",
-      "paramsSchema": "create-workspace-session-params.json"
+      "paramsSchema": "create-workspace-session-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "start_session",
       "domain": "sessions",
       "method": "sessions/start_session",
-      "paramsSchema": "start-session-params.json"
+      "paramsSchema": "start-session-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "start_chat",
       "domain": "sessions",
       "method": "sessions/start_chat",
-      "paramsSchema": "start-chat-params.json"
+      "paramsSchema": "start-chat-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "update_chat_model",
       "domain": "sessions",
       "method": "sessions/update_chat_model",
-      "paramsSchema": "update-chat-model-params.json"
+      "paramsSchema": "update-chat-model-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "prepare_turn",
       "domain": "sessions",
       "method": "sessions/prepare_turn",
-      "paramsSchema": "prepare-turn-params.json"
+      "paramsSchema": "prepare-turn-params.json",
+      "resultSchema": "sanitized-turn.json"
     },
     {
       "command": "send_turn",
@@ -137,7 +152,8 @@
       "command": "stop_session",
       "domain": "sessions",
       "method": "sessions/stop_session",
-      "paramsSchema": "stop-session-params.json"
+      "paramsSchema": "stop-session-params.json",
+      "resultSchema": "bridge-state.json"
     },
     {
       "command": "resolve_approval",
@@ -171,31 +187,36 @@
       "command": "list_slash_commands",
       "domain": "slash",
       "method": "slash/list_slash_commands",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "slash-commands-result.json"
     },
     {
       "command": "resolve_slash_command",
       "domain": "slash",
       "method": "slash/resolve_slash_command",
-      "paramsSchema": "resolve-slash-command-params.json"
+      "paramsSchema": "resolve-slash-command-params.json",
+      "resultSchema": "slash-command-resolve-result.json"
     },
     {
       "command": "create_completion_plan",
       "domain": "completion",
       "method": "completion/create_completion_plan",
-      "paramsSchema": "create-completion-plan-params.json"
+      "paramsSchema": "create-completion-plan-params.json",
+      "resultSchema": "completion-summary.json"
     },
     {
       "command": "record_completion_check",
       "domain": "completion",
       "method": "completion/record_completion_check",
-      "paramsSchema": "record-completion-check-params.json"
+      "paramsSchema": "record-completion-check-params.json",
+      "resultSchema": "completion-summary.json"
     },
     {
       "command": "waive_completion",
       "domain": "completion",
       "method": "completion/waive_completion",
-      "paramsSchema": "waive-completion-params.json"
+      "paramsSchema": "waive-completion-params.json",
+      "resultSchema": "completion-summary.json"
     },
     {
       "command": "register_verifier_manifest",
@@ -208,133 +229,155 @@
       "command": "verifier_candidates",
       "domain": "completion",
       "method": "completion/verifier_candidates",
-      "paramsSchema": "verifier-candidates-params.json"
+      "paramsSchema": "verifier-candidates-params.json",
+      "resultSchema": "verifier-candidates-result.json"
     },
     {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",
-      "paramsSchema": "get-router-preferences-params.json"
+      "paramsSchema": "get-router-preferences-params.json",
+      "resultSchema": "router-preferences.json"
     },
     {
       "command": "update_router_preferences",
       "domain": "routing",
       "method": "routing/update_router_preferences",
-      "paramsSchema": "update-router-preferences-params.json"
+      "paramsSchema": "update-router-preferences-params.json",
+      "resultSchema": "router-preferences.json"
     },
     {
       "command": "rollback_routing_policy",
       "domain": "routing",
       "method": "routing/rollback_routing_policy",
-      "paramsSchema": "rollback-routing-policy-params.json"
+      "paramsSchema": "rollback-routing-policy-params.json",
+      "resultDeferred": "bridge_core::learning_job::LearningState"
     },
     {
       "command": "get_model_setup",
       "domain": "models",
       "method": "models/get_model_setup",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::model_profiles::ModelSetupState"
     },
     {
       "command": "recommended_model_profiles",
       "domain": "models",
       "method": "models/recommended_model_profiles",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "recommended-model-profiles-result.json"
     },
     {
       "command": "save_model_profiles",
       "domain": "models",
       "method": "models/save_model_profiles",
-      "paramsSchema": "save-model-profiles-params.json"
+      "paramsSchema": "save-model-profiles-params.json",
+      "resultDeferred": "bridge_core::model_profiles::ModelSetupState"
     },
     {
       "command": "reset_model_profiles",
       "domain": "models",
       "method": "models/reset_model_profiles",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::model_profiles::ModelSetupState"
     },
     {
       "command": "get_config_state",
       "domain": "config",
       "method": "config/get_config_state",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "config-state.json"
     },
     {
       "command": "save_harness_config",
       "domain": "config",
       "method": "config/save_harness_config",
-      "paramsSchema": "save-harness-config-params.json"
+      "paramsSchema": "save-harness-config-params.json",
+      "resultSchema": "config-state.json"
     },
     {
       "command": "reset_harness_config",
       "domain": "config",
       "method": "config/reset_harness_config",
-      "paramsSchema": "reset-harness-config-params.json"
+      "paramsSchema": "reset-harness-config-params.json",
+      "resultSchema": "config-state.json"
     },
     {
       "command": "refresh_opencode_catalog",
       "domain": "config",
       "method": "config/refresh_opencode_catalog",
-      "paramsSchema": "refresh-opencode-catalog-params.json"
+      "paramsSchema": "refresh-opencode-catalog-params.json",
+      "resultDeferred": "bridge_core::opencode_adapter::OpenCodeCatalog"
     },
     {
       "command": "set_opencode_provider_api_key",
       "domain": "config",
       "method": "config/set_opencode_provider_api_key",
-      "paramsSchema": "set-opencode-provider-api-key-params.json"
+      "paramsSchema": "set-opencode-provider-api-key-params.json",
+      "resultDeferred": "bridge_core::opencode_adapter::OpenCodeCatalog"
     },
     {
       "command": "remove_opencode_provider_auth",
       "domain": "config",
       "method": "config/remove_opencode_provider_auth",
-      "paramsSchema": "remove-opencode-provider-auth-params.json"
+      "paramsSchema": "remove-opencode-provider-auth-params.json",
+      "resultDeferred": "bridge_core::opencode_adapter::OpenCodeCatalog"
     },
     {
       "command": "save_agent_config",
       "domain": "config",
       "method": "config/save_agent_config",
-      "paramsSchema": "save-agent-config-params.json"
+      "paramsSchema": "save-agent-config-params.json",
+      "resultSchema": "config-state.json"
     },
     {
       "command": "delete_agent_config",
       "domain": "config",
       "method": "config/delete_agent_config",
-      "paramsSchema": "delete-agent-config-params.json"
+      "paramsSchema": "delete-agent-config-params.json",
+      "resultSchema": "config-state.json"
     },
     {
       "command": "set_default_agent",
       "domain": "config",
       "method": "config/set_default_agent",
-      "paramsSchema": "set-default-agent-params.json"
+      "paramsSchema": "set-default-agent-params.json",
+      "resultSchema": "config-state.json"
     },
     {
       "command": "reset_all_config",
       "domain": "config",
       "method": "config/reset_all_config",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "config-state.json"
     },
     {
       "command": "get_learning_state",
       "domain": "learning",
       "method": "learning/get_learning_state",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::learning_job::LearningState"
     },
     {
       "command": "run_learning",
       "domain": "learning",
       "method": "learning/run_learning",
-      "paramsSchema": "run-learning-params.json"
+      "paramsSchema": "run-learning-params.json",
+      "resultDeferred": "bridge_core::learning_job::LearningRun"
     },
     {
       "command": "cancel_learning_run",
       "domain": "learning",
       "method": "learning/cancel_learning_run",
-      "paramsSchema": "cancel-learning-run-params.json"
+      "paramsSchema": "cancel-learning-run-params.json",
+      "resultDeferred": "bridge_core::learning_job::LearningRun"
     },
     {
       "command": "update_learning_schedule",
       "domain": "learning",
       "method": "learning/update_learning_schedule",
-      "paramsSchema": "update-learning-schedule-params.json"
+      "paramsSchema": "update-learning-schedule-params.json",
+      "resultSchema": "learning-schedule.json"
     },
     {
       "command": "register_learning_trigger",
@@ -347,7 +390,8 @@
       "command": "get_learning_trigger_instructions",
       "domain": "learning",
       "method": "learning/get_learning_trigger_instructions",
-      "paramsSchema": "get-learning-trigger-instructions-params.json"
+      "paramsSchema": "get-learning-trigger-instructions-params.json",
+      "resultSchema": "learning-trigger-instructions-result.json"
     },
     {
       "command": "enable_learning_trigger",
@@ -360,25 +404,29 @@
       "command": "approve_learning_run",
       "domain": "learning",
       "method": "learning/approve_learning_run",
-      "paramsSchema": "approve-learning-run-params.json"
+      "paramsSchema": "approve-learning-run-params.json",
+      "resultDeferred": "bridge_core::learning_job::LearningRun"
     },
     {
       "command": "browser_bridge_state",
       "domain": "browser",
       "method": "browser/browser_bridge_state",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::browser_bridge::BrowserBridgeSnapshot"
     },
     {
       "command": "install_browser_native_host",
       "domain": "browser",
       "method": "browser/install_browser_native_host",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "install-browser-native-host-result.json"
     },
     {
       "command": "browser_action",
       "domain": "browser",
       "method": "browser/browser_action",
-      "paramsSchema": "browser-action-params.json"
+      "paramsSchema": "browser-action-params.json",
+      "resultSchema": "browser-action-result.json"
     },
     {
       "command": "set_browser_permission",
@@ -405,19 +453,22 @@
       "command": "detach_browser",
       "domain": "browser",
       "method": "browser/detach_browser",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "detach-browser-result.json"
     },
     {
       "command": "route_browser",
       "domain": "browser",
       "method": "browser/route_browser",
-      "paramsSchema": "route-browser-params.json"
+      "paramsSchema": "route-browser-params.json",
+      "resultSchema": "browser-route-decision.json"
     },
     {
       "command": "browser_skills",
       "domain": "browser",
       "method": "browser/browser_skills",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultSchema": "browser-skills-result.json"
     },
     {
       "command": "configure_remote_browser",
@@ -430,54 +481,62 @@
       "command": "start_remote_browser",
       "domain": "browser",
       "method": "browser/start_remote_browser",
-      "paramsSchema": "start-remote-browser-params.json"
+      "paramsSchema": "start-remote-browser-params.json",
+      "resultDeferred": "provider-defined remote browser session descriptor"
     },
     {
       "command": "marketplace_catalog",
       "domain": "marketplace",
       "method": "marketplace/marketplace_catalog",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::marketplace::MarketplaceCatalog"
     },
     {
       "command": "marketplace_app_auth_states",
       "domain": "marketplace",
       "method": "marketplace/marketplace_app_auth_states",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "Vec<bridge_core::marketplace::MarketplaceAppAuthState>"
     },
     {
       "command": "marketplace_action",
       "domain": "marketplace",
       "method": "marketplace/marketplace_action",
-      "paramsSchema": "marketplace-action-params.json"
+      "paramsSchema": "marketplace-action-params.json",
+      "resultDeferred": "bridge_core::marketplace::MarketplaceActionResult"
     },
     {
       "command": "skill_catalog",
       "domain": "skills",
       "method": "skills/skill_catalog",
-      "paramsSchema": null
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::skill_marketplace::SkillCatalog"
     },
     {
       "command": "skill_suggestions",
       "domain": "skills",
       "method": "skills/skill_suggestions",
-      "paramsSchema": "skill-suggestions-params.json"
+      "paramsSchema": "skill-suggestions-params.json",
+      "resultDeferred": "Vec<bridge_core::skill_marketplace::CapabilitySuggestion>"
     },
     {
       "command": "preview_skill_change",
       "domain": "skills",
       "method": "skills/preview_skill_change",
-      "paramsSchema": "preview-skill-change-params.json"
+      "paramsSchema": "preview-skill-change-params.json",
+      "resultDeferred": "bridge_core::skill_marketplace::SkillPreview"
     },
     {
       "command": "execute_skill_change",
       "domain": "skills",
       "method": "skills/execute_skill_change",
-      "paramsSchema": "execute-skill-change-params.json"
+      "paramsSchema": "execute-skill-change-params.json",
+      "resultDeferred": "Vec<bridge_core::skill_marketplace::SkillActionResult>"
     }
   ],
   "protocolVersion": {
     "major": 0,
-    "minor": 6
+    "minor": 7
   },
   "reserved": {
     "cancel": "$/cancel",
