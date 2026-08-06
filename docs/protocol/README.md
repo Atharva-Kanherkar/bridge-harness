@@ -20,7 +20,7 @@ bidirectional events — is RPC-shaped, so REST+SSE was considered and rejected.
 | --- | --- |
 | Unix-domain socket | Local clients (Tauri shell, TUI, `bridge exec`) — served by `bridged` today |
 | WebSocket | Browser and remote clients (follow-on; the auth token and origin rules are designed for it) |
-| Tauri invoke/event adapter | Migration compatibility while the shell still hosts the runtime in-process |
+| Tauri invoke/event adapter | The desktop webview; proxied to `bridged` by default, in-process only in embedded fallback |
 | Plain HTTP | `/healthz` and `/readyz` only |
 
 ## The `bridged` daemon
@@ -78,6 +78,24 @@ token handshake, sequential calls with interleaved notifications, and the
 recovery rules encoded once — `SessionEventStream` yields a session's durable
 events gap-free across disconnects, live-channel lag (`stream-lagged` →
 cursor replay), and sequence gaps. The Tauri proxy and TUI build on it.
+
+**The desktop app** runs as a daemon client by default. On startup it
+attaches to a `bridged` serving its data directory, or starts the bundled
+binary and waits for it (stdout/stderr land in `<data_dir>/bridged.log`).
+Every Tauri invoke is proxied generically: the command's registry method is
+called with the invoke payload as params (invoke argument names *are* the
+wire names; the shell's signature-parity test pins that), and every daemon
+notification is re-emitted to the webview with an unchanged name and payload
+— the frontend cannot tell which host it is on. A supervisor thread owns the
+connection: after a daemon restart it reattaches on its own, and after any
+reconnect or `stream-lagged` marker it emits the `state-changed` /
+`adapters-changed` refetch hints, so the UI recovers durable history (open
+approvals included) from the session forest exactly as the embedded host's
+lag path always worked. `BRIDGE_DESKTOP_HOST` selects the host: `auto`
+(default: attach → start → fall back to embedded), `daemon` (no embedded
+fallback — the acceptance configuration), `embedded` (the in-process runtime,
+kept during migration; never concurrent with a daemon thanks to the lease).
+`BRIDGE_DAEMON_BIN` overrides which daemon binary is started.
 
 **`bridge exec --json`** is the CI one-shot. It attaches to a running daemon
 when one owns the data directory, and otherwise hosts the runtime itself for
