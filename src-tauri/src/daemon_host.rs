@@ -50,8 +50,10 @@ const START_DEADLINE: Duration = Duration::from_secs(30);
 /// Handshake budget per connection attempt against a live socket.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Graceful process-group shutdown budget before a forced kill.
-const CHILD_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+/// Graceful process-group shutdown budget before a forced kill. This exceeds
+/// bridged's own drain deadline so adapter settlement and socket cleanup get
+/// time to finish after the accept loop observes SIGTERM.
+const CHILD_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Where a spawned daemon's stdout/stderr goes, inside the data directory.
 const DAEMON_LOG_FILE: &str = "bridged.log";
@@ -777,6 +779,11 @@ mod tests {
                 "extension"
             ]
         );
+    }
+
+    #[test]
+    fn child_shutdown_budget_exceeds_the_daemon_drain_deadline() {
+        assert!(CHILD_SHUTDOWN_DEADLINE > bridged::DEFAULT_DRAIN_TIMEOUT);
     }
 
     #[test]
