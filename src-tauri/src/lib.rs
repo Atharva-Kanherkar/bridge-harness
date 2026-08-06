@@ -3,14 +3,14 @@ pub use bridge_core::{
     routing_policy,
 };
 
+use bridge_core::events::CoreEvent;
+use bridge_core::live_turn;
 use bridge_core::model::*;
 use bridge_core::{
     adapters, agent, agent_config, binary, browser_bridge, git, marketplace, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
     worker_lifecycle, workspace_files,
 };
-use bridge_core::events::CoreEvent;
-use bridge_core::live_turn;
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError, RuntimeSession};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -26,15 +26,12 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-
 /// Every UI notification flows through the core event bus; the setup
 /// forwarder is the only code that touches Tauri's event system. The shell
 /// publishes, it never emits.
 fn publish(app: &AppHandle, event: CoreEvent) {
     app.state::<Arc<BridgeCore>>().events.publish(event);
 }
-
-
 
 #[derive(Serialize)]
 struct Health {
@@ -78,7 +75,9 @@ async fn browser_bridge_state(
 }
 
 #[tauri::command]
-async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
+async fn install_browser_native_host(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<String, BridgeError> {
     let supervisor = Arc::clone(&state.browser_bridge);
     tauri::async_runtime::spawn_blocking(move || {
         let executable = std::env::var_os("BRIDGE_BROWSER_HOST")
@@ -732,7 +731,10 @@ async fn run_learning(
     })
     .await
     .map_err(|error| BridgeError::Invalid(format!("Learning task failed: {error}")))??;
-    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()));
+    publish(
+        &app,
+        CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()),
+    );
     Ok(run)
 }
 
@@ -743,7 +745,10 @@ async fn cancel_learning_run(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
-    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()));
+    publish(
+        &app,
+        CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()),
+    );
     Ok(run)
 }
 
@@ -797,7 +802,10 @@ async fn approve_learning_run(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
-    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()));
+    publish(
+        &app,
+        CoreEvent::LearningJobChanged(serde_json::to_value(&run).unwrap_or_default()),
+    );
     Ok(run)
 }
 
@@ -810,7 +818,10 @@ async fn rollback_routing_policy(
 ) -> Result<learning_job::LearningState, BridgeError> {
     learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
     let result = learning_job::learning_state(&state.db.lock().unwrap())?;
-    publish(&app, CoreEvent::LearningJobChanged(serde_json::to_value(&result).unwrap_or_default()));
+    publish(
+        &app,
+        CoreEvent::LearningJobChanged(serde_json::to_value(&result).unwrap_or_default()),
+    );
     Ok(result)
 }
 
@@ -825,7 +836,10 @@ async fn activate_session_entry(
 }
 
 #[tauri::command]
-async fn add_project(path: String, state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+async fn add_project(
+    path: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<BridgeState, BridgeError> {
     state.add_project(&path)
 }
 
@@ -1173,16 +1187,16 @@ async fn list_workspace_files(
     match state.session_workspace_root(&session_id) {
         // Listing is pure filesystem work; only the blocking-pool placement
         // is the shell's concern.
-        Some(root) => tauri::async_runtime::spawn_blocking(move || {
-            workspace_files::list_files(&root)
-        })
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Workspace file listing failed: {error}")))?,
+        Some(root) => {
+            tauri::async_runtime::spawn_blocking(move || workspace_files::list_files(&root))
+                .await
+                .map_err(|error| {
+                    BridgeError::Invalid(format!("Workspace file listing failed: {error}"))
+                })?
+        }
         None => Ok(Vec::new()),
     }
 }
-
-
 
 #[tauri::command]
 async fn compact_session(
@@ -1213,7 +1227,10 @@ async fn replay_session_events(
 }
 
 #[tauri::command]
-async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+async fn interrupt_turn(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
     state.interrupt_turn(&session_id)
 }
 
@@ -1222,13 +1239,9 @@ async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -
 /// command; Codex is asked on a live session and answers on its event stream.
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
-async fn refresh_account_usage(
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<(), BridgeError> {
+async fn refresh_account_usage(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
     state.refresh_account_usage()
 }
-
-
 
 #[tauri::command]
 async fn resolve_approval(
@@ -1256,15 +1269,32 @@ async fn resolve_approval(
         .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
     if data.get("approvalType").and_then(serde_json::Value::as_str) == Some("delegation_path_scope")
     {
-        let launch =
-            live_turn::resolve_policy_delegation_approval(&db, &session_id, event_id, &decision, &data)?;
+        let launch = live_turn::resolve_policy_delegation_approval(
+            &db,
+            &session_id,
+            event_id,
+            &decision,
+            &data,
+        )?;
         drop(db);
         if let Some((turn_id, request)) = launch {
-            match live_turn::launch_worker_outcome(state.inner(), &session_id, &turn_id, &request, true) {
-                live_turn::WorkerLaunchOutcome::Launched(_) | live_turn::WorkerLaunchOutcome::Queued => {}
+            match live_turn::launch_worker_outcome(
+                state.inner(),
+                &session_id,
+                &turn_id,
+                &request,
+                true,
+            ) {
+                live_turn::WorkerLaunchOutcome::Launched(_)
+                | live_turn::WorkerLaunchOutcome::Queued => {}
                 live_turn::WorkerLaunchOutcome::Failed => {
                     let db = state.db.lock().unwrap();
-                    live_turn::record_approved_launch_failure(&db, &session_id, &turn_id, &request)?;
+                    live_turn::record_approved_launch_failure(
+                        &db,
+                        &session_id,
+                        &turn_id,
+                        &request,
+                    )?;
                     publish(&app, CoreEvent::StateChanged);
                     return Err(BridgeError::Invalid(
                         "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
@@ -1345,8 +1375,6 @@ async fn resolve_approval(
     Ok(())
 }
 
-
-
 #[tauri::command]
 async fn resize_terminal(
     workspace_id: String,
@@ -1392,7 +1420,9 @@ async fn refresh_workspace(
     let path = state.workspace_path(&workspace_id)?;
     let stats = tauri::async_runtime::spawn_blocking(move || git::stats(Path::new(&path)))
         .await
-        .map_err(|error| BridgeError::Invalid(format!("Workspace refresh task failed: {error}")))??;
+        .map_err(|error| {
+            BridgeError::Invalid(format!("Workspace refresh task failed: {error}"))
+        })??;
     state.record_workspace_git_stats(&workspace_id, stats)
 }
 
@@ -1437,10 +1467,9 @@ pub fn run() {
                         // frames here; daemon clients use cursor replay.
                         Err(bridge_core::events::ReceiveError::Lagged(_)) => {
                             for event in receiver.reconciliation_events() {
-                                let _ =
-                                    forwarder.emit(event.kind().as_str(), event.payload());
+                                let _ = forwarder.emit(event.kind().as_str(), event.payload());
                             }
-                            continue
+                            continue;
                         }
                         Err(bridge_core::events::ReceiveError::Closed) => break,
                     }
@@ -1548,11 +1577,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bridge_core::{
-        compaction_controller, delegation, policy, prompt_compiler, session_forest,
-    };
-    use std::sync::Mutex;
-    use std::time::Duration;
     use bridge_core::live_turn::{
         agent_event_changes_bridge_state, begin_pressure_compaction, cross_harness_reuse_marker,
         deliver_sanitized_turn, deliver_worker_objective, persist_prompt_compilation,
@@ -1562,7 +1586,10 @@ mod tests {
         resolve_policy_delegation_approval, WorkerReservationOutcome, HISTORY_SNAPSHOT_INTERVAL,
     };
     use bridge_core::workspaces;
+    use bridge_core::{compaction_controller, delegation, policy, prompt_compiler, session_forest};
     use std::process::Command;
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {
@@ -1596,9 +1623,18 @@ mod tests {
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Cache','bridge/cache','/tmp/cache-test','idle','now')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child','w','claude','Child','working','reported','parent')", []).unwrap();
-        assert_eq!(cross_harness_reuse_marker(&db, "parent", "codex"), "same_harness");
-        assert_eq!(cross_harness_reuse_marker(&db, "parent", "claude"), "incompatible");
-        assert_eq!(cross_harness_reuse_marker(&db, "missing", "claude"), "not_applicable");
+        assert_eq!(
+            cross_harness_reuse_marker(&db, "parent", "codex"),
+            "same_harness"
+        );
+        assert_eq!(
+            cross_harness_reuse_marker(&db, "parent", "claude"),
+            "incompatible"
+        );
+        assert_eq!(
+            cross_harness_reuse_marker(&db, "missing", "claude"),
+            "not_applicable"
+        );
 
         let prompt = prompt_compiler::PromptCompiler::new("worker:verification")
             .stable_section("contract", "Verify the task")
@@ -1615,13 +1651,20 @@ mod tests {
             RestorationMode::CheckpointRestored,
             cross_harness_reuse_marker(&db, "parent", "claude"),
             &prompt,
-        ).unwrap();
-        let stored = store::latest_prompt_compilation(&db, "child").unwrap().unwrap();
+        )
+        .unwrap();
+        let stored = store::latest_prompt_compilation(&db, "child")
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.restoration_mode, "checkpoint_restored");
         assert_eq!(stored.cross_harness_reuse, "incompatible");
         assert_eq!(stored.prefix_hash, prompt.metadata.prefix_hash);
-        assert!(!serde_json::to_string(&stored).unwrap().contains("Verify the task"));
-        assert!(!serde_json::to_string(&stored).unwrap().contains("checkpoint evidence"));
+        assert!(!serde_json::to_string(&stored)
+            .unwrap()
+            .contains("Verify the task"));
+        assert!(!serde_json::to_string(&stored)
+            .unwrap()
+            .contains("checkpoint evidence"));
     }
 
     #[test]
@@ -1657,8 +1700,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(created.branch, "bridge/payments-api-12345678");
-        assert_eq!(std::fs::read_to_string(created.path.join("README.md")).unwrap(), "base\n");
-        assert_eq!(git::current_branch(&created.path).as_deref(), Some(created.branch.as_str()));
+        assert_eq!(
+            std::fs::read_to_string(created.path.join("README.md")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(
+            git::current_branch(&created.path).as_deref(),
+            Some(created.branch.as_str())
+        );
     }
 
     #[test]
@@ -1718,6 +1767,307 @@ mod tests {
             "bridge-protocol declares methods for commands that are not registered; \
              the registry and generate_handler![...] must stay 1:1"
         );
+    }
+
+    #[test]
+    fn every_command_signature_matches_its_contracted_params() {
+        // The contract's params structs are hand-written mirrors of these
+        // signatures. Compare both wire names and JSON-relevant Rust types so
+        // a rename or retype fails here rather than in daemon dispatch.
+        let source = include_str!("lib.rs");
+        for method in bridge_protocol::MethodName::ALL.iter().copied() {
+            let command = command_arguments(source, method.command_name());
+            let contract = bridge_protocol::TypedMethod::params_schema_fields(method);
+            match (command, contract) {
+                (None, None) => {}
+                (Some(command), Some(contract)) => {
+                    let command_names: Vec<&str> = command
+                        .iter()
+                        .map(|argument| argument.name.as_str())
+                        .collect();
+                    let contract_names: Vec<&str> =
+                        contract.iter().map(|(name, _)| name.as_str()).collect();
+                    assert_eq!(
+                        command_names,
+                        contract_names,
+                        "{} takes different arguments than its contract names",
+                        method.as_str()
+                    );
+                    for (argument, (_, schema)) in command.iter().zip(contract.iter()) {
+                        assert_eq!(
+                            rust_parameter_shape(method, &argument.name, &argument.kind),
+                            schema_parameter_shape(schema),
+                            "{} parameter {} has a different type from its contract",
+                            method.as_str(),
+                            argument.name
+                        );
+                    }
+                }
+                (command, contract) => panic!(
+                    "{} parameterlessness drifted: command={command:?}, contract={contract:?}",
+                    method.as_str()
+                ),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CommandArgument {
+        name: String,
+        kind: String,
+    }
+
+    /// The non-injected arguments a Tauri command accepts, sorted by their
+    /// camelCase wire names. Whitespace is removed from Rust types so multiline
+    /// signatures compare consistently.
+    fn command_arguments(source: &str, command: &str) -> Option<Vec<CommandArgument>> {
+        let needle = format!("async fn {command}(");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no async fn named {command} in the shell"))
+            + needle.len();
+        // Split the parameter list on top-level commas: generic arguments
+        // (`State<'_, Arc<BridgeCore>>`) carry commas of their own.
+        let mut depth = 0usize;
+        let mut parameters: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for character in source[start..].chars() {
+            match character {
+                ')' if depth == 0 => break,
+                ',' if depth == 0 => parameters.push(std::mem::take(&mut current)),
+                _ => {
+                    match character {
+                        '(' | '<' => depth += 1,
+                        ')' | '>' => depth -= 1,
+                        _ => {}
+                    }
+                    current.push(character);
+                }
+            }
+        }
+        parameters.push(current);
+
+        let mut arguments: Vec<CommandArgument> = parameters
+            .iter()
+            .filter_map(|parameter| {
+                let (name, kind) = parameter.split_once(':')?;
+                let kind: String = kind
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect();
+                // Tauri injects these; a client never sends them.
+                if kind.contains("State<") || kind.contains("AppHandle") {
+                    return None;
+                }
+                Some(CommandArgument {
+                    name: camel_case(name.trim()),
+                    kind,
+                })
+            })
+            .collect();
+        arguments.sort_by(|left, right| left.name.cmp(&right.name));
+        (!arguments.is_empty()).then_some(arguments)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ParameterShape {
+        String,
+        Boolean,
+        Integer(String),
+        Number,
+        Reference(String),
+        Array(Box<ParameterShape>),
+        Optional(Box<ParameterShape>),
+    }
+
+    fn rust_parameter_shape(
+        method: bridge_protocol::MethodName,
+        field: &str,
+        kind: &str,
+    ) -> ParameterShape {
+        if let Some(inner) = generic_inner(kind, "Option") {
+            return ParameterShape::Optional(Box::new(rust_parameter_shape(method, field, inner)));
+        }
+        if let Some(inner) = generic_inner(kind, "Vec") {
+            return ParameterShape::Array(Box::new(rust_parameter_shape(method, field, inner)));
+        }
+
+        let leaf = kind.rsplit("::").next().unwrap_or(kind);
+        match leaf {
+            "String" => match (method, field) {
+                (bridge_protocol::MethodName::ResolveApproval, "decision") => {
+                    ParameterShape::Reference("ApprovalDecision".into())
+                }
+                (bridge_protocol::MethodName::SetBrowserPermission, "permission") => {
+                    ParameterShape::Reference("BrowserPermission".into())
+                }
+                _ => ParameterShape::String,
+            },
+            "bool" => ParameterShape::Boolean,
+            "i64" | "u16" | "u32" => ParameterShape::Integer(
+                match leaf {
+                    "i64" => "int64",
+                    "u16" => "uint16",
+                    "u32" => "uint32",
+                    _ => unreachable!(),
+                }
+                .into(),
+            ),
+            "f64" => ParameterShape::Number,
+            "Harness" => ParameterShape::Reference("HarnessId".into()),
+            "LearningTriggerKind"
+                if field == "kind"
+                    && matches!(
+                        method,
+                        bridge_protocol::MethodName::RegisterLearningTrigger
+                            | bridge_protocol::MethodName::GetLearningTriggerInstructions
+                            | bridge_protocol::MethodName::EnableLearningTrigger
+                    ) =>
+            {
+                ParameterShape::Reference("ExternalLearningTriggerKind".into())
+            }
+            "LearningTriggerKind" if method == bridge_protocol::MethodName::RunLearning => {
+                ParameterShape::Reference("LocalLearningTriggerKind".into())
+            }
+            reference => ParameterShape::Reference(reference.into()),
+        }
+    }
+
+    fn generic_inner<'a>(kind: &'a str, container: &str) -> Option<&'a str> {
+        kind.strip_prefix(container)?
+            .strip_prefix('<')?
+            .strip_suffix('>')
+    }
+
+    fn schema_parameter_shape(schema: &serde_json::Value) -> ParameterShape {
+        if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
+            return ParameterShape::Reference(reference.rsplit('/').next().unwrap().into());
+        }
+        if let Some(parts) = schema.get("allOf").and_then(serde_json::Value::as_array) {
+            assert_eq!(parts.len(), 1, "unsupported allOf params schema: {schema}");
+            return schema_parameter_shape(&parts[0]);
+        }
+        if let Some(options) = schema.get("anyOf").and_then(serde_json::Value::as_array) {
+            let non_null: Vec<&serde_json::Value> = options
+                .iter()
+                .filter(|option| {
+                    option.get("type").and_then(serde_json::Value::as_str) != Some("null")
+                })
+                .collect();
+            assert_eq!(
+                non_null.len(),
+                1,
+                "unsupported anyOf params schema: {schema}"
+            );
+            return ParameterShape::Optional(Box::new(schema_parameter_shape(non_null[0])));
+        }
+
+        match schema.get("type") {
+            Some(serde_json::Value::String(kind)) => schema_type_shape(kind, schema),
+            Some(serde_json::Value::Array(kinds)) => {
+                let non_null: Vec<&str> = kinds
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|kind| *kind != "null")
+                    .collect();
+                assert_eq!(
+                    non_null.len(),
+                    1,
+                    "unsupported union params schema: {schema}"
+                );
+                ParameterShape::Optional(Box::new(schema_type_shape(non_null[0], schema)))
+            }
+            _ => panic!("unsupported params schema: {schema}"),
+        }
+    }
+
+    fn schema_type_shape(kind: &str, schema: &serde_json::Value) -> ParameterShape {
+        match kind {
+            "string" => ParameterShape::String,
+            "boolean" => ParameterShape::Boolean,
+            "integer" => ParameterShape::Integer(
+                schema
+                    .get("format")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("integer")
+                    .into(),
+            ),
+            "number" => ParameterShape::Number,
+            "array" => ParameterShape::Array(Box::new(schema_parameter_shape(
+                schema
+                    .get("items")
+                    .expect("array params schemas declare items"),
+            ))),
+            _ => panic!("unsupported params type {kind}: {schema}"),
+        }
+    }
+
+    #[test]
+    fn signature_type_comparison_covers_scalars_collections_and_narrowed_enums() {
+        use bridge_protocol::MethodName;
+
+        assert_eq!(
+            rust_parameter_shape(MethodName::ReplaySessionEvents, "limit", "Option<u32>"),
+            ParameterShape::Optional(Box::new(ParameterShape::Integer("uint32".into())))
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::ResizeTerminal, "rows", "u16"),
+            ParameterShape::Integer("uint16".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::ReplaySessionEvents, "after", "i64"),
+            ParameterShape::Integer("int64".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::SaveAgentConfig, "args", "Vec<String>"),
+            ParameterShape::Array(Box::new(ParameterShape::String))
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::SaveModelProfiles,
+                "profiles",
+                "Vec<model_profiles::ModelProfileDraft>"
+            ),
+            ParameterShape::Array(Box::new(ParameterShape::Reference(
+                "ModelProfileDraft".into()
+            )))
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::ResolveApproval, "decision", "String"),
+            ParameterShape::Reference("ApprovalDecision".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::RegisterLearningTrigger,
+                "kind",
+                "learning_job::LearningTriggerKind"
+            ),
+            ParameterShape::Reference("ExternalLearningTriggerKind".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::RunLearning,
+                "triggerKind",
+                "learning_job::LearningTriggerKind"
+            ),
+            ParameterShape::Reference("LocalLearningTriggerKind".into())
+        );
+    }
+
+    fn camel_case(snake: &str) -> String {
+        let mut out = String::with_capacity(snake.len());
+        let mut capitalize = false;
+        for character in snake.chars() {
+            if character == '_' {
+                capitalize = true;
+            } else if capitalize {
+                out.push(character.to_ascii_uppercase());
+                capitalize = false;
+            } else {
+                out.push(character);
+            }
+        }
+        out
     }
 
     #[test]

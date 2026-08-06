@@ -4,12 +4,14 @@
     {
       "command": "health",
       "domain": "health",
-      "method": "health/health"
+      "method": "health/health",
+      "paramsSchema": null
     },
     {
       "command": "get_state",
       "domain": "state",
-      "method": "state/get_state"
+      "method": "state/get_state",
+      "paramsSchema": null
     },
     {
       "command": "add_project",
@@ -140,277 +142,342 @@
     {
       "command": "resolve_approval",
       "domain": "approvals",
-      "method": "approvals/resolve_approval"
+      "method": "approvals/resolve_approval",
+      "paramsSchema": "resolve-approval-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "open_terminal",
       "domain": "terminal",
-      "method": "terminal/open_terminal"
+      "method": "terminal/open_terminal",
+      "paramsSchema": "open-terminal-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "write_terminal",
       "domain": "terminal",
-      "method": "terminal/write_terminal"
+      "method": "terminal/write_terminal",
+      "paramsSchema": "write-terminal-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "resize_terminal",
       "domain": "terminal",
-      "method": "terminal/resize_terminal"
+      "method": "terminal/resize_terminal",
+      "paramsSchema": "resize-terminal-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "list_slash_commands",
       "domain": "slash",
-      "method": "slash/list_slash_commands"
+      "method": "slash/list_slash_commands",
+      "paramsSchema": null
     },
     {
       "command": "resolve_slash_command",
       "domain": "slash",
-      "method": "slash/resolve_slash_command"
+      "method": "slash/resolve_slash_command",
+      "paramsSchema": "resolve-slash-command-params.json"
     },
     {
       "command": "create_completion_plan",
       "domain": "completion",
-      "method": "completion/create_completion_plan"
+      "method": "completion/create_completion_plan",
+      "paramsSchema": "create-completion-plan-params.json"
     },
     {
       "command": "record_completion_check",
       "domain": "completion",
-      "method": "completion/record_completion_check"
+      "method": "completion/record_completion_check",
+      "paramsSchema": "record-completion-check-params.json"
     },
     {
       "command": "waive_completion",
       "domain": "completion",
-      "method": "completion/waive_completion"
+      "method": "completion/waive_completion",
+      "paramsSchema": "waive-completion-params.json"
     },
     {
       "command": "register_verifier_manifest",
       "domain": "completion",
-      "method": "completion/register_verifier_manifest"
+      "method": "completion/register_verifier_manifest",
+      "paramsSchema": "register-verifier-manifest-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "verifier_candidates",
       "domain": "completion",
-      "method": "completion/verifier_candidates"
+      "method": "completion/verifier_candidates",
+      "paramsSchema": "verifier-candidates-params.json"
     },
     {
       "command": "get_router_preferences",
       "domain": "routing",
-      "method": "routing/get_router_preferences"
+      "method": "routing/get_router_preferences",
+      "paramsSchema": "get-router-preferences-params.json"
     },
     {
       "command": "update_router_preferences",
       "domain": "routing",
-      "method": "routing/update_router_preferences"
+      "method": "routing/update_router_preferences",
+      "paramsSchema": "update-router-preferences-params.json"
     },
     {
       "command": "rollback_routing_policy",
       "domain": "routing",
-      "method": "routing/rollback_routing_policy"
+      "method": "routing/rollback_routing_policy",
+      "paramsSchema": "rollback-routing-policy-params.json"
     },
     {
       "command": "get_model_setup",
       "domain": "models",
-      "method": "models/get_model_setup"
+      "method": "models/get_model_setup",
+      "paramsSchema": null
     },
     {
       "command": "recommended_model_profiles",
       "domain": "models",
-      "method": "models/recommended_model_profiles"
+      "method": "models/recommended_model_profiles",
+      "paramsSchema": null
     },
     {
       "command": "save_model_profiles",
       "domain": "models",
-      "method": "models/save_model_profiles"
+      "method": "models/save_model_profiles",
+      "paramsSchema": "save-model-profiles-params.json"
     },
     {
       "command": "reset_model_profiles",
       "domain": "models",
-      "method": "models/reset_model_profiles"
+      "method": "models/reset_model_profiles",
+      "paramsSchema": null
     },
     {
       "command": "get_config_state",
       "domain": "config",
-      "method": "config/get_config_state"
+      "method": "config/get_config_state",
+      "paramsSchema": null
     },
     {
       "command": "save_harness_config",
       "domain": "config",
-      "method": "config/save_harness_config"
+      "method": "config/save_harness_config",
+      "paramsSchema": "save-harness-config-params.json"
     },
     {
       "command": "reset_harness_config",
       "domain": "config",
-      "method": "config/reset_harness_config"
+      "method": "config/reset_harness_config",
+      "paramsSchema": "reset-harness-config-params.json"
     },
     {
       "command": "refresh_opencode_catalog",
       "domain": "config",
-      "method": "config/refresh_opencode_catalog"
+      "method": "config/refresh_opencode_catalog",
+      "paramsSchema": "refresh-opencode-catalog-params.json"
     },
     {
       "command": "set_opencode_provider_api_key",
       "domain": "config",
-      "method": "config/set_opencode_provider_api_key"
+      "method": "config/set_opencode_provider_api_key",
+      "paramsSchema": "set-opencode-provider-api-key-params.json"
     },
     {
       "command": "remove_opencode_provider_auth",
       "domain": "config",
-      "method": "config/remove_opencode_provider_auth"
+      "method": "config/remove_opencode_provider_auth",
+      "paramsSchema": "remove-opencode-provider-auth-params.json"
     },
     {
       "command": "save_agent_config",
       "domain": "config",
-      "method": "config/save_agent_config"
+      "method": "config/save_agent_config",
+      "paramsSchema": "save-agent-config-params.json"
     },
     {
       "command": "delete_agent_config",
       "domain": "config",
-      "method": "config/delete_agent_config"
+      "method": "config/delete_agent_config",
+      "paramsSchema": "delete-agent-config-params.json"
     },
     {
       "command": "set_default_agent",
       "domain": "config",
-      "method": "config/set_default_agent"
+      "method": "config/set_default_agent",
+      "paramsSchema": "set-default-agent-params.json"
     },
     {
       "command": "reset_all_config",
       "domain": "config",
-      "method": "config/reset_all_config"
+      "method": "config/reset_all_config",
+      "paramsSchema": null
     },
     {
       "command": "get_learning_state",
       "domain": "learning",
-      "method": "learning/get_learning_state"
+      "method": "learning/get_learning_state",
+      "paramsSchema": null
     },
     {
       "command": "run_learning",
       "domain": "learning",
-      "method": "learning/run_learning"
+      "method": "learning/run_learning",
+      "paramsSchema": "run-learning-params.json"
     },
     {
       "command": "cancel_learning_run",
       "domain": "learning",
-      "method": "learning/cancel_learning_run"
+      "method": "learning/cancel_learning_run",
+      "paramsSchema": "cancel-learning-run-params.json"
     },
     {
       "command": "update_learning_schedule",
       "domain": "learning",
-      "method": "learning/update_learning_schedule"
+      "method": "learning/update_learning_schedule",
+      "paramsSchema": "update-learning-schedule-params.json"
     },
     {
       "command": "register_learning_trigger",
       "domain": "learning",
-      "method": "learning/register_learning_trigger"
+      "method": "learning/register_learning_trigger",
+      "paramsSchema": "register-learning-trigger-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "get_learning_trigger_instructions",
       "domain": "learning",
-      "method": "learning/get_learning_trigger_instructions"
+      "method": "learning/get_learning_trigger_instructions",
+      "paramsSchema": "get-learning-trigger-instructions-params.json"
     },
     {
       "command": "enable_learning_trigger",
       "domain": "learning",
-      "method": "learning/enable_learning_trigger"
+      "method": "learning/enable_learning_trigger",
+      "paramsSchema": "enable-learning-trigger-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "approve_learning_run",
       "domain": "learning",
-      "method": "learning/approve_learning_run"
+      "method": "learning/approve_learning_run",
+      "paramsSchema": "approve-learning-run-params.json"
     },
     {
       "command": "browser_bridge_state",
       "domain": "browser",
-      "method": "browser/browser_bridge_state"
+      "method": "browser/browser_bridge_state",
+      "paramsSchema": null
     },
     {
       "command": "install_browser_native_host",
       "domain": "browser",
-      "method": "browser/install_browser_native_host"
+      "method": "browser/install_browser_native_host",
+      "paramsSchema": null
     },
     {
       "command": "browser_action",
       "domain": "browser",
-      "method": "browser/browser_action"
+      "method": "browser/browser_action",
+      "paramsSchema": "browser-action-params.json"
     },
     {
       "command": "set_browser_permission",
       "domain": "browser",
-      "method": "browser/set_browser_permission"
+      "method": "browser/set_browser_permission",
+      "paramsSchema": "set-browser-permission-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "resolve_browser_approval",
       "domain": "browser",
-      "method": "browser/resolve_browser_approval"
+      "method": "browser/resolve_browser_approval",
+      "paramsSchema": "resolve-browser-approval-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "takeover_browser",
       "domain": "browser",
-      "method": "browser/takeover_browser"
+      "method": "browser/takeover_browser",
+      "paramsSchema": null,
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "detach_browser",
       "domain": "browser",
-      "method": "browser/detach_browser"
+      "method": "browser/detach_browser",
+      "paramsSchema": null
     },
     {
       "command": "route_browser",
       "domain": "browser",
-      "method": "browser/route_browser"
+      "method": "browser/route_browser",
+      "paramsSchema": "route-browser-params.json"
     },
     {
       "command": "browser_skills",
       "domain": "browser",
-      "method": "browser/browser_skills"
+      "method": "browser/browser_skills",
+      "paramsSchema": null
     },
     {
       "command": "configure_remote_browser",
       "domain": "browser",
-      "method": "browser/configure_remote_browser"
+      "method": "browser/configure_remote_browser",
+      "paramsSchema": "configure-remote-browser-params.json",
+      "resultSchema": "unit-result.json"
     },
     {
       "command": "start_remote_browser",
       "domain": "browser",
-      "method": "browser/start_remote_browser"
+      "method": "browser/start_remote_browser",
+      "paramsSchema": "start-remote-browser-params.json"
     },
     {
       "command": "marketplace_catalog",
       "domain": "marketplace",
-      "method": "marketplace/marketplace_catalog"
+      "method": "marketplace/marketplace_catalog",
+      "paramsSchema": null
     },
     {
       "command": "marketplace_app_auth_states",
       "domain": "marketplace",
-      "method": "marketplace/marketplace_app_auth_states"
+      "method": "marketplace/marketplace_app_auth_states",
+      "paramsSchema": null
     },
     {
       "command": "marketplace_action",
       "domain": "marketplace",
-      "method": "marketplace/marketplace_action"
+      "method": "marketplace/marketplace_action",
+      "paramsSchema": "marketplace-action-params.json"
     },
     {
       "command": "skill_catalog",
       "domain": "skills",
-      "method": "skills/skill_catalog"
+      "method": "skills/skill_catalog",
+      "paramsSchema": null
     },
     {
       "command": "skill_suggestions",
       "domain": "skills",
-      "method": "skills/skill_suggestions"
+      "method": "skills/skill_suggestions",
+      "paramsSchema": "skill-suggestions-params.json"
     },
     {
       "command": "preview_skill_change",
       "domain": "skills",
-      "method": "skills/preview_skill_change"
+      "method": "skills/preview_skill_change",
+      "paramsSchema": "preview-skill-change-params.json"
     },
     {
       "command": "execute_skill_change",
       "domain": "skills",
-      "method": "skills/execute_skill_change"
+      "method": "skills/execute_skill_change",
+      "paramsSchema": "execute-skill-change-params.json"
     }
   ],
   "protocolVersion": {
     "major": 0,
-    "minor": 4
+    "minor": 5
   },
   "reserved": {
     "cancel": "$/cancel",
