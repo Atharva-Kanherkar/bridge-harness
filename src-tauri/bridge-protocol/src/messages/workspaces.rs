@@ -4,13 +4,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateWorkspaceParams {
     pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ConnectWorkspaceFolderParams {
     pub workspace_id: String,
     /// Folder to connect; a Git repository resolves to its root and links a
@@ -19,7 +19,7 @@ pub struct ConnectWorkspaceFolderParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ListWorkspaceFilesParams {
     pub session_id: String,
 }
@@ -30,13 +30,13 @@ pub struct ListWorkspaceFilesParams {
 pub struct ListWorkspaceFilesResult(pub Vec<String>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RefreshWorkspaceParams {
     pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ArchiveWorkspaceParams {
     pub workspace_id: String,
 }

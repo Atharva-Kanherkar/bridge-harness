@@ -4,7 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// Published in protocol 0.4 without `additionalProperties: false`. Keep this
+// shape open until the next major version so a 0.5 server remains compatible
+// with every request accepted by the 0.4 schema.
+#[serde(rename_all = "camelCase")]
 pub struct AddProjectParams {
     /// Path to a Git repository (any path inside it resolves to the root).
     pub path: String,

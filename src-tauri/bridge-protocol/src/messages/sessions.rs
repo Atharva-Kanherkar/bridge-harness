@@ -21,13 +21,13 @@ pub enum HarnessId {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GetSessionForestParams {
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ActivateSessionEntryParams {
     pub session_id: String,
     /// The forest entry to become the conversation head; files are not changed.
@@ -35,7 +35,7 @@ pub struct ActivateSessionEntryParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateChatParams {
     pub harness: HarnessId,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,7 +45,7 @@ pub struct CreateChatParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateWorkspaceSessionParams {
     pub workspace_id: String,
     /// Create the session in an isolated Git worktree (requires a connected
@@ -55,7 +55,7 @@ pub struct CreateWorkspaceSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateChatModelParams {
     pub session_id: String,
     pub harness: HarnessId,
@@ -66,7 +66,7 @@ pub struct UpdateChatModelParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ReplaySessionEventsParams {
     pub session_id: String,
     /// The last durable sequence the client has seen; events strictly after
@@ -113,7 +113,7 @@ pub struct ReplaySessionEvent {
 pub struct ReplaySessionEventsResult(pub Vec<ReplaySessionEvent>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StartSessionParams {
     pub workspace_id: String,
     /// Explicit harness; omitted resolves the configured orchestrator.
@@ -124,39 +124,39 @@ pub struct StartSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StartChatParams {
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PrepareTurnParams {
     pub session_id: String,
     pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SendTurnParams {
     pub session_id: String,
     pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StopSessionParams {
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct InterruptTurnParams {
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactSessionParams {
     pub session_id: String,
 }

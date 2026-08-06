@@ -8,10 +8,10 @@
 //! [`TYPED_METHODS`] is therefore total over [`MethodName::ALL`], and a test
 //! below fails the build if it ever stops being.
 //!
-//! Params structs refuse unknown fields. The handshake already rejects a client
-//! whose minor is newer than the server's, so no compatible client can send a
-//! field the server does not know — which makes an unknown field a client bug,
-//! and `invalid_params` a better answer than silently ignoring it.
+//! Params structs first contracted in protocol 0.5 refuse unknown fields. The
+//! 19 params schemas published before 0.5 stay open until the next major
+//! version: minor versions are additive, so a 0.5 server must continue to
+//! accept every document the 0.4 schemas allowed.
 //!
 //! Results are contracted where the shape is the method's own. Methods that
 //! return the aggregate application snapshot (`BridgeState`) or a domain
@@ -252,6 +252,28 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    const OPEN_UNTIL_NEXT_MAJOR: &[&str] = &[
+        "AddProjectParams",
+        "CreateWorkspaceParams",
+        "ConnectWorkspaceFolderParams",
+        "ListWorkspaceFilesParams",
+        "RefreshWorkspaceParams",
+        "ArchiveWorkspaceParams",
+        "GetSessionForestParams",
+        "ActivateSessionEntryParams",
+        "CreateChatParams",
+        "CreateWorkspaceSessionParams",
+        "UpdateChatModelParams",
+        "ReplaySessionEventsParams",
+        "StartSessionParams",
+        "StartChatParams",
+        "PrepareTurnParams",
+        "SendTurnParams",
+        "StopSessionParams",
+        "InterruptTurnParams",
+        "CompactSessionParams",
+    ];
+
     #[test]
     fn every_method_in_the_registry_is_contracted_exactly_once() {
         let mut seen = HashSet::new();
@@ -365,6 +387,32 @@ mod tests {
                 assert!(
                     schemas.iter().any(|(name, _)| *name == payload),
                     "{payload} is contracted but has no schema"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn params_schema_strictness_preserves_minor_version_compatibility() {
+        let schemas = payload_schemas();
+        for entry in TYPED_METHODS {
+            let Some(params) = entry.params else { continue };
+            let schema = &schemas
+                .iter()
+                .find(|(name, _)| *name == params)
+                .unwrap_or_else(|| panic!("{params} has no schema"))
+                .1;
+            let additional = schema.get("additionalProperties");
+            if OPEN_UNTIL_NEXT_MAJOR.contains(&params) {
+                assert!(
+                    additional.is_none(),
+                    "{params} was published open in protocol 0.4 and cannot close in a minor bump"
+                );
+            } else {
+                assert_eq!(
+                    additional,
+                    Some(&Value::Bool(false)),
+                    "{params} was first contracted in 0.5 and must reject unknown fields"
                 );
             }
         }

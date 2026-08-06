@@ -83,10 +83,12 @@ crate parses each `#[tauri::command]` signature and compares it against the
 contracted field names, so renaming an argument without renaming the field
 fails the build.
 
-Params objects **reject unknown fields**. The handshake already refuses a client
-whose minor is newer than the server's, so no compatible client can send a field
-the server does not know; an unknown field is a client bug, and `invalid_params`
-is a better answer than silently ignoring it.
+Params objects first contracted in 0.5 **reject unknown fields**. The 19 params
+schemas published in 0.4 remain open until the next major version because minor
+versions are additive: a 0.5 server must keep accepting every request permitted
+by the 0.4 contract. Newly contracted methods have no older schema to preserve,
+so an unknown field is a client bug and `invalid_params` is preferable to
+silently ignoring it.
 
 Payload types that mirror a `bridge-core` DTO (`CheckRun`, `RouterPreferences`,
 `HarnessConfig`, `LearningSchedule`, the browser payloads, and the closed enums
