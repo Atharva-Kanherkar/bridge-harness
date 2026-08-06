@@ -124,7 +124,7 @@ pub struct BrowserBridgeSnapshot {
     pub remote_provider: Option<RemoteBrowserConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserActionRequest {
     pub kind: String,

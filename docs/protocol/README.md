@@ -96,7 +96,8 @@ alongside them) exist twice on purpose: the contract does not depend on the
 runtime it describes. A test-only module in bridge-core
 (`src/protocol_mirror.rs`) is the drift gate — exhaustive matches so a new core
 enum variant fails to compile, and JSON round-trips so a renamed or added struct
-field fails the test.
+field fails the test. Input DTOs derive testable serialization too, so optional
+field additions cannot slip through a one-way deserialization check.
 
 ### Results
 

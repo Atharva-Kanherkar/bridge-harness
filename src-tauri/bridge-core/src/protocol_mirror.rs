@@ -41,25 +41,6 @@ where
     );
 }
 
-/// Assert core accepts every document its protocol mirror emits.
-///
-/// Used where the core type is a command *input* and so derives only
-/// `Deserialize`: there is no core document to compare against. Weaker than
-/// [`assert_mirrors`] — it catches a renamed, retyped, or removed core field,
-/// but an *optional* field added to core and not to the mirror slips through.
-fn assert_core_accepts_mirror<Core>(mirror: &impl Serialize)
-where
-    Core: DeserializeOwned,
-{
-    let wire_json = serde_json::to_value(mirror).unwrap();
-    serde_json::from_value::<Core>(wire_json.clone()).unwrap_or_else(|error| {
-        panic!(
-            "core rejects what {} emits: {error}\n{wire_json:#}",
-            std::any::type_name::<Core>()
-        )
-    });
-}
-
 /// Assert a core enum variant and its protocol mirror share a wire value.
 fn assert_same_wire_value(core: &impl Serialize, mirror: &impl Serialize) {
     assert_eq!(
@@ -375,22 +356,18 @@ fn learning_schedules_mirror_core() {
 
 #[test]
 fn browser_payloads_mirror_core() {
-    // Core's action request is input-only, so compare in the one direction
-    // that exists: everything the contract emits, core must accept.
-    assert_core_accepts_mirror::<browser_bridge::BrowserActionRequest>(
-        &wire::BrowserActionRequest {
-            kind: "click".into(),
-            element_id: Some("submit".into()),
-            text: Some("hello".into()),
-            url: Some("https://example.test".into()),
-            x: Some(12.5),
-            y: Some(48.0),
-            tab_id: Some(3),
-            sensitive_kind: Some("password".into()),
-            expected_domain: Some("example.test".into()),
-            actor: Some("worker-1".into()),
-        },
-    );
+    assert_mirrors::<wire::BrowserActionRequest>(&browser_bridge::BrowserActionRequest {
+        kind: "click".into(),
+        element_id: Some("submit".into()),
+        text: Some("hello".into()),
+        url: Some("https://example.test".into()),
+        x: Some(12.5),
+        y: Some(48.0),
+        tab_id: Some(3),
+        sensitive_kind: Some("password".into()),
+        expected_domain: Some("example.test".into()),
+        actor: Some("worker-1".into()),
+    });
     assert_mirrors::<wire::BrowserRouteRequest>(&browser_bridge::BrowserRouteRequest {
         structured_api_available: false,
         needs_user_auth: true,
