@@ -395,7 +395,7 @@ export interface LearningSchedule {
   runBudgetTokens: number;
 }
 
-export type LearningTriggerKind = "manual" | "in_app" | "codex" | "claude" | "open_code";
+export type LocalLearningTriggerKind = "manual" | "in_app";
 
 export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
 
@@ -733,7 +733,7 @@ export interface SetDefaultAgentParams {
 }
 
 export interface RunLearningParams {
-  triggerKind: LearningTriggerKind;
+  triggerKind: LocalLearningTriggerKind;
 }
 
 export interface CancelLearningRunParams {

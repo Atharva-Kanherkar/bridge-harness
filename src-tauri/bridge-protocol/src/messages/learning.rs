@@ -27,6 +27,15 @@ pub enum ExternalLearningTriggerKind {
     OpenCode,
 }
 
+/// A trigger initiated inside Bridge. External harnesses use their registered
+/// narrow commands instead of the general `run_learning` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalLearningTriggerKind {
+    Manual,
+    InApp,
+}
+
 /// The learning job's cadence and per-run budget. Mirrors
 /// `bridge_core::learning_job::LearningSchedule`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -46,7 +55,7 @@ pub struct LearningSchedule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunLearningParams {
-    pub trigger_kind: LearningTriggerKind,
+    pub trigger_kind: LocalLearningTriggerKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -106,7 +115,7 @@ mod tests {
 
     #[test]
     fn trigger_kinds_are_snake_case_on_the_wire() {
-        let run = RunLearningParams { trigger_kind: LearningTriggerKind::InApp };
+        let run = RunLearningParams { trigger_kind: LocalLearningTriggerKind::InApp };
         assert_eq!(serde_json::to_value(&run).unwrap(), json!({"triggerKind": "in_app"}));
         assert_eq!(round_trip(&run), run);
         assert_eq!(
@@ -219,6 +228,15 @@ mod tests {
             serde_json::from_value::<RunLearningParams>(json!({"triggerKind": "cron"})).is_err(),
             "unknown trigger kinds must be rejected"
         );
+        for external in ["codex", "claude", "open_code"] {
+            assert!(
+                serde_json::from_value::<RunLearningParams>(json!({
+                    "triggerKind": external,
+                }))
+                .is_err(),
+                "external trigger {external} must use its registered narrow command"
+            );
+        }
         assert!(serde_json::from_value::<CancelLearningRunParams>(json!({})).is_err());
         assert!(serde_json::from_value::<ApproveLearningRunParams>(json!({})).is_err());
         assert!(serde_json::from_value::<UpdateLearningScheduleParams>(json!({})).is_err());

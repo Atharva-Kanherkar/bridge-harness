@@ -1926,6 +1926,9 @@ mod tests {
             {
                 ParameterShape::Reference("ExternalLearningTriggerKind".into())
             }
+            "LearningTriggerKind" if method == bridge_protocol::MethodName::RunLearning => {
+                ParameterShape::Reference("LocalLearningTriggerKind".into())
+            }
             reference => ParameterShape::Reference(reference.into()),
         }
     }

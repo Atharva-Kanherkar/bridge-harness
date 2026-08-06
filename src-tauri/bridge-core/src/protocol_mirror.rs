@@ -244,6 +244,18 @@ fn learning_trigger_kinds_share_their_wire_values() {
     ] {
         assert_same_wire_value(&core, &external);
     }
+    for (core, local) in [
+        (
+            learning_job::LearningTriggerKind::Manual,
+            wire::LocalLearningTriggerKind::Manual,
+        ),
+        (
+            learning_job::LearningTriggerKind::InApp,
+            wire::LocalLearningTriggerKind::InApp,
+        ),
+    ] {
+        assert_same_wire_value(&core, &local);
+    }
 }
 
 #[test]

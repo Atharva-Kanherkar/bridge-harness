@@ -3,21 +3,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
-    "LearningTriggerKind": {
-      "description": "What woke a learning run. Mirrors `bridge_core::learning_job::LearningTriggerKind` — including its wire spelling, so `OpenCode` is `open_code` here as it is there.",
+    "LocalLearningTriggerKind": {
+      "description": "A trigger initiated inside Bridge. External harnesses use their registered narrow commands instead of the general `run_learning` command.",
       "enum": [
         "manual",
-        "in_app",
-        "codex",
-        "claude",
-        "open_code"
+        "in_app"
       ],
       "type": "string"
     }
   },
   "properties": {
     "triggerKind": {
-      "$ref": "#/definitions/LearningTriggerKind"
+      "$ref": "#/definitions/LocalLearningTriggerKind"
     }
   },
   "required": [
