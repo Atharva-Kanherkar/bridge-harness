@@ -108,7 +108,12 @@ pub struct DataDirLease {
 
 impl DataDirLease {
     /// Acquire the exclusive lease, creating the data directory if needed.
-    /// Fails fast — this never waits for the current owner to exit.
+    /// Fails fast when a live owner holds the lock — this never waits for an
+    /// identified owner to exit. The one bounded wait is for an *identityless*
+    /// hold: a lock with no readable identity is transitional (an owner
+    /// mid-first-write, or a just-dropped lease whose file handle is still
+    /// closing), so an immediate successor — a daemon restart — retries
+    /// briefly instead of failing on the release race.
     pub fn acquire(data_dir: &Path, kind: OwnerKind) -> Result<DataDirLease, OwnershipError> {
         std::fs::create_dir_all(data_dir)?;
         let lock_path = data_dir.join(LOCK_FILE_NAME);
@@ -118,22 +123,32 @@ impl DataDirLease {
             .create(true)
             .truncate(false)
             .open(&lock_path)?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => {
-                // Read the holder's identity from the still-locked file: OS
-                // file locks gate locking, not reading.
-                let mut contents = String::new();
-                let holder = file
-                    .read_to_string(&mut contents)
-                    .ok()
-                    .and_then(|_| serde_json::from_str::<OwnerIdentity>(&contents).ok());
-                return Err(OwnershipError::Held {
-                    data_dir: data_dir.to_path_buf(),
-                    holder,
-                });
+        let transitional_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    // Read the holder's identity from the still-locked file:
+                    // OS file locks gate locking, not reading.
+                    let mut contents = String::new();
+                    file.seek(SeekFrom::Start(0))?;
+                    let holder = file
+                        .read_to_string(&mut contents)
+                        .ok()
+                        .and_then(|_| serde_json::from_str::<OwnerIdentity>(&contents).ok());
+                    if holder.is_none() && std::time::Instant::now() < transitional_deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        continue;
+                    }
+                    return Err(OwnershipError::Held {
+                        data_dir: data_dir.to_path_buf(),
+                        holder,
+                    });
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(OwnershipError::Io(error))
+                }
             }
-            Err(std::fs::TryLockError::Error(error)) => return Err(OwnershipError::Io(error)),
         }
         let identity = OwnerIdentity {
             kind,
