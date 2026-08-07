@@ -781,9 +781,10 @@ pub fn worker_briefing(
     evidence: &[WorkerEvidence],
 ) -> String {
     format!(
-        "{}\n\n{}",
+        "{}\n\n{}\n\n{}",
         worker_contract(request.role, depth),
-        worker_task_context(request, branch, evidence)
+        worker_task_context(request, branch, evidence),
+        crate::prompts::RENDERING_NOTE,
     )
 }
 
@@ -1098,6 +1099,8 @@ mod tests {
         assert!(briefing.contains("bridge-worker-result"));
         assert!(briefing.contains("schemaVersion"));
         assert!(briefing.contains("Do not directly delegate"));
+        assert!(briefing.contains("```mermaid"));
+        assert!(briefing.contains("sandboxed iframe"));
         assert!(briefing.contains("entry-evidence-1"));
         assert!(briefing.contains("worker-1"));
         assert!(briefing.contains(&serde_json::to_string(&result).unwrap()));

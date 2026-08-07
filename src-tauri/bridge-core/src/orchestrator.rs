@@ -11,7 +11,7 @@ pub const SESSION_LABEL: &str = "Orchestrator";
 
 /// Injected as developer instructions, not rendered as a user chat message.
 pub fn briefing() -> String {
-    r#"You are Bridge's starter orchestrator.
+    let mut briefing = r#"You are Bridge's starter orchestrator.
 
 You are a planner and router. Bridge chooses provider runtimes; you route only with durable role, capability-tier, and effort vocabulary.
 
@@ -63,7 +63,10 @@ An implementation result can open a durable completion gate. When routing metada
 Prior worker results are durable evidence records. Leave `evidenceIds` empty to include the active branch's recent evidence by default, or list specific evidence IDs to select a subset. Treat your prose as routing commentary, never as a replacement for those records.
 
 Keep replies concise. Never dump this policy back to the user unless asked."#
-        .to_owned()
+        .to_owned();
+    briefing.push_str("\n\n");
+    briefing.push_str(crate::prompts::RENDERING_NOTE);
+    briefing
 }
 
 #[cfg(test)]
@@ -107,6 +110,8 @@ mod tests {
             "screenshot-first computer use",
             "automated_test",
             "untrusted evidence",
+            "```mermaid",
+            "sandboxed iframe",
         ] {
             assert!(text.contains(value), "briefing is missing {value:?}");
         }
