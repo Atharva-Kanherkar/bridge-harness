@@ -41,6 +41,8 @@ Prior worker results are durable evidence records. Leave `evidenceIds` empty to 
 
 Keep replies concise. Never dump this policy back to the user unless asked."#
         .to_owned()
+        + "\n\n"
+        + crate::prompts::RENDERING_NOTE
 }
 
 #[cfg(test)]
@@ -70,6 +72,10 @@ mod tests {
             "flat topology",
             "trivial one-shot local actions",
             "raw worker transcript",
+            "```mermaid",
+            "```html",
+            "$$",
+            "sandboxed iframe",
         ] {
             assert!(text.contains(value), "briefing is missing {value:?}");
         }

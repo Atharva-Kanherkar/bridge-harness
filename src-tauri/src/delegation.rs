@@ -740,13 +740,16 @@ End with exactly one fenced `bridge-worker-result` JSON object matching schemaVe
 {{"schemaVersion":1,"status":"completed","summary":"What changed or was found","filesChanged":[],"tests":[{{"command":"command run","status":"passed"}}],"decisions":[],"risks":[],"remainingWork":[],"suggestedNextAction":"finish"}}
 ```
 
-{protocol}"#,
+{protocol}
+
+{rendering}"#,
         role = request.role,
         objective = request.objective,
         write_mode = request.write_mode,
         tier = request.capability_tier,
         effort = request.effort.as_str(),
         protocol = protocol(depth),
+        rendering = crate::prompts::RENDERING_NOTE,
     )
 }
 
@@ -1049,6 +1052,8 @@ mod tests {
         assert!(briefing.contains("bridge-worker-result"));
         assert!(briefing.contains("schemaVersion"));
         assert!(briefing.contains("Do not directly delegate"));
+        assert!(briefing.contains("```mermaid"));
+        assert!(briefing.contains("sandboxed iframe"));
         assert!(briefing.contains("entry-evidence-1"));
         assert!(briefing.contains("worker-1"));
         assert!(briefing.contains(&serde_json::to_string(&result).unwrap()));

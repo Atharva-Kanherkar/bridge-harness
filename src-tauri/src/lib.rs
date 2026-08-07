@@ -20,6 +20,7 @@ mod opencode_adapter;
 mod orchestrator;
 mod policy;
 mod policy_coordinator;
+mod prompts;
 pub mod policy_replay;
 mod restoration;
 pub mod router_replay;

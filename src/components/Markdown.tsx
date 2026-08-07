@@ -1,16 +1,29 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import katex from "katex";
 import { highlightCode, normalizeLang } from "./highlight";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
+  | { kind: "mermaid"; code: string }
+  | { kind: "math"; tex: string }
+  | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "quote"; text: string }
   | { kind: "rule" }
   | { kind: "para"; text: string };
 
-function splitBlocks(source: string): Block[] {
+/** Classify a fenced block by its info string into a rich-content block kind. */
+function fencedBlock(lang: string, body: string): Block {
+  const key = lang.trim().toLowerCase();
+  if (key === "mermaid") return { kind: "mermaid", code: body };
+  if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
+  if (key === "html") return { kind: "html", html: body };
+  return { kind: "code", lang, body };
+}
+
+export function splitBlocks(source: string): Block[] {
   const blocks: Block[] = [];
   const lines = source.replaceAll("\r\n", "\n").split("\n");
   let index = 0;
@@ -24,7 +37,23 @@ function splitBlocks(source: string): Block[] {
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
       index += 1;
-      blocks.push({ kind: "code", lang: fence[1] ?? "", body: body.join("\n") });
+      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n")));
+      continue;
+    }
+    if (trimmed.startsWith("$$")) {
+      const single = trimmed.match(/^\$\$(.+?)\$\$$/);
+      if (single) { blocks.push({ kind: "math", tex: single[1].trim() }); index += 1; continue; }
+      const body: string[] = [];
+      const head = trimmed.slice(2);
+      if (head) body.push(head);
+      index += 1;
+      while (index < lines.length && !lines[index].trim().endsWith("$$")) { body.push(lines[index]); index += 1; }
+      if (index < lines.length) {
+        const tail = lines[index].trim().slice(0, -2);
+        if (tail) body.push(tail);
+        index += 1;
+      }
+      blocks.push({ kind: "math", tex: body.join("\n").trim() });
       continue;
     }
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
@@ -56,7 +85,7 @@ function splitBlocks(source: string): Block[] {
     index += 1;
     while (index < lines.length) {
       const current = lines[index].trim();
-      if (!current || current.startsWith("```") || /^(#{1,6})\s+/.test(current) || bullet.test(current) || numbered.test(current) || /^>\s?/.test(current)) break;
+      if (!current || current.startsWith("```") || current.startsWith("$$") || /^(#{1,6})\s+/.test(current) || bullet.test(current) || numbered.test(current) || /^>\s?/.test(current)) break;
       para.push(current); index += 1;
     }
     blocks.push({ kind: "para", text: para.join("\n") });
@@ -64,11 +93,37 @@ function splitBlocks(source: string): Block[] {
   return blocks;
 }
 
-const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+// Inline tokens, in priority order: code span, \(math\), $math$, bold, italic, link.
+// The $…$ pattern requires non-space just inside both delimiters and forbids a
+// trailing digit, so ordinary prose ("costs $5 and $10") is not misread as math.
+const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+
+/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
+export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
+  try {
+    return katex.renderToString(tex, { displayMode, throwOnError: true, trust: false, output: "htmlAndMathml" });
+  } catch {
+    return null;
+  }
+}
+
+function InlineMath({ tex }: { tex: string }) {
+  const html = useMemo(() => renderMathToHtml(tex, false), [tex]);
+  if (html == null) return <code>{tex}</code>;
+  return <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function MathBlock({ tex }: { tex: string }) {
+  const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
+  if (html == null) return <pre className="math-error"><code>{tex}</code></pre>;
+  return <div className="math-block" dangerouslySetInnerHTML={{ __html: html }} />;
+}
 
 function renderInline(text: string): React.ReactNode[] {
   return text.split(INLINE).filter(part => part !== "").map((part, index) => {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("\\(") && part.endsWith("\\)") && part.length > 4) return <InlineMath key={index} tex={part.slice(2, -2)} />;
+    if (part.startsWith("$") && part.endsWith("$") && part.length > 2) return <InlineMath key={index} tex={part.slice(1, -1)} />;
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2))}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
@@ -98,11 +153,67 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   );
 }
 
+let mermaidSeq = 0;
+
+function MermaidBlock({ code }: { code: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const idRef = useRef("");
+  if (!idRef.current) { mermaidSeq += 1; idRef.current = `bridge-mermaid-${mermaidSeq}`; }
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg(null);
+    setFailed(false);
+    (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+        await mermaid.parse(code); // throws on malformed diagrams
+        const rendered = await mermaid.render(idRef.current, code);
+        if (!cancelled) setSvg(rendered.svg);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code]);
+
+  if (failed) {
+    return (
+      <div className="mermaid-fallback">
+        <div className="mermaid-fallback-hint">Could not render this Mermaid diagram — showing its source.</div>
+        <CodeBlock lang="mermaid" body={code} />
+      </div>
+    );
+  }
+  if (svg == null) return <div className="mermaid-loading">Rendering diagram…</div>;
+  return <div className="mermaid-block" role="img" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+// Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
+// iframe: sandbox="" grants no capabilities (no scripts, no same-origin), which
+// is the sole isolation boundary because the Tauri webview sets no CSP.
+function HtmlBlock({ html }: { html: string }) {
+  return (
+    <iframe
+      className="html-block"
+      title="Rendered HTML"
+      sandbox=""
+      referrerPolicy="no-referrer"
+      srcDoc={html}
+    />
+  );
+}
+
 export const Markdown = memo(function Markdown({ text, dim }: { text: string; dim?: boolean }) {
   return (
     <div className={dim ? "md dim" : "md"}>
       {splitBlocks(text).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
+        if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
+        if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
+        if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
         if (block.kind === "heading") {
           const H = (`h${Math.min(block.level, 4)}`) as keyof JSX.IntrinsicElements;
           return <H key={index}>{renderInline(block.text)}</H>;
