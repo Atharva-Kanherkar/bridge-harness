@@ -40,6 +40,18 @@ test("query options load explicit Claude plugins and credential-free connectors"
   assert.deepEqual(options.disallowedTools, ["Edit", "Write", "NotebookEdit"]);
 });
 
+test("Claude receives the compiled stable prefix before variable context", () => {
+  const stable = '<bridge-stable-prompt schema="1">stable-provider-contract</bridge-stable-prompt>';
+  const compile = evidence => [stable, `<bridge-variable-context>${evidence}</bridge-variable-context>`].join("\n\n");
+  const first = buildOptions({ ...base, instructions: compile("variable-task-evidence-one"), resume: false }).systemPrompt.append;
+  const second = buildOptions({ ...base, instructions: compile("variable-task-evidence-two"), resume: false }).systemPrompt.append;
+  assert.notEqual(first, second);
+  for (const appended of [first, second]) {
+    assert.ok(appended.startsWith(stable));
+    assert.ok(appended.indexOf("stable-provider-contract") < appended.indexOf("variable-task-evidence"));
+  }
+});
+
 test("read-only mode denies direct write tools without dangerous bypass", () => {
   const options = permissionOptions("ReadOnly");
   assert.equal(options.permissionMode, "dontAsk");

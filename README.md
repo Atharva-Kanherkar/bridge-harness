@@ -1,5 +1,7 @@
 # Bridge
 
+Bridge includes a supervised [authenticated browser bridge](docs/authenticated-browser-bridge.md) for using a user-approved logged-in Chrome or Safari tab without copying browser credentials.
+
 Bridge is a native macOS control room for supervised coding-agent work. It connects local Git repositories to structured Codex, Claude Code, and OpenCode sessions, isolates concurrent tasks in worktrees, and keeps durable local history so agent activity remains inspectable and recoverable.
 
 Bridge is built for developers who want the speed of coding agents with explicit boundaries around files, processes, approvals, delegation, and session state.
@@ -88,7 +90,7 @@ Rust supervisor and policy engine
    └── PTY terminal and health reporting
 ```
 
-The frontend lives in `src/`. The native application, provider supervision, persistence, routing, Git integration, and terminal process management live in `src-tauri/src/`. The Claude sidecar lives in `sidecar/claude-agent/` and requires Node.js 18 or newer.
+The frontend lives in `src/`. The native side is a cargo workspace under `src-tauri/`: the `bridge-core` crate (`src-tauri/bridge-core/`) holds the Tauri-free runtime — provider supervision, persistence, routing, Git integration, policy, and the `BridgeCore` state — while the Tauri shell (`src-tauri/src/`) holds the IPC command wrappers and desktop wiring. The Claude sidecar lives in `sidecar/claude-agent/` and requires Node.js 18 or newer.
 
 ## Prerequisites
 
@@ -167,7 +169,8 @@ The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost
 | Path | Purpose |
 | --- | --- |
 | `src/` | React UI, typed Tauri API boundary, event normalization, conversation projection, usage, and tests |
-| `src-tauri/src/` | Rust adapters, process supervision, policy, orchestration, persistence, Git, worktrees, PTY, and health |
+| `src-tauri/bridge-core/` | Tauri-free Rust runtime: adapters, process supervision, policy, orchestration, persistence, Git, worktrees, PTY, and health |
+| `src-tauri/src/` | Tauri shell: IPC command wrappers, event emission, and desktop wiring around `bridge-core` |
 | `sidecar/claude-agent/` | Node.js bridge for Claude Agent SDK sessions |
 | `docs/` | Design notes for session history, delegation, compaction, local history, and adaptive learning |
 | `testing/` | Acceptance contracts, regression notes, and replay fixtures |
@@ -175,6 +178,7 @@ The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost
 
 Useful design references:
 
+- [`docs/protocol/README.md`](docs/protocol/README.md) — the versioned RPC contract, handshake, error codes, and generated client types
 - [`docs/session-forest.md`](docs/session-forest.md) — immutable history, active branches, and divergence evidence
 - [`docs/delegation-policy.md`](docs/delegation-policy.md) — routing, budgets, write isolation, approvals, and worker lifecycle
 - [`docs/compaction-and-resume.md`](docs/compaction-and-resume.md) — checkpoint ownership and restoration modes

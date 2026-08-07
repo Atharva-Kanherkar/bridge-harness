@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Bridge Authenticated Browser",
+  "version": "0.1.0",
+  "description": "Attach a user-approved Chrome tab to Bridge without copying browser credentials.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyf0gWzg/N2tiEAEt+H26GzNU1G02+7rWnjCTvq7nJ+9dme8HcJ3JWhjgpDkfKAlhuV6qyWOMGI4u3V9Mkdcjaz/erV4Gdnm+MkSr4EGT7N8xVV6rweySavD50Zv1ljbZmwu0Nj3LtWHUxhl2L5MUsDEYB6uIr7zs+cXnIy3j6O74yK7NoLas4zkaS6uVwYumyTHhIC639pa8H6fbX5YakOiWeJ2SJFoJ9GAuR3OC8BAiy35uoSBVdFmQC9pYgKQhexoSqiQ49PxDyYp9dYp/V3dw+GpIta3lCRtPSMem9jPri8vwmtOX+E9gGkYJ7I+3RvK1TxiBrzbgngrdM8+xfQIDAQAB",
+  "permissions": [
+    "activeTab",
+    "debugger",
+    "nativeMessaging",
+    "offscreen",
+    "scripting",
+    "storage",
+    "tabs",
+    "tabCapture"
+  ],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "Attach this tab to Bridge" },
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["content.js"],
+    "run_at": "document_start"
+  }]
+}

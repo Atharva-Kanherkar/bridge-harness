@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AgentConversation } from "./AgentConversation";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
 
-const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh" };
+const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" };
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({ id, sessionId: "s", sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides });
 const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
@@ -62,6 +62,25 @@ describe("AgentConversation", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[entry]} activeLeafId="approval"/>);
     expect(html).toContain("Allow once");
     expect(html).not.toContain("Allow for session");
+  });
+  it("surfaces a rejected delegation as a distinct row instead of silently dropping it", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", title: "Delegation rejected", text: "unknown variant `none`", data: { reason: "unknown variant `none`", willRetry: true, attempt: 1 } })
+    ]}/>);
+    expect(html).toContain("Delegation rejected");
+    expect(html).toContain("no worker started");
+    expect(html).toContain("unknown variant");
+    expect(html).toContain("correct and re-emit");
+    expect(html).toContain('role="alert"');
+  });
+  it("shows launch failures and confirms that the orchestrator will not wait", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.rejected", { role: "system", status: "failed", title: "Worker failed to start", text: "router schema mismatch", data: { launchFailed: true, phase: "routing", reason: "router schema mismatch", willRetry: false, orchestratorNotified: true } })
+    ]}/>);
+    expect(html).toContain("Worker failed to start");
+    expect(html).toContain("router schema mismatch");
+    expect(html).toContain("orchestrator was notified");
+    expect(html).toContain("will not wait");
   });
   it("surfaces conversation and file-state divergence", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.bridge.deck",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bun run prepare:browser-host:dev && bun run prepare:daemon:dev && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun run build && bun run prepare:browser-host && bun run prepare:daemon",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,5 +29,14 @@
     }],
     "security": { "csp": null }
   },
-  "bundle": { "active": true, "targets": ["app"], "macOS": { "minimumSystemVersion": "12.0" } }
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "externalBin": ["binaries/bridge-browser-host", "binaries/bridged"],
+    "resources": {
+      "../browser-extension/": "browser-extension/",
+      "../browser-skills/": "browser-skills/"
+    },
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
 }

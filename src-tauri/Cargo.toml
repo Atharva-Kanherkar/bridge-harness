@@ -1,6 +1,24 @@
+[workspace]
+members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
+
+# Single version for every crate in the workspace: bridge-core reports
+# CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
+# never drift from the application version.
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
 [package]
 name = "bridge-deck"
-version = "0.1.0"
+version = { workspace = true }
 description = "Local control room for supervised coding-agent workspaces"
 authors = ["Bridge"]
 edition = "2021"
@@ -14,25 +32,23 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+bridge-core = { path = "bridge-core" }
+bridge-protocol = { path = "bridge-protocol" }
+bridge-client = { path = "bridge-client" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
-portable-pty = "0.8"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-which = "7"
-thiserror = "2"
-tiny_http = "0.12"
-sha2 = "0.10"
-base64 = "0.22"
-regex = "1"
-reqwest = { version = "0.13", features = ["blocking", "json"] }
-zeroize = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+portable-pty = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
+# In-process daemon hosting for the proxy integration tests.
+bridged = { path = "bridged" }
 
 [profile.dev]
 debug = 0

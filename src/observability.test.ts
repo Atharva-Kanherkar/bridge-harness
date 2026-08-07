@@ -10,7 +10,7 @@ describe("restoration honesty", () => {
 });
 
 describe("policy explanations", () => {
-  const queue = { id:"q", parentSessionId:"p", workspaceId:"w", turnId:"t", request:{ objective:"write auth", ownedPaths:["src/auth/**"], reason:"owned_path_conflict" }, actualModel:"runtime", queueStatus:"queued", sequence:1, dispatchedSessionId:null, createdAt:"now", updatedAt:"now" } satisfies QueuedWorkerRequest;
+  const queue = { id:"q", parentSessionId:"p", workspaceId:"w", turnId:"t", request:{ objective:"write auth", ownedPaths:["src/auth/**"], reason:"owned_path_conflict" }, actualModel:"runtime", queueStatus:"queued", sequence:1, attemptCount:0, dispatchedSessionId:null, expiresAt:"now", createdAt:"now", updatedAt:"now" } satisfies QueuedWorkerRequest;
   const lease = { sessionId:"worker", workspaceId:"w", role:"implementation", capabilityTier:"standard", taskFamily:"implementation", ownedPaths:["src/auth/**"], writeMode:"isolated", leaseStatus:"active", expiresAt:null, createdAt:"now", updatedAt:"now" } satisfies WorkerLease;
   it("names the conflicting owner and path", () => expect(queueExplanation(queue, [lease])).toBe("Waiting: implementation owns src/auth/**."));
   it("names human approval and paused TTL as a first-class state", () => expect(queueExplanation({...queue, queueStatus:"blocked_on_human"}, [])).toBe("Blocked on human approval; queue TTL is paused."));

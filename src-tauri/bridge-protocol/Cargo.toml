@@ -1,0 +1,13 @@
+[package]
+name = "bridge-protocol"
+version = { workspace = true }
+description = "Versioned RPC contract every Bridge client speaks: envelope, methods, error codes, handshake, and generated client types"
+authors = ["Bridge"]
+edition = "2021"
+# Workspace-internal contract crate; artifacts are generated into the repo.
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = "0.8"

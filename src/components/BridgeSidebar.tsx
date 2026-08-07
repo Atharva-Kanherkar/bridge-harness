@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, FolderGit2, FolderOpen, GitBranch, MessageSquarePlus, Package, PanelLeft, Plus, Settings2, Sparkles } from "lucide-react";
-import type { Session, SessionStatus, Workspace } from "../types";
+import type { BridgeEvent, Session, SessionStatus, WorkerRuntimeRecord, Workspace } from "../types";
 import { cn } from "@/lib/utils";
+import { SidebarWorkerPanel } from "./SidebarWorkerPanel";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
@@ -73,6 +74,9 @@ export type BridgeSidebarProps = {
   settingsActive: boolean;
   expanded: Set<string>;
   busy: boolean;
+  workers: Session[];
+  workerRuntimes: WorkerRuntimeRecord[];
+  workerReasons: BridgeEvent[];
   onOpenNewChat: () => void;
   onOpenMarketplace: () => void;
   onOpenSettings: () => void;
@@ -92,6 +96,9 @@ export function BridgeSidebar({
   settingsActive,
   expanded,
   busy,
+  workers,
+  workerRuntimes,
+  workerReasons,
   onOpenNewChat,
   onOpenMarketplace,
   onOpenSettings,
@@ -227,6 +234,8 @@ export function BridgeSidebar({
             {!collapsed && "New chat"}
           </button>
         </div>
+
+        <SidebarWorkerPanel workers={workers} runtimes={workerRuntimes} reasons={workerReasons} collapsed={collapsed} />
 
         <div className="flex-1 overflow-auto">
           {!collapsed && <SectionLabel>Chats</SectionLabel>}

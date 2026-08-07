@@ -110,13 +110,15 @@ export function renderMathToHtml(tex: string, displayMode: boolean): string | nu
 function InlineMath({ tex }: { tex: string }) {
   const html = useMemo(() => renderMathToHtml(tex, false), [tex]);
   if (html == null) return <code>{tex}</code>;
-  return <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function MathBlock({ tex }: { tex: string }) {
   const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
-  if (html == null) return <pre className="math-error"><code>{tex}</code></pre>;
-  return <div className="math-block" dangerouslySetInnerHTML={{ __html: html }} />;
+  if (html == null) {
+    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-red-400/35 bg-red-950/20 px-[0.85em] py-[0.6em] text-red-300"><code>{tex}</code></pre>;
+  }
+  return <div className="my-[0.9em] overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -181,14 +183,16 @@ function MermaidBlock({ code }: { code: string }) {
 
   if (failed) {
     return (
-      <div className="mermaid-fallback">
-        <div className="mermaid-fallback-hint">Could not render this Mermaid diagram — showing its source.</div>
+      <div className="my-[0.8em]">
+        <div className="mb-[0.35em] text-xs text-amber-300">Could not render this Mermaid diagram — showing its source.</div>
         <CodeBlock lang="mermaid" body={code} />
       </div>
     );
   }
-  if (svg == null) return <div className="mermaid-loading">Rendering diagram…</div>;
-  return <div className="mermaid-block" role="img" dangerouslySetInnerHTML={{ __html: svg }} />;
+  if (svg == null) {
+    return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
+  }
+  return <div className="my-[0.9em] flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
 // Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
@@ -197,7 +201,7 @@ function MermaidBlock({ code }: { code: string }) {
 function HtmlBlock({ html }: { html: string }) {
   return (
     <iframe
-      className="html-block"
+      className="my-[0.9em] min-h-30 w-full rounded-[0.9rem] border border-border bg-white [color-scheme:light]"
       title="Rendered HTML"
       sandbox=""
       referrerPolicy="no-referrer"
