@@ -150,8 +150,18 @@ fn seatbelt_profile(
         r#"(version 1)
 (allow default)
 ; Preserve the provider runtime's non-filesystem IPC and system services while
-; denying every write outside this per-worker output directory.
-(deny file-write* (require-not (subpath {output})))
+; denying every write outside this per-worker output directory. Character
+; devices are exempted: spawning a child with an ignored stdio stream opens
+; /dev/null for writing inside posix_spawn, so a blanket deny makes every
+; such spawn fail with EPERM before the tool even runs (the Claude Agent SDK
+; launches its CLI exactly that way). Writes to null/zero/ptys are IPC, not
+; workspace mutation.
+(deny file-write* (require-all
+  (require-not (subpath {output}))
+  (require-not (literal "/dev/null"))
+  (require-not (literal "/dev/zero"))
+  (require-not (literal "/dev/ptmx"))
+  (require-not (regex #"^/dev/ttys[0-9]+$"))))
 {network}
 "#
     ))
@@ -204,7 +214,8 @@ mod tests {
         let profile =
             seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), false).unwrap();
         assert!(profile.contains("(allow default)"));
-        assert!(profile.contains("(deny file-write* (require-not (subpath \"/tmp/output\")))"));
+        assert!(profile.contains("(require-not (subpath \"/tmp/output\"))"));
+        assert!(profile.contains("(require-not (literal \"/dev/null\"))"));
         assert!(!profile.contains("(deny network*)"));
 
         let hard_isolated =
@@ -269,6 +280,27 @@ mod tests {
         sandbox.cleanup();
         sandbox.cleanup();
         assert!(!root.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dev_null_writes_survive_the_sandbox_so_child_spawns_work() {
+        // Spawning a child with an ignored stdio stream opens /dev/null for
+        // writing inside posix_spawn; the profile must not turn that into
+        // EPERM (it killed every Claude SDK worker in the field).
+        if !Path::new("/usr/bin/sandbox-exec").is_file() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = ReadOnlySandbox::create("dev-null", workspace.path(), &request()).unwrap();
+        let mut redirect = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        assert!(redirect
+            .args(["-c", "echo probe > /dev/null"])
+            .current_dir(sandbox.output_dir())
+            .status()
+            .unwrap()
+            .success());
+        sandbox.cleanup();
     }
 
     #[cfg(target_os = "macos")]
