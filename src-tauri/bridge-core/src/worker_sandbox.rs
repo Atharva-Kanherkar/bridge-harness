@@ -39,9 +39,6 @@ impl ReadOnlySandbox {
         request: &DelegationRequest,
         runtime_network_denied: bool,
     ) -> Result<Self, BridgeError> {
-        if request.network_access && !read_only_network_policy_allows() {
-            return Err(BridgeError::Invalid("Read-only worker requested network access, but Bridge policy does not authorize it".into()));
-        }
         if request.network_access && runtime_network_denied {
             return Err(BridgeError::Invalid("BRIDGE_READ_ONLY_NETWORK=deny forbids read-only worker network egress, but this request asked for network access".into()));
         }
@@ -119,24 +116,16 @@ pub fn command(program: &Path, sandbox: Option<&ReadOnlySandbox>) -> Result<Comm
     }
 }
 
-fn read_only_network_policy_allows() -> bool {
-    // Deliberately opt-in at the application policy boundary, never by a model
-    // request alone. An administrator may set this before launching Bridge.
-    matches!(
-        std::env::var("BRIDGE_ALLOW_READ_ONLY_NETWORK").as_deref(),
-        Ok("1") | Ok("true")
-    )
-}
-
 /// Whether the seatbelt denies ALL network to read-only workers.
 ///
 /// Off by default on purpose: every supported provider runtime is
 /// cloud-backed, so `(deny network*)` kills the worker on its first model
 /// API call — the CLI boots, then exits before producing anything, and every
-/// research delegation fails. The OS boundary's job here is the write-deny;
-/// task-level network stays governed by the request flag and
-/// `BRIDGE_ALLOW_READ_ONLY_NETWORK`. Installations running fully local
-/// runtimes can restore total denial with `BRIDGE_READ_ONLY_NETWORK=deny`.
+/// research delegation fails. Network is therefore on by default at both
+/// levels: the runtime may reach its API, and a delegation may request
+/// task-level network without any pre-set environment. The single knob is
+/// `BRIDGE_READ_ONLY_NETWORK=deny`, which restores total denial for
+/// installations running fully local runtimes.
 fn runtime_network_denied() -> bool {
     runtime_network_policy_denies(std::env::var("BRIDGE_READ_ONLY_NETWORK").ok().as_deref())
 }
@@ -234,6 +223,25 @@ mod tests {
     }
 
     #[test]
+    fn a_network_requesting_worker_is_accepted_by_default() {
+        // No pre-set environment required: network is on by default at both
+        // levels, so a delegation asking for task network just works.
+        let workspace = tempfile::tempdir().unwrap();
+        let mut networked = request();
+        networked.network_access = true;
+        let sandbox = ReadOnlySandbox::create_with_runtime_network(
+            "test-networked",
+            workspace.path(),
+            &networked,
+            false,
+        )
+        .unwrap();
+        assert!(sandbox.network_allowed());
+        assert!(!sandbox.runtime_network_denied());
+        sandbox.cleanup();
+    }
+
+    #[test]
     fn hard_isolation_refuses_a_network_requesting_worker() {
         let workspace = tempfile::tempdir().unwrap();
         let mut networked = request();
@@ -318,14 +326,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "requires authenticated Codex and Claude runtimes plus BRIDGE_ALLOW_READ_ONLY_NETWORK=1"]
+    #[ignore = "requires authenticated Codex and Claude runtimes"]
     fn live_codex_and_claude_workers_obey_the_os_boundary() {
         use crate::{
             adapters::{AdapterRuntime, ShutdownReason},
             claude_adapter, codex_adapter,
         };
 
-        assert!(read_only_network_policy_allows());
         let workspace = tempfile::tempdir().unwrap();
         fs::write(
             workspace.path().join("marker.txt"),
