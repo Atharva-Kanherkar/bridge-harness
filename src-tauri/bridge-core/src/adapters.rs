@@ -40,7 +40,91 @@ pub trait AdapterRuntime: Send {
     fn read_usage(&self) -> Result<(), BridgeError> {
         Ok(())
     }
+    /// Why the provider process died, once it has: exit status plus a bounded
+    /// stderr tail. `None` while it is still running or when nothing useful
+    /// was captured. Supervisors attach this to the synthetic failure they
+    /// report when a worker exits without a typed result — the difference
+    /// between "ended without reporting" and the provider's actual error.
+    fn failure_context(&mut self) -> Option<String> {
+        None
+    }
     fn stop(&mut self, reason: ShutdownReason);
+}
+
+/// How much of a provider's stderr is retained for failure reporting. Enough
+/// for a CLI's final error paragraph; never an unbounded transcript.
+const STDERR_TAIL_LINES: usize = 30;
+const STDERR_LINE_MAX_BYTES: usize = 500;
+
+/// A bounded rolling tail of a child process's stderr, filled by a detached
+/// reader thread so the pipe never backpressures the provider.
+#[derive(Clone, Default)]
+pub struct StderrTail {
+    lines: Arc<Mutex<std::collections::VecDeque<String>>>,
+}
+
+impl StderrTail {
+    /// Start capturing `child`'s stderr, if it was piped. Always returns a
+    /// tail handle — an empty one when there is nothing to read.
+    pub fn capture(child: &mut std::process::Child) -> StderrTail {
+        let tail = StderrTail::default();
+        let Some(stderr) = child.stderr.take() else {
+            return tail;
+        };
+        let lines = tail.lines.clone();
+        let _ = thread::Builder::new()
+            .name("adapter-stderr-tail".into())
+            .spawn(move || {
+                let reader = std::io::BufReader::new(stderr);
+                for line in reader.lines() {
+                    let Ok(mut line) = line else { break };
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if line.len() > STDERR_LINE_MAX_BYTES {
+                        let mut cut = STDERR_LINE_MAX_BYTES;
+                        while !line.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        line.truncate(cut);
+                        line.push('…');
+                    }
+                    let mut lines = lines.lock().unwrap();
+                    if lines.len() == STDERR_TAIL_LINES {
+                        lines.pop_front();
+                    }
+                    lines.push_back(line);
+                }
+            });
+        tail
+    }
+
+    pub fn snapshot(&self) -> Option<String> {
+        let lines = self.lines.lock().unwrap();
+        if lines.is_empty() {
+            return None;
+        }
+        Some(lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+    }
+}
+
+/// The standard [`AdapterRuntime::failure_context`] body for process-backed
+/// runtimes: exit status (when the child has exited) plus the stderr tail.
+pub fn process_failure_context(
+    child: &mut std::process::Child,
+    stderr_tail: &StderrTail,
+) -> Option<String> {
+    let status = match child.try_wait() {
+        Ok(Some(status)) => Some(status.to_string()),
+        _ => None,
+    };
+    let tail = stderr_tail.snapshot();
+    match (status, tail) {
+        (Some(status), Some(tail)) => Some(format!("Provider process {status}. Stderr tail:\n{tail}")),
+        (Some(status), None) => Some(format!("Provider process {status} with no stderr output")),
+        (None, Some(tail)) => Some(format!("Provider stderr tail:\n{tail}")),
+        (None, None) => None,
+    }
 }
 
 #[cfg(unix)]
@@ -835,5 +919,65 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.contains(hint)));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stderr_tail_captures_a_dying_process_last_words() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "echo boot >&2; echo 'API error: connection refused' >&2; exit 7"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = StderrTail::capture(&mut child);
+        child.wait().unwrap();
+        // The capture thread races the wait; poll briefly for the tail.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while tail.snapshot().is_none() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let context = process_failure_context(&mut child, &tail).expect("context after exit");
+        assert!(context.contains("exit status: 7"), "{context}");
+        assert!(context.contains("API error: connection refused"), "{context}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stderr_tail_is_bounded_to_the_last_lines() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "i=0; while [ $i -lt 100 ]; do echo line-$i >&2; i=$((i+1)); done"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = StderrTail::capture(&mut child);
+        child.wait().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while tail
+            .snapshot()
+            .is_none_or(|snapshot| !snapshot.contains("line-99"))
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let snapshot = tail.snapshot().unwrap();
+        assert!(snapshot.contains("line-99"));
+        assert!(!snapshot.contains("line-69\n"), "older lines must be evicted");
+        assert_eq!(snapshot.lines().count(), STDERR_TAIL_LINES);
+    }
+
+    #[test]
+    fn a_running_process_with_silent_stderr_has_no_failure_context() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 5"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tail = StderrTail::capture(&mut child);
+        assert!(process_failure_context(&mut child, &tail).is_none());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

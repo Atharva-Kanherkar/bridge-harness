@@ -80,6 +80,7 @@ pub struct OpenCodeModel {
 
 pub struct OpenCodeRuntime {
     child: Child,
+    stderr_tail: crate::adapters::StderrTail,
     client: Option<Client>,
     base_url: String,
     directory: String,
@@ -157,9 +158,12 @@ fn launch(
         .env("OPENCODE_SERVER_PASSWORD", &server_password)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Piped and tail-captured so a dead server reports its own error
+        // instead of a generic exit.
+        .stderr(Stdio::piped());
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
+    let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let client = match build_authenticated_client(&server_password) {
         Ok(client) => client,
         Err(error) => {
@@ -245,6 +249,7 @@ fn launch(
     Ok(StartedOpenCode {
         runtime: OpenCodeRuntime {
             child,
+            stderr_tail,
             client: Some(client),
             base_url,
             directory,
@@ -663,6 +668,9 @@ impl AdapterRuntime for OpenCodeRuntime {
             Some(json!({"reply": reply})),
             "resolve OpenCode permission",
         )
+    }
+    fn failure_context(&mut self) -> Option<String> {
+        crate::adapters::process_failure_context(&mut self.child, &self.stderr_tail)
     }
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();

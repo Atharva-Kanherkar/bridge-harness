@@ -15,7 +15,13 @@ pub struct ReadOnlySandbox {
     root_dir: PathBuf,
     profile_path: PathBuf,
     output_dir: PathBuf,
+    /// Task-level network: whether the worker's *tools* may use the network
+    /// (drives the provider's own sandbox policy and the briefing).
     network_allowed: bool,
+    /// OS-level egress: whether the seatbelt denies all network. Distinct
+    /// from `network_allowed` — the provider runtime itself is cloud-backed
+    /// and dies on its first model API call without egress.
+    runtime_network_denied: bool,
 }
 
 impl ReadOnlySandbox {
@@ -24,8 +30,17 @@ impl ReadOnlySandbox {
         workspace: &Path,
         request: &DelegationRequest,
     ) -> Result<Self, BridgeError> {
-        if request.network_access && !read_only_network_policy_allows() {
-            return Err(BridgeError::Invalid("Read-only worker requested network access, but Bridge policy does not authorize it".into()));
+        Self::create_with_runtime_network(_session_id, workspace, request, runtime_network_denied())
+    }
+
+    fn create_with_runtime_network(
+        _session_id: &str,
+        workspace: &Path,
+        request: &DelegationRequest,
+        runtime_network_denied: bool,
+    ) -> Result<Self, BridgeError> {
+        if request.network_access && runtime_network_denied {
+            return Err(BridgeError::Invalid("BRIDGE_READ_ONLY_NETWORK=deny forbids read-only worker network egress, but this request asked for network access".into()));
         }
         let root = std::env::temp_dir()
             .join("bridge-read-only-workers")
@@ -41,13 +56,14 @@ impl ReadOnlySandbox {
                 ))
             })?;
             let output = output_dir.canonicalize()?;
-            let profile = seatbelt_profile(&workspace, &output, request.network_access)?;
+            let profile = seatbelt_profile(&workspace, &output, runtime_network_denied)?;
             fs::write(&profile_path, profile)?;
             Ok(Self {
                 root_dir: root.clone(),
                 profile_path,
                 output_dir,
                 network_allowed: request.network_access,
+                runtime_network_denied,
             })
         })();
         if result.is_err() {
@@ -62,6 +78,10 @@ impl ReadOnlySandbox {
 
     pub fn network_allowed(&self) -> bool {
         self.network_allowed
+    }
+
+    pub fn runtime_network_denied(&self) -> bool {
+        self.runtime_network_denied
     }
 
     pub fn cleanup(&self) {
@@ -96,26 +116,35 @@ pub fn command(program: &Path, sandbox: Option<&ReadOnlySandbox>) -> Result<Comm
     }
 }
 
-fn read_only_network_policy_allows() -> bool {
-    // Deliberately opt-in at the application policy boundary, never by a model
-    // request alone. An administrator may set this before launching Bridge.
-    matches!(
-        std::env::var("BRIDGE_ALLOW_READ_ONLY_NETWORK").as_deref(),
-        Ok("1") | Ok("true")
-    )
+/// Whether the seatbelt denies ALL network to read-only workers.
+///
+/// Off by default on purpose: every supported provider runtime is
+/// cloud-backed, so `(deny network*)` kills the worker on its first model
+/// API call — the CLI boots, then exits before producing anything, and every
+/// research delegation fails. Network is therefore on by default at both
+/// levels: the runtime may reach its API, and a delegation may request
+/// task-level network without any pre-set environment. The single knob is
+/// `BRIDGE_READ_ONLY_NETWORK=deny`, which restores total denial for
+/// installations running fully local runtimes.
+fn runtime_network_denied() -> bool {
+    runtime_network_policy_denies(std::env::var("BRIDGE_READ_ONLY_NETWORK").ok().as_deref())
+}
+
+fn runtime_network_policy_denies(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("deny") | Some("denied"))
 }
 
 fn seatbelt_profile(
     workspace: &Path,
     output: &Path,
-    network_allowed: bool,
+    runtime_network_denied: bool,
 ) -> Result<String, BridgeError> {
     let _workspace = quoted(workspace)?;
     let output = quoted(output)?;
-    let network = if network_allowed {
-        ""
-    } else {
+    let network = if runtime_network_denied {
         "(deny network*)"
+    } else {
+        ""
     };
     Ok(format!(
         r#"(version 1)
@@ -167,16 +196,65 @@ mod tests {
     }
 
     #[test]
-    fn profile_denies_workspace_writes_and_network_by_default() {
+    fn profile_denies_workspace_writes_but_keeps_provider_egress_by_default() {
+        // The write-deny is the isolation boundary. Egress stays open by
+        // default because cloud provider runtimes die on their first model
+        // API call without it — the failure mode that broke every research
+        // worker in the field.
         let profile =
             seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), false).unwrap();
         assert!(profile.contains("(allow default)"));
         assert!(profile.contains("(deny file-write* (require-not (subpath \"/tmp/output\")))"));
-        assert!(profile.contains("(deny network*)"));
+        assert!(!profile.contains("(deny network*)"));
 
-        let networked =
+        let hard_isolated =
             seatbelt_profile(Path::new("/repo"), Path::new("/tmp/output"), true).unwrap();
-        assert!(!networked.contains("(deny network*)"));
+        assert!(hard_isolated.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn runtime_network_denial_is_an_explicit_opt_in() {
+        assert!(!runtime_network_policy_denies(None));
+        assert!(!runtime_network_policy_denies(Some("")));
+        assert!(!runtime_network_policy_denies(Some("1")));
+        assert!(!runtime_network_policy_denies(Some("allow")));
+        assert!(runtime_network_policy_denies(Some("deny")));
+        assert!(runtime_network_policy_denies(Some(" denied ")));
+    }
+
+    #[test]
+    fn a_network_requesting_worker_is_accepted_by_default() {
+        // No pre-set environment required: network is on by default at both
+        // levels, so a delegation asking for task network just works.
+        let workspace = tempfile::tempdir().unwrap();
+        let mut networked = request();
+        networked.network_access = true;
+        let sandbox = ReadOnlySandbox::create_with_runtime_network(
+            "test-networked",
+            workspace.path(),
+            &networked,
+            false,
+        )
+        .unwrap();
+        assert!(sandbox.network_allowed());
+        assert!(!sandbox.runtime_network_denied());
+        sandbox.cleanup();
+    }
+
+    #[test]
+    fn hard_isolation_refuses_a_network_requesting_worker() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut networked = request();
+        networked.network_access = true;
+        // Even if application policy allowed task network, deny-all egress
+        // contradicts it; the contradiction is refused, never half-honored.
+        let refused = ReadOnlySandbox::create_with_runtime_network(
+            "test",
+            workspace.path(),
+            &networked,
+            true,
+        );
+        assert!(refused.is_err());
     }
 
     #[test]
@@ -202,6 +280,14 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let sandbox = ReadOnlySandbox::create("test", workspace.path(), &request()).unwrap();
         let mut output = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        // Egress denial remains enforceable when explicitly opted into.
+        let hard_isolated = ReadOnlySandbox::create_with_runtime_network(
+            "test-deny",
+            workspace.path(),
+            &request(),
+            true,
+        )
+        .unwrap();
         let target = workspace.path().join("blocked.txt");
         let status = output
             .arg("-c")
@@ -226,27 +312,27 @@ mod tests {
             .success());
         assert!(sandbox.output_dir().join("allowed.txt").exists());
         if Path::new("/usr/bin/curl").is_file() {
-            let mut network = command(Path::new("/usr/bin/curl"), Some(&sandbox)).unwrap();
+            let mut network = command(Path::new("/usr/bin/curl"), Some(&hard_isolated)).unwrap();
             assert!(!network
                 .args(["-fsS", "--max-time", "2", "https://example.com"])
-                .current_dir(sandbox.output_dir())
+                .current_dir(hard_isolated.output_dir())
                 .status()
                 .unwrap()
                 .success());
         }
+        hard_isolated.cleanup();
         sandbox.cleanup();
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "requires authenticated Codex and Claude runtimes plus BRIDGE_ALLOW_READ_ONLY_NETWORK=1"]
+    #[ignore = "requires authenticated Codex and Claude runtimes"]
     fn live_codex_and_claude_workers_obey_the_os_boundary() {
         use crate::{
             adapters::{AdapterRuntime, ShutdownReason},
             claude_adapter, codex_adapter,
         };
 
-        assert!(read_only_network_policy_allows());
         let workspace = tempfile::tempdir().unwrap();
         fs::write(
             workspace.path().join("marker.txt"),

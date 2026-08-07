@@ -23,6 +23,7 @@ pub struct ClaudeRuntime {
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicU64,
     stopped: bool,
+    stderr_tail: crate::adapters::StderrTail,
 }
 
 pub struct StartedClaude {
@@ -104,7 +105,10 @@ fn launch(
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        // Piped and tail-captured: when the sidecar dies before producing a
+        // typed result, its last words are the failure context the parent
+        // sees instead of a generic "ended without reporting".
+        .stderr(Stdio::piped());
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -129,6 +133,7 @@ fn launch(
             "Failed to launch the Claude Agent SDK sidecar via node: {e}"
         ))
     })?;
+    let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let stdin = child
         .stdin
         .take()
@@ -155,6 +160,7 @@ fn launch(
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicU64::new(1),
             stopped: false,
+            stderr_tail,
         },
         reader,
         startup_messages,
@@ -465,6 +471,9 @@ impl AdapterRuntime for ClaudeRuntime {
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         ClaudeRuntime::respond(self, request_id, decision)
+    }
+    fn failure_context(&mut self) -> Option<String> {
+        crate::adapters::process_failure_context(&mut self.child, &self.stderr_tail)
     }
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
