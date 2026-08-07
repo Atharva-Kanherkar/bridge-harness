@@ -3042,6 +3042,26 @@ pub fn prepare_worker_failure_settlement(db: &Connection, session_id: &str) -> R
     .map(|_| ())
 }
 
+/// The worker's most recent non-empty assistant text — the output the typed
+/// result contract is parsed from. Session-forest entries carry the SEMANTIC
+/// kind (`assistant.message`); the raw live-event kind (`message.completed`)
+/// is accepted too so nothing depends on which writer produced the row. A
+/// filter on the wrong kind here silently fails every worker: the query
+/// matches nothing, the placeholder text is parsed instead, and a fully
+/// compliant `bridge-worker-result` block is ruled "missing".
+pub(crate) fn latest_worker_output(db: &Connection, session_id: &str) -> Option<String> {
+    db.query_row(
+        "SELECT json_extract(payload,'$.text') FROM session_entries
+         WHERE session_id=?1 AND kind IN ('assistant.message','message.completed')
+           AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant'
+           AND COALESCE(json_extract(payload,'$.text'),'')<>''
+         ORDER BY sequence DESC LIMIT 1",
+        params![session_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 /// Frame a finished worker's final message and send it up to its parent.
 fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
     let state = core.clone();
@@ -3066,18 +3086,9 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
     if parent.is_none() {
         return;
     }
-    let raw_output: Option<String> = {
+    let raw_output = {
         let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT json_extract(payload,'$.text') FROM session_entries
-             WHERE session_id=?1 AND kind='message.completed'
-               AND json_extract(payload,'$.role')='assistant'
-               AND COALESCE(json_extract(payload,'$.text'),'')<>''
-             ORDER BY sequence DESC LIMIT 1",
-            params![child_session_id],
-            |r| r.get(0),
-        )
-        .ok()
+        latest_worker_output(&db, child_session_id)
     };
     let raw_output =
         raw_output.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
@@ -4494,6 +4505,53 @@ fn record_shutdown_reason(
         session_id,
         reason.as_str(),
     )
+}
+
+#[cfg(test)]
+mod worker_output_tests {
+    use super::latest_worker_output;
+    use crate::session_forest::{EntryKind, SessionForest};
+    use crate::{delegation, store};
+    use std::path::Path;
+
+    #[test]
+    fn the_typed_result_is_read_from_semantic_forest_entries() {
+        // The field failure this pins: entries carry `assistant.message`, the
+        // old query filtered on `message.completed`, matched nothing, and a
+        // compliant worker was ruled "missing bridge-worker-result block".
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+             VALUES('worker-1',NULL,'claude','Research · standard','working','reported')",
+            [],
+        )
+        .unwrap();
+        let fenced = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"mapped the delegation tree\",\"filesChanged\":[],\"tests\":[],\"decisions\":[],\"risks\":[],\"remainingWork\":[],\"suggestedNextAction\":\"finish\"}\n```";
+        let forest = SessionForest::new(&db);
+        forest
+            .append(
+                "worker-1",
+                EntryKind::AssistantMessage,
+                serde_json::json!({"text": "working on it"}),
+            )
+            .unwrap();
+        forest
+            .append(
+                "worker-1",
+                EntryKind::AssistantMessage,
+                serde_json::json!({"text": fenced, "role": "assistant"}),
+            )
+            .unwrap();
+
+        let output = latest_worker_output(&db, "worker-1").expect("assistant text found");
+        assert_eq!(output, fenced);
+        // The full loop: what the query returns must parse as the contract.
+        assert!(matches!(
+            delegation::parse_worker_result(&output),
+            delegation::ParseOutcome::Parsed(result) if result.summary == "mapped the delegation tree"
+        ));
+        assert_eq!(latest_worker_output(&db, "worker-none"), None);
+    }
 }
 
 #[cfg(test)]
