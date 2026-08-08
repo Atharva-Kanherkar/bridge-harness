@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
-import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry } from "../types";
+import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { highlightDiff, looksLikeDiff } from "./highlight";
@@ -35,7 +35,7 @@ function groupItems(items: ConversationItem[]): Rendered[] {
       rawItems.push(item);
       continue;
     }
-    if (GROUPABLE.has(item.type)) {
+    if (GROUPABLE.has(item.type) && item.data.staleBase !== true) {
       const last = out[out.length - 1];
       if (last?.kind === "group") { last.items.push(item); continue; }
       out.push({ kind: "group", key: `group-${item.key}`, items: [item] });
@@ -257,7 +257,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, onRefreshBase, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -271,7 +271,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
 
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
-  if (!visibleItems.length && !working && !pendingMessages.length && !completion && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  if (!visibleItems.length && !working && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
   const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
@@ -280,6 +280,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10">
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 sm:gap-8">
+      {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
       {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
       {continuationFidelity === "projected_at_boundary" && <div role="status" className="mb-4 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-xs text-muted-foreground">Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
@@ -288,12 +289,50 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {renderedItems.map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
-        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} errorContext={errorContext}/>)}
+        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} onRefreshBase={onRefreshBase} errorContext={errorContext}/>)}
       {optimistic.map((text, index) => <div key={`pending-${index}`} className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{text}</div></div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start pl-4"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
     </div>
   </ScrollFollow>;
 });
+
+/// Changes that exist only in a worker's own worktree. The parent session cannot
+/// finish while this is unresolved, so the choice has to be reachable here.
+function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding; onResolve?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void> }) {
+  const [busy, setBusy] = useState<"adopt" | "discard" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const settling = binding.state === "settling";
+  const act = async (decision: "adopt" | "discard") => {
+    if (!onResolve) return;
+    setBusy(decision); setError(null);
+    try { await onResolve(binding.sessionId, decision); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(null); }
+  };
+  return <div role="alert" className="my-4 overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
+    <header className="flex items-baseline gap-[9px] px-[15px] pt-3">
+      <b className="text-[13px] font-semibold text-foreground">Worker changes are not in your workspace yet</b>
+      {settling && <small className="text-warning text-[10.5px] tracking-[0.03em]">settling…</small>}
+    </header>
+    <p className="mt-1.5 px-[15px] text-[12.5px] leading-relaxed text-muted-foreground">
+      This worker wrote in its own worktree. Adopting merges those changes into your checkout; discarding throws them away. Until you choose, this session stays unfinished.
+    </p>
+    {binding.changedPaths.length > 0 && <code className="mt-2 mx-[15px] block max-h-40 overflow-y-auto rounded-md border border-border bg-background p-[9px_11px] font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-code-foreground">{binding.changedPaths.join("\n")}</code>}
+    <small className="mt-1 block px-[15px] font-mono text-[10.5px] text-muted-foreground/70">
+      {binding.diffstat ?? "no diffstat"} · {binding.worktreeBranch}{binding.dirty ? " · uncommitted" : ""}
+    </small>
+    <small className="mt-0.5 block px-[15px] font-mono text-[10.5px] text-muted-foreground/60">{binding.worktreePath}</small>
+    {error && <p className="mt-1.5 px-[15px] text-[12px] leading-relaxed text-destructive-foreground">{error}</p>}
+    <div className="flex items-center justify-end gap-[7px] p-[12px_13px]">
+      <button disabled={!!busy || settling || !onResolve} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50" onClick={() => act("discard")}>
+        <X size={12} aria-hidden="true" /> {busy === "discard" ? "Discarding…" : "Discard"}
+      </button>
+      <button disabled={!!busy || settling || !onResolve} className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50" onClick={() => act("adopt")}>
+        <Check size={12} aria-hidden="true" /> {busy === "adopt" ? "Adopting…" : "Adopt changes"}
+      </button>
+    </div>
+  </div>;
+}
 
 function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; onWaive?: (attemptId: string, checkIds: string[], reason: string) => Promise<void> }) {
   const [waiverOpen, setWaiverOpen] = useState(false);
@@ -359,11 +398,12 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, onResolve, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, onResolve, onRefreshBase, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; onRefreshBase?: () => Promise<void>; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{item.text}</div></div>;
     return <div className="chat-message-enter flex w-full justify-start"><div className="relative max-w-[min(100%,44rem)] py-1 pl-1 text-neutral-300">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div></div>;
   }
+  if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
@@ -449,9 +489,22 @@ function PlanCard({ item }: { item: ConversationItem }) {
 function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void }) {
   const pending = item.status === "pending";
   const accepted = item.status === "accept" || item.status === "acceptForSession";
+  const scope = Array.isArray(item.data.requestedOwnedPaths) ? item.data.requestedOwnedPaths.map(String) : [];
+  // The machine-readable routing reason and its remediation are persisted on the
+  // approval entry. Showing them is what turns "allow this?" into a decision the
+  // user can actually make.
+  const reason = typeof item.data.reason === "string" ? item.data.reason : "";
+  const remediation = typeof item.data.remediation === "string" ? item.data.remediation : "";
   return <div className="my-4 border border-warning/30 rounded-lg bg-warning/5 overflow-hidden">
     <header className="flex items-baseline gap-[9px] pt-3 px-[15px]"><b className="text-[13px] font-semibold text-foreground">{item.title || "Approval needed"}</b>{pending && <small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small>}</header>
-    {item.text && <p className="mt-1.5 px-[15px] text-muted-foreground text-[12.5px] leading-relaxed">{item.text}</p>}
+    {item.data.objective ? <p className="mt-1.5 px-[15px] text-muted-foreground text-[12.5px] leading-relaxed">{String(item.data.objective)}</p> : null}
+    {scope.length > 0 && <div className="mt-2 px-[15px]">
+      <small className="block text-muted-foreground/70 text-[10.5px] tracking-[0.03em] uppercase">Write scope</small>
+      <code className="mt-1 block p-[9px_11px] border border-border rounded-md bg-background text-code-foreground font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap">{scope.join("\n")}</code>
+    </div>}
+    {remediation
+      ? <p className="mt-2 px-[15px] text-muted-foreground text-[12.5px] leading-relaxed">{reason ? <em className="not-italic font-mono text-[11px] text-warning/90">{reason}</em> : null}{reason ? " — " : ""}{remediation}</p>
+      : item.text && <p className="mt-1.5 px-[15px] text-muted-foreground text-[12.5px] leading-relaxed">{item.text}</p>}
     {item.data.command ? <code className="block mt-2.5 mx-[15px] p-[9px_11px] border border-border rounded-md bg-background text-code-foreground font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap">{String(item.data.command)}</code> : null}
     {item.data.cwd ? <small className="block pt-1.5 px-[15px] text-muted-foreground/70 font-mono text-[10.5px]">{String(item.data.cwd)}</small> : null}
     {pending
@@ -464,7 +517,63 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   </div>;
 }
 
+/// A workspace far behind its base branch: any change lands on stale code and
+/// completion evidence gets stamped against it. The refresh action is a strict
+/// fast-forward, so declining it by doing nothing is always safe.
+function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshed, setRefreshed] = useState(false);
+  const divergence = (item.data.divergence ?? {}) as Record<string, unknown>;
+  const behind = Number(divergence.behind ?? 0);
+  const ahead = Number(divergence.ahead ?? 0);
+  const baseRef = String(divergence.baseRef ?? "its base branch");
+  const refresh = async () => {
+    if (!onRefresh) return;
+    setBusy(true); setError(null);
+    try { await onRefresh(); setRefreshed(true); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  };
+  return <div role="alert" className="my-4 overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
+    <header className="flex items-baseline gap-[9px] px-[15px] pt-3">
+      <b className="text-[13px] font-semibold text-foreground">{item.title || `Workspace is ${behind} commits behind ${baseRef}`}</b>
+    </header>
+    <p className="mt-1.5 px-[15px] text-[12.5px] leading-relaxed text-muted-foreground">{item.text}</p>
+    <small className="mt-1 block px-[15px] font-mono text-[10.5px] text-muted-foreground/70">{behind} behind · {ahead} ahead · {baseRef}{divergence.dirty === true ? " · uncommitted changes" : ""}</small>
+    {error && <p className="mt-1.5 px-[15px] text-[12px] leading-relaxed text-destructive-foreground">{error}</p>}
+    {refreshed
+      ? <div className="flex items-center gap-1.5 p-[10px_15px_12px] text-[11.5px] text-muted-foreground"><Check size={12} aria-hidden="true" /> Workspace refreshed onto {baseRef}</div>
+      : <div className="flex items-center justify-end gap-[7px] p-[12px_13px]">
+          <span className="mr-auto px-2 text-[11.5px] text-muted-foreground/70">Or continue on the current revision.</span>
+          <button disabled={busy || !onRefresh} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50" onClick={refresh}>{busy ? "Refreshing…" : "Refresh workspace"}</button>
+        </div>}
+  </div>;
+}
+
 function DelegationRow({ item }: { item: ConversationItem }) {
+  // A background worker's own approval card renders on the worker's conversation,
+  // which is normally not the selected one. This mirrored row is what makes the
+  // block visible where the user is actually working.
+  if ("childBlocked" in item.data) {
+    const blocked = item.data.childBlocked === true;
+    const paths = Array.isArray(item.data.ownedPaths) ? item.data.ownedPaths.map(String) : [];
+    if (!blocked) {
+      return <div className="my-3 flex items-center gap-[9px] px-2 -ml-2 text-muted-foreground text-[12.5px]">
+        <Check size={13} aria-hidden="true" />
+        <span>{item.title || "Worker approval resolved"}</span>
+      </div>;
+    }
+    return <div className="my-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" role="alert">
+      <div className="flex items-center gap-1.5 font-medium"><AlertTriangle size={13} aria-hidden="true" /> {item.title || "A worker needs your approval"}</div>
+      {item.data.objective ? <p className="mt-1 text-warning/80">{String(item.data.objective)}</p> : null}
+      {item.text && <p className="mt-1 text-warning/80">{item.text}</p>}
+      {item.data.command ? <code className="mt-1.5 block rounded-md border border-warning/25 bg-background/40 px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-warning/90">{String(item.data.command)}</code> : null}
+      {item.data.cwd ? <small className="mt-1 block font-mono text-[10.5px] text-warning/60">{String(item.data.cwd)}</small> : null}
+      {paths.length > 0 && <small className="mt-1 block font-mono text-[10.5px] text-warning/60">write scope: {paths.join(", ")}</small>}
+      <p className="mt-1 text-warning/70">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>
+    </div>;
+  }
   const isRejected = "willRetry" in item.data;
   if (isRejected) {
     const reason = String(item.data.reason ?? item.text ?? "");

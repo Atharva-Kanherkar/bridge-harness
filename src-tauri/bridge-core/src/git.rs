@@ -217,6 +217,352 @@ pub fn create_child_worktree(
     })
 }
 
+/// How far a checkout has drifted from the branch it is meant to build on.
+///
+/// This is *not* the same question as `RepositoryDivergence`, which compares a
+/// conversation entry's saved local stamp with the current local tree: both sides
+/// of that comparison can be months behind the default branch and still look
+/// "aligned". This measures the checkout against the best available fetched ref
+/// for the default branch, and reports how stale that ref itself is, so an
+/// offline stale ref is never presented as current truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaseBranchDivergence {
+    /// The ref compared against, e.g. `origin/main`. `None` when the repository
+    /// has no upstream or default branch to compare with.
+    pub base_ref: Option<String>,
+    pub base_commit: Option<String>,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub ahead: i64,
+    pub behind: i64,
+    /// Age of the compared ref's newest commit, in seconds. A large value means
+    /// the local copy of the base branch is itself stale.
+    pub ref_age_seconds: Option<i64>,
+    pub fetch_attempted: bool,
+    pub fetched: bool,
+    pub dirty: bool,
+    /// Why no comparison was possible, when `base_ref` is `None`.
+    pub unavailable_reason: Option<String>,
+}
+
+impl BaseBranchDivergence {
+    /// How far behind is far enough to be worth interrupting for. One or two
+    /// commits behind is normal; dozens means the work is being done against
+    /// code nobody else is running.
+    pub const WARN_BEHIND: i64 = 20;
+
+    pub fn should_warn(&self) -> bool {
+        self.base_ref.is_some() && self.behind >= Self::WARN_BEHIND
+    }
+
+    pub fn summary(&self) -> String {
+        let Some(base_ref) = &self.base_ref else {
+            return self
+                .unavailable_reason
+                .clone()
+                .unwrap_or_else(|| "no base branch could be resolved".into());
+        };
+        let mut summary = format!(
+            "this workspace is {} commit(s) behind and {} ahead of {base_ref}",
+            self.behind, self.ahead
+        );
+        match (self.fetch_attempted, self.fetched) {
+            (true, true) => summary.push_str(", measured against a freshly fetched ref"),
+            (true, false) => summary.push_str(
+                ", measured against the last fetched ref because fetching failed (possibly offline)",
+            ),
+            (false, _) => summary.push_str(", measured against the last fetched ref"),
+        }
+        if let Some(age) = self.ref_age_seconds {
+            summary.push_str(&format!(
+                "; that ref's newest commit is {} day(s) old",
+                age / 86_400
+            ));
+        }
+        summary
+    }
+}
+
+/// Measure `worktree` against its default/upstream branch.
+///
+/// `allow_fetch` controls whether a network fetch is attempted; when it fails or
+/// is skipped, the comparison still happens against the last fetched ref and says
+/// so. This never mutates the working tree.
+pub fn base_branch_divergence(worktree: &Path, allow_fetch: bool) -> BaseBranchDivergence {
+    let unavailable = |reason: &str| BaseBranchDivergence {
+        base_ref: None,
+        base_commit: None,
+        head: None,
+        branch: None,
+        ahead: 0,
+        behind: 0,
+        ref_age_seconds: None,
+        fetch_attempted: false,
+        fetched: false,
+        dirty: false,
+        unavailable_reason: Some(reason.to_owned()),
+    };
+    let Ok(head) = run(worktree, ["rev-parse", "HEAD"]) else {
+        return unavailable("the workspace has no resolvable Git HEAD");
+    };
+    let head = head.trim().to_owned();
+    let dirty = run(worktree, ["status", "--porcelain"])
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let branch = current_branch(worktree);
+    let (fetch_attempted, fetched) = if allow_fetch {
+        (true, run(worktree, ["fetch", "--quiet"]).is_ok())
+    } else {
+        (false, false)
+    };
+    let Some(base_ref) = resolve_base_ref(worktree) else {
+        let mut result = unavailable("no upstream or default branch ref is available to compare against; fetch the remote or set an upstream");
+        result.head = Some(head);
+        result.branch = branch;
+        result.dirty = dirty;
+        result.fetch_attempted = fetch_attempted;
+        result.fetched = fetched;
+        return result;
+    };
+    let base_commit = run(worktree, ["rev-parse", base_ref.as_str()])
+        .ok()
+        .map(|value| value.trim().to_owned());
+    let range = format!("{base_ref}...HEAD");
+    let (behind, ahead) = run(worktree, ["rev-list", "--left-right", "--count", range.as_str()])
+        .ok()
+        .and_then(|counts| {
+            let mut parts = counts.split_whitespace();
+            Some((
+                parts.next()?.parse::<i64>().ok()?,
+                parts.next()?.parse::<i64>().ok()?,
+            ))
+        })
+        .unwrap_or((0, 0));
+    let ref_age_seconds = run(worktree, ["log", "-1", "--format=%ct", base_ref.as_str()])
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .map(|committed| (Utc::now().timestamp() - committed).max(0));
+    BaseBranchDivergence {
+        base_ref: Some(base_ref),
+        base_commit,
+        head: Some(head),
+        branch,
+        ahead,
+        behind,
+        ref_age_seconds,
+        fetch_attempted,
+        fetched,
+        dirty,
+        unavailable_reason: None,
+    }
+}
+
+/// The "refresh" half of the stale-base choice: fast-forward the workspace onto
+/// its base ref.
+///
+/// Deliberately conservative. A dirty tree, an active session, or any history
+/// that is not a pure fast-forward is refused with an explanation instead of
+/// rebased or reset — losing uncommitted work to a background warning would be
+/// far worse than staying behind.
+pub fn fast_forward_to_base(
+    worktree: &Path,
+    session_active: bool,
+) -> Result<BaseBranchDivergence, BridgeError> {
+    ensure_inactive(session_active, "refresh the workspace")?;
+    ensure_clean(worktree, "refresh the workspace")?;
+    let divergence = base_branch_divergence(worktree, true);
+    let Some(base_ref) = divergence.base_ref.clone() else {
+        return Err(BridgeError::Invalid(
+            divergence
+                .unavailable_reason
+                .unwrap_or_else(|| "no base branch could be resolved".into()),
+        ));
+    };
+    if divergence.behind == 0 {
+        return Ok(divergence);
+    }
+    if divergence.ahead > 0 {
+        return Err(BridgeError::Invalid(format!(
+            "this workspace has {} local commit(s) that {base_ref} does not, so it cannot be fast-forwarded. Rebase or merge deliberately instead.",
+            divergence.ahead
+        )));
+    }
+    run(worktree, ["merge", "--ff-only", base_ref.as_str()])?;
+    Ok(base_branch_divergence(worktree, false))
+}
+
+/// Best available ref for "the branch this work should build on": the tracked
+/// upstream first, then the remote's advertised default branch, then a local
+/// conventional default. Only refs that actually exist are returned.
+fn resolve_base_ref(worktree: &Path) -> Option<String> {
+    let exists = |candidate: &str| {
+        run(worktree, ["rev-parse", "--verify", "--quiet", candidate])
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    };
+    let upstream = run(worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if let Some(upstream) = upstream.filter(|candidate| exists(candidate)) {
+        return Some(upstream);
+    }
+    let remote_head = run(worktree, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if let Some(remote_head) = remote_head.filter(|candidate| exists(candidate)) {
+        return Some(remote_head);
+    }
+    ["origin/main", "origin/master", "main", "master"]
+        .into_iter()
+        .find(|candidate| exists(candidate))
+        .map(str::to_owned)
+}
+
+/// What the repository actually shows for a worker's checkout: the revision it
+/// produced, what it is relative to, and every path it touched — committed or
+/// still dirty. This is derived from Git, never from what a worker claimed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryEvidence {
+    pub head: String,
+    pub branch: Option<String>,
+    pub base_commit: Option<String>,
+    pub commits: Vec<String>,
+    pub committed_paths: Vec<String>,
+    pub dirty_paths: Vec<String>,
+    pub files_changed: i64,
+    pub insertions: i64,
+    pub deletions: i64,
+}
+
+impl RepositoryEvidence {
+    /// Union of committed and uncommitted paths, sorted and deduplicated.
+    pub fn changed_paths(&self) -> Vec<String> {
+        let mut paths = self.committed_paths.clone();
+        paths.extend(self.dirty_paths.iter().cloned());
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    /// True when Git shows no change at all: no commits past the base and a
+    /// clean tree. A `completed` write-mode result with empty evidence is a
+    /// claim the repository does not support.
+    pub fn is_empty(&self) -> bool {
+        self.commits.is_empty() && self.dirty_paths.is_empty() && self.committed_paths.is_empty()
+    }
+
+    pub fn dirty(&self) -> bool {
+        !self.dirty_paths.is_empty()
+    }
+
+    pub fn diffstat(&self) -> String {
+        format!(
+            "{} file(s) changed, {} insertion(s), {} deletion(s)",
+            self.files_changed, self.insertions, self.deletions
+        )
+    }
+}
+
+/// Derive [`RepositoryEvidence`] for a checkout. `base_commit` is the revision
+/// the worker started from; when known, commits and the diffstat cover
+/// `base..HEAD` plus the working tree, so committed work is not invisible.
+pub fn derive_repository_evidence(
+    worktree: &Path,
+    base_commit: Option<&str>,
+) -> Result<RepositoryEvidence, BridgeError> {
+    let head = run(worktree, ["rev-parse", "HEAD"])?.trim().to_owned();
+    // `--untracked-files=all` matters: the default collapses a new directory to
+    // `src/`, which is neither a path the worker reported nor one the owned-path
+    // lease can be checked against file by file.
+    let dirty_paths = porcelain_paths(&run(
+        worktree,
+        [
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+    )?);
+    let base = base_commit
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| commit_exists(worktree, value))
+        .map(str::to_owned);
+    let (commits, committed_paths) = match base.as_deref() {
+        Some(base) if base != head => {
+            let range = format!("{base}..{head}");
+            (
+                nonempty_lines(&run(worktree, ["rev-list", "--reverse", range.as_str()])?),
+                nonempty_lines(&run(
+                    worktree,
+                    ["-c", "core.quotePath=false", "diff", "--name-only", range.as_str()],
+                )?),
+            )
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
+    // Numstat against the base when known, otherwise against HEAD, so the
+    // diffstat matches the same range the paths came from.
+    let numstat = run(
+        worktree,
+        ["diff", "--numstat", base.as_deref().unwrap_or("HEAD")],
+    )?;
+    let mut insertions = 0;
+    let mut deletions = 0;
+    let mut files = 0;
+    for line in numstat.lines().filter(|line| !line.trim().is_empty()) {
+        let columns: Vec<_> = line.split('\t').collect();
+        if columns.len() > 1 {
+            files += 1;
+            insertions += columns[0].parse::<i64>().unwrap_or(0);
+            deletions += columns[1].parse::<i64>().unwrap_or(0);
+        }
+    }
+    let mut evidence = RepositoryEvidence {
+        head,
+        branch: current_branch(worktree),
+        base_commit: base,
+        commits,
+        committed_paths,
+        dirty_paths,
+        files_changed: files,
+        insertions,
+        deletions,
+    };
+    // Untracked files never appear in `git diff --numstat`; count them so the
+    // file total matches the path list callers compare against `filesChanged`.
+    let counted = evidence.changed_paths().len() as i64;
+    evidence.files_changed = evidence.files_changed.max(counted);
+    Ok(evidence)
+}
+
+fn commit_exists(worktree: &Path, commit: &str) -> bool {
+    run(worktree, ["cat-file", "-e", &format!("{commit}^{{commit}}")]).is_ok()
+}
+
+/// Paths from `git status --porcelain`, including the destination half of a
+/// rename (`R old -> new`).
+fn porcelain_paths(porcelain: &str) -> Vec<String> {
+    let mut paths = porcelain
+        .lines()
+        .filter(|line| line.len() > 3)
+        .map(|line| {
+            let path = line[3..].trim();
+            path.rsplit(" -> ").next().unwrap_or(path).trim()
+        })
+        .map(|path| path.trim_matches('"').to_owned())
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 pub fn record_clean_checkpoint(
     worktree: &Path,
     session_id: &str,
@@ -271,6 +617,45 @@ pub fn extract_worker_changes(
         changed_paths,
         patch,
     })
+}
+
+/// Commit whatever the worker left uncommitted onto its own branch, so its work
+/// can be integrated. A coding harness routinely edits without committing, and
+/// `integrate_worker_changes` requires a clean worker tree — without this, the
+/// normal case would be permanently unadoptable and the only exit would be
+/// discarding verified work. Returns the new commit, or `None` if already clean.
+pub fn commit_worker_worktree(
+    worker_worktree: &Path,
+    message: &str,
+) -> Result<Option<String>, BridgeError> {
+    if run(worker_worktree, ["status", "--porcelain"])?.trim().is_empty() {
+        return Ok(None);
+    }
+    run(worker_worktree, ["add", "--all", "."])?;
+    // `--no-verify` keeps a repository hook from blocking adoption of work the
+    // user has already chosen to keep; the checks that matter are the completion
+    // gate's, which ran against this same tree.
+    run(
+        worker_worktree,
+        ["commit", "--no-verify", "--no-gpg-sign", "-m", message],
+    )?;
+    Ok(Some(
+        run(worker_worktree, ["rev-parse", "HEAD"])?.trim().to_owned(),
+    ))
+}
+
+/// Would integrating this worker be a pure fast-forward? True when the task
+/// worktree's HEAD is already an ancestor of the worker's commit, i.e. the task
+/// branch has not advanced since the worker branched.
+pub fn integration_is_fast_forward(
+    task_worktree: &Path,
+    worker_worktree: &Path,
+) -> Result<bool, BridgeError> {
+    let worker_commit = run(worker_worktree, ["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
+    let task_commit = run(task_worktree, ["rev-parse", "HEAD"])?.trim().to_owned();
+    is_ancestor(task_worktree, &task_commit, &worker_commit)
 }
 
 pub fn integrate_worker_changes(
@@ -660,6 +1045,163 @@ mod tests {
         );
         assert_eq!(git(&repo, &["rev-parse", "HEAD"]), current_head);
         assert!(!git(&repo, &["status", "--porcelain"]).is_empty());
+    }
+
+    /// Git quotes non-ASCII paths by default (`"src/caf\303\251.rs"`), which would
+    /// make every comparison against an owned-path lease fail and downgrade a
+    /// correct result. Untracked directories are also collapsed to `dir/` unless
+    /// asked for every file.
+    #[test]
+    fn derived_paths_are_unquoted_and_listed_file_by_file() {
+        let (_fixture, repo) = repository();
+        let base = git(&repo, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(repo.join("src/nested")).unwrap();
+        std::fs::write(repo.join("src/café.rs").to_str().unwrap(), "unicode\n").unwrap();
+        std::fs::write(repo.join("src/nested/deep.rs"), "deep\n").unwrap();
+
+        let dirty = derive_repository_evidence(&repo, Some(&base)).unwrap();
+        assert_eq!(
+            dirty.dirty_paths,
+            vec!["src/café.rs", "src/nested/deep.rs"],
+            "untracked files must be listed individually and unquoted"
+        );
+        assert!(dirty.commits.is_empty());
+        assert!(!dirty.is_empty());
+        assert!(dirty.dirty());
+
+        commit_file(&repo, "src/committed.rs", "committed\n", "add files");
+        let committed = derive_repository_evidence(&repo, Some(&base)).unwrap();
+        assert_eq!(committed.commits.len(), 1);
+        assert!(committed
+            .committed_paths
+            .iter()
+            .all(|path| !path.contains('\\') && !path.starts_with('"')));
+        assert!(committed.committed_paths.contains(&"src/café.rs".to_owned()));
+        assert!(committed.changed_paths().contains(&"src/nested/deep.rs".to_owned()));
+        assert_eq!(committed.base_commit.as_deref(), Some(base.as_str()));
+        assert!(committed.diffstat().contains("insertion(s)"));
+    }
+
+    /// A "clone" whose `origin` is a local bare repository, so divergence can be
+    /// exercised end to end without a network.
+    fn cloned_repository() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let fixture = tempfile::tempdir().unwrap();
+        let origin = fixture.path().join("origin.git");
+        let seed = fixture.path().join("seed");
+        std::fs::create_dir(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        git(&seed, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(&seed, &["config", "user.name", "Bridge Test"]);
+        std::fs::write(seed.join("shared.txt"), "base\n").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-q", "-m", "base"]);
+        git(&seed, &["clone", "-q", "--bare", ".", origin.to_str().unwrap()]);
+        // `seed` was the clone source, so it has no `origin` of its own.
+        git(&seed, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        let clone = fixture.path().join("clone");
+        git(
+            fixture.path(),
+            &["clone", "-q", origin.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+        git(&clone, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(&clone, &["config", "user.name", "Bridge Test"]);
+        (fixture, clone, seed)
+    }
+
+    /// The incident ran 67 commits behind `origin/main`, and the existing
+    /// `RepositoryDivergence` could not see it: both sides of that comparison were
+    /// equally stale.
+    #[test]
+    fn divergence_counts_commits_against_the_upstream_default_branch() {
+        let (_fixture, clone, seed) = cloned_repository();
+        let aligned = base_branch_divergence(&clone, false);
+        assert_eq!(aligned.base_ref.as_deref(), Some("origin/main"));
+        assert_eq!((aligned.behind, aligned.ahead), (0, 0));
+        assert!(!aligned.should_warn());
+        assert!(aligned.ref_age_seconds.is_some());
+
+        // Upstream moves well past the workspace.
+        for index in 0..BaseBranchDivergence::WARN_BEHIND + 5 {
+            commit_file(&seed, "shared.txt", &format!("upstream {index}\n"), "upstream");
+        }
+        git(&seed, &["push", "-q", "origin", "main"]);
+        // And the workspace has one local commit of its own.
+        commit_file(&clone, "local.txt", "local\n", "local work");
+
+        let behind = base_branch_divergence(&clone, true);
+        assert!(behind.fetch_attempted && behind.fetched);
+        assert_eq!(behind.behind, BaseBranchDivergence::WARN_BEHIND + 5);
+        assert_eq!(behind.ahead, 1);
+        assert!(behind.should_warn());
+        let summary = behind.summary();
+        assert!(summary.contains("commit(s) behind"), "{summary}");
+        assert!(summary.contains("origin/main"), "{summary}");
+        assert!(summary.contains("freshly fetched"), "{summary}");
+    }
+
+    /// An offline check must still report numbers, and must say the ref it used
+    /// was not refreshed rather than presenting it as current truth.
+    #[test]
+    fn a_failed_fetch_is_reported_instead_of_being_presented_as_current() {
+        let (_fixture, clone, _seed) = cloned_repository();
+        git(&clone, &["remote", "set-url", "origin", "/bridge/definitely-not-a-remote"]);
+        let divergence = base_branch_divergence(&clone, true);
+        assert!(divergence.fetch_attempted);
+        assert!(!divergence.fetched);
+        assert_eq!(divergence.base_ref.as_deref(), Some("origin/main"));
+        assert!(divergence.summary().contains("fetching failed"));
+    }
+
+    #[test]
+    fn a_repository_with_no_base_ref_explains_itself_instead_of_reporting_zero() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("solo");
+        std::fs::create_dir(&repo).unwrap();
+        // No remote and no conventionally-named default branch: there is nothing
+        // to compare against, and saying "0 behind" would be a false all-clear.
+        git(&repo, &["init", "-q", "-b", "bridge/task"]);
+        git(&repo, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(&repo, &["config", "user.name", "Bridge Test"]);
+        std::fs::write(repo.join("only.txt"), "solo\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "solo"]);
+        let divergence = base_branch_divergence(&repo, false);
+        assert!(divergence.base_ref.is_none());
+        assert!(!divergence.should_warn());
+        assert!(divergence
+            .unavailable_reason
+            .unwrap()
+            .contains("no upstream or default branch"));
+    }
+
+    #[test]
+    fn refresh_fast_forwards_but_never_touches_dirty_active_or_diverged_work() {
+        let (_fixture, clone, seed) = cloned_repository();
+        commit_file(&seed, "shared.txt", "upstream\n", "upstream");
+        git(&seed, &["push", "-q", "origin", "main"]);
+
+        // An active session must never have its checkout moved underneath it.
+        assert!(fast_forward_to_base(&clone, true).is_err());
+        // Nor may uncommitted work be discarded by a background warning.
+        std::fs::write(clone.join("dirty.txt"), "wip\n").unwrap();
+        assert!(fast_forward_to_base(&clone, false).is_err());
+        std::fs::remove_file(clone.join("dirty.txt")).unwrap();
+
+        let refreshed = fast_forward_to_base(&clone, false).unwrap();
+        assert_eq!((refreshed.behind, refreshed.ahead), (0, 0));
+        assert_eq!(
+            std::fs::read_to_string(clone.join("shared.txt")).unwrap(),
+            "upstream\n"
+        );
+
+        // Local history that upstream does not have is a deliberate decision, not
+        // something to fast-forward away.
+        commit_file(&seed, "shared.txt", "upstream two\n", "upstream two");
+        git(&seed, &["push", "-q", "origin", "main"]);
+        commit_file(&clone, "local.txt", "local\n", "local work");
+        let error = fast_forward_to_base(&clone, false).unwrap_err().to_string();
+        assert!(error.contains("cannot be fast-forwarded"), "{error}");
+        assert!(clone.join("local.txt").exists());
     }
 
     #[test]

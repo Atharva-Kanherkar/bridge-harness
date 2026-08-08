@@ -39,6 +39,72 @@ pub enum RouteReason {
     ChildWorktreeUnavailable,
 }
 
+impl RouteReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ParentExecutionPreferred => "parent_execution_preferred",
+            Self::CompatibleWarmWorker => "compatible_warm_worker",
+            Self::EligibleFreshSpawn => "eligible_fresh_spawn",
+            Self::ConcurrencyLimit => "concurrency_limit",
+            Self::WriterConflict => "writer_conflict",
+            Self::DepthLimit => "depth_limit",
+            Self::WorkerBudgetExhausted => "worker_budget_exhausted",
+            Self::StrongWorkerLimit => "strong_worker_limit",
+            Self::RetryLimit => "retry_limit",
+            Self::CapabilityBudgetExhausted => "capability_budget_exhausted",
+            Self::UserApprovalRequired => "user_approval_required",
+            Self::OwnedPathProvenanceRequired => "owned_path_provenance_required",
+            Self::InvalidOwnedPath => "invalid_owned_path",
+            Self::ChildWorktreeUnavailable => "child_worktree_unavailable",
+        }
+    }
+
+    /// What the decision-maker — orchestrator or human — can actually do about
+    /// this reason. Projected into the parent's routing notice and the approval
+    /// card so neither has to guess why a launch stopped.
+    pub fn remediation(self) -> &'static str {
+        match self {
+            Self::OwnedPathProvenanceRequired => {
+                "these write paths were proposed by the agent and were not explicitly authorized. \
+                 Approve once for this turn, narrow the paths, or delegate read-only. A user \
+                 message line of the form `Write scope: src/**` authorizes a scope without a card."
+            }
+            Self::UserApprovalRequired => {
+                "this delegation requires explicit human approval before a worker can start."
+            }
+            Self::InvalidOwnedPath => {
+                "the requested owned paths are not workspace-relative patterns. Re-emit the \
+                 delegation with paths inside the workspace and no `..` segments."
+            }
+            Self::DepthLimit => {
+                "workers cannot delegate further. Execute this step in the current session."
+            }
+            Self::WorkerBudgetExhausted => {
+                "this turn already used its worker budget. Finish with the evidence in hand or \
+                 ask the user to continue in a new turn."
+            }
+            Self::StrongWorkerLimit => {
+                "this turn already used its strong-model worker. Re-emit at the standard tier."
+            }
+            Self::RetryLimit => {
+                "automatic retries are exhausted. Report the failure instead of re-delegating."
+            }
+            Self::CapabilityBudgetExhausted => {
+                "the turn's capability budget cannot fund this worker. Lower the tier or effort."
+            }
+            Self::ConcurrencyLimit | Self::WriterConflict | Self::ChildWorktreeUnavailable => {
+                "the worker was queued behind active work and will start when capacity frees up."
+            }
+            Self::ParentExecutionPreferred => {
+                "the parent session should execute this step itself."
+            }
+            Self::CompatibleWarmWorker | Self::EligibleFreshSpawn => {
+                "no action needed; the route was accepted."
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedPathProvenance {
@@ -222,11 +288,11 @@ impl PolicyEngine {
         if writer_conflict(input, self.config.max_writers_per_worktree) {
             return outcome(RouteDecision::Queue, RouteReason::WriterConflict, units);
         }
-        let requires_child_worktree = input.request.write_mode == WriteMode::Isolated
-            && input
-                .active_workers
-                .iter()
-                .any(|worker| worker.write_mode != WriteMode::ReadOnly);
+        // `Isolated` is a promise to the caller that the worker's writes land in
+        // their own checkout. A lone isolated writer used to skip the child
+        // worktree entirely and mutate the shared task worktree, so the promise
+        // held only when a second writer happened to be active.
+        let requires_child_worktree = input.request.write_mode == WriteMode::Isolated;
         if requires_child_worktree && !input.child_worktrees_available {
             return outcome(
                 RouteDecision::Queue,
@@ -286,6 +352,81 @@ fn trusted_pattern_covers(scope: &str, claim: &str) -> bool {
     let claim_literal = claim_wildcard.map_or(claim, |index| &claim[..index]);
     let descendant_prefix = format!("{scope_base}/");
     claim_literal.starts_with(&descendant_prefix)
+}
+
+/// Does any owned-path pattern cover this concrete repository path? Used to
+/// check derived repository evidence against the lease a worker was granted:
+/// paths outside every pattern are writes the worker was never authorized to
+/// make.
+pub fn owned_paths_cover_path(patterns: &[String], path: &str) -> bool {
+    let Ok(path) = normalize_owned_pattern(path) else {
+        return false;
+    };
+    let Ok(patterns) = normalize_owned_paths(patterns) else {
+        return false;
+    };
+    patterns.iter().any(|pattern| {
+        if glob_matches(pattern, path.as_str()) {
+            return true;
+        }
+        // `Write scope: src` is accepted by `trusted_pattern_covers` and by the
+        // overlap check, so it must grant `src/foo.rs` here too — otherwise a
+        // valid lease would mark every write out of scope.
+        !pattern.contains(['*', '?', '[']) && path.starts_with(&format!("{pattern}/"))
+    })
+}
+
+/// Match one normalized pattern against one normalized path. `**` spans path
+/// separators, `*` and `?` do not.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').collect();
+    let path: Vec<&str> = path.split('/').collect();
+    segments_match(&pattern, &path)
+}
+
+fn segments_match(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.split_first() {
+        // A trailing `**` covers the rest, including nothing.
+        None => path.is_empty(),
+        Some((&"**", rest)) => {
+            if rest.is_empty() {
+                return true;
+            }
+            (0..=path.len()).any(|skip| segments_match(rest, &path[skip..]))
+        }
+        Some((head, rest)) => match path.split_first() {
+            None => false,
+            Some((segment, remaining)) => {
+                segment_matches(head, segment) && segments_match(rest, remaining)
+            }
+        },
+    }
+}
+
+fn segment_matches(pattern: &str, segment: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let segment: Vec<char> = segment.chars().collect();
+    // Iterative wildcard match with backtracking: linear in the common case and
+    // never recurses, so a hostile pattern cannot blow the stack.
+    let (mut p, mut s) = (0usize, 0usize);
+    let (mut star, mut star_s) = (None, 0usize);
+    while s < segment.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == segment[s]) {
+            p += 1;
+            s += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            star_s = s;
+            p += 1;
+        } else if let Some(star) = star {
+            p = star + 1;
+            star_s += 1;
+            s = star_s;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|character| *character == '*')
 }
 
 fn outcome(decision: RouteDecision, reason: RouteReason, capability_units: i64) -> PolicyOutcome {
@@ -650,13 +791,16 @@ fn worker_from_lease(db: &Connection, lease: WorkerLease) -> Result<WorkerSnapsh
     })
 }
 
+/// Persist the routing decision. Returns the approval id when the decision
+/// raised (or re-used) a pending approval card, so the caller can report an
+/// approval-pending launch instead of a failure.
 pub fn record_decision(
     db: &Connection,
     parent_session_id: &str,
     turn_id: &str,
     input: &PolicyInput,
     outcome: &PolicyOutcome,
-) -> Result<(), BridgeError> {
+) -> Result<Option<String>, BridgeError> {
     let request = &input.request;
     let kind = match &outcome.decision {
         RouteDecision::SpawnWorker(_) | RouteDecision::ResumeWorker { .. } => {
@@ -679,9 +823,11 @@ pub fn record_decision(
         },
         "capabilityUnits": outcome.capability_units,
         "ownedPathProvenance": input.owned_path_provenance,
+        "remediation": outcome.reason.remediation(),
         "replaySchemaVersion": 1,
         "replayInput": input,
     });
+    let mut pending_approval_id = None;
     if matches!(outcome.decision, RouteDecision::RequireUserApproval) {
         let scope_key = normalize_owned_paths(&request.owned_paths)
             .unwrap_or_else(|_| request.owned_paths.clone())
@@ -694,17 +840,23 @@ pub fn record_decision(
             entry.kind == "approval.requested" && entry.payload["approvalId"] == approval_id
         });
         if approval_already_recorded {
-            return Ok(());
+            return Ok(Some(approval_id));
         }
+        pending_approval_id = Some(approval_id.clone());
         payload["approvalId"] = Value::String(approval_id);
         payload["approvalType"] = Value::String("delegation_path_scope".into());
         payload["status"] = Value::String("pending".into());
         payload["title"] = Value::String("Approve delegation write scope".into());
         payload["text"] = Value::String(format!(
-            "Allow this worker to write only within: {}",
-            request.owned_paths.join(", ")
+            "Allow this worker to write only within: {}\n\n{}: {}",
+            request.owned_paths.join(", "),
+            outcome.reason.as_str(),
+            outcome.reason.remediation(),
         ));
         payload["requestedOwnedPaths"] = serde_json::json!(request.owned_paths);
+        payload["objective"] = Value::String(request.objective.clone());
+        payload["role"] = Value::String(role_name(request.role).into());
+        payload["writeMode"] = Value::String(write_mode_name(request.write_mode).into());
     }
     SessionForest::new(db)
         .append(parent_session_id, kind, payload)
@@ -720,7 +872,8 @@ pub fn record_decision(
             "reason": outcome.reason,
         }))
         .map_err(|error| BridgeError::Invalid(error.to_string()))?,
-    )
+    )?;
+    Ok(pending_approval_id)
 }
 
 pub fn record_spawn_usage(
@@ -826,6 +979,30 @@ fn parse_write_mode(value: &str) -> WriteMode {
 
 #[cfg(test)]
 mod tests {
+
+    /// Evidence paths are compared against the lease with this, so its reading of
+    /// a pattern must match the reading used to *grant* the lease. `src` and
+    /// `src/**` both authorize `src/foo.rs`.
+    #[test]
+    fn owned_path_coverage_matches_how_the_lease_was_granted() {
+        let scope = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+        for pattern in [scope(&["src/**"]), scope(&["src"])] {
+            assert!(owned_paths_cover_path(&pattern, "src/foo.rs"), "{pattern:?}");
+            assert!(owned_paths_cover_path(&pattern, "src/a/b/c.rs"), "{pattern:?}");
+            assert!(!owned_paths_cover_path(&pattern, "docs/foo.md"), "{pattern:?}");
+            assert!(!owned_paths_cover_path(&pattern, "srcx/foo.rs"), "{pattern:?}");
+        }
+        // `*` and `?` stay inside one segment.
+        assert!(owned_paths_cover_path(&scope(&["src/*.rs"]), "src/foo.rs"));
+        assert!(!owned_paths_cover_path(&scope(&["src/*.rs"]), "src/a/foo.rs"));
+        assert!(owned_paths_cover_path(&scope(&["src/f?o.rs"]), "src/foo.rs"));
+        // An exact file authorizes only itself.
+        assert!(owned_paths_cover_path(&scope(&["src/index.css"]), "src/index.css"));
+        assert!(!owned_paths_cover_path(&scope(&["src/index.css"]), "src/index.css.map"));
+        // A traversal attempt is never covered.
+        assert!(!owned_paths_cover_path(&scope(&["src/**"]), "../secrets.env"));
+        assert!(!owned_paths_cover_path(&scope(&["../**"]), "src/foo.rs"));
+    }
     use super::*;
     use crate::delegation::{OutputContract, WorkerRole};
     use serde_json::json;

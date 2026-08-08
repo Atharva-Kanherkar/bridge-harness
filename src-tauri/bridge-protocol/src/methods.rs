@@ -79,6 +79,13 @@ methods![
     (WaiveCompletion, "completion", "waive_completion"),
     (RegisterVerifierManifest, "completion", "register_verifier_manifest"),
     (VerifierCandidates, "completion", "verifier_candidates"),
+    // base-branch divergence
+    (WorkspaceBaseDivergence, "worktrees", "workspace_base_divergence"),
+    (RefreshWorkspaceBase, "worktrees", "refresh_workspace_base"),
+    // worker worktree adoption
+    (PendingWorkerAdoptions, "worktrees", "pending_worker_adoptions"),
+    (AdoptWorkerWorktree, "worktrees", "adopt_worker_worktree"),
+    (DiscardWorkerWorktree, "worktrees", "discard_worker_worktree"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

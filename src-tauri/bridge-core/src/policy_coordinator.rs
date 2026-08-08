@@ -8,6 +8,9 @@ pub struct WorkerRouteContext {
     pub path: String,
     pub branch: String,
     pub outcome: policy::PolicyOutcome,
+    /// Set when the decision raised or re-used a pending approval card. The
+    /// launch is still live; the caller must not report it as a failure.
+    pub pending_approval_id: Option<String>,
 }
 
 pub struct PolicyCoordinator;
@@ -52,13 +55,15 @@ impl PolicyCoordinator {
             child_worktrees_available,
         };
         let outcome = policy::PolicyEngine::default().decide(&input);
-        policy::record_decision(db, parent_session_id, turn_id, &input, &outcome)?;
+        let pending_approval_id =
+            policy::record_decision(db, parent_session_id, turn_id, &input, &outcome)?;
         Ok(WorkerRouteContext {
             workspace_id,
             parent_depth,
             path,
             branch,
             outcome,
+            pending_approval_id,
         })
     }
 }

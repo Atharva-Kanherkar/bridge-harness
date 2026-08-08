@@ -233,6 +233,41 @@
       "resultSchema": "verifier-candidates-result.json"
     },
     {
+      "command": "workspace_base_divergence",
+      "domain": "worktrees",
+      "method": "worktrees/workspace_base_divergence",
+      "paramsSchema": "workspace-base-divergence-params.json",
+      "resultSchema": "base-branch-divergence.json"
+    },
+    {
+      "command": "refresh_workspace_base",
+      "domain": "worktrees",
+      "method": "worktrees/refresh_workspace_base",
+      "paramsSchema": "refresh-workspace-base-params.json",
+      "resultSchema": "base-branch-divergence.json"
+    },
+    {
+      "command": "pending_worker_adoptions",
+      "domain": "worktrees",
+      "method": "worktrees/pending_worker_adoptions",
+      "paramsSchema": "pending-worker-adoptions-params.json",
+      "resultSchema": "pending-worker-adoptions-result.json"
+    },
+    {
+      "command": "adopt_worker_worktree",
+      "domain": "worktrees",
+      "method": "worktrees/adopt_worker_worktree",
+      "paramsSchema": "adopt-worker-worktree-params.json",
+      "resultSchema": "worker-repository-binding.json"
+    },
+    {
+      "command": "discard_worker_worktree",
+      "domain": "worktrees",
+      "method": "worktrees/discard_worker_worktree",
+      "paramsSchema": "discard-worker-worktree-params.json",
+      "resultSchema": "worker-repository-binding.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",
@@ -536,7 +571,7 @@
   ],
   "protocolVersion": {
     "major": 0,
-    "minor": 7
+    "minor": 8
   },
   "reserved": {
     "cancel": "$/cancel",

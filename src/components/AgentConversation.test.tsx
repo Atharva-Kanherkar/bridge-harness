@@ -82,6 +82,54 @@ describe("AgentConversation", () => {
     expect(html).toContain("orchestrator was notified");
     expect(html).toContain("will not wait");
   });
+  it("offers adopt and discard for changes that never reached the workspace", () => {
+    const binding = { sessionId: "child", parentSessionId: "s", workspaceId: "w", worktreePath: "/tmp/workers/child", worktreeBranch: "bridge/task-worker-child", taskWorktreePath: "/tmp/task", state: "pending_adoption", head: "2b43aaad", baseCommit: "90ce51c", baseBranch: "bridge/task", baselineDirtyPaths: [], changedPaths: ["src/components/Markdown.tsx"], diffstat: "1 file(s) changed, 12 insertion(s), 3 deletion(s)", dirty: false, detail: null, createdAt: "now", updatedAt: "now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} pendingAdoptions={[binding]} onResolveAdoption={async () => undefined}/>);
+    expect(html).toContain("not in your workspace yet");
+    expect(html).toContain("src/components/Markdown.tsx");
+    expect(html).toContain("1 file(s) changed");
+    expect(html).toContain("bridge/task-worker-child");
+    expect(html).toContain("Adopt changes");
+    expect(html).toContain("Discard");
+    expect(html).toContain("stays unfinished");
+    expect(html).toContain('role="alert"');
+  });
+  it("disables the adoption choice while a decision is already settling", () => {
+    const binding = { sessionId: "child", parentSessionId: "s", workspaceId: "w", worktreePath: "/tmp/workers/child", worktreeBranch: "b", taskWorktreePath: "/tmp/task", state: "settling", head: null, baseCommit: null, baseBranch: null, baselineDirtyPaths: [], changedPaths: [], diffstat: null, dirty: true, detail: "adopt in progress", createdAt: "now", updatedAt: "now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} pendingAdoptions={[binding]} onResolveAdoption={async () => undefined}/>);
+    expect(html).toContain("settling");
+    expect(html).toContain("disabled");
+  });
+  it("shows the routing reason, remediation, and write scope on a delegation approval", () => {
+    const entry: SessionEntry = { id:"approval",sessionId:"s",parentEntryId:null,sequence:5,semanticSchemaVersion:2,kind:"approval.requested",payload:{status:"pending",approvalType:"delegation_path_scope",title:"Approve delegation write scope",objective:"Render Mermaid inline",reason:"owned_path_provenance_required",remediation:"these write paths were proposed by the agent and were not explicitly authorized.",requestedOwnedPaths:["src/**","docs/**"]},providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[entry]} activeLeafId="approval"/>);
+    expect(html).toContain("Write scope");
+    expect(html).toContain("src/**");
+    expect(html).toContain("docs/**");
+    expect(html).toContain("owned_path_provenance_required");
+    expect(html).toContain("were not explicitly authorized");
+    expect(html).toContain("Render Mermaid inline");
+  });
+  it("mirrors a background worker's approval onto the parent instead of calling it a failure", () => {
+    const blocked = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install?", data: { childBlocked: true, childSessionId: "child", label: "Implementation · strong", objective: "Render Mermaid inline", command: "bun install", cwd: "/repo", ownedPaths: ["src/**"], orchestratorNotified: true } })
+    ]}/>);
+    expect(blocked).toContain("needs your approval");
+    expect(blocked).toContain("bun install");
+    expect(blocked).toContain("/repo");
+    expect(blocked).toContain("write scope: src/**");
+    expect(blocked).toContain("idle until you do");
+    expect(blocked).toContain('role="alert"');
+    // A blocked child must never be presented as a failed launch.
+    expect(blocked).not.toContain("Worker failed to start");
+    expect(blocked).not.toContain("no worker started");
+
+    const resolved = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.blocked", { role: "system", status: "accept", title: "Implementation · strong approval accept", data: { childBlocked: false, childSessionId: "child", label: "Implementation · strong", outcome: "accept" } })
+    ]}/>);
+    expect(resolved).toContain("approval accept");
+    expect(resolved).not.toContain('role="alert"');
+  });
   it("surfaces conversation and file-state divergence", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);
     expect(html).toContain("This branch&#x27;s context predates the current file state.");

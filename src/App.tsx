@@ -4,7 +4,7 @@ import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileM
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, Workspace } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { isVisibleWorker } from "./components/workerStatus";
@@ -94,6 +94,10 @@ export function App() {
   const [browserOpen, setBrowserOpen] = useState(false);
   const [error, setError] = useState<string>();
   const [forest, setForest] = useState<SessionForestSnapshot>();
+  // Completion blocks while a child's changes live only in its own worktree, so
+  // the user must be able to see and resolve that here — otherwise the session
+  // waits forever with no visible cause.
+  const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string }[]>([]);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
@@ -282,11 +286,17 @@ export function App() {
   useEffect(() => {
     forestKeyRef.current = "";
     setForest(undefined);
+    setPendingAdoptions([]);
     if (!session?.id) return;
     let active = true;
     const refresh = async () => {
-      const value = await bridgeApi.sessionForest(session.id).catch(() => undefined);
-      if (!active || !value) return;
+      const [value, adoptions] = await Promise.all([
+        bridgeApi.sessionForest(session.id).catch(() => undefined),
+        bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
+      ]);
+      if (!active) return;
+      setPendingAdoptions(adoptions);
+      if (!value) return;
       const key = forestSnapshotKey(value);
       if (key === forestKeyRef.current) return;
       forestKeyRef.current = key;
@@ -470,6 +480,25 @@ export function App() {
     const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
     setForest(current => current ? { ...current, completion } : current);
   }, []);
+  const resolveAdoption = useCallback(async (childSessionId: string, decision: "adopt" | "discard") => {
+    if (decision === "adopt") await bridgeApi.adoptWorkerWorktree(childSessionId);
+    else await bridgeApi.discardWorkerWorktree(childSessionId, "Discarded from the workspace panel");
+    if (!session) return;
+    const [next, adoptions] = await Promise.all([
+      bridgeApi.sessionForest(session.id),
+      bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
+    ]);
+    forestKeyRef.current = forestSnapshotKey(next);
+    setForest(next);
+    setPendingAdoptions(adoptions);
+  }, [session]);
+  // The "refresh" half of a stale-base warning. A strict fast-forward, so it
+  // refuses rather than rewrites when the workspace has its own commits.
+  const refreshWorkspaceBase = useCallback(async () => {
+    if (!session) throw new Error("Open a session before refreshing its workspace");
+    await bridgeApi.refreshWorkspaceBase(session.id);
+    setForest(await bridgeApi.sessionForest(session.id));
+  }, [session]);
   async function applySlash(command: import("./types").SlashCommand) {
     if (session?.kind === "direct" && command.harness !== session.harness) {
       const adapter = adapters.find(item => item.id === command.harness);
@@ -577,6 +606,9 @@ export function App() {
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   completion={forest?.completion}
                   onWaiveCompletion={waiveCompletion}
+                  onRefreshBase={refreshWorkspaceBase}
+                  pendingAdoptions={pendingAdoptions}
+                  onResolveAdoption={resolveAdoption}
                   continuationFidelity={session?.continuationFidelity}
                   preview={false}
                   working={turnActive}

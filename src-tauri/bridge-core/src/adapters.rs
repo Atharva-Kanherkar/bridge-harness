@@ -1,7 +1,7 @@
 use crate::{
     agent, binary, claude_adapter, codex_adapter,
     delegation::WriteMode,
-    model::{AdapterDescriptor, CapabilityTier, ModelOption},
+    model::{AdapterDescriptor, CapabilityTier, ModelOption, SandboxMode},
     opencode_adapter,
     worker_sandbox::ReadOnlySandbox,
     BridgeError,
@@ -630,6 +630,11 @@ impl HarnessAdapter for OpenCodeAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+            // OpenCode drives a localhost HTTP server; the read-only worker
+            // sandbox is offline, so a read-only OpenCode worker can never
+            // start. Declaring that here lets the router exclude the route
+            // before a worker session exists.
+            sandbox_modes: vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess],
             unavailable_reason,
             models,
             default_model,
@@ -698,6 +703,7 @@ impl HarnessAdapter for CodexAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+            sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: binary::resolve("codex")
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
@@ -770,6 +776,7 @@ impl HarnessAdapter for ClaudeAdapter {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+            sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: claude_adapter::unavailable_reason(),
             models: model_options(&[
                 ("haiku", "Claude Haiku", CapabilityTier::Fast, true),
@@ -821,6 +828,7 @@ mod tests {
         }
         fn descriptor(&self) -> AdapterDescriptor {
             AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
                 id: "fake".into(),
                 label: "Fake".into(),
                 available: true,
@@ -860,6 +868,40 @@ mod tests {
         };
         registry.register(Box::new(Fake)).unwrap();
         assert_eq!(registry.descriptors()[0].capabilities, vec!["messages"]);
+    }
+
+    /// The descriptor is the router's only source of truth about what a harness
+    /// can start. OpenCode's read-only launch guard fails closed, so the
+    /// descriptor must not advertise a mode the adapter always rejects.
+    #[test]
+    fn opencode_never_advertises_the_read_only_sandbox_it_refuses_to_start() {
+        let registry = AdapterRegistry::built_in().unwrap();
+        let opencode = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "opencode")
+            .expect("opencode adapter is registered");
+        assert!(!opencode.supports_sandbox(SandboxMode::ReadOnly));
+        assert!(opencode.supports_sandbox(SandboxMode::WorkspaceWrite));
+        assert!(opencode.supports_sandbox(SandboxMode::DangerFullAccess));
+        for descriptor in registry.descriptors() {
+            assert!(
+                !descriptor.sandbox_modes.is_empty(),
+                "{} must declare its sandbox modes",
+                descriptor.id
+            );
+        }
+        for other in registry
+            .descriptors()
+            .into_iter()
+            .filter(|descriptor| descriptor.id != "opencode")
+        {
+            assert!(
+                other.supports_sandbox(SandboxMode::ReadOnly),
+                "{} runs read-only workers",
+                other.id
+            );
+        }
     }
 
     #[test]

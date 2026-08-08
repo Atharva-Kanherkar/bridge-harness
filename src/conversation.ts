@@ -33,6 +33,9 @@ const LIFECYCLE_KINDS = new Set([
   "command.started", "command.completed",
   "file_change.started", "file_change.completed",
   "item.started", "item.completed",
+  // A mirrored child approval is blocked-then-resolved under one item id; folding
+  // keeps the durable projection from showing both halves as separate alerts.
+  "delegation.blocked",
 ]);
 
 /** Project immutable forest entries into UI items with entry-derived, branch-stable keys. */
@@ -174,7 +177,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "plan.updated" || event.kind.startsWith("plan.")) {
       items.set("current-plan", { key:"current-plan", type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
-    if (event.kind === "delegation.spawned" || event.kind === "delegation.result" || event.kind === "delegation.rejected") {
+    if (event.kind === "delegation.spawned" || event.kind === "delegation.result" || event.kind === "delegation.rejected" || event.kind === "delegation.blocked") {
       items.set(itemKey, { key:itemKey, type:"delegation", eventId:event.id, role:"system", status:event.status ?? undefined, title:event.title ?? undefined, text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
     if (event.kind === "approval.requested") {

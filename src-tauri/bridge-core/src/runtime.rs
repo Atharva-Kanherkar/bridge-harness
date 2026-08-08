@@ -88,6 +88,19 @@ impl Drop for SessionLifecycleClaim<'_> {
 /// only covers the alive-but-silent case.
 pub const WORKER_STALL_TIMEOUT_SECONDS: u64 = 600;
 
+/// A worker parked in `waiting` on a human approval is deliberately idle, so the
+/// stall watchdog skips it. That used to mean it was excluded from *every*
+/// watchdog and could sit unreported forever. This is the separate approval
+/// deadline: past it, the worker is resolved to a terminal typed result that
+/// names the unanswered approval, which unblocks the parent.
+pub const WORKER_APPROVAL_TIMEOUT_SECONDS: i64 = 30 * 60;
+
+/// A verification attempt whose planned checks have not reached a terminal state
+/// within this window is escalated to a terminal failure. Without a deadline an
+/// attempt with an unrunnable check stays `verifying` forever and the parent
+/// never becomes ready.
+pub const COMPLETION_VERIFY_TIMEOUT_SECONDS: i64 = 45 * 60;
+
 /// Bookkeeping for the multi-agent delegation tree.
 #[derive(Default)]
 pub struct DelegationState {
@@ -191,6 +204,9 @@ impl BridgeCore {
         let telemetry_connection = store::open_telemetry(&telemetry_db_path)?;
         session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)?;
         session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)?;
+        // Adoption state must survive restart: a pending row whose worktree is
+        // gone would otherwise block its parent forever.
+        crate::worker_adoption::recover(&connection)?;
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)?;
         let _ = store::export_history_snapshot(&connection, &snapshot_dir);
         let opencode_config = agent_config::state(&connection)?

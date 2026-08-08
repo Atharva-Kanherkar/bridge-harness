@@ -194,6 +194,29 @@ pub struct ModelOption {
     pub default_for_tier: bool,
 }
 
+/// Isolation level a worker runs under. The wire values match the sandbox names
+/// the router records on each candidate, so a descriptor's declaration and a
+/// route decision are directly comparable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl SandboxMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::DangerFullAccess => "danger_full_access",
+        }
+    }
+
+    pub const ALL: [Self; 3] = [Self::ReadOnly, Self::WorkspaceWrite, Self::DangerFullAccess];
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdapterDescriptor {
@@ -202,9 +225,23 @@ pub struct AdapterDescriptor {
     pub available: bool,
     pub version: Option<String>,
     pub capabilities: Vec<String>,
+    /// Sandbox modes this harness can actually start in, including transport
+    /// constraints. A harness that cannot run read-only must not advertise it:
+    /// the router uses this to exclude routes that are guaranteed to fail at
+    /// adapter startup instead of discovering the failure after spawning.
+    #[serde(default)]
+    pub sandbox_modes: Vec<SandboxMode>,
     pub unavailable_reason: Option<String>,
     pub models: Vec<ModelOption>,
     pub default_model: Option<String>,
+}
+
+impl AdapterDescriptor {
+    /// An empty declaration is treated as "unconstrained" so third-party or
+    /// replayed descriptors are never silently excluded.
+    pub fn supports_sandbox(&self, mode: SandboxMode) -> bool {
+        self.sandbox_modes.is_empty() || self.sandbox_modes.contains(&mode)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
