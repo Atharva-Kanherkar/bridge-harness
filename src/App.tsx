@@ -470,6 +470,13 @@ export function App() {
     const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
     setForest(current => current ? { ...current, completion } : current);
   }, []);
+  // The "refresh" half of a stale-base warning. A strict fast-forward, so it
+  // refuses rather than rewrites when the workspace has its own commits.
+  const refreshWorkspaceBase = useCallback(async () => {
+    if (!session) throw new Error("Open a session before refreshing its workspace");
+    await bridgeApi.refreshWorkspaceBase(session.id);
+    setForest(await bridgeApi.sessionForest(session.id));
+  }, [session]);
   async function applySlash(command: import("./types").SlashCommand) {
     if (session?.kind === "direct" && command.harness !== session.harness) {
       const adapter = adapters.find(item => item.id === command.harness);
@@ -577,6 +584,7 @@ export function App() {
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   completion={forest?.completion}
                   onWaiveCompletion={waiveCompletion}
+                  onRefreshBase={refreshWorkspaceBase}
                   continuationFidelity={session?.continuationFidelity}
                   preview={false}
                   working={turnActive}

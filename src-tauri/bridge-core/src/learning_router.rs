@@ -474,15 +474,19 @@ fn tier_rank(tier: CapabilityTier) -> u8 {
     }
 }
 
-fn sandbox_for(request: &DelegationRequest) -> String {
+pub fn sandbox_mode_for(request: &DelegationRequest) -> crate::model::SandboxMode {
+    use crate::model::SandboxMode;
     match request.write_mode {
-        crate::delegation::WriteMode::ReadOnly => "read_only",
+        crate::delegation::WriteMode::ReadOnly => SandboxMode::ReadOnly,
         crate::delegation::WriteMode::Shared | crate::delegation::WriteMode::Isolated => {
-            "workspace_write"
+            SandboxMode::WorkspaceWrite
         }
-        crate::delegation::WriteMode::Full => "danger_full_access",
+        crate::delegation::WriteMode::Full => SandboxMode::DangerFullAccess,
     }
-    .into()
+}
+
+fn sandbox_for(request: &DelegationRequest) -> String {
+    sandbox_mode_for(request).as_str().into()
 }
 
 fn build_candidates(
@@ -491,9 +495,14 @@ fn build_candidates(
     unavailable_by_harness: &BTreeMap<String, (bool, bool)>,
 ) -> Vec<RouteCandidate> {
     let minimum_rank = tier_rank(request.capability_tier);
+    let sandbox_mode = sandbox_mode_for(request);
     descriptors
         .iter()
         .flat_map(|descriptor| {
+            // A harness that cannot start in the requested sandbox mode is not a
+            // candidate at all: reserving it would create a worker session that
+            // the adapter is guaranteed to reject at startup.
+            let sandbox_supported = descriptor.supports_sandbox(sandbox_mode);
             descriptor.models.iter().filter_map(move |model| {
                 if tier_rank(model.tier) < minimum_rank {
                     return None;
@@ -511,7 +520,7 @@ fn build_candidates(
                     capabilities: descriptor.capabilities.clone(),
                     available: descriptor.available,
                     platform_supported: true,
-                    permission_eligible: true,
+                    permission_eligible: sandbox_supported,
                     quota_available,
                     context_available,
                     risk_eligible: true,
@@ -734,14 +743,57 @@ pub fn route(
         let selected = candidate_for_key(&decision.candidates, &key).ok_or_else(|| {
             BridgeError::Invalid(format!("router selected unknown candidate {key}"))
         })?;
+        // A permission ceiling is a hard incompatibility, not a preference. A
+        // manual or pinned route must fail here with something the caller can
+        // act on rather than reserving a worker the adapter will refuse.
+        if selected
+            .exclusions
+            .contains(&CandidateExclusion::PermissionCeiling)
+        {
+            let sandbox = sandbox_mode_for(request);
+            let alternatives = descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.available
+                        && !descriptor.models.is_empty()
+                        && descriptor.supports_sandbox(sandbox)
+                })
+                .map(|descriptor| descriptor.id.as_str())
+                .collect::<Vec<_>>();
+            return Err(BridgeError::Invalid(format!(
+                "{} cannot run a {} worker, so this delegation was not started. {}",
+                selected.candidate.harness,
+                sandbox.as_str(),
+                if alternatives.is_empty() {
+                    "No installed harness supports this sandbox mode; change the write mode or install another harness.".to_owned()
+                } else {
+                    format!(
+                        "Re-delegate with a compatible harness ({}) or change the write mode.",
+                        alternatives.join(", ")
+                    )
+                }
+            )));
+        }
         routed.harness = Some(selected.candidate.harness.clone());
         routed.model = Some(selected.candidate.model.clone());
         routed.capability_tier = selected.candidate.tier;
         routed.effort = selected.candidate.effort;
     } else if preferences.mode == RouterMode::Autonomous || independent_verification {
-        return Err(BridgeError::Invalid(
-            "learning router found no eligible route under the required constraints".into(),
-        ));
+        let sandbox = sandbox_mode_for(request);
+        let sandbox_blocked_every_candidate = !decision.candidates.is_empty()
+            && decision.candidates.iter().all(|candidate| {
+                candidate
+                    .exclusions
+                    .contains(&CandidateExclusion::PermissionCeiling)
+            });
+        return Err(BridgeError::Invalid(if sandbox_blocked_every_candidate {
+            format!(
+                "no installed harness can run a {} worker, so this delegation was not started; change the write mode or install a compatible harness",
+                sandbox.as_str()
+            )
+        } else {
+            "learning router found no eligible route under the required constraints".into()
+        }));
     }
     Ok(RoutedDelegation {
         request: routed,
@@ -1219,7 +1271,7 @@ mod tests {
     use super::*;
     use crate::{
         delegation::{OutputContract, SuggestedNextAction, WorkerRole, WriteMode, SCHEMA_VERSION},
-        model::{ModelOption, UsageLedgerRow, WorkerRuntimeRecord},
+        model::{ModelOption, SandboxMode, UsageLedgerRow, WorkerRuntimeRecord},
         store,
     };
     use serde_json::json;
@@ -1298,6 +1350,7 @@ mod tests {
         [("codex", "codex-standard"), ("claude", "claude-standard")]
             .into_iter()
             .map(|(harness, model)| AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
                 id: harness.into(),
                 label: harness.into(),
                 available: true,
@@ -1313,6 +1366,25 @@ mod tests {
                 default_model: Some(model.into()),
             })
             .collect()
+    }
+
+    /// Autonomous mode normally requires 20 completed shadow outcomes. These
+    /// tests exercise the sandbox constraint, not the activation gate, so the
+    /// preference row is written directly.
+    fn force_autonomous(db: &Connection, workspace_id: &str) {
+        db.execute(
+            "INSERT INTO router_preferences(workspace_id,mode,preferences,updated_at) VALUES(?1,'autonomous',?2,'now')
+             ON CONFLICT(workspace_id) DO UPDATE SET mode=excluded.mode,preferences=excluded.preferences",
+            params![
+                workspace_id,
+                serde_json::to_string(&RouterPreferences {
+                    mode: RouterMode::Autonomous,
+                    ..RouterPreferences::default()
+                })
+                .unwrap()
+            ],
+        )
+        .unwrap();
     }
 
     fn routing_db() -> Connection {
@@ -1748,5 +1820,107 @@ mod tests {
         assert!(fixture
             .iter()
             .all(|row| row.normalized_cost > 0 && row.latency_ms > 0));
+    }
+
+    /// A harness that cannot start read-only must be excluded before a worker
+    /// session exists, not discovered when its adapter refuses to launch.
+    #[test]
+    fn sandbox_incompatible_harness_is_excluded_with_a_permission_ceiling() {
+        let mut descriptors = descriptors();
+        descriptors[1].sandbox_modes =
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        let read_only = request();
+        assert_eq!(read_only.write_mode, WriteMode::ReadOnly);
+        let candidates = build_candidates(&descriptors, &read_only, &BTreeMap::new());
+        let claude = candidates
+            .iter()
+            .find(|candidate| candidate.harness == "claude")
+            .unwrap();
+        let codex = candidates
+            .iter()
+            .find(|candidate| candidate.harness == "codex")
+            .unwrap();
+        assert!(!claude.permission_eligible);
+        assert!(codex.permission_eligible);
+
+        let mut writing = read_only.clone();
+        writing.write_mode = WriteMode::Isolated;
+        writing.owned_paths = vec!["src/**".into()];
+        assert!(build_candidates(&descriptors, &writing, &BTreeMap::new())
+            .iter()
+            .all(|candidate| candidate.permission_eligible));
+
+        let evaluated = evaluate(EvaluationInput {
+            candidates,
+            preferences: RouterPreferences::default(),
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into(), "commands".into()],
+            remaining_capability_units: 24,
+            budget_preference: None,
+            latency_preference: None,
+        });
+        let claude = evaluated
+            .iter()
+            .find(|item| item.candidate.harness == "claude")
+            .unwrap();
+        assert!(claude
+            .exclusions
+            .contains(&CandidateExclusion::PermissionCeiling));
+        assert!(evaluated
+            .iter()
+            .find(|item| item.candidate.harness == "codex")
+            .unwrap()
+            .eligible());
+    }
+
+    /// Autonomous routing must pick the compatible harness rather than the
+    /// harness that would fail at startup.
+    #[test]
+    fn autonomous_routing_avoids_a_read_only_incompatible_harness() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].sandbox_modes =
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        force_autonomous(&db, "w");
+        let routed = route(&db, "parent", "turn-sandbox", &request(), &descriptors).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+    }
+
+    /// A manual pin at an incompatible harness must return an actionable
+    /// incompatibility instead of reserving a doomed worker.
+    #[test]
+    fn pinned_incompatible_harness_returns_an_actionable_incompatibility() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].sandbox_modes =
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        pinned.model = Some("codex-standard".into());
+        let error = route(&db, "parent", "turn-pinned", &pinned, &descriptors)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("codex cannot run a read_only worker"), "{error}");
+        assert!(error.contains("claude"), "{error}");
+    }
+
+    #[test]
+    fn no_compatible_harness_explains_the_sandbox_mode() {
+        let db = routing_db();
+        let descriptors = descriptors()
+            .into_iter()
+            .map(|mut descriptor| {
+                descriptor.sandbox_modes = vec![SandboxMode::WorkspaceWrite];
+                descriptor
+            })
+            .collect::<Vec<_>>();
+        force_autonomous(&db, "w");
+        let error = route(&db, "parent", "turn-none", &request(), &descriptors)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no installed harness can run a read_only worker"),
+            "{error}"
+        );
     }
 }

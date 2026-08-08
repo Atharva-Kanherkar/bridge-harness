@@ -293,6 +293,48 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
 }
 
 #[test]
+fn base_branch_divergence_mirrors_core() {
+    assert_mirrors::<wire::BaseBranchDivergence>(&crate::git::BaseBranchDivergence {
+        base_ref: Some("origin/main".into()),
+        base_commit: Some("90ce51c".into()),
+        head: Some("2b43aaad9b36".into()),
+        branch: Some("bridge/task".into()),
+        ahead: 1,
+        behind: 67,
+        ref_age_seconds: Some(3_600),
+        fetch_attempted: true,
+        fetched: false,
+        dirty: true,
+        unavailable_reason: None,
+    });
+}
+
+#[test]
+fn worker_repository_binding_mirrors_core() {
+    assert_mirrors::<wire::WorkerRepositoryBinding>(
+        &crate::worker_adoption::WorkerRepositoryBinding {
+            session_id: "child".into(),
+            parent_session_id: "parent".into(),
+            workspace_id: "w".into(),
+            worktree_path: "/repos/demo/worktrees/workers/oslo/child".into(),
+            worktree_branch: "bridge/task-worker-child".into(),
+            task_worktree_path: "/repos/demo/worktrees/oslo".into(),
+            state: crate::worker_adoption::STATE_PENDING.into(),
+            head: Some("2b43aaad9b36".into()),
+            base_commit: Some("90ce51c".into()),
+            base_branch: Some("bridge/task".into()),
+            baseline_dirty_paths: vec![],
+            changed_paths: vec!["src/components/Markdown.tsx".into()],
+            diffstat: Some("1 file(s) changed, 12 insertion(s), 3 deletion(s)".into()),
+            dirty: false,
+            detail: None,
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        },
+    );
+}
+
+#[test]
 fn completion_payloads_mirror_core() {
     assert_mirrors::<wire::CheckRun>(&completion::CheckRun {
         check_id: "cargo-test".into(),
@@ -755,6 +797,12 @@ fn result_payloads_mirror_core() {
         telemetry_database: "/data/bridge-telemetry.db".into(),
         snapshot_directory: "/data/history-snapshots".into(),
         adapters: vec![model::AdapterDescriptor {
+            // Deliberately a partial declaration so the mirror proves the wire
+            // shape carries the exact list rather than a defaulted one.
+            sandbox_modes: vec![
+                model::SandboxMode::ReadOnly,
+                model::SandboxMode::WorkspaceWrite,
+            ],
             id: "codex".into(),
             label: "Codex".into(),
             available: true,

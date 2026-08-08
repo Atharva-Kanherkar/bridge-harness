@@ -174,6 +174,26 @@ pub fn dispatch(
             let manifest = into_core(method, &p.manifest)?;
             reply(api::register_verifier_manifest(core, &p.source, &manifest))
         }
+        MethodName::WorkspaceBaseDivergence => {
+            let p: wire::WorkspaceBaseDivergenceParams = decode(method, params)?;
+            reply(api::workspace_base_divergence(core, &p.session_id, p.fetch))
+        }
+        MethodName::RefreshWorkspaceBase => {
+            let p: wire::RefreshWorkspaceBaseParams = decode(method, params)?;
+            reply(api::refresh_workspace_base(core, &p.session_id))
+        }
+        MethodName::PendingWorkerAdoptions => {
+            let p: wire::PendingWorkerAdoptionsParams = decode(method, params)?;
+            reply(api::pending_worker_adoptions(core, &p.session_id))
+        }
+        MethodName::AdoptWorkerWorktree => {
+            let p: wire::AdoptWorkerWorktreeParams = decode(method, params)?;
+            reply(api::adopt_worker_worktree(core, &p.session_id))
+        }
+        MethodName::DiscardWorkerWorktree => {
+            let p: wire::DiscardWorkerWorktreeParams = decode(method, params)?;
+            reply(api::discard_worker_worktree(core, &p.session_id, &p.reason))
+        }
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

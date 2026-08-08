@@ -172,6 +172,13 @@ typed_methods![
     (WaiveCompletion, WaiveCompletionParams, CompletionSummary),
     (RegisterVerifierManifest, RegisterVerifierManifestParams, UnitResult),
     (VerifierCandidates, VerifierCandidatesParams, VerifierCandidatesResult),
+    // base-branch divergence
+    (WorkspaceBaseDivergence, WorkspaceBaseDivergenceParams, BaseBranchDivergence),
+    (RefreshWorkspaceBase, RefreshWorkspaceBaseParams, BaseBranchDivergence),
+    // worker worktree adoption
+    (PendingWorkerAdoptions, PendingWorkerAdoptionsParams, PendingWorkerAdoptionsResult),
+    (AdoptWorkerWorktree, AdoptWorkerWorktreeParams, WorkerRepositoryBinding),
+    (DiscardWorkerWorktree, DiscardWorkerWorktreeParams, WorkerRepositoryBinding),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),

@@ -32,6 +32,13 @@
           },
           "type": "array"
         },
+        "sandboxModes": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/SandboxMode"
+          },
+          "type": "array"
+        },
         "unavailableReason": {
           "type": [
             "string",
@@ -86,6 +93,15 @@
         "tier"
       ],
       "type": "object"
+    },
+    "SandboxMode": {
+      "description": "Mirrors `bridge_core::model::SandboxMode`.",
+      "enum": [
+        "read_only",
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "type": "string"
     }
   },
   "description": "`health/health`'s result. Mirrors `bridge_core::api::Health`.",

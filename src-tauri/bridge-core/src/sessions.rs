@@ -832,6 +832,7 @@ mod tests {
         }
         fn descriptor(&self) -> AdapterDescriptor {
             AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
                 id: "codex".into(),
                 label: "Codex".into(),
                 available: true,

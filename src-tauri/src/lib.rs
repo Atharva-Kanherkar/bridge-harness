@@ -245,6 +245,48 @@ async fn waive_completion(
 }
 
 #[tauri::command]
+async fn workspace_base_divergence(
+    session_id: String,
+    fetch: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::BaseBranchDivergence, BridgeError> {
+    api::workspace_base_divergence(state.inner(), &session_id, fetch)
+}
+
+#[tauri::command]
+async fn refresh_workspace_base(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::BaseBranchDivergence, BridgeError> {
+    api::refresh_workspace_base(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn pending_worker_adoptions(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::worker_adoption::WorkerRepositoryBinding>, BridgeError> {
+    api::pending_worker_adoptions(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn adopt_worker_worktree(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worker_adoption::WorkerRepositoryBinding, BridgeError> {
+    api::adopt_worker_worktree(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn discard_worker_worktree(
+    session_id: String,
+    reason: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worker_adoption::WorkerRepositoryBinding, BridgeError> {
+    api::discard_worker_worktree(state.inner(), &session_id, &reason)
+}
+
+#[tauri::command]
 async fn register_verifier_manifest(
     source: String,
     manifest: completion::VerifierManifest,
@@ -918,6 +960,7 @@ fn setup_embedded(
     let core = Arc::new(core);
     app.manage(core.clone());
     live_turn::start_worker_maintenance(core.clone());
+    live_turn::start_completion_check_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
@@ -954,6 +997,11 @@ pub fn run() {
             create_completion_plan,
             record_completion_check,
             waive_completion,
+            workspace_base_divergence,
+            refresh_workspace_base,
+            pending_worker_adoptions,
+            adopt_worker_worktree,
+            discard_worker_worktree,
             register_verifier_manifest,
             verifier_candidates,
             get_router_preferences,
@@ -2282,15 +2330,16 @@ mod tests {
             .last()
             .unwrap();
         assert_eq!(approval.kind, "approval.requested");
-        let (turn_id, approved_request) = resolve_policy_delegation_approval(
+        let resolved = resolve_policy_delegation_approval(
             &db,
             "parent",
             approval.sequence,
             "accept",
             &approval.payload,
         )
-        .unwrap()
         .unwrap();
+        assert!(resolved.accepted);
+        assert_eq!(resolved.approval_id, approval.payload["approvalId"]);
         assert_eq!(
             db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| {
                 row.get::<_, String>(0)
@@ -2298,12 +2347,12 @@ mod tests {
             .unwrap(),
             "working"
         );
-        assert_eq!(turn_id, "turn-approval");
+        assert_eq!(resolved.turn_id, "turn-approval");
         assert!(reserve_worker_launch(
             &db,
             "parent",
-            &turn_id,
-            &approved_request,
+            &resolved.turn_id,
+            &resolved.request,
             "gpt-5.6-terra",
             true,
         )
@@ -2317,6 +2366,161 @@ mod tests {
             &approval.payload,
         )
         .is_err());
+    }
+
+    /// Cold start, no-approval variant: an ordinary "implement X" request where
+    /// the user *did* declare a write scope goes straight through, with no
+    /// approval card and no rejection entry.
+    #[test]
+    fn cold_start_write_delegation_with_a_declared_scope_launches_without_approval() {
+        let db = policy_fixture();
+        let outcome = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cold-declared",
+            &policy_request(&["src/**"]),
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+
+        let WorkerReservationOutcome::Reserved(reservation) = outcome else {
+            panic!("a declared write scope must authorize the launch outright");
+        };
+        assert_eq!(reservation.depth, 1);
+        // `isolated` always needs its own worktree, even as the only writer.
+        assert!(matches!(
+            &reservation.outcome.decision,
+            policy::RouteDecision::SpawnWorker(spec) if spec.requires_child_worktree
+        ));
+        let kinds = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.kind)
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"delegation.approved".to_owned()));
+        assert!(!kinds.contains(&"approval.requested".to_owned()));
+        assert!(!kinds.contains(&"delegation.rejected".to_owned()));
+    }
+
+    /// Cold start, approval-required variant: the ordinary product flow, where the
+    /// user never learned the `Write scope:` syntax. The launch must be reported as
+    /// approval-pending — never as a failure — and must complete after acceptance.
+    #[test]
+    fn cold_start_write_delegation_without_a_declared_scope_awaits_approval_then_launches() {
+        let db = policy_fixture();
+        // Provenance trusts only the *latest* durable user message, so a later
+        // ordinary request supersedes the fixture's declaration — exactly the
+        // normal product flow, where the user never learned the syntax.
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({
+                    "text": "Please render Mermaid, math, and sandboxed HTML inline in chat and open a PR"
+                }),
+            )
+            .unwrap();
+        let request = policy_request(&["src/**"]);
+
+        let outcome = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cold",
+            &request,
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+
+        let WorkerReservationOutcome::AwaitingApproval(pending) = outcome else {
+            panic!("an agent-authored write scope must raise an approval, not launch or fail");
+        };
+        assert_eq!(
+            pending.reason,
+            policy::RouteReason::OwnedPathProvenanceRequired
+        );
+        // Nothing terminal was recorded and nothing was consumed.
+        let entries = store::session_entries(&db, "parent").unwrap();
+        assert!(entries.iter().all(|entry| entry.kind != "delegation.rejected"));
+        let approval = entries.into_iter().last().unwrap();
+        assert_eq!(approval.kind, "approval.requested");
+        assert_eq!(approval.payload["approvalId"], pending.approval_id);
+        // The card carries the machine-readable reason and its remediation, so
+        // neither the user nor the orchestrator has to guess the cause.
+        assert_eq!(approval.payload["reason"], "owned_path_provenance_required");
+        assert!(approval.payload["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("Write scope:"));
+        assert!(approval.payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("owned_path_provenance_required"));
+        assert_eq!(approval.payload["requestedOwnedPaths"][0], "src/**");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+
+        // A repeat of the same delegation re-reports the pending approval rather
+        // than stacking cards or failing — this is what stopped the orchestrator
+        // from producing duplicate implementation workers.
+        let repeated = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cold",
+            &request,
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+        let WorkerReservationOutcome::AwaitingApproval(repeat_pending) = repeated else {
+            panic!("a repeated approval-pending launch stays approval-pending");
+        };
+        assert_eq!(repeat_pending.approval_id, pending.approval_id);
+        assert_eq!(
+            store::session_entries(&db, "parent")
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.kind == "approval.requested")
+                .count(),
+            1
+        );
+
+        let resolved = resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .unwrap();
+        assert!(resolved.accepted);
+        assert_eq!(resolved.turn_id, "turn-cold");
+
+        let launched = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            &resolved.turn_id,
+            &resolved.request,
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(launched, WorkerReservationOutcome::Reserved(_)));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -2344,7 +2548,7 @@ mod tests {
             .into_iter()
             .last()
             .unwrap();
-        assert!(resolve_policy_delegation_approval(
+        assert!(!resolve_policy_delegation_approval(
             &db,
             "parent",
             approval.sequence,
@@ -2352,7 +2556,7 @@ mod tests {
             &approval.payload,
         )
         .unwrap()
-        .is_none());
+        .accepted);
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
                 .get::<_, i64>(0))

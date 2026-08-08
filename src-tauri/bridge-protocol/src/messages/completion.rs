@@ -76,6 +76,87 @@ pub struct CreateCompletionPlanParams {
     pub markdown_committed: bool,
 }
 
+/// How far a workspace has drifted from the branch it builds on. Mirrors
+/// `bridge_core::git::BaseBranchDivergence`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BaseBranchDivergence {
+    pub base_ref: Option<String>,
+    pub base_commit: Option<String>,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub ahead: i64,
+    pub behind: i64,
+    pub ref_age_seconds: Option<i64>,
+    pub fetch_attempted: bool,
+    pub fetched: bool,
+    pub dirty: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceBaseDivergenceParams {
+    pub session_id: String,
+    /// Consult the network for a fresh base ref. False measures against the last
+    /// fetched ref, which the result reports.
+    pub fetch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RefreshWorkspaceBaseParams {
+    pub session_id: String,
+}
+
+/// Where a worker's repository output stands. Mirrors
+/// `bridge_core::worker_adoption::WorkerRepositoryBinding`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerRepositoryBinding {
+    pub session_id: String,
+    pub parent_session_id: String,
+    pub workspace_id: String,
+    pub worktree_path: String,
+    pub worktree_branch: String,
+    pub task_worktree_path: String,
+    /// `in_place`, `pending_adoption`, `adopted`, `discarded`, or `empty`.
+    pub state: String,
+    pub head: Option<String>,
+    pub base_commit: Option<String>,
+    pub base_branch: Option<String>,
+    pub baseline_dirty_paths: Vec<String>,
+    pub changed_paths: Vec<String>,
+    pub diffstat: Option<String>,
+    pub dirty: bool,
+    pub detail: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingWorkerAdoptionsParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct PendingWorkerAdoptionsResult(pub Vec<WorkerRepositoryBinding>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdoptWorkerWorktreeParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscardWorkerWorktreeParams {
+    pub session_id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecordCompletionCheckParams {

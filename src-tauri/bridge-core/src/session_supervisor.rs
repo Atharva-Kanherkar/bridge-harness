@@ -13,6 +13,11 @@ use std::{collections::HashSet, str::FromStr};
 
 pub struct SessionSupervisor;
 
+/// Where derived repository evidence rides on a `worker.result` entry. Prefixed
+/// like the other Bridge annotations so it is stripped before the payload is
+/// deserialized back into a typed `WorkerResult`.
+pub const REPOSITORY_EVIDENCE_KEY: &str = "_bridgeRepoEvidence";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportedWorkerResult {
     pub parent_session_id: String,
@@ -143,6 +148,21 @@ impl SessionSupervisor {
             "UPDATE worker_runtime SET lifecycle_state=?2,updated_at=?3 WHERE session_id=?1",
             params![session_id, next.as_str(), now],
         )?;
+        // The approval deadline measures `waiting_since`, so entering and leaving
+        // `waiting` must always move it — otherwise a resolved approval would
+        // keep an expired-looking stamp and the deadline would fire on a worker
+        // that is back at work.
+        if next == WorkerLifecycleState::Waiting {
+            transaction.execute(
+                "UPDATE worker_runtime SET waiting_since=COALESCE(waiting_since,?2),waiting_reason=COALESCE(?3,waiting_reason) WHERE session_id=?1",
+                params![session_id, now, reason],
+            )?;
+        } else if current == WorkerLifecycleState::Waiting {
+            transaction.execute(
+                "UPDATE worker_runtime SET waiting_since=NULL,waiting_reason=NULL WHERE session_id=?1",
+                params![session_id],
+            )?;
+        }
         transaction.execute(
             "UPDATE sessions SET status=?2,ended_at=CASE WHEN ?2 IN ('completed','cancelled') THEN ?3 ELSE ended_at END WHERE id=?1",
             params![session_id, next.as_str(), now],
@@ -159,6 +179,19 @@ impl SessionSupervisor {
         db: &Connection,
         session_id: &str,
         result: &WorkerResult,
+    ) -> Result<Option<ReportedWorkerResult>, BridgeError> {
+        Self::record_result_with_evidence(db, session_id, result, None)
+    }
+
+    /// Record a worker result, optionally carrying the repository evidence it was
+    /// checked against. The evidence rides along on the canonical parent-facing
+    /// entry so the parent sees the derived revision and diffstat, not only the
+    /// worker's prose.
+    pub fn record_result_with_evidence(
+        db: &Connection,
+        session_id: &str,
+        result: &WorkerResult,
+        evidence: Option<&serde_json::Value>,
     ) -> Result<Option<ReportedWorkerResult>, BridgeError> {
         result.validate().map_err(BridgeError::Invalid)?;
         let transaction = db.unchecked_transaction()?;
@@ -178,6 +211,9 @@ impl SessionSupervisor {
         let mut payload = serde_json::to_value(result)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         payload["childSessionId"] = serde_json::Value::String(session_id.to_owned());
+        if let Some(evidence) = evidence {
+            payload[REPOSITORY_EVIDENCE_KEY] = evidence.clone();
+        }
         session_forest::append_in_transaction(
             &transaction,
             session_id,
@@ -250,6 +286,7 @@ impl SessionSupervisor {
             object.remove("childSessionId");
             object.remove("_bridgeTypedSchemaVersion");
             object.remove("_bridgeRepoState");
+            object.remove(REPOSITORY_EVIDENCE_KEY);
             let result: WorkerResult = serde_json::from_value(payload)
                 .map_err(|error| BridgeError::Invalid(format!("worker evidence {} is malformed: {error}", entry.id)))?;
             result.validate().map_err(BridgeError::Invalid)?;

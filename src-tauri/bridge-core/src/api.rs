@@ -18,7 +18,7 @@ use crate::{
     adapters, agent, agent_config, binary, browser_bridge, completion, git, learning_job,
     learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
+    worker_adoption, worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -293,23 +293,64 @@ pub fn resolve_approval(
             .cloned()
     };
     if detail("approvalType").as_ref().and_then(Value::as_str) == Some("delegation_path_scope") {
-        let launch = live_turn::resolve_policy_delegation_approval(
+        let resolved = live_turn::resolve_policy_delegation_approval(
             &db, session_id, event_id, decision, &data,
         )?;
         drop(db);
-        if let Some((turn_id, request)) = launch {
-            match live_turn::launch_worker_outcome(core, session_id, &turn_id, &request, true) {
-                live_turn::WorkerLaunchOutcome::Launched(_)
-                | live_turn::WorkerLaunchOutcome::Queued => {}
-                live_turn::WorkerLaunchOutcome::Failed => {
-                    let db = core.db.lock().unwrap();
-                    live_turn::record_approved_launch_failure(&db, session_id, &turn_id, &request)?;
-                    drop(db);
-                    core.events.publish(CoreEvent::StateChanged);
-                    return Err(BridgeError::Invalid(
-                        "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
-                    ));
-                }
+        if !resolved.accepted {
+            live_turn::report_delegation_approval_declined(
+                core,
+                session_id,
+                &resolved.turn_id,
+                &resolved.approval_id,
+                decision,
+                &resolved.request,
+            );
+            return Ok(());
+        }
+        match live_turn::launch_worker_outcome(
+            core,
+            session_id,
+            &resolved.turn_id,
+            &resolved.request,
+            true,
+        ) {
+            live_turn::WorkerLaunchOutcome::Launched(child_session_id) => {
+                live_turn::report_approved_launch_adopted(
+                    core,
+                    session_id,
+                    &resolved.turn_id,
+                    &resolved.approval_id,
+                    Some(&child_session_id),
+                    false,
+                );
+            }
+            live_turn::WorkerLaunchOutcome::Queued => {
+                live_turn::report_approved_launch_adopted(
+                    core,
+                    session_id,
+                    &resolved.turn_id,
+                    &resolved.approval_id,
+                    None,
+                    true,
+                );
+            }
+            // An approved scope that still routes to approval would loop the
+            // user; treat it as a launch failure so the turn terminates.
+            live_turn::WorkerLaunchOutcome::AwaitingApproval
+            | live_turn::WorkerLaunchOutcome::Failed => {
+                let db = core.db.lock().unwrap();
+                live_turn::record_approved_launch_failure(
+                    &db,
+                    session_id,
+                    &resolved.turn_id,
+                    &resolved.request,
+                )?;
+                drop(db);
+                core.events.publish(CoreEvent::StateChanged);
+                return Err(BridgeError::Invalid(
+                    "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
+                ));
             }
         }
         core.events.publish(CoreEvent::StateChanged);
@@ -380,6 +421,12 @@ pub fn resolve_approval(
     )?;
     drop(db);
     core.events.publish(CoreEvent::Agent(event));
+    // Resolving from any surface — the child conversation or the parent's
+    // mirrored card — must update the parent's view and the worker lifecycle
+    // together, so the two never disagree about whether the child is blocked.
+    if is_worker {
+        live_turn::notify_parent_child_left_waiting(core, session_id, decision);
+    }
     core.events.publish(CoreEvent::StateChanged);
     Ok(())
 }
@@ -771,6 +818,120 @@ pub fn verifier_candidates(
         change_labels,
         &available_capabilities.into_iter().collect(),
     )
+}
+
+// --- base-branch divergence ----------------------------------------------------
+
+/// How far this session's workspace has drifted from the branch it builds on.
+/// Read-only; `fetch` controls whether the network is consulted.
+pub fn workspace_base_divergence(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    fetch: bool,
+) -> Result<git::BaseBranchDivergence, BridgeError> {
+    // Resolve under the lock, run Git outside it: a fetch can be slow.
+    let path = store::repository_path_for_session(&core.db.lock().unwrap(), session_id)?
+        .ok_or_else(|| BridgeError::Invalid("this session has no connected repository".into()))?;
+    Ok(git::base_branch_divergence(&path, fetch))
+}
+
+/// The "refresh" choice offered by a stale-base warning: fast-forward the
+/// workspace onto its base ref. Refuses on a dirty tree, an active session, or
+/// any history that is not a pure fast-forward.
+pub fn refresh_workspace_base(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<git::BaseBranchDivergence, BridgeError> {
+    let (path, active) = {
+        let db = core.db.lock().unwrap();
+        let path = store::repository_path_for_session(&db, session_id)?.ok_or_else(|| {
+            BridgeError::Invalid("this session has no connected repository".into())
+        })?;
+        let active: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE (id=?1 OR parent_session_id=?1) AND status IN ('starting','working','resuming','checkpointing'))",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(true);
+        (path, active)
+    };
+    let divergence = git::fast_forward_to_base(&path, active)?;
+    {
+        let db = core.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "workspace",
+            "workspace.base_refreshed",
+            session_id,
+            &serde_json::to_string(&divergence).unwrap_or_default(),
+        );
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(divergence)
+}
+
+// --- worker worktree adoption --------------------------------------------------
+
+/// Children of this session whose changes exist only in their own worktree.
+pub fn pending_worker_adoptions(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<Vec<worker_adoption::WorkerRepositoryBinding>, BridgeError> {
+    worker_adoption::pending_for_parent(&core.db.lock().unwrap(), session_id)
+}
+
+/// Merge a worker's isolated worktree into the task checkout. Integration
+/// refuses to run against a dirty or active task worktree, so a rejected call
+/// leaves the work pending rather than losing it.
+pub fn adopt_worker_worktree(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<worker_adoption::WorkerRepositoryBinding, BridgeError> {
+    // Validate under the lock, merge with the lock released, settle under it
+    // again. `git merge` plus `git worktree remove` can take seconds, and holding
+    // the shared connection across them would stall every other session.
+    let plan = {
+        let db = core.db.lock().unwrap();
+        worker_adoption::plan_adoption(&db, session_id)?
+    };
+    let detail = worker_adoption::integrate(&plan)?;
+    let binding = {
+        let db = core.db.lock().unwrap();
+        let binding =
+            worker_adoption::settle_plan(&db, &plan, worker_adoption::STATE_ADOPTED, &detail)?;
+        completion::reconcile_parent_readiness(&db, &binding.parent_session_id)?;
+        binding
+    };
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(binding)
+}
+
+/// Throw a worker's isolated output away on purpose and release its worktree.
+pub fn discard_worker_worktree(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    reason: &str,
+) -> Result<worker_adoption::WorkerRepositoryBinding, BridgeError> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(BridgeError::Invalid(
+            "discarding a worker worktree requires a reason".into(),
+        ));
+    }
+    let plan = {
+        let db = core.db.lock().unwrap();
+        worker_adoption::plan_discard(&db, session_id)?
+    };
+    let binding = {
+        let db = core.db.lock().unwrap();
+        let binding =
+            worker_adoption::settle_plan(&db, &plan, worker_adoption::STATE_DISCARDED, reason)?;
+        completion::reconcile_parent_readiness(&db, &binding.parent_session_id)?;
+        binding
+    };
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(binding)
 }
 
 // --- routing -------------------------------------------------------------------

@@ -40,6 +40,11 @@ export type BridgeMethod =
   | "completion/waive_completion"
   | "completion/register_verifier_manifest"
   | "completion/verifier_candidates"
+  | "worktrees/workspace_base_divergence"
+  | "worktrees/refresh_workspace_base"
+  | "worktrees/pending_worker_adoptions"
+  | "worktrees/adopt_worker_worktree"
+  | "worktrees/discard_worker_worktree"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -118,6 +123,11 @@ export const BRIDGE_METHODS = [
   { method: "completion/waive_completion", domain: "completion", command: "waive_completion" },
   { method: "completion/register_verifier_manifest", domain: "completion", command: "register_verifier_manifest" },
   { method: "completion/verifier_candidates", domain: "completion", command: "verifier_candidates" },
+  { method: "worktrees/workspace_base_divergence", domain: "worktrees", command: "workspace_base_divergence" },
+  { method: "worktrees/refresh_workspace_base", domain: "worktrees", command: "refresh_workspace_base" },
+  { method: "worktrees/pending_worker_adoptions", domain: "worktrees", command: "pending_worker_adoptions" },
+  { method: "worktrees/adopt_worker_worktree", domain: "worktrees", command: "adopt_worker_worktree" },
+  { method: "worktrees/discard_worker_worktree", domain: "worktrees", command: "discard_worker_worktree" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -236,6 +246,11 @@ export interface BridgeMethodParams {
   "completion/waive_completion": WaiveCompletionParams;
   "completion/register_verifier_manifest": RegisterVerifierManifestParams;
   "completion/verifier_candidates": VerifierCandidatesParams;
+  "worktrees/workspace_base_divergence": WorkspaceBaseDivergenceParams;
+  "worktrees/refresh_workspace_base": RefreshWorkspaceBaseParams;
+  "worktrees/pending_worker_adoptions": PendingWorkerAdoptionsParams;
+  "worktrees/adopt_worker_worktree": AdoptWorkerWorktreeParams;
+  "worktrees/discard_worker_worktree": DiscardWorkerWorktreeParams;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -316,6 +331,11 @@ export interface BridgeMethodResults {
   "completion/waive_completion": CompletionSummary;
   "completion/register_verifier_manifest": UnitResult;
   "completion/verifier_candidates": VerifierCandidatesResult;
+  "worktrees/workspace_base_divergence": BaseBranchDivergence;
+  "worktrees/refresh_workspace_base": BaseBranchDivergence;
+  "worktrees/pending_worker_adoptions": PendingWorkerAdoptionsResult;
+  "worktrees/adopt_worker_worktree": WorkerRepositoryBinding;
+  "worktrees/discard_worker_worktree": WorkerRepositoryBinding;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -368,6 +388,7 @@ export interface AdapterDescriptor {
   id: string;
   label: string;
   models: ModelOption[];
+  sandboxModes?: SandboxMode[];
   unavailableReason?: string | null;
   version?: string | null;
 }
@@ -643,6 +664,8 @@ export interface RpcSuccess {
   result: unknown;
 }
 
+export type SandboxMode = "read_only" | "workspace_write" | "danger_full_access";
+
 export interface SecretInterception {
   detector: string;
   reference: string;
@@ -781,6 +804,26 @@ export interface WorkerLease {
   updatedAt: string;
   workspaceId: string;
   writeMode: string;
+}
+
+export interface WorkerRepositoryBinding {
+  baseBranch?: string | null;
+  baseCommit?: string | null;
+  baselineDirtyPaths: string[];
+  changedPaths: string[];
+  createdAt: string;
+  detail?: string | null;
+  diffstat?: string | null;
+  dirty: boolean;
+  head?: string | null;
+  parentSessionId: string;
+  sessionId: string;
+  state: string;
+  taskWorktreePath: string;
+  updatedAt: string;
+  workspaceId: string;
+  worktreeBranch: string;
+  worktreePath: string;
 }
 
 export interface WorkerRuntimeRecord {
@@ -1037,6 +1080,44 @@ export interface VerifierCandidatesParams {
 }
 
 export type VerifierCandidatesResult = VerifierCandidate[];
+
+export interface WorkspaceBaseDivergenceParams {
+  fetch: boolean;
+  sessionId: string;
+}
+
+export interface BaseBranchDivergence {
+  ahead: number;
+  baseCommit?: string | null;
+  baseRef?: string | null;
+  behind: number;
+  branch?: string | null;
+  dirty: boolean;
+  fetchAttempted: boolean;
+  fetched: boolean;
+  head?: string | null;
+  refAgeSeconds?: number | null;
+  unavailableReason?: string | null;
+}
+
+export interface RefreshWorkspaceBaseParams {
+  sessionId: string;
+}
+
+export interface PendingWorkerAdoptionsParams {
+  sessionId: string;
+}
+
+export type PendingWorkerAdoptionsResult = WorkerRepositoryBinding[];
+
+export interface AdoptWorkerWorktreeParams {
+  sessionId: string;
+}
+
+export interface DiscardWorkerWorktreeParams {
+  reason: string;
+  sessionId: string;
+}
 
 export interface GetRouterPreferencesParams {
   workspaceId: string;

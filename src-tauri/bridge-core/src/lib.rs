@@ -50,6 +50,8 @@ pub mod sessions;
 pub mod skill_marketplace;
 pub mod slash;
 pub mod store;
+pub mod check_runner;
+pub mod worker_adoption;
 pub mod worker_guard;
 pub mod worker_lifecycle;
 pub mod worker_pool;
@@ -61,6 +63,7 @@ pub mod worktree_coordinator;
 pub use runtime::{
     SessionLifecycleClaim,
     start_health_server, BootConfig, BridgeCore, DelegationState, RuntimeSession,
+    COMPLETION_VERIFY_TIMEOUT_SECONDS, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
 

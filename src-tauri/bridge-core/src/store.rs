@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 20;
+const LATEST_SCHEMA_VERSION: i64 = 21;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -241,6 +241,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             18 => migration_18_prompt_cache_telemetry(&transaction)?,
             19 => migration_19_repair_learning_router_schema(&transaction)?,
             20 => migration_20_repair_legacy_learning_constraints(&transaction)?,
+            21 => migration_21_approval_deadlines_and_worktree_adoption(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -469,6 +470,52 @@ fn migration_20_repair_legacy_learning_constraints(
     }
 
     add_column_if_missing(transaction, "worker_runtime", "last_activity_at", "TEXT")
+}
+
+fn migration_21_approval_deadlines_and_worktree_adoption(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    // `waiting` workers were excluded from every watchdog, so an unanswered
+    // in-session approval left the worker pending forever. Stamping the entry
+    // time gives the approval deadline something durable to measure.
+    add_column_if_missing(transaction, "worker_runtime", "waiting_since", "TEXT")?;
+    add_column_if_missing(transaction, "worker_runtime", "waiting_reason", "TEXT")?;
+    // Completion evidence used to be a bare HEAD string, which cannot say what
+    // the change is relative to or which worker revision produced it.
+    add_column_if_missing(transaction, "eval_attempts", "base_ref", "TEXT")?;
+    add_column_if_missing(transaction, "eval_attempts", "base_commit", "TEXT")?;
+    add_column_if_missing(transaction, "eval_attempts", "worker_branch", "TEXT")?;
+    add_column_if_missing(transaction, "eval_attempts", "worker_session_id", "TEXT")?;
+    // Why an attempt ended, when it ended for a reason other than its checks.
+    // A gate that could not be built must keep failing closed; a gate that ran
+    // out of time must release the parent so it can report.
+    add_column_if_missing(transaction, "eval_attempts", "escalation", "TEXT")?;
+    // Verified work that lives only in a child worktree must not silently
+    // disappear: it needs a durable adoption state that survives restart.
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS worker_worktree_adoptions (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            parent_session_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            worktree_path TEXT NOT NULL,
+            worktree_branch TEXT NOT NULL,
+            task_worktree_path TEXT NOT NULL,
+            state TEXT NOT NULL,
+            head TEXT,
+            base_commit TEXT,
+            base_branch TEXT,
+            baseline_dirty_paths TEXT NOT NULL DEFAULT '[]',
+            changed_paths TEXT NOT NULL DEFAULT '[]',
+            diffstat TEXT,
+            dirty INTEGER NOT NULL DEFAULT 0,
+            detail TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_worker_worktree_adoptions_parent
+            ON worker_worktree_adoptions(parent_session_id,state);",
+    )?;
+    Ok(())
 }
 
 fn current_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
@@ -2450,7 +2497,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
         );
         for table in [
             "model_profiles",
@@ -2518,7 +2565,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }
@@ -2566,13 +2613,13 @@ mod tests {
              ALTER TABLE model_profiles DROP COLUMN profile_id;
              ALTER TABLE learning_jobs DROP COLUMN last_evidence_boundary;
              DROP TABLE configuration_entries;
-             DELETE FROM schema_version WHERE version IN (16,17,18,19,20);",
+             DELETE FROM schema_version WHERE version >= 16;",
         )
         .unwrap();
         drop(db);
 
         let db = open(&path).unwrap();
-        assert_eq!(current_schema_version(&db).unwrap(), 20);
+        assert_eq!(current_schema_version(&db).unwrap(), LATEST_SCHEMA_VERSION);
         for (table, column) in [
             ("model_profiles", "profile_id"),
             ("learning_jobs", "last_evidence_boundary"),
@@ -2649,12 +2696,12 @@ mod tests {
                 result TEXT NOT NULL,
                 created_at TEXT NOT NULL
              );
-             DELETE FROM schema_version WHERE version IN (19,20);",
+             DELETE FROM schema_version WHERE version >= 19;",
         ).unwrap();
         drop(db);
 
         let db = open(&path).unwrap();
-        assert_eq!(current_schema_version(&db).unwrap(), 20);
+        assert_eq!(current_schema_version(&db).unwrap(), LATEST_SCHEMA_VERSION);
         for (table, column) in late_columns {
             let exists = db
                 .prepare(&format!("PRAGMA table_info({table})"))

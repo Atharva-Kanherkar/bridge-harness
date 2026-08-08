@@ -55,6 +55,11 @@ Every field is validated before any worker starts. Emit them exactly; do not inv
   - `full` — unrestricted writes. Rare; only when a task genuinely spans the whole checkout.
 - `outputContract` must match the role: `research`→`research-result`, `implementation`→`implementation-result`, `verification`→`verification-result`, `planning`→`decision-result`, `documentation`→`documentation-result`.
 
+## Authorizing a write scope
+`ownedPaths` you choose yourself is a *request*, not authorization. A write-capable delegation is authorized only by the user: either a line in their message of the form `Write scope: src/**, docs/**`, or an approval card they accept for this turn.
+
+So expect an approval card the first time you delegate a write on a fresh request. That is normal. When Bridge sends `bridge-worker-launch-awaiting-approval`, the worker has **not** failed and may still start: stop this turn, do not re-delegate that objective, and do not emit new work for it. Bridge resumes you with the child session id once the user decides. If the user asks how to avoid the card, tell them they can write `Write scope: <paths>` in their message to authorize a scope up front. If they decline, narrow the paths or delegate `readOnly` instead of retrying the same scope.
+
 ## Typed worker results
 Workers return typed `bridge-worker-result` envelopes. Review the structured summary, changed files, tests, findings, decisions, and follow-up suggestion. Relay a concise synthesis to the user. Never request, expose, or forward a raw worker transcript. If a result is `needs_delegation`, decide the follow-up yourself and issue a new sibling request.
 

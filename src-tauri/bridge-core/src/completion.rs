@@ -9,6 +9,16 @@ use uuid::Uuid;
 
 pub const COMPLETION_SCHEMA_VERSION: u32 = 1;
 
+/// Deterministic checks Bridge itself runs, in the attempt's repository.
+pub const SHELL_EXECUTOR: &str = "bridge.shell";
+/// Semantic checks a verification worker settles.
+pub const WORKER_EXECUTOR: &str = "bridge.worker";
+/// Evidence derived from a verification worker's typed result. Never sufficient
+/// for a planned `bridge.shell` check: the digest only proves which JSON arrived.
+pub const WORKER_RESULT_EXECUTOR: &str = "bridge.worker_result";
+/// Verdicts Bridge records about its own machinery (gate errors, deadlines).
+pub const SYSTEM_EXECUTOR: &str = "bridge.system";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskTier {
@@ -321,7 +331,7 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             label: command.clone(),
             kind: EvalKind::Deterministic,
             required: true,
-            executor: "bridge.shell".into(),
+            executor: SHELL_EXECUTOR.into(),
             command: Some(command),
             required_capabilities: vec!["shell".into()],
             different_model_family: false,
@@ -334,7 +344,7 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             label: "Independent scrutiny review".into(),
             kind: EvalKind::Scrutiny,
             required: true,
-            executor: "bridge.worker".into(),
+            executor: WORKER_EXECUTOR.into(),
             command: None,
             required_capabilities: vec!["code_review".into()],
             different_model_family: true,
@@ -347,7 +357,7 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             label: "User journey verification".into(),
             kind: EvalKind::UserTesting,
             required: true,
-            executor: "bridge.worker".into(),
+            executor: WORKER_EXECUTOR.into(),
             command: None,
             required_capabilities: vec!["browser".into(), "console_inspection".into()],
             different_model_family: true,
@@ -384,7 +394,7 @@ pub fn plan_with_registered_manifests(
                 label: label.clone(),
                 kind: candidate.manifest.kind,
                 required: true,
-                executor: "bridge.worker".into(),
+                executor: WORKER_EXECUTOR.into(),
                 command: None,
                 required_capabilities: candidate.manifest.required_capabilities.clone(),
                 different_model_family: candidate.manifest.different_model_family,
@@ -618,10 +628,37 @@ pub fn latest_summary(
     }))
 }
 
+/// Marker for an attempt that ended because its verification deadline expired
+/// rather than because its checks reached verdicts.
+pub const VERIFY_DEADLINE_ESCALATION: &str = "verify_deadline";
+
+/// Whether the completion gate still holds the session back.
+///
+/// `Verifying` and `ChangesRequested` are live states: more automatic work is
+/// expected, so the session stays blocked. A gate that could not be built keeps
+/// failing closed and must be waived by a human. A gate that ran *out of time*
+/// is different: nothing further will ever happen on its own, so holding the
+/// session in `waiting` forever is a deadlock, not a safety property — the parent
+/// is released to report the checks that never ran.
 pub fn completion_allows_ready(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
-    Ok(latest_summary(db, session_id)?
-        .map(|summary| matches!(summary.verdict, CompletionVerdict::Verified | CompletionVerdict::Waived))
-        .unwrap_or(true))
+    let Some(summary) = latest_summary(db, session_id)? else {
+        return Ok(true);
+    };
+    if matches!(
+        summary.verdict,
+        CompletionVerdict::Verified | CompletionVerdict::Waived | CompletionVerdict::Superseded
+    ) {
+        return Ok(true);
+    }
+    if summary.verdict != CompletionVerdict::Failed {
+        return Ok(false);
+    }
+    let escalation: Option<String> = db.query_row(
+        "SELECT escalation FROM eval_attempts WHERE id=?1",
+        params![summary.attempt_id],
+        |row| row.get(0),
+    )?;
+    Ok(escalation.as_deref() == Some(VERIFY_DEADLINE_ESCALATION))
 }
 
 pub fn reconcile_parent_readiness(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
@@ -630,7 +667,11 @@ pub fn reconcile_parent_readiness(db: &Connection, session_id: &str) -> Result<b
         params![session_id],
         |row| row.get(0),
     )?;
-    let ready = remaining == 0 && completion_allows_ready(db, session_id)?;
+    // Changes that exist only in a child worktree have not reached the user's
+    // task checkout. A session with unadopted worker output is not finished, no
+    // matter what its checks say.
+    let unadopted = !crate::worker_adoption::pending_for_parent(db, session_id)?.is_empty();
+    let ready = remaining == 0 && !unadopted && completion_allows_ready(db, session_id)?;
     if ready {
         db.execute(
             "UPDATE sessions SET status='ready' WHERE id=?1 AND status='waiting'",
@@ -744,7 +785,22 @@ pub fn create_from_worker_result(
         changed_paths: result.files_changed.clone(),
         repository_commands: request.verification,
     }, &labels_for_paths(&result.files_changed), available_capabilities)?;
-    create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
+    let attempt_id = create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
+    // A bare HEAD cannot say what the change is relative to or who produced it.
+    // Binding the attempt to the worker's base revision, branch, and session
+    // makes the proof answer "what changed, from what, by whom".
+    if let Some(binding) = crate::worker_adoption::binding(db, child_session_id)? {
+        db.execute(
+            "UPDATE eval_attempts SET base_commit=?2,base_ref=?3,worker_branch=?4,worker_session_id=?5 WHERE id=?1",
+            params![
+                attempt_id,
+                binding.base_commit,
+                binding.base_branch,
+                binding.worktree_branch,
+                child_session_id,
+            ],
+        )?;
+    }
     latest_summary(db, &context.parent_session_id)
 }
 
@@ -757,7 +813,18 @@ fn settle_verification_result(
     let Some(summary) = latest_summary(db, &context.parent_session_id)? else {
         return Err(BridgeError::Invalid("verification worker completed without an active completion gate".into()));
     };
-    if matches!(summary.verdict, CompletionVerdict::Verified | CompletionVerdict::Waived) {
+    // Terminal verdicts are final. A late verification result must not re-open a
+    // gate that already failed, superseded, or passed: `finalize` would recompute
+    // the verdict as `verifying` (its blockers are `blocked`, not `failed`), the
+    // parent would be pinned again, and nothing could re-escalate it because the
+    // deadline pass only looks for `pending`/`running` checks.
+    if matches!(
+        summary.verdict,
+        CompletionVerdict::Verified
+            | CompletionVerdict::Waived
+            | CompletionVerdict::Failed
+            | CompletionVerdict::Superseded
+    ) {
         return Ok(Some(summary));
     }
     let repository_path: String = db.query_row(
@@ -768,10 +835,18 @@ fn settle_verification_result(
     let current_repository = repository_stamp(&repository_path)?;
     let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(result).map_err(|error| BridgeError::Invalid(error.to_string()))?));
     let mut updated = 0usize;
-    for check in summary.checks.iter().filter(|check| check.kind == EvalKind::Deterministic && check.status != CheckStatus::Passed) {
+    // Deterministic checks planned as `bridge.shell` belong to the check runner:
+    // a worker's `tests[]` entry is a claim, and hashing the JSON it arrived in
+    // does not make it evidence. Only non-shell deterministic checks — ones with
+    // no executor of their own — can be settled from a typed result.
+    for check in summary.checks.iter().filter(|check| {
+        check.kind == EvalKind::Deterministic
+            && check.status != CheckStatus::Passed
+            && check.executor != SHELL_EXECUTOR
+    }) {
         if let Some(test) = result.tests.iter().find(|test| Some(test.command.as_str()) == check.command.as_deref()) {
             let status = match test.status { TestStatus::Passed => CheckStatus::Passed, TestStatus::Failed => CheckStatus::Failed, TestStatus::Skipped => CheckStatus::Skipped };
-            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: "bridge.worker_result".into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: test.detail.clone(), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
+            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: WORKER_RESULT_EXECUTOR.into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: test.detail.clone(), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
             updated += 1;
         }
     }
@@ -792,12 +867,17 @@ fn settle_verification_result(
         let mut detail = result.summary.clone();
         if !result.risks.is_empty() { detail.push_str(&format!("\nRisks: {}", result.risks.join(" | "))); }
         if !result.remaining_work.is_empty() { detail.push_str(&format!("\nRemaining: {}", result.remaining_work.join(" | "))); }
-        record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: "bridge.worker_result".into(), command: None, verifier_family: Some(context.harness.clone()), detail: Some(detail), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
+        record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: WORKER_RESULT_EXECUTOR.into(), command: None, verifier_family: Some(context.harness.clone()), detail: Some(detail), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
         updated += 1;
     }
     if updated == 0 {
-        if let Some(check) = summary.checks.iter().find(|check| check.required && check.status != CheckStatus::Passed) {
-            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: true, status: CheckStatus::Blocked, executor: "bridge.worker_result".into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: Some("Verification worker returned no matching typed evidence".into()), output_digest: Some(digest), artifact_refs: vec![] })?;
+        // Blocking a shell check here would be the same trust violation, so the
+        // fallback only touches checks a worker is allowed to settle. Any shell
+        // check left pending is the runner's, or the deadline's.
+        if let Some(check) = summary.checks.iter().find(|check| {
+            check.required && check.status != CheckStatus::Passed && check.executor != SHELL_EXECUTOR
+        }) {
+            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: true, status: CheckStatus::Blocked, executor: WORKER_RESULT_EXECUTOR.into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: Some("Verification worker returned no matching typed evidence".into()), output_digest: Some(digest), artifact_refs: vec![] })?;
         }
     }
     for (index, finding) in result.risks.iter().chain(&result.remaining_work).enumerate() {
@@ -821,13 +901,13 @@ pub fn record_gate_error(
         head: "unavailable".into(), dirty_digest: format!("{:x}", Sha256::digest(message.as_bytes())),
     });
     let contract = CompletionContract { id: Uuid::new_v4().to_string(), workspace_id: context.workspace_id, session_id: context.parent_session_id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, acceptance_criteria: vec!["Resolve completion gate creation failure".into()], markdown_projection: None, markdown_committed: false };
-    let plan = EvalPlan { id: Uuid::new_v4().to_string(), contract_id: contract.id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, risk: RiskTier::High, checks: vec![EvalCheck { id: "gate-error".into(), label: "Completion gate creation failed".into(), kind: EvalKind::Deterministic, required: true, executor: "bridge.system".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "Bridge could not construct the required completion gate".into() }] };
+    let plan = EvalPlan { id: Uuid::new_v4().to_string(), contract_id: contract.id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, risk: RiskTier::High, checks: vec![EvalCheck { id: "gate-error".into(), label: "Completion gate creation failed".into(), kind: EvalKind::Deterministic, required: true, executor: SYSTEM_EXECUTOR.into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "Bridge could not construct the required completion gate".into() }] };
     let attempt_id = create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
     db.execute(
         "UPDATE eval_attempts SET status='superseded',completed_at=?3 WHERE session_id=?1 AND id<>?2 AND status IN ('verifying','changes_requested','failed')",
         params![context.parent_session_id, attempt_id, Utc::now().to_rfc3339()],
     )?;
-    record_check(db, &attempt_id, &CheckRun { check_id: "gate-error".into(), kind: EvalKind::Deterministic, required: true, status: CheckStatus::Blocked, executor: "bridge.system".into(), command: None, verifier_family: None, detail: Some(message.into()), output_digest: Some(format!("{:x}", Sha256::digest(message.as_bytes()))), artifact_refs: vec![] })?;
+    record_check(db, &attempt_id, &CheckRun { check_id: "gate-error".into(), kind: EvalKind::Deterministic, required: true, status: CheckStatus::Blocked, executor: SYSTEM_EXECUTOR.into(), command: None, verifier_family: None, detail: Some(message.into()), output_digest: Some(format!("{:x}", Sha256::digest(message.as_bytes()))), artifact_refs: vec![] })?;
     db.execute("UPDATE eval_attempts SET status='failed' WHERE id=?1", params![attempt_id])?;
     latest_summary(db, &context.parent_session_id)
 }
@@ -955,7 +1035,7 @@ pub fn record_check(
 ) -> Result<(), BridgeError> {
     let attempt: Option<(String, String, Option<String>, String)> = db
         .query_row(
-            "SELECT a.repository_head,a.dirty_digest,a.implementer_family,p.plan FROM eval_attempts a JOIN eval_plans p ON p.id=a.plan_id WHERE a.id=?1 AND a.status NOT IN ('verified','waived','superseded')",
+            "SELECT a.repository_head,a.dirty_digest,a.implementer_family,p.plan FROM eval_attempts a JOIN eval_plans p ON p.id=a.plan_id WHERE a.id=?1 AND a.status NOT IN ('verified','waived','superseded') AND (a.status<>'failed' OR a.escalation IS NULL)",
             params![attempt_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -972,6 +1052,17 @@ pub fn record_check(
         .iter()
         .find(|check| check.id == run.check_id)
         .ok_or_else(|| BridgeError::Invalid(format!("unknown check {} for verification attempt", run.check_id)))?;
+    // A `bridge.shell` check is proven by running the command. A digest of a
+    // worker's JSON says only which message arrived, so worker-reported evidence
+    // may never resolve one — the runner or the deadline escalation must.
+    if check.executor == SHELL_EXECUTOR
+        && !matches!(run.executor.as_str(), SHELL_EXECUTOR | SYSTEM_EXECUTOR)
+    {
+        return Err(BridgeError::Invalid(format!(
+            "check {} is a {SHELL_EXECUTOR} command; evidence from {} cannot satisfy it",
+            run.check_id, run.executor
+        )));
+    }
     if run.status == CheckStatus::Passed && check.different_model_family {
         let verifier = run.verifier_family.as_deref().filter(|value| !value.trim().is_empty());
         let implementer = implementer_family.as_deref().filter(|value| !value.trim().is_empty());
@@ -1210,7 +1301,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_verifiers_close_typed_checks_sequentially() {
+    fn verifiers_close_semantic_checks_but_never_shell_checks() {
         use crate::delegation::{SuggestedNextAction, WorkerTestResult};
         let db = fixture();
         let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
@@ -1237,8 +1328,38 @@ mod tests {
         }
         let final_summary = latest_summary(&db, "s").unwrap().unwrap();
         assert_eq!(final_summary.attempt_id, first.attempt_id);
-        assert_eq!(final_summary.verdict, CompletionVerdict::Verified);
-        assert!(final_summary.checks.iter().filter(|check| check.required).all(|check| check.status == CheckStatus::Passed));
+        // Semantic checks are the verifier's to settle, and both closed.
+        assert!(final_summary
+            .checks
+            .iter()
+            .filter(|check| check.kind != EvalKind::Deterministic)
+            .all(|check| check.status == CheckStatus::Passed));
+        // The shell checks are NOT closed by the verifier's `tests[]`. A digest of
+        // the JSON that arrived is not evidence the command ran, so they stay
+        // pending for the check runner and the gate stays open.
+        let shell: Vec<_> = final_summary
+            .checks
+            .iter()
+            .filter(|check| check.executor == SHELL_EXECUTOR)
+            .collect();
+        assert!(shell.iter().any(|check| check.command.as_deref() == Some("bun run test")));
+        assert!(shell.iter().all(|check| check.status == CheckStatus::Pending));
+        assert_eq!(final_summary.verdict, CompletionVerdict::Verifying);
+        // And they cannot be closed that way even directly.
+        let refused = record_check(&db, &final_summary.attempt_id, &CheckRun {
+            check_id: shell[0].check_id.clone(),
+            kind: EvalKind::Deterministic,
+            required: true,
+            status: CheckStatus::Passed,
+            executor: WORKER_RESULT_EXECUTOR.into(),
+            command: shell[0].command.clone(),
+            verifier_family: Some("codex".into()),
+            detail: Some("the worker said it passed".into()),
+            output_digest: Some("digest-of-received-json".into()),
+            artifact_refs: vec![],
+        })
+        .unwrap_err();
+        assert!(refused.to_string().contains("cannot satisfy it"), "{refused}");
     }
 
     #[test]

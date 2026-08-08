@@ -16,7 +16,9 @@ use crate::{
     learning_job, learning_router, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
     secret_interception, session_forest, session_supervisor, skill_marketplace, slash, store,
     worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
-    worktree_coordinator, BridgeError, WORKER_STALL_TIMEOUT_SECONDS,
+    check_runner, git, worker_adoption, worktree_coordinator, BridgeError,
+    WORKER_APPROVAL_TIMEOUT_SECONDS,
+    WORKER_STALL_TIMEOUT_SECONDS,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection};
@@ -844,6 +846,17 @@ pub fn start_chat(
         current_turn,
         reader,
     );
+    // Workspace open is the one place a network fetch is affordable, so the
+    // stale-base check runs against a freshly fetched ref here and against the
+    // last fetched ref everywhere else. Off the calling thread: the user should
+    // not wait on the network to see their session start.
+    if is_orchestrator {
+        let core = core.clone();
+        let session_id = session_id.clone();
+        thread::spawn(move || {
+            warn_on_stale_base(&core, &session_id, "workspace_open", true);
+        });
+    }
     core.events.publish(CoreEvent::StateChanged);
     store::state(&state.db.lock().unwrap())
 }
@@ -990,6 +1003,11 @@ fn handle_agent_value(
     let state = core.clone();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
+    // Child approvals and their resolutions are surfaced to the parent after the
+    // correctness lock is released, because reaching the parent's live runtime
+    // needs the adapter map.
+    let mut pending_child_approval: Option<serde_json::Value> = None;
+    let mut child_left_waiting: Option<&'static str> = None;
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
@@ -1111,6 +1129,20 @@ fn handle_agent_value(
                             worker_lifecycle::WorkerLifecycleState::Waiting,
                             Some("approval_requested"),
                         );
+                        // A background worker's approval card renders on the
+                        // worker's own conversation, which nobody is looking at.
+                        // Stamp the wait so the approval deadline can measure it
+                        // and hand the parent enough to surface the block.
+                        let _ = db.execute(
+                            "UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested',updated_at=?2 WHERE session_id=?1",
+                            params![session_id, Utc::now().to_rfc3339()],
+                        );
+                        pending_child_approval = Some(serde_json::json!({
+                            "title": event.title,
+                            "text": event.text,
+                            "command": event.data.get("command").or_else(|| event.data.pointer("/data/command")),
+                            "cwd": event.data.get("cwd").or_else(|| event.data.pointer("/data/cwd")),
+                        }));
                     } else {
                         let _ = db.execute(
                             "UPDATE sessions SET status='waiting' WHERE id=?1",
@@ -1148,6 +1180,7 @@ fn handle_agent_value(
                                 worker_lifecycle::WorkerLifecycleState::Working,
                                 Some("approval_aborted_by_error"),
                             );
+                            child_left_waiting = Some("aborted");
                         }
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
@@ -1355,6 +1388,12 @@ fn handle_agent_value(
         finish_orchestrator_shutdown(core, session_id, adapters::ShutdownReason::UserStopped);
     }
 
+    if let Some(detail) = &pending_child_approval {
+        surface_child_approval_on_parent(core, session_id, detail);
+    }
+    if let Some(outcome) = child_left_waiting {
+        notify_parent_child_left_waiting(core, session_id, outcome);
+    }
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(core, session_id, turn_id, directive, true);
     }
@@ -1617,12 +1656,24 @@ pub struct WorkerLaunchReservation {
 pub enum WorkerReservationOutcome {
     Reserved(WorkerLaunchReservation),
     Queued,
-    Blocked,
+    /// The policy raised an approval card and the launch can still happen. This
+    /// is deliberately not `Blocked`: reporting it as a failure told the parent
+    /// "no worker started, do not wait", which made it re-delegate while the
+    /// same launch was still pending, producing duplicate workers.
+    AwaitingApproval(PendingApproval),
+    Blocked(policy::RouteReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingApproval {
+    pub approval_id: String,
+    pub reason: policy::RouteReason,
 }
 
 pub enum WorkerLaunchOutcome {
     Launched(String),
     Queued,
+    AwaitingApproval,
     Failed,
 }
 
@@ -1672,6 +1723,7 @@ pub fn reserve_worker_launch_outcome(
         path,
         branch,
         outcome,
+        pending_approval_id,
     } = route;
     if let Some(decision_id) = router_decision_id {
         learning_router::record_policy_result(db, decision_id, &outcome)?;
@@ -1713,7 +1765,7 @@ pub fn reserve_worker_launch_outcome(
             return Ok(if queue_on_block {
                 WorkerReservationOutcome::Queued
             } else {
-                WorkerReservationOutcome::Blocked
+                WorkerReservationOutcome::Blocked(outcome.reason)
             });
         }
         policy::RouteDecision::ResumeWorker { session_id } => {
@@ -1745,9 +1797,17 @@ pub fn reserve_worker_launch_outcome(
                 "UPDATE workspaces SET status='waiting' WHERE id=?1",
                 params![workspace_id],
             )?;
-            return Ok(WorkerReservationOutcome::Blocked);
+            let approval_id = pending_approval_id.ok_or_else(|| {
+                BridgeError::Invalid(
+                    "policy required approval but recorded no approval card".into(),
+                )
+            })?;
+            return Ok(WorkerReservationOutcome::AwaitingApproval(PendingApproval {
+                approval_id,
+                reason: outcome.reason,
+            }));
         }
-        _ => return Ok(WorkerReservationOutcome::Blocked),
+        _ => return Ok(WorkerReservationOutcome::Blocked(outcome.reason)),
     }
 
     let session_id = Uuid::new_v4().to_string();
@@ -1872,7 +1932,9 @@ pub fn reserve_worker_launch(
             None,
         )? {
             WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
-            WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
+            WorkerReservationOutcome::Queued
+            | WorkerReservationOutcome::AwaitingApproval(_)
+            | WorkerReservationOutcome::Blocked(_) => None,
         },
     )
 }
@@ -1962,6 +2024,12 @@ pub fn launch_worker_outcome(
             return WorkerLaunchOutcome::Failed;
         }
     };
+    // Before the first write of a turn, say plainly that the change would land on
+    // stale code. No fetch here: a delegation must not wait on the network, and
+    // the last fetched ref is enough to detect months of drift.
+    if directive.write_mode != delegation::WriteMode::ReadOnly {
+        warn_on_stale_base(core, parent_session_id, "before_write_delegation", false);
+    }
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
@@ -1994,7 +2062,22 @@ pub fn launch_worker_outcome(
             core.events.publish(CoreEvent::StateChanged);
             return WorkerLaunchOutcome::Queued;
         }
-        Ok(WorkerReservationOutcome::Blocked) => {
+        Ok(WorkerReservationOutcome::AwaitingApproval(pending)) => {
+            let _ = learning_router::record_route_status(
+                &state.db.lock().unwrap(),
+                &routed.decision.id,
+                "awaiting_user_approval",
+            );
+            report_worker_launch_awaiting_approval(
+                core,
+                parent_session_id,
+                turn_id,
+                directive,
+                &pending,
+            );
+            return WorkerLaunchOutcome::AwaitingApproval;
+        }
+        Ok(WorkerReservationOutcome::Blocked(reason)) => {
             let _ = learning_router::record_route_status(
                 &state.db.lock().unwrap(),
                 &routed.decision.id,
@@ -2004,7 +2087,11 @@ pub fn launch_worker_outcome(
                 core,
                 parent_session_id,
                 "policy",
-                "Worker launch was blocked by delegation policy",
+                &format!(
+                    "Worker launch was blocked by delegation policy ({}): {}",
+                    reason.as_str(),
+                    reason.remediation()
+                ),
             );
             return WorkerLaunchOutcome::Failed;
         }
@@ -2085,6 +2172,24 @@ pub fn launch_worker_outcome(
         &reservation.outcome.decision,
         policy::RouteDecision::SpawnWorker(spec) if spec.requires_child_worktree
     );
+    // A resumed warm worker already has its child worktree, so `reservation.path`
+    // is that child, not the task checkout. Resolving the task worktree from the
+    // workspace keeps a resumed isolated worker bound as isolated — otherwise its
+    // binding would look in-place and its commits would never be queued for
+    // adoption.
+    let task_worktree_path = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT path FROM workspaces WHERE id=?1",
+            params![reservation.workspace_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| reservation.path.clone());
     if requires_child_worktree {
         match worktree_coordinator::WorktreeCoordinator::prepare_isolated_worker(
             &state.db.lock().unwrap(),
@@ -2166,6 +2271,45 @@ pub fn launch_worker_outcome(
                 return WorkerLaunchOutcome::Failed;
             }
         }
+    }
+    // Bind every writer to the checkout it actually runs in, before it can
+    // change anything. `worktree_path` used to stay NULL unless the isolated
+    // coordinator ran, so nothing downstream could tell where a claim came from;
+    // the recorded base revision is also what makes committed work visible in
+    // the evidence derived after the result.
+    if directive.write_mode != delegation::WriteMode::ReadOnly {
+        let binding = worker_adoption::record_binding(
+            &state.db.lock().unwrap(),
+            &reservation.session_id,
+            parent_session_id,
+            &reservation.workspace_id,
+            &reservation.path,
+            &reservation.branch,
+            &task_worktree_path,
+            // A resumed isolated worker keeps its existing child worktree, so
+            // isolation is a property of the write mode, not of whether this
+            // launch created the worktree.
+            requires_child_worktree
+                || directive.write_mode == delegation::WriteMode::Isolated,
+        );
+        if let Err(error) = binding {
+            fail_reserved_worker(
+                core,
+                &reservation.session_id,
+                &directive.label(),
+                &format!("Could not bind the worker to a repository checkout: {error}"),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
+        let _ = state.db.lock().unwrap().execute(
+            "UPDATE worker_runtime SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE session_id=?1",
+            params![
+                reservation.session_id,
+                reservation.path,
+                reservation.branch,
+                Utc::now().to_rfc3339()
+            ],
+        );
     }
     let model = reservation.actual_model.clone();
     let effort = directive.effort.as_str().to_owned();
@@ -2858,6 +3002,546 @@ pub fn launch_worker_outcome(
     WorkerLaunchOutcome::Launched(session_id)
 }
 
+/// Event kind for a recorded stale-base warning. Also the dedupe key: one
+/// warning per session per base revision, so opening a workspace repeatedly does
+/// not re-nag about the same drift.
+const BASE_DIVERGENCE_EVENT: &str = "workspace.base_divergence";
+
+/// Warn the user and the orchestrator when a workspace is far behind the branch
+/// it is meant to build on.
+///
+/// The incident ran 67 commits behind `origin/main` and produced completion
+/// stamps against that code with no warning at all. `phase` records whether this
+/// was caught at workspace open or before the first write delegation; `allow_fetch`
+/// is true only at open, so a delegation never waits on the network.
+pub fn warn_on_stale_base(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    phase: &str,
+    allow_fetch: bool,
+) -> Option<git::BaseBranchDivergence> {
+    let state = core.clone();
+    let path = store::repository_path_for_session(&state.db.lock().unwrap(), session_id)
+        .ok()
+        .flatten()?;
+    if !path.is_dir() {
+        return None;
+    }
+    // Git runs entirely outside the correctness lock: a fetch can be slow, and a
+    // stale-base check must never delay a turn commit.
+    let divergence = git::base_branch_divergence(&path, allow_fetch);
+    if !divergence.should_warn() {
+        return Some(divergence);
+    }
+    let fingerprint = format!(
+        "{}@{}",
+        divergence.base_ref.as_deref().unwrap_or("unknown"),
+        divergence.base_commit.as_deref().unwrap_or("unknown")
+    );
+    {
+        let db = state.db.lock().unwrap();
+        let already_warned: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind=?2 AND body LIKE '%'||?3||'%')",
+                params![session_id, BASE_DIVERGENCE_EVENT, fingerprint],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if already_warned {
+            return Some(divergence);
+        }
+        let _ = store::event(
+            &db,
+            "workspace",
+            BASE_DIVERGENCE_EVENT,
+            session_id,
+            &serde_json::json!({
+                "phase": phase,
+                "fingerprint": fingerprint,
+                "divergence": divergence,
+            })
+            .to_string(),
+        );
+    }
+    let routing_notice = serde_json::json!({
+        "type": "bridge-workspace-behind-base",
+        "phase": phase,
+        "baseRef": divergence.base_ref,
+        "baseCommit": divergence.base_commit,
+        "head": divergence.head,
+        "behind": divergence.behind,
+        "ahead": divergence.ahead,
+        "refAgeSeconds": divergence.ref_age_seconds,
+        "fetchAttempted": divergence.fetch_attempted,
+        "fetched": divergence.fetched,
+        "dirty": divergence.dirty,
+        "instruction": "This workspace is far behind its base branch, so any change you make is against stale code and completion evidence will be stamped against it. Tell the user the counts and let them choose to refresh the workspace or continue on the current revision. Do not rebase or reset anything yourself."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let event = agent::NormalizedEvent {
+        kind: "workspace.stale_base".into(),
+        item_id: Some(format!("stale-base-{fingerprint}")),
+        role: Some("system".into()),
+        status: Some("warning".into()),
+        title: Some(format!(
+            "Workspace is {} commits behind {}",
+            divergence.behind,
+            divergence.base_ref.as_deref().unwrap_or("its base branch")
+        )),
+        text: Some(divergence.summary()),
+        data: serde_json::json!({
+            "staleBase": true,
+            "phase": phase,
+            "divergence": divergence,
+            "choices": ["refresh", "continue"],
+            "orchestratorNotified": delivered,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &state.db.lock().unwrap(),
+        session_id,
+        &event,
+        &serde_json::json!({"workspace": true}),
+    ) {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Some(divergence)
+}
+
+/// Context a parent (and the global approvals inbox) needs to act on a child's
+/// in-session approval without selecting the worker's conversation.
+struct ChildApprovalContext {
+    parent_session_id: String,
+    label: String,
+    objective: Option<String>,
+    owned_paths: Vec<String>,
+    cwd: Option<String>,
+}
+
+fn child_approval_context(db: &Connection, child_session_id: &str) -> Option<ChildApprovalContext> {
+    let (parent_session_id, label, cwd, owned_paths): (String, String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT s.parent_session_id,s.label,COALESCE(r.worktree_path,s.cwd,w.path),l.owned_paths
+             FROM sessions s
+             LEFT JOIN worker_runtime r ON r.session_id=s.id
+             LEFT JOIN worker_leases l ON l.session_id=s.id
+             LEFT JOIN workspaces w ON w.id=s.workspace_id
+             WHERE s.id=?1 AND s.parent_session_id IS NOT NULL",
+            params![child_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .ok()?;
+    let objective = db
+        .query_row(
+            "SELECT request FROM worker_completion_inputs WHERE child_session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|serialized| serde_json::from_str::<serde_json::Value>(&serialized).ok())
+        .and_then(|request| {
+            request
+                .get("objective")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    Some(ChildApprovalContext {
+        parent_session_id,
+        label,
+        objective,
+        owned_paths: owned_paths
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default(),
+        cwd,
+    })
+}
+
+/// Surface a background worker's in-session approval where the user actually is:
+/// on the parent conversation, with the worker label, objective, command, cwd,
+/// and owned-path scope, plus a link back to the child conversation that owns the
+/// card. Without this a worker can sit `waiting` forever behind a card nobody
+/// sees, which is exactly what happened to both `bun install` approvals.
+fn surface_child_approval_on_parent(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    detail: &serde_json::Value,
+) {
+    let state = core.clone();
+    let Some(context) = child_approval_context(&state.db.lock().unwrap(), child_session_id) else {
+        return;
+    };
+    let command = detail
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let cwd = detail
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| context.cwd.clone());
+    let text = detail
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("The worker is waiting for your approval before it can continue.");
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-blocked-on-approval",
+        "childSessionId": child_session_id,
+        "label": context.label,
+        "objective": context.objective,
+        "command": command,
+        "cwd": cwd,
+        "ownedPaths": context.owned_paths,
+        "instruction": "This worker is blocked on a human approval and is producing no output. Do not treat it as failed and do not re-delegate its objective. Stop this turn; Bridge notifies you when the approval is resolved or the approval deadline expires."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&context.parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let event = agent::NormalizedEvent {
+        kind: "delegation.blocked".into(),
+        item_id: Some(format!("child-approval-{child_session_id}")),
+        role: Some("system".into()),
+        status: Some("waiting".into()),
+        title: Some(format!("{} needs your approval", context.label)),
+        text: Some(text.to_owned()),
+        data: serde_json::json!({
+            "childBlocked": true,
+            "childSessionId": child_session_id,
+            "label": context.label,
+            "objective": context.objective,
+            "command": command,
+            "cwd": cwd,
+            "ownedPaths": context.owned_paths,
+            "orchestratorNotified": delivered,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &state.db.lock().unwrap(),
+        &context.parent_session_id,
+        &event,
+        &serde_json::json!({"delegation": true}),
+    ) {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Close the loop opened by [`surface_child_approval_on_parent`]: the parent is
+/// told the child is unblocked, and the mirrored card on the parent is updated so
+/// resolving an approval from any surface leaves one consistent state.
+pub fn notify_parent_child_left_waiting(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    outcome: &str,
+) {
+    let state = core.clone();
+    let Some(context) = child_approval_context(&state.db.lock().unwrap(), child_session_id) else {
+        return;
+    };
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-unblocked",
+        "childSessionId": child_session_id,
+        "label": context.label,
+        "outcome": outcome,
+        "instruction": "The worker's approval was resolved and it is running again. Keep waiting for its typed result."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&context.parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let event = agent::NormalizedEvent {
+        kind: "delegation.blocked".into(),
+        item_id: Some(format!("child-approval-{child_session_id}")),
+        role: Some("system".into()),
+        status: Some(outcome.to_owned()),
+        title: Some(format!("{} approval {outcome}", context.label)),
+        text: None,
+        data: serde_json::json!({
+            "childBlocked": false,
+            "childSessionId": child_session_id,
+            "label": context.label,
+            "outcome": outcome,
+            "orchestratorNotified": delivered,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &state.db.lock().unwrap(),
+        &context.parent_session_id,
+        &event,
+        &serde_json::json!({"delegation": true}),
+    ) {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Resolve workers that have waited past the approval deadline. `waiting` is
+/// intentionally excluded from the stall watchdog, so this is the only thing that
+/// stops an unanswered approval from pinning the parent forever.
+fn expire_worker_approvals(core: &Arc<BridgeCore>) {
+    let state = core.clone();
+    let expired: Vec<(String, String, i64)> = {
+        let db = state.db.lock().unwrap();
+        let Ok(mut statement) = db.prepare(
+            "SELECT r.session_id,s.label,r.waiting_since FROM worker_runtime r
+             JOIN sessions s ON s.id=r.session_id
+             WHERE r.lifecycle_state='waiting' AND r.result_status='pending'
+               AND r.waiting_since IS NOT NULL",
+        ) else {
+            return;
+        };
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        });
+        let Ok(rows) = rows else { return };
+        let now = Utc::now();
+        rows.filter_map(Result::ok)
+            .filter_map(|(session_id, label, since)| {
+                let waited = chrono::DateTime::parse_from_rfc3339(&since)
+                    .ok()
+                    .map(|since| now.signed_duration_since(since.with_timezone(&Utc)).num_seconds())?;
+                (waited >= WORKER_APPROVAL_TIMEOUT_SECONDS).then_some((session_id, label, waited))
+            })
+            .collect()
+    };
+    for (child_session_id, label, waited) in expired {
+        let minutes = waited / 60;
+        let failure_context = format!(
+            "{label} waited {minutes} minute(s) for an in-session approval that was never answered, \
+             past the {}-minute approval deadline",
+            WORKER_APPROVAL_TIMEOUT_SECONDS / 60
+        );
+        {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "supervisor",
+                "worker.approval_deadline_expired",
+                &child_session_id,
+                &failure_context,
+            );
+        }
+        // Leave `waiting` before failing: the lifecycle machine has no
+        // waiting -> failed edge, and the transition also clears the stamp.
+        {
+            let db = state.db.lock().unwrap();
+            let _ = session_supervisor::SessionSupervisor::transition(
+                &db,
+                &child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("approval_deadline_expired"),
+            );
+        }
+        let runtime = state.adapters.lock().unwrap().remove(&child_session_id);
+        {
+            let db = state.db.lock().unwrap();
+            let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+                &db,
+                &child_session_id,
+            );
+        }
+        state
+            .worker_activity
+            .lock()
+            .unwrap()
+            .remove(&child_session_id);
+        state
+            .worker_activity_persisted
+            .lock()
+            .unwrap()
+            .remove(&child_session_id);
+        verify_read_only_worker(core, &child_session_id);
+        let result = delegation::WorkerResult {
+            schema_version: delegation::SCHEMA_VERSION,
+            status: delegation::WorkerResultStatus::Blocked,
+            summary: failure_context.clone(),
+            files_changed: vec![],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![failure_context],
+            remaining_work: vec![
+                "Re-delegate without the step that needs approval, or pre-authorize it and delegate again"
+                    .into(),
+            ],
+            suggested_next_action: delegation::SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        report_synthetic_worker_failure(core, &child_session_id, &result);
+        if let Some(mut runtime) = runtime {
+            runtime.stop(adapters::ShutdownReason::Failed);
+        }
+    }
+}
+
+/// Tell the parent that a launch is waiting on a human, not that it failed. The
+/// approval card is already on the parent's conversation; this notice identifies
+/// the delegation so the orchestrator stops emitting work for the same objective
+/// without treating the child as terminal.
+fn report_worker_launch_awaiting_approval(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    turn_id: &str,
+    directive: &delegation::DelegationRequest,
+    pending: &PendingApproval,
+) {
+    let state = core.clone();
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-launch-awaiting-approval",
+        "approvalId": pending.approval_id,
+        "turnId": turn_id,
+        "reason": pending.reason.as_str(),
+        "remediation": pending.reason.remediation(),
+        "label": directive.label(),
+        "objective": directive.objective,
+        "ownedPaths": directive.owned_paths,
+        "writeMode": policy::write_mode_name(directive.write_mode),
+        "instruction": "A user approval card is pending for this delegation. The worker has NOT failed and may still start. Do not re-delegate this objective and do not emit new work for it. Stop this turn and wait; Bridge resumes you with the child session id once the user decides."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let db = state.db.lock().unwrap();
+    let _ = store::event(
+        &db,
+        "policy",
+        "policy.launch_awaiting_approval",
+        parent_session_id,
+        &serde_json::json!({
+            "approvalId": pending.approval_id,
+            "reason": pending.reason.as_str(),
+            "orchestratorNotified": delivered,
+        })
+        .to_string(),
+    );
+    drop(db);
+    core.events.publish(CoreEvent::StateChanged);
+}
+
+/// One terminal notice when the user declines, cancels, or lets an approval
+/// lapse. Without this the parent would wait on a launch that can never happen.
+pub fn report_delegation_approval_declined(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    turn_id: &str,
+    approval_id: &str,
+    decision: &str,
+    request: &delegation::DelegationRequest,
+) {
+    let state = core.clone();
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-launch-declined",
+        "approvalId": approval_id,
+        "turnId": turn_id,
+        "decision": decision,
+        "label": request.label(),
+        "ownedPaths": request.owned_paths,
+        "instruction": "The user declined this write scope. No worker started and none will. Do not retry the same scope. Either narrow the paths, delegate read-only, or tell the user what you need."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let db = state.db.lock().unwrap();
+    let _ = session_forest::SessionForest::new(&db).append(
+        parent_session_id,
+        session_forest::EntryKind::DelegationRejected,
+        serde_json::json!({
+            "requestId": turn_id,
+            "turnId": turn_id,
+            "status": "failed",
+            "reason": format!("delegation_scope_{decision}"),
+            "approvalId": approval_id,
+            "title": "Write scope declined",
+            "text": format!("The requested write scope was {decision}d, so no worker started."),
+            "willRetry": false,
+            "orchestratorNotified": delivered,
+            "request": request,
+        }),
+    );
+    let _ = store::event(
+        &db,
+        "policy",
+        "policy.delegation_scope_declined",
+        parent_session_id,
+        approval_id,
+    );
+    drop(db);
+    core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Hand the parent the child session id created by an approved launch so it
+/// re-adopts the child instead of assuming the delegation evaporated.
+pub fn report_approved_launch_adopted(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    turn_id: &str,
+    approval_id: &str,
+    child_session_id: Option<&str>,
+    queued: bool,
+) {
+    let state = core.clone();
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-launch-approved",
+        "approvalId": approval_id,
+        "turnId": turn_id,
+        "childSessionId": child_session_id,
+        "queued": queued,
+        "instruction": if queued {
+            "The user approved the write scope. The worker is queued behind active work and will start automatically. Wait for its typed result."
+        } else {
+            "The user approved the write scope and the worker started. Wait for the typed result from this child session id."
+        }
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let db = state.db.lock().unwrap();
+    let _ = store::event(
+        &db,
+        "policy",
+        "policy.approved_launch_adopted",
+        parent_session_id,
+        &serde_json::json!({
+            "approvalId": approval_id,
+            "childSessionId": child_session_id,
+            "queued": queued,
+            "orchestratorNotified": delivered,
+        })
+        .to_string(),
+    );
+    drop(db);
+    core.events.publish(CoreEvent::StateChanged);
+}
+
 fn report_worker_launch_failure(
     core: &Arc<BridgeCore>,
     parent_session_id: &str,
@@ -2954,7 +3638,9 @@ fn launch_worker(
 ) -> Option<String> {
     match launch_worker_outcome(core, parent_session_id, turn_id, directive, queue_on_block) {
         WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
-        WorkerLaunchOutcome::Queued | WorkerLaunchOutcome::Failed => None,
+        WorkerLaunchOutcome::Queued
+        | WorkerLaunchOutcome::AwaitingApproval
+        | WorkerLaunchOutcome::Failed => None,
     }
 }
 
@@ -3615,11 +4301,73 @@ fn verify_read_only_worker(core: &Arc<BridgeCore>, child_session_id: &str) {
 /// parent's live turn stream and drop a marker card into the parent's transcript.
 fn report_to_parent(core: &Arc<BridgeCore>, child_session_id: &str, result: &delegation::WorkerResult) {
     let state = core.clone();
+    // Check the claim against the repository *before* it becomes canonical. A
+    // `completed` write-mode result with no matching commit or dirty path is
+    // downgraded here, and `filesChanged` is replaced with the derived paths so
+    // the completion planner cannot be steered by worker prose. Git runs between
+    // the two locks, never inside one.
+    let binding = {
+        let db = state.db.lock().unwrap();
+        worker_adoption::binding(&db, child_session_id).ok().flatten()
+    };
+    let reconciled = match binding {
+        Some(binding) => {
+            let evidence = git::derive_repository_evidence(
+                Path::new(&binding.worktree_path),
+                binding.base_commit.as_deref(),
+            );
+            let db = state.db.lock().unwrap();
+            worker_adoption::reconcile_with_derived_evidence(
+                &db,
+                child_session_id,
+                result,
+                binding,
+                evidence,
+            )
+        }
+        None => worker_adoption::ReconciledResult {
+            result: result.clone(),
+            evidence: None,
+            binding: None,
+            mismatches: Vec::new(),
+        },
+    };
+    if !reconciled.mismatches.is_empty() {
+        let db = state.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "supervisor",
+            "worker.result_evidence_mismatch",
+            child_session_id,
+            &reconciled.mismatches.join("; "),
+        );
+    }
+    let evidence_payload = reconciled.evidence.as_ref().map(|evidence| {
+        serde_json::json!({
+            "worktreePath": reconciled.binding.as_ref().map(|binding| binding.worktree_path.clone()),
+            "branch": evidence.branch,
+            "head": evidence.head,
+            "baseCommit": evidence.base_commit,
+            "commits": evidence.commits,
+            "changedPaths": evidence.changed_paths(),
+            "dirtyPaths": evidence.dirty_paths,
+            "diffstat": evidence.diffstat(),
+            "dirty": evidence.dirty(),
+            "adoptionState": reconciled.binding.as_ref().map(|binding| binding.state.clone()),
+            "mismatches": reconciled.mismatches,
+        })
+    });
+    let result = &reconciled.result;
     let report = {
         let db = state.db.lock().unwrap();
-        session_supervisor::SessionSupervisor::record_result(&db, child_session_id, result)
-            .ok()
-            .flatten()
+        session_supervisor::SessionSupervisor::record_result_with_evidence(
+            &db,
+            child_session_id,
+            result,
+            evidence_payload.as_ref(),
+        )
+        .ok()
+        .flatten()
     };
     let Some(report) = report else {
         return;
@@ -3659,13 +4407,26 @@ fn report_to_parent(core: &Arc<BridgeCore>, child_session_id: &str, result: &del
             let db = state.db.lock().unwrap();
             let _ = completion::reconcile_parent_readiness(&db, &report.parent_session_id);
         }
+        let awaits_adoption = evidence_payload
+            .as_ref()
+            .and_then(|evidence| evidence.get("adoptionState"))
+            .and_then(serde_json::Value::as_str)
+            == Some(worker_adoption::STATE_PENDING);
         let routing_notice = serde_json::json!({
         "type": "bridge-worker-evidence",
         "evidenceId": report.evidence_id,
         "status": result.status.as_str(),
         "summary": result.summary,
         "completion": completion,
-        "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
+        // Derived from Git, not from the worker: the exact checkout, branch,
+        // revision, dirty state, and diffstat behind this claim.
+        "repository": evidence_payload,
+        "awaitsAdoption": awaits_adoption,
+        "instruction": if awaits_adoption {
+            "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. These changes exist ONLY in the worker's own worktree — the user's task checkout is unchanged until they are adopted. Do not claim the task is done; report that the change is waiting to be adopted or discarded."
+        } else {
+            "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
+        }
     })
     .to_string();
         let delivered = match state
@@ -3686,7 +4447,7 @@ fn report_to_parent(core: &Arc<BridgeCore>, child_session_id: &str, result: &del
                 status: Some("completed".into()),
                 title: Some("Worker result".into()),
                 text: Some(result.summary.clone()),
-                data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str()}),
+                data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str(), "repository": evidence_payload, "awaitsAdoption": awaits_adoption}),
             };
             if let Ok(stored) = store::session_event(
                 &db,
@@ -3905,6 +4666,11 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
         dispatch_next_queued_worker(core, &workspace_id);
     }
 
+    // `waiting` workers are excluded from the stall watchdog below because they
+    // are legitimately idle. They still need a deadline, or an unanswered
+    // approval pins the parent forever.
+    expire_worker_approvals(core);
+
     // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
     // the common case (no silent sessions) touches neither the adapter map nor
     // the DB. Only sessions already silent past the timeout are confirmed — via
@@ -3957,6 +4723,90 @@ pub fn start_worker_maintenance(core: Arc<BridgeCore>) {
         thread::sleep(Duration::from_secs(1));
         maintain_worker_pool(&core);
     });
+}
+
+/// How often the check runner looks for work. Deliberately unhurried: a planned
+/// command is a build or a test suite, not a poll.
+const CHECK_RUNNER_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Execute planned `bridge.shell` checks and enforce the verify deadline.
+///
+/// Runs on its own thread and takes one check at a time: a planned command is a
+/// full build or test run, so it must not block the one-second worker-pool loop,
+/// and two concurrent builds in the same checkout would fight over target
+/// directories and lockfiles.
+pub fn start_completion_check_maintenance(core: Arc<BridgeCore>) {
+    thread::spawn(move || loop {
+        thread::sleep(CHECK_RUNNER_INTERVAL);
+        run_due_completion_checks(&core);
+    });
+}
+
+fn run_due_completion_checks(core: &Arc<BridgeCore>) {
+    let state = core.clone();
+    let escalated = {
+        let db = state.db.lock().unwrap();
+        check_runner::escalate_stalled_attempts(&db).unwrap_or_default()
+    };
+    if !escalated.is_empty() {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    let pending = {
+        let db = state.db.lock().unwrap();
+        check_runner::pending_shell_checks(&db).unwrap_or_default()
+    };
+    for check in pending {
+        // Claim under the lock, then release it: the command itself must never
+        // run while the global SQLite lock is held.
+        let claimed = {
+            let db = state.db.lock().unwrap();
+            check_runner::claim(&db, &check).unwrap_or(false)
+        };
+        if !claimed {
+            continue;
+        }
+        // The command runs with no lock held: a `cargo test` can take minutes,
+        // and holding the global SQLite lock across it would freeze every other
+        // session. Only the verdict is written under the lock.
+        let outcome = check_runner::run_claimed_check_offline(&check);
+        let ran = {
+            let db = state.db.lock().unwrap();
+            check_runner::record_outcome(&db, &check, &outcome)
+        };
+        if let Err(error) = ran {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "completion",
+                "completion.check_execution_failed",
+                &check.session_id,
+                &error.to_string(),
+            );
+            continue;
+        }
+        // Recompute the verdict now that this check is terminal, then release the
+        // parent if the gate is satisfied. The stamp is re-derived from the
+        // checkout, not read back out of the attempt row: passing the stored
+        // values would make `finalize`'s drift guard unfalsifiable, and a tree
+        // that changed under the checks must supersede the attempt.
+        let current = store::repository_state_for_path(Path::new(&check.repository_path));
+        let stamp = current
+            .get("head")
+            .and_then(serde_json::Value::as_str)
+            .zip(current.get("dirtyHash").and_then(serde_json::Value::as_str))
+            .map(|(head, dirty_digest)| completion::RepositoryStamp {
+                head: head.to_owned(),
+                dirty_digest: dirty_digest.to_owned(),
+            });
+        {
+            let db = state.db.lock().unwrap();
+            if let Some(stamp) = stamp {
+                let _ = completion::finalize(&db, &check.attempt_id, &stamp);
+            }
+            let _ = completion::reconcile_parent_readiness(&db, &check.session_id);
+        }
+        core.events.publish(CoreEvent::StateChanged);
+    }
 }
 
 pub fn start_learning_maintenance(core: Arc<BridgeCore>) {
@@ -4269,13 +5119,22 @@ pub fn record_approved_launch_failure(
     Ok(())
 }
 
+pub struct ResolvedDelegationApproval {
+    pub approval_id: String,
+    pub turn_id: String,
+    pub request: delegation::DelegationRequest,
+    /// True only when the user accepted; a declined or cancelled approval still
+    /// returns the identity so the parent gets exactly one terminal notice.
+    pub accepted: bool,
+}
+
 pub fn resolve_policy_delegation_approval(
     db: &Connection,
     session_id: &str,
     event_id: i64,
     decision: &str,
     payload: &serde_json::Value,
-) -> Result<Option<(String, delegation::DelegationRequest)>, BridgeError> {
+) -> Result<ResolvedDelegationApproval, BridgeError> {
     if decision == "acceptForSession" {
         return Err(BridgeError::Invalid(
             "Delegation path scope can only be approved for this turn".into(),
@@ -4344,7 +5203,12 @@ pub fn resolve_policy_delegation_approval(
          WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
         params![session_id],
     )?;
-    Ok(matches!(decision, "accept" | "acceptForSession").then_some((turn_id, request)))
+    Ok(ResolvedDelegationApproval {
+        approval_id: approval_id.to_owned(),
+        turn_id,
+        request,
+        accepted: matches!(decision, "accept" | "acceptForSession"),
+    })
 }
 
 pub fn stop_session(
@@ -4578,5 +5442,178 @@ mod exit_result_tests {
         result.validate().expect("synthetic result validates");
         assert_eq!(result.summary, "Research · standard ended without reporting a result");
         assert_eq!(result.risks.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod approval_deadline_tests {
+    use super::*;
+    use crate::model::WorkerRuntimeRecord;
+
+    fn waiting_since(db: &Connection, session_id: &str) -> Option<String> {
+        db.query_row(
+            "SELECT waiting_since FROM worker_runtime WHERE session_id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn core_with_waiting_worker(waiting_since: Option<&str>) -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','waiting','reported',0)", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Implementation · strong','waiting','reported','parent',1)", []).unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(&db, &WorkerRuntimeRecord {
+                session_id: "child".into(), parent_session_id: "parent".into(),
+                lifecycle_state: "waiting".into(), task_family: "implementation".into(),
+                compatibility_key: "key".into(), result_status: "pending".into(), retry_count: 0,
+                warm_until: None, worktree_path: None, worktree_branch: None, last_result: None,
+                last_activity_at: None, updated_at: Utc::now().to_rfc3339(),
+            }).unwrap();
+            if let Some(since) = waiting_since {
+                db.execute("UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested' WHERE session_id=?1", params!["child", since]).unwrap();
+            }
+        }
+        (fixture, Arc::new(core))
+    }
+
+    /// The stall watchdog deliberately skips `waiting`. Before the approval
+    /// deadline existed that meant an unanswered card left the worker pending
+    /// forever and the parent could never become ready.
+    #[test]
+    fn an_unanswered_approval_becomes_a_terminal_blocked_result_past_the_deadline() {
+        let expired = (Utc::now()
+            - chrono::Duration::seconds(WORKER_APPROVAL_TIMEOUT_SECONDS + 60))
+        .to_rfc3339();
+        let (_fixture, core) = core_with_waiting_worker(Some(&expired));
+
+        expire_worker_approvals(&core);
+
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(runtime.result_status, "reported");
+        assert_eq!(waiting_since(&db, "child"), None);
+        let result = runtime.last_result.unwrap();
+        assert_eq!(result["status"], "blocked");
+        assert!(result["summary"].as_str().unwrap().contains("approval"));
+        assert!(result["risks"][0].as_str().unwrap().contains("deadline"));
+        assert!(db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id='child' AND kind='worker.approval_deadline_expired')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        // The parent must be released, not left waiting on a child that can
+        // never report.
+        assert_eq!(store::outstanding_children(&db, "parent").unwrap(), 0);
+    }
+
+    #[test]
+    fn a_worker_inside_the_approval_window_is_left_alone() {
+        let recent = Utc::now().to_rfc3339();
+        let (_fixture, core) = core_with_waiting_worker(Some(&recent));
+
+        expire_worker_approvals(&core);
+
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(
+            (runtime.lifecycle_state.as_str(), runtime.result_status.as_str()),
+            ("waiting", "pending")
+        );
+    }
+
+    /// Leaving `waiting` must clear the stamp, or a resolved approval would keep
+    /// an expired-looking timestamp and the deadline would fire on live work.
+    #[test]
+    fn resolving_an_approval_clears_the_deadline_stamp() {
+        let expired = (Utc::now()
+            - chrono::Duration::seconds(WORKER_APPROVAL_TIMEOUT_SECONDS + 60))
+        .to_rfc3339();
+        let (_fixture, core) = core_with_waiting_worker(Some(&expired));
+        {
+            let db = core.db.lock().unwrap();
+            session_supervisor::SessionSupervisor::transition(
+                &db,
+                "child",
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("approval_resolved"),
+            )
+            .unwrap();
+            assert_eq!(waiting_since(&db, "child"), None);
+        }
+
+        expire_worker_approvals(&core);
+
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(
+            (runtime.lifecycle_state.as_str(), runtime.result_status.as_str()),
+            ("working", "pending")
+        );
+    }
+
+    /// The parent must get a visible, machine-readable notice naming the worker,
+    /// its objective, the command, cwd, and its owned-path scope.
+    #[test]
+    fn a_child_approval_is_mirrored_onto_the_parent_conversation() {
+        let (_fixture, core) = core_with_waiting_worker(Some(&Utc::now().to_rfc3339()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')",
+                params![serde_json::json!({"objective":"Render Mermaid inline"}).to_string()],
+            )
+            .unwrap();
+        }
+
+        surface_child_approval_on_parent(
+            &core,
+            "child",
+            &serde_json::json!({"text":"Run bun install?","command":"bun install","cwd":"/repo"}),
+        );
+
+        let db = core.db.lock().unwrap();
+        let entry = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == "delegation.blocked")
+            .expect("parent sees the child approval");
+        let data = &entry.payload["data"];
+        assert_eq!(data["childBlocked"], true);
+        assert_eq!(data["childSessionId"], "child");
+        assert_eq!(data["label"], "Implementation · strong");
+        assert_eq!(data["objective"], "Render Mermaid inline");
+        assert_eq!(data["command"], "bun install");
+        assert_eq!(data["cwd"], "/repo");
+        assert_eq!(data["ownedPaths"][0], "src/**");
+        assert!(entry.payload["title"]
+            .as_str()
+            .unwrap()
+            .contains("needs your approval"));
+
+        drop(db);
+        notify_parent_child_left_waiting(&core, "child", "accept");
+        let db = core.db.lock().unwrap();
+        let resolved = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.kind == "delegation.blocked")
+            .next_back()
+            .unwrap();
+        assert_eq!(resolved.payload["data"]["childBlocked"], false);
+        assert_eq!(resolved.payload["data"]["outcome"], "accept");
     }
 }

@@ -153,6 +153,15 @@ pub struct ModelOption {
     pub default_for_tier: bool,
 }
 
+/// Mirrors `bridge_core::model::SandboxMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
 /// Mirrors `bridge_core::model::AdapterDescriptor`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +171,8 @@ pub struct AdapterDescriptor {
     pub available: bool,
     pub version: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub sandbox_modes: Vec<SandboxMode>,
     pub unavailable_reason: Option<String>,
     pub models: Vec<ModelOption>,
     pub default_model: Option<String>,
@@ -292,6 +303,7 @@ mod tests {
                 available: true,
                 version: Some("1.0".into()),
                 capabilities: vec!["shell".into()],
+                sandbox_modes: vec![SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite],
                 unavailable_reason: None,
                 models: vec![ModelOption {
                     id: "gpt-5".into(),

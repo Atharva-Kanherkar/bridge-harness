@@ -531,6 +531,7 @@ mod tests {
 
     fn catalog() -> Vec<AdapterDescriptor> {
         vec![AdapterDescriptor {
+            sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
             id: "catalog-provider".into(),
             label: "Catalog Provider".into(),
             available: true,

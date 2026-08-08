@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
@@ -122,11 +122,19 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-5b", "session-1", 7, "compaction", { schemaVersion: 1, summary: "Workers own isolated paths", firstRetainedEntryId: "entry-6b", tokensBefore: 9200, filesTouched: ["src-tauri/src/lib.rs"], reason: "phase_boundary", sourceAgent: "session-1" }, "entry-4b"),
   forestEntry("entry-6b", "session-1", 8, "branch.summary", { summary: "Selected isolated-worker branch" }, "entry-5b"),
   forestEntry("entry-7b", "session-1", 9, "worker.result", { status: "completed", summary: "Lifecycle implementation verified", decisions: ["Keep SQLite authoritative"], tests: ["130 Rust tests"] }, "entry-6b"),
-  forestEntry("entry-raw", "session-1", 10, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-7b")
+  // A pending write-scope approval: the normal cold-start state, carrying the
+  // machine-readable reason and its remediation.
+  forestEntry("entry-8b", "session-1", 10, "approval.requested", { status: "pending", approvalType: "delegation_path_scope", approvalId: "delegation-path-scope:mock-turn-1:src/**", title: "Approve delegation write scope", objective: "Render Mermaid, math, and sandboxed HTML inline in chat", reason: "owned_path_provenance_required", remediation: "these write paths were proposed by the agent and were not explicitly authorized. Approve once for this turn, narrow the paths, or delegate read-only. A user message line of the form `Write scope: src/**` authorizes a scope without a card.", requestedOwnedPaths: ["src/components/**", "src/index.css"], writeMode: "isolated", role: "implementation" }, "entry-7b"),
+  // A background worker blocked on its own in-session approval, mirrored here
+  // because its card renders on a conversation nobody is looking at.
+  forestEntry("entry-9b", "session-1", 11, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install to add the renderer dependencies?", data: { childBlocked: true, childSessionId: "session-1w", label: "Implementation · strong", objective: "Render Mermaid, math, and sandboxed HTML inline in chat", command: "bun install", cwd: "/tmp/bridge/worker-1w", ownedPaths: ["src/components/**"], orchestratorNotified: true } }, "entry-8b"),
+  // A workspace far behind its base branch, with the counts and the choice.
+  forestEntry("entry-10b", "session-1", 12, "workspace.stale_base", { role: "system", status: "warning", title: "Workspace is 67 commits behind origin/main", text: "this workspace is 67 commit(s) behind and 1 ahead of origin/main, measured against a freshly fetched ref; that ref's newest commit is 0 day(s) old", data: { staleBase: true, phase: "workspace_open", choices: ["refresh", "continue"], divergence: { baseRef: "origin/main", baseCommit: "90ce51c", head: "2b43aaad9b36", branch: "bridge/task", ahead: 1, behind: 67, refAgeSeconds: 3600, fetchAttempted: true, fetched: true, dirty: false, unavailableReason: null } } }, "entry-9b"),
+  forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
 ];
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
-    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[9]],
+    sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
     workerLeases: [
       { sessionId: "session-1w", workspaceId: "demo-1", role: "implementation", capabilityTier: "strong", taskFamily: "implementation", ownedPaths: ["src/auth/**"], writeMode: "isolated", leaseStatus: "active", expiresAt: null, createdAt: now, updatedAt: now },
       { sessionId: "session-1w2", workspaceId: "demo-1", role: "verification", capabilityTier: "strong", taskFamily: "verification", ownedPaths: ["src/auth/**"], writeMode: "readOnly", leaseStatus: "released", expiresAt: null, createdAt: now, updatedAt: now }
@@ -428,6 +436,30 @@ export const bridgeApi = {
   waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/waive_completion", { attemptId, checkIds, reason });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); const unresolved = forest.completion.checks.filter(check => check.required && check.status !== "passed").map(check => check.checkId); if (!unresolved.every(checkId => checkIds.includes(checkId))) throw new Error("Waiver must cover every unresolved required check"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
+  },
+  // A workspace far behind its base branch produces changes and completion
+  // stamps against stale code; `refresh` is the explicit choice the warning offers.
+  workspaceBaseDivergence: async (sessionId: string, fetch: boolean): Promise<BaseBranchDivergence> => {
+    if (isTauri()) return call("worktrees/workspace_base_divergence", { sessionId, fetch });
+    return { baseRef: null, baseCommit: null, head: null, branch: null, ahead: 0, behind: 0, refAgeSeconds: null, fetchAttempted: false, fetched: false, dirty: false, unavailableReason: "Base-branch comparison needs the desktop app" };
+  },
+  refreshWorkspaceBase: async (sessionId: string): Promise<BaseBranchDivergence> => {
+    if (isTauri()) return call("worktrees/refresh_workspace_base", { sessionId });
+    throw new Error("Refreshing the workspace needs the desktop app");
+  },
+  // Worker output that lives only in a child worktree has not reached the user's
+  // task checkout; adopting or discarding it is an explicit decision.
+  pendingWorkerAdoptions: async (sessionId: string): Promise<WorkerRepositoryBinding[]> => {
+    if (isTauri()) return call("worktrees/pending_worker_adoptions", { sessionId });
+    return [];
+  },
+  adoptWorkerWorktree: async (sessionId: string): Promise<WorkerRepositoryBinding> => {
+    if (isTauri()) return call("worktrees/adopt_worker_worktree", { sessionId });
+    throw new Error("Adopting a worker worktree needs the desktop app");
+  },
+  discardWorkerWorktree: async (sessionId: string, reason: string): Promise<WorkerRepositoryBinding> => {
+    if (isTauri()) return call("worktrees/discard_worker_worktree", { sessionId, reason });
+    throw new Error("Discarding a worker worktree needs the desktop app");
   },
   registerVerifierManifest: async (source: string, manifest: VerifierManifest): Promise<void> => {
     if (isTauri()) return unit(call("completion/register_verifier_manifest", { source, manifest }));
