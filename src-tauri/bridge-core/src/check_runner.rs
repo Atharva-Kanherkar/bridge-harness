@@ -17,9 +17,11 @@
 //!   with a check nothing can run fails terminally and explains which checks
 //!   never ran instead of blocking the parent forever.
 //!
-//! Commands are allowlisted by program name and rejected outright if they carry
-//! shell metacharacters: a planned check is a repository command, never a shell
-//! script, and it is executed without a shell.
+//! Commands are allowlisted by program *and verb* — the program alone is not a
+//! boundary, since `git` also spells `reset --hard` and `npm` also spells
+//! `install` — and rejected outright if they carry shell metacharacters or point
+//! a path flag outside the checkout. A planned check is a repository command,
+//! never a shell script, and it is executed without a shell.
 
 use crate::{
     completion::{self, CheckRun, CheckStatus, EvalKind},
@@ -32,24 +34,60 @@ use std::{
     io::Read,
     path::Path,
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
-/// Programs a planned check is allowed to invoke. Everything else is recorded as
-/// blocked with the reason, rather than executed.
+/// What each allowlisted program may be asked to do.
 ///
-/// `npx`, `npm exec`, and the `dlx` subcommands are deliberately absent: they
-/// download and execute arbitrary registry code, and a planned command comes from
-/// an LLM-authored `verification` list.
+/// The program alone is not a safety boundary: `git` also spells `reset --hard`,
+/// `clean -fdx`, and `push`; `npm` also spells `install` and `publish`. A
+/// verification check inspects and builds — it does not mutate history, install
+/// dependencies, or reach a registry — so the *verb* is allowlisted too. An empty
+/// verb list means the program takes a script or file rather than a subcommand.
+///
+/// `npx`, `npm exec`, and the `dlx` verbs are absent throughout: they download and
+/// execute arbitrary registry code, and a planned command is LLM-authored.
+const ALLOWED_SUBCOMMANDS: &[(&str, &[&str])] = &[
+    ("bun", &["build", "check", "run", "test", "tsc", "vitest"]),
+    ("cargo", &["bench", "build", "check", "clippy", "fmt", "test"]),
+    (
+        "git",
+        &[
+            "branch",
+            "diff",
+            "log",
+            "ls-files",
+            "merge-base",
+            "rev-list",
+            "rev-parse",
+            "show",
+            "status",
+        ],
+    ),
+    ("node", &[]),
+    ("npm", &["run", "run-script", "test"]),
+    ("pnpm", &["build", "check", "run", "test"]),
+    ("python3", &[]),
+    ("tsc", &[]),
+    ("vitest", &[]),
+    ("yarn", &["build", "check", "run", "test"]),
+];
+
+/// Programs a planned check is allowed to invoke.
 pub const ALLOWED_PROGRAMS: &[&str] = &[
     "bun", "cargo", "git", "node", "npm", "pnpm", "python3", "tsc", "vitest", "yarn",
 ];
 
-/// Arguments that relocate a tool's working directory or project root. A check
-/// runs against the attempt's exact `repository_path` — that is what the proof
-/// claims — so a command that points somewhere else is refused rather than run.
-const DIRECTORY_ESCAPE_FLAGS: &[&str] = &[
+/// `bun x`, `npm exec`, `pnpm dlx`, `yarn dlx` — fetch-and-run.
+const REMOTE_EXECUTION_SUBCOMMANDS: &[&str] = &["dlx", "exec", "x"];
+
+/// Flags whose value names a directory or project root. Their *value* is what
+/// matters: `--manifest-path src-tauri/Cargo.toml` stays inside the checkout and
+/// is exactly what the planner emits, while `--manifest-path /elsewhere` or
+/// `../other` would verify a different tree than the one the proof names.
+const PATH_VALUED_FLAGS: &[&str] = &[
     "-C",
     "--cwd",
     "--directory",
@@ -60,9 +98,6 @@ const DIRECTORY_ESCAPE_FLAGS: &[&str] = &[
     "--project",
     "--work-tree",
 ];
-
-/// Subcommands that fetch and execute code from a registry.
-const REMOTE_EXECUTION_SUBCOMMANDS: &[&str] = &["dlx", "exec"];
 
 /// Characters that only make sense to a shell. A planned check is executed
 /// directly, so their presence means the command was never going to work — and
@@ -75,13 +110,27 @@ const SHELL_METACHARACTERS: &[char] = &[
 /// build cannot fill the database.
 const MAX_STREAM_BYTES: usize = 64 * 1024;
 
-/// How long one planned command may run before it is killed and recorded failed.
+/// How long one planned command may run before its process group is killed and
+/// the check is recorded failed.
 pub const CHECK_TIMEOUT_SECONDS: u64 = 20 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCommand {
     pub program: String,
     pub arguments: Vec<String>,
+}
+
+/// Is this a repository-relative path that stays inside the checkout?
+fn stays_in_repository(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value.starts_with('/') || value.starts_with('~') {
+        return false;
+    }
+    // Windows-style absolute (`C:\...`) and UNC paths are equally out of bounds.
+    if value.len() >= 2 && value.as_bytes()[1] == b':' {
+        return false;
+    }
+    !value.split(['/', '\\']).any(|segment| segment == "..")
 }
 
 /// Parse and authorize a planned command. Returns why it was refused rather than
@@ -101,34 +150,89 @@ pub fn authorize(command: &str) -> Result<ShellCommand, String> {
     }
     let mut tokens = command.split_whitespace();
     let program = tokens.next().unwrap_or_default().to_owned();
-    if !ALLOWED_PROGRAMS.contains(&program.as_str()) {
+    let Some((_, verbs)) = ALLOWED_SUBCOMMANDS
+        .iter()
+        .find(|(name, _)| *name == program.as_str())
+    else {
         return Err(format!(
             "{program} is not an allowlisted check program ({})",
             ALLOWED_PROGRAMS.join(", ")
         ));
-    }
+    };
     let arguments = tokens.map(str::to_owned).collect::<Vec<_>>();
-    if let Some(flag) = arguments.iter().find(|argument| {
-        DIRECTORY_ESCAPE_FLAGS
+    // Pass 1: every path-valued flag must stay inside the checkout, in both the
+    // `--flag value` and `--flag=value` forms. This is a separate, exhaustive pass
+    // rather than part of verb detection: verb detection stops at the verb, so a
+    // flag written after it would never be examined.
+    let mut expect_path: Option<&str> = None;
+    for argument in &arguments {
+        if let Some(flag) = expect_path.take() {
+            if !stays_in_repository(argument) {
+                return Err(format!(
+                    "{flag} points at {argument}, outside the repository being verified; a check must run against the attempt's own checkout"
+                ));
+            }
+            continue;
+        }
+        let Some(flag) = PATH_VALUED_FLAGS
             .iter()
-            .any(|flag| *argument == flag || argument.starts_with(&format!("{flag}=")))
-    }) {
+            .find(|flag| argument == *flag || argument.starts_with(&format!("{flag}=")))
+        else {
+            continue;
+        };
+        match argument.strip_prefix(&format!("{flag}=")) {
+            Some(value) if !stays_in_repository(value) => {
+                return Err(format!(
+                    "{flag} points at {value}, outside the repository being verified; a check must run against the attempt's own checkout"
+                ))
+            }
+            Some(_) => {}
+            None => expect_path = Some(flag),
+        }
+    }
+    if let Some(flag) = expect_path {
         return Err(format!(
-            "the planned command uses {flag}, which would run it outside the repository being verified; a check must run in the attempt's own checkout"
+            "the planned command ends with {flag} and no value"
         ));
     }
-    if let Some(subcommand) = arguments
-        .first()
-        .filter(|first| REMOTE_EXECUTION_SUBCOMMANDS.contains(&first.as_str()))
-    {
+    // Pass 2: the first non-flag token is the verb. Flags may precede it (`cargo
+    // --locked test`), and a separated flag's value must not be mistaken for it.
+    let mut verb: Option<&str> = None;
+    let mut skip_value = false;
+    for argument in &arguments {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if PATH_VALUED_FLAGS.iter().any(|flag| argument == *flag) {
+            skip_value = true;
+            continue;
+        }
+        if argument.starts_with('-') {
+            continue;
+        }
+        verb = Some(argument);
+        break;
+    }
+    if let Some(verb) = verb {
+        if REMOTE_EXECUTION_SUBCOMMANDS.contains(&verb) {
+            return Err(format!(
+                "{program} {verb} downloads and runs code from a registry, which cannot be a verification check"
+            ));
+        }
+        if !verbs.is_empty() && !verbs.contains(&verb) {
+            return Err(format!(
+                "{program} {verb} is not a verification action; {program} checks may only {}",
+                verbs.join(", ")
+            ));
+        }
+    } else if !verbs.is_empty() {
         return Err(format!(
-            "{program} {subcommand} downloads and runs code from a registry, which cannot be a verification check"
+            "the planned {program} command names no subcommand; expected one of {}",
+            verbs.join(", ")
         ));
     }
-    Ok(ShellCommand {
-        program,
-        arguments,
-    })
+    Ok(ShellCommand { program, arguments })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,13 +247,18 @@ pub struct CommandOutcome {
 /// command ran rather than evidence a message was received.
 pub fn execute(worktree: &Path, command: &ShellCommand) -> CommandOutcome {
     let started = Instant::now();
-    let spawned = Command::new(&command.program)
+    let mut builder = Command::new(&command.program);
+    builder
         .args(&command.arguments)
         .current_dir(worktree)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .stderr(Stdio::piped());
+    // Own the process group so a timeout can kill the whole tree. `cargo test`
+    // and `bun run` both spawn children; killing only the direct child leaves a
+    // grandchild holding the pipes open, and the drain threads would never end.
+    crate::adapters::configure_process_group(&mut builder);
+    let spawned = builder.spawn();
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
@@ -173,7 +282,11 @@ pub fn execute(worktree: &Path, command: &ShellCommand) -> CommandOutcome {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if started.elapsed() >= deadline => {
-                let _ = child.kill();
+                // Terminate the group, not just the leader, so no descendant
+                // survives holding stdout/stderr open.
+                if !crate::adapters::terminate_process_group(child.id()) {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 break None;
             }
@@ -217,16 +330,48 @@ pub fn execute(worktree: &Path, command: &ShellCommand) -> CommandOutcome {
     }
 }
 
-/// Read one child stream to EOF on its own thread, so the child is never blocked
-/// waiting for us to empty its pipe.
-fn drain_on_thread<S: Read + Send + 'static>(mut stream: S) -> thread::JoinHandle<String> {
-    thread::spawn(move || bounded_read(&mut stream))
+/// How long to wait for a drain thread after the child has exited. Bounded
+/// because a leaked descendant can still hold the write end of the pipe, and the
+/// check runner must not be frozen by one.
+const DRAIN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+struct Drain {
+    handle: thread::JoinHandle<()>,
+    captured: Arc<Mutex<String>>,
 }
 
-fn join_drain(handle: thread::JoinHandle<String>) -> String {
-    handle
-        .join()
-        .unwrap_or_else(|_| "[Bridge could not capture this stream]".to_owned())
+/// Read one child stream to EOF on its own thread, so the child is never blocked
+/// waiting for us to empty its pipe. The text is published through a mutex rather
+/// than the thread's return value so it can be read even if the thread is still
+/// blocked on a pipe a survivor holds open.
+fn drain_on_thread<S: Read + Send + 'static>(mut stream: S) -> Drain {
+    let captured = Arc::new(Mutex::new(String::new()));
+    let sink = captured.clone();
+    Drain {
+        handle: thread::spawn(move || {
+            let text = bounded_read(&mut stream);
+            *sink.lock().unwrap() = text;
+        }),
+        captured,
+    }
+}
+
+fn join_drain(drain: Drain) -> String {
+    let deadline = Instant::now() + DRAIN_JOIN_TIMEOUT;
+    while !drain.handle.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if !drain.handle.is_finished() {
+        // The thread is parked on a pipe an escaped descendant still owns. Take
+        // what was captured and move on; the thread ends when that process does.
+        let mut text = drain.captured.lock().unwrap().clone();
+        text.push_str("\n[Bridge stopped waiting for this stream: a descendant process kept it open]");
+        return text;
+    }
+    match drain.handle.join() {
+        Ok(()) => drain.captured.lock().unwrap().clone(),
+        Err(_) => "[Bridge could not capture this stream]".to_owned(),
+    }
 }
 
 /// Keep the first [`MAX_STREAM_BYTES`] and *discard the rest*, but keep reading
@@ -502,17 +647,35 @@ mod tests {
     use crate::completion::{CompletionContract, EvalCheck, EvalPlan, RepositoryStamp, RiskTier};
     use std::process::Command as StdCommand;
 
+    /// The planner's own commands must authorize. Rejecting `--manifest-path`
+    /// outright meant every Rust check was blocked instead of producing evidence.
     #[test]
-    fn only_allowlisted_programs_without_shell_syntax_are_authorized() {
+    fn every_command_the_planner_generates_authorizes() {
+        for command in [
+            "cargo test --manifest-path src-tauri/Cargo.toml --workspace",
+            "cargo check --manifest-path src-tauri/Cargo.toml --workspace",
+            "bun run test",
+            "bun run build",
+            "git diff --check",
+        ] {
+            assert!(authorize(command).is_ok(), "{command}: {:?}", authorize(command));
+        }
         assert_eq!(
-            authorize("cargo test --workspace").unwrap(),
+            authorize("cargo test --manifest-path src-tauri/Cargo.toml --workspace").unwrap(),
             ShellCommand {
                 program: "cargo".into(),
-                arguments: vec!["test".into(), "--workspace".into()],
+                arguments: vec![
+                    "test".into(),
+                    "--manifest-path".into(),
+                    "src-tauri/Cargo.toml".into(),
+                    "--workspace".into(),
+                ],
             }
         );
-        assert!(authorize("bun run build").is_ok());
-        // Injection and traversal attempts are refused with a reason, not run.
+    }
+
+    #[test]
+    fn shell_syntax_and_unlisted_programs_are_refused() {
         assert!(authorize("cargo test; rm -rf /").unwrap_err().contains("metacharacter"));
         assert!(authorize("cargo test && curl evil.example").unwrap_err().contains("metacharacter"));
         assert!(authorize("cargo test | tee /tmp/out").unwrap_err().contains("metacharacter"));
@@ -520,6 +683,80 @@ mod tests {
         assert!(authorize("rm -rf target").unwrap_err().contains("not an allowlisted"));
         assert!(authorize("sh -c cargo").unwrap_err().contains("not an allowlisted"));
         assert!(authorize("   ").unwrap_err().contains("empty command"));
+    }
+
+    /// The program is not the safety boundary: `git` also spells `reset --hard`.
+    /// A verification check inspects and builds; it does not mutate history,
+    /// install dependencies, or reach a registry.
+    #[test]
+    fn destructive_and_mutating_subcommands_are_refused() {
+        for command in [
+            "git reset --hard HEAD~5",
+            "git clean -fdx",
+            "git push origin main",
+            "git checkout main",
+            "git commit -am wip",
+            "npm install",
+            "npm publish",
+            "cargo publish",
+            "cargo install cargo-audit",
+            "yarn add left-pad",
+            "pnpm add left-pad",
+        ] {
+            let error = authorize(command).unwrap_err();
+            assert!(
+                error.contains("is not a verification action"),
+                "{command} was allowed: {error}"
+            );
+        }
+        // And the read/verify verbs still pass.
+        for command in [
+            "git status --porcelain",
+            "git diff --name-only HEAD",
+            "git log -1",
+            "cargo clippy --workspace",
+            "cargo fmt --check",
+            "npm run lint",
+            "vitest run",
+            "tsc -b",
+        ] {
+            assert!(authorize(command).is_ok(), "{command} was refused");
+        }
+        // A program that takes a script needs no verb; one that takes a verb needs it.
+        assert!(authorize("node scripts/check.js").is_ok());
+        assert!(authorize("cargo").unwrap_err().contains("names no subcommand"));
+    }
+
+    /// The flag's *value* is what decides whether the check leaves the checkout.
+    #[test]
+    fn a_command_pointed_outside_the_attempt_repository_is_refused() {
+        for command in [
+            "git -C /etc status",
+            "cargo test --manifest-path ../../other/Cargo.toml",
+            "cargo test --manifest-path=/elsewhere/Cargo.toml",
+            "npm --prefix /elsewhere run build",
+            "yarn --cwd /elsewhere test",
+            "git --git-dir=/elsewhere/.git status",
+            "git -C ~/other status",
+        ] {
+            let error = authorize(command).unwrap_err();
+            assert!(
+                error.contains("outside the repository being verified"),
+                "{command}: {error}"
+            );
+        }
+        assert!(authorize("cargo test --manifest-path").unwrap_err().contains("and no value"));
+        // Registry code fetched at check time is not verification evidence.
+        assert!(authorize("npx some-package").unwrap_err().contains("not an allowlisted"));
+        for command in ["npm exec some-package", "pnpm dlx some-package", "yarn dlx some-package", "bun x some-package"] {
+            assert!(
+                authorize(command).unwrap_err().contains("downloads and runs code"),
+                "{command}"
+            );
+        }
+        // Relative paths inside the checkout are exactly the intended use.
+        assert!(authorize("git -C src-tauri status").is_ok());
+        assert!(authorize("cargo test --manifest-path=src-tauri/Cargo.toml").is_ok());
     }
 
     /// A verification worker that reports *after* the deadline expired must not
@@ -608,34 +845,6 @@ mod tests {
         assert!(outcome.detail.len() < 4 * MAX_STREAM_BYTES);
     }
 
-    #[test]
-    fn a_command_pointed_outside_the_attempt_repository_is_refused() {
-        for command in [
-            "git -C /etc status",
-            "cargo test --manifest-path ../../other/Cargo.toml",
-            "npm --prefix /elsewhere run build",
-            "yarn --cwd /elsewhere test",
-            "git --git-dir=/elsewhere/.git status",
-        ] {
-            let error = authorize(command).unwrap_err();
-            assert!(
-                error.contains("outside the repository being verified"),
-                "{command}: {error}"
-            );
-        }
-        // Registry code fetched at check time is not verification evidence.
-        assert!(authorize("npx some-package").unwrap_err().contains("not an allowlisted"));
-        for command in ["npm exec some-package", "pnpm dlx some-package", "yarn dlx some-package"] {
-            assert!(
-                authorize(command).unwrap_err().contains("downloads and runs code"),
-                "{command}"
-            );
-        }
-        // The ordinary forms still work.
-        assert!(authorize("cargo test --manifest-path=src-tauri/Cargo.toml").is_err());
-        assert!(authorize("bun run build").is_ok());
-        assert!(authorize("npm run test").is_ok());
-    }
 
     fn fixture() -> (tempfile::TempDir, Connection, String) {
         let dir = tempfile::tempdir().unwrap();

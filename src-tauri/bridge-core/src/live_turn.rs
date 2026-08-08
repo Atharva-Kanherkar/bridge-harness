@@ -3328,25 +3328,42 @@ fn expire_worker_approvals(core: &Arc<BridgeCore>) {
              past the {}-minute approval deadline",
             WORKER_APPROVAL_TIMEOUT_SECONDS / 60
         );
+        // Re-confirm under the lock and let the transition itself be the gate.
+        // Between the snapshot above and here, the user may have answered the
+        // approval — the worker would be back at work, and killing it because a
+        // stale snapshot said "expired" would destroy live work. `waiting ->
+        // working` is only legal from `waiting`, so a successful transition is
+        // proof the worker was still parked when we took it.
         {
             let db = state.db.lock().unwrap();
+            let still_waiting = db
+                .query_row(
+                    "SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state='waiting'
+                       AND result_status='pending' AND waiting_since IS NOT NULL",
+                    params![child_session_id],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            if !still_waiting {
+                continue;
+            }
+            if session_supervisor::SessionSupervisor::transition(
+                &db,
+                &child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("approval_deadline_expired"),
+            )
+            .is_err()
+            {
+                // Someone else moved it first; it is not ours to fail.
+                continue;
+            }
             let _ = store::event(
                 &db,
                 "supervisor",
                 "worker.approval_deadline_expired",
                 &child_session_id,
                 &failure_context,
-            );
-        }
-        // Leave `waiting` before failing: the lifecycle machine has no
-        // waiting -> failed edge, and the transition also clears the stamp.
-        {
-            let db = state.db.lock().unwrap();
-            let _ = session_supervisor::SessionSupervisor::transition(
-                &db,
-                &child_session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("approval_deadline_expired"),
             );
         }
         let runtime = state.adapters.lock().unwrap().remove(&child_session_id);
@@ -4671,6 +4688,14 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
     // approval pins the parent forever.
     expire_worker_approvals(core);
 
+    // A worker that was warm when its output was adopted keeps its worktree, so
+    // resuming it does not land in a deleted directory. Collect those once the
+    // worker can no longer be resumed.
+    {
+        let db = state.db.lock().unwrap();
+        let _ = worker_adoption::release_terminal_worktrees(&db);
+    }
+
     // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
     // the common case (no silent sessions) touches neither the adapter map nor
     // the DB. Only sessions already silent past the timeout are confirmed — via
@@ -5518,6 +5543,53 @@ mod approval_deadline_tests {
         // The parent must be released, not left waiting on a child that can
         // never report.
         assert_eq!(store::outstanding_children(&db, "parent").unwrap(), 0);
+    }
+
+    /// The expiry pass snapshots expired workers, releases the lock, then acts.
+    /// If the user answers the approval inside that window the worker is back at
+    /// work, and killing it on the strength of a stale snapshot would destroy live
+    /// work. The `waiting -> working` transition is the gate that prevents it.
+    #[test]
+    fn an_approval_resolved_during_the_expiry_pass_does_not_kill_the_worker() {
+        let expired = (Utc::now()
+            - chrono::Duration::seconds(WORKER_APPROVAL_TIMEOUT_SECONDS + 60))
+        .to_rfc3339();
+        let (_fixture, core) = core_with_waiting_worker(Some(&expired));
+        // Stand in for the approval resolving between snapshot and action.
+        {
+            let db = core.db.lock().unwrap();
+            session_supervisor::SessionSupervisor::transition(
+                &db,
+                "child",
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some("approval_resolved"),
+            )
+            .unwrap();
+            // A stale stamp is what the snapshot would have carried.
+            db.execute(
+                "UPDATE worker_runtime SET waiting_since=?2 WHERE session_id=?1",
+                params!["child", expired],
+            )
+            .unwrap();
+        }
+
+        expire_worker_approvals(&core);
+
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(
+            (runtime.lifecycle_state.as_str(), runtime.result_status.as_str()),
+            ("working", "pending"),
+            "an approved worker must keep running"
+        );
+        assert!(runtime.last_result.is_none());
+        assert!(!db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id='child' AND kind='worker.approval_deadline_expired')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
     }
 
     #[test]

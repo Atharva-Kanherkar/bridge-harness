@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
-import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry } from "../types";
+import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { highlightDiff, looksLikeDiff } from "./highlight";
@@ -257,7 +257,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, onRefreshBase, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, onRefreshBase, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -271,7 +271,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
 
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
-  if (!visibleItems.length && !working && !pendingMessages.length && !completion && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  if (!visibleItems.length && !working && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
   const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
@@ -280,6 +280,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-8 pb-24 sm:px-6 sm:py-10">
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 sm:gap-8">
+      {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
       {repositoryDivergence === "diverged" && <div role="alert" className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">This branch&apos;s context predates the current file state.</div>}
       {continuationFidelity === "projected_at_boundary" && <div role="status" className="mb-4 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-xs text-muted-foreground">Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
@@ -294,6 +295,44 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     </div>
   </ScrollFollow>;
 });
+
+/// Changes that exist only in a worker's own worktree. The parent session cannot
+/// finish while this is unresolved, so the choice has to be reachable here.
+function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding; onResolve?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void> }) {
+  const [busy, setBusy] = useState<"adopt" | "discard" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const settling = binding.state === "settling";
+  const act = async (decision: "adopt" | "discard") => {
+    if (!onResolve) return;
+    setBusy(decision); setError(null);
+    try { await onResolve(binding.sessionId, decision); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(null); }
+  };
+  return <div role="alert" className="my-4 overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
+    <header className="flex items-baseline gap-[9px] px-[15px] pt-3">
+      <b className="text-[13px] font-semibold text-foreground">Worker changes are not in your workspace yet</b>
+      {settling && <small className="text-warning text-[10.5px] tracking-[0.03em]">settling…</small>}
+    </header>
+    <p className="mt-1.5 px-[15px] text-[12.5px] leading-relaxed text-muted-foreground">
+      This worker wrote in its own worktree. Adopting merges those changes into your checkout; discarding throws them away. Until you choose, this session stays unfinished.
+    </p>
+    {binding.changedPaths.length > 0 && <code className="mt-2 mx-[15px] block max-h-40 overflow-y-auto rounded-md border border-border bg-background p-[9px_11px] font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-code-foreground">{binding.changedPaths.join("\n")}</code>}
+    <small className="mt-1 block px-[15px] font-mono text-[10.5px] text-muted-foreground/70">
+      {binding.diffstat ?? "no diffstat"} · {binding.worktreeBranch}{binding.dirty ? " · uncommitted" : ""}
+    </small>
+    <small className="mt-0.5 block px-[15px] font-mono text-[10.5px] text-muted-foreground/60">{binding.worktreePath}</small>
+    {error && <p className="mt-1.5 px-[15px] text-[12px] leading-relaxed text-destructive-foreground">{error}</p>}
+    <div className="flex items-center justify-end gap-[7px] p-[12px_13px]">
+      <button disabled={!!busy || settling || !onResolve} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-transparent px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50" onClick={() => act("discard")}>
+        <X size={12} aria-hidden="true" /> {busy === "discard" ? "Discarding…" : "Discard"}
+      </button>
+      <button disabled={!!busy || settling || !onResolve} className="inline-flex items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50" onClick={() => act("adopt")}>
+        <Check size={12} aria-hidden="true" /> {busy === "adopt" ? "Adopting…" : "Adopt changes"}
+      </button>
+    </div>
+  </div>;
+}
 
 function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; onWaive?: (attemptId: string, checkIds: string[], reason: string) => Promise<void> }) {
   const [waiverOpen, setWaiverOpen] = useState(false);

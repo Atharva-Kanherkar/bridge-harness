@@ -1052,9 +1052,18 @@ pub fn record_check(
         .iter()
         .find(|check| check.id == run.check_id)
         .ok_or_else(|| BridgeError::Invalid(format!("unknown check {} for verification attempt", run.check_id)))?;
+    // `bridge.system` is Bridge reporting on its own machinery — a deadline that
+    // expired, a gate it could not build. Those are never passes, so it must not
+    // become a way to mark any check passed without an executor having run it.
+    if run.executor == SYSTEM_EXECUTOR && run.status == CheckStatus::Passed {
+        return Err(BridgeError::Invalid(format!(
+            "{SYSTEM_EXECUTOR} records why a check could not run; it cannot pass check {}",
+            run.check_id
+        )));
+    }
     // A `bridge.shell` check is proven by running the command. A digest of a
     // worker's JSON says only which message arrived, so worker-reported evidence
-    // may never resolve one — the runner or the deadline escalation must.
+    // may never resolve one — the runner must, or the deadline must fail it.
     if check.executor == SHELL_EXECUTOR
         && !matches!(run.executor.as_str(), SHELL_EXECUTOR | SYSTEM_EXECUTOR)
     {
@@ -1360,6 +1369,44 @@ mod tests {
         })
         .unwrap_err();
         assert!(refused.to_string().contains("cannot satisfy it"), "{refused}");
+    }
+
+    /// `bridge.system` exists so Bridge can say *why* a check could not run. It
+    /// must not be a way for a caller to mark one passed without an executor.
+    #[test]
+    fn the_system_executor_can_explain_a_failure_but_never_pass_a_check() {
+        let db = fixture();
+        let contract = contract();
+        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "tests".into(), label: "tests".into(), kind: EvalKind::Deterministic, required: true, executor: SHELL_EXECUTOR.into(), command: Some("bun run test".into()), required_capabilities: vec!["shell".into()], different_model_family: false, reason: "policy".into() }] };
+        let stamp = RepositoryStamp { head: "head".into(), dirty_digest: "dirty".into() };
+        let attempt = create_flow(&db, &contract, &plan, "s", ".", &stamp, Some("codex")).unwrap();
+
+        let forged = |executor: &str| CheckRun {
+            check_id: "tests".into(),
+            kind: EvalKind::Deterministic,
+            required: true,
+            status: CheckStatus::Passed,
+            executor: executor.into(),
+            command: Some("bun run test".into()),
+            verifier_family: None,
+            detail: Some("trust me".into()),
+            output_digest: Some("digest".into()),
+            artifact_refs: vec![],
+        };
+        // Neither the system executor nor a worker result can pass a shell check.
+        let system = record_check(&db, &attempt, &forged(SYSTEM_EXECUTOR)).unwrap_err();
+        assert!(system.to_string().contains("cannot pass check"), "{system}");
+        let worker = record_check(&db, &attempt, &forged(WORKER_RESULT_EXECUTOR)).unwrap_err();
+        assert!(worker.to_string().contains("cannot satisfy it"), "{worker}");
+        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().passed_required, 0);
+
+        // The system executor may still record why the check could not run.
+        record_check(&db, &attempt, &CheckRun { status: CheckStatus::Blocked, detail: Some("deadline expired".into()), ..forged(SYSTEM_EXECUTOR) }).unwrap();
+        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().checks[0].status, CheckStatus::Blocked);
+        // And the runner itself can pass it.
+        db.execute("UPDATE eval_check_runs SET status='pending' WHERE attempt_id=?1", params![attempt]).unwrap();
+        record_check(&db, &attempt, &forged(SHELL_EXECUTOR)).unwrap();
+        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().passed_required, 1);
     }
 
     #[test]

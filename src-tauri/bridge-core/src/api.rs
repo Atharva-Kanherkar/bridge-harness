@@ -866,6 +866,38 @@ pub fn refresh_workspace_base(
             session_id,
             &serde_json::to_string(&divergence).unwrap_or_default(),
         );
+        // Durable, so the resolution is still visible after a reload instead of
+        // leaving only the warning that prompted it.
+        let resolved = agent::NormalizedEvent {
+            kind: "workspace.stale_base".into(),
+            item_id: Some(format!(
+                "stale-base-{}@{}",
+                divergence.base_ref.as_deref().unwrap_or("unknown"),
+                divergence.base_commit.as_deref().unwrap_or("unknown")
+            )),
+            role: Some("system".into()),
+            status: Some("resolved".into()),
+            title: Some(format!(
+                "Workspace refreshed onto {}",
+                divergence.base_ref.as_deref().unwrap_or("its base branch")
+            )),
+            text: Some(divergence.summary()),
+            data: serde_json::json!({
+                "staleBase": true,
+                "phase": "refreshed",
+                "divergence": divergence,
+                "choices": [],
+            }),
+        };
+        if let Ok(stored) = store::session_event(
+            &db,
+            session_id,
+            &resolved,
+            &serde_json::json!({"workspace": true}),
+        ) {
+            drop(db);
+            core.events.publish(CoreEvent::Agent(stored));
+        }
     }
     core.events.publish(CoreEvent::StateChanged);
     Ok(divergence)
@@ -895,11 +927,29 @@ pub fn adopt_worker_worktree(
         let db = core.db.lock().unwrap();
         worker_adoption::plan_adoption(&db, session_id)?
     };
-    let detail = worker_adoption::integrate(&plan)?;
+    let outcome = match worker_adoption::integrate(&plan) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // The claim must be handed back, or the decision is stuck forever.
+            let db = core.db.lock().unwrap();
+            let _ = worker_adoption::release_claim(&db, session_id, &error.to_string());
+            drop(db);
+            core.events.publish(CoreEvent::StateChanged);
+            return Err(error);
+        }
+    };
     let binding = {
         let db = core.db.lock().unwrap();
-        let binding =
-            worker_adoption::settle_plan(&db, &plan, worker_adoption::STATE_ADOPTED, &detail)?;
+        let binding = worker_adoption::settle_plan(
+            &db,
+            &plan,
+            worker_adoption::STATE_ADOPTED,
+            &outcome.detail,
+        )?;
+        // A merged tree that is not the verified tree must not inherit its proof.
+        if !outcome.verified_tree_preserved {
+            worker_adoption::supersede_stale_proof(&db, &plan, &outcome)?;
+        }
         completion::reconcile_parent_readiness(&db, &binding.parent_session_id)?;
         binding
     };

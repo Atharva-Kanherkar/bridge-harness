@@ -171,6 +171,16 @@ const mockForests: Record<string, SessionForestSnapshot> = {
     }
   }
 };
+const mockPendingAdoption: WorkerRepositoryBinding = {
+  sessionId: "session-1w", parentSessionId: "session-1", workspaceId: "demo-1",
+  worktreePath: "/tmp/bridge/worker-1w", worktreeBranch: "bridge/worker-1w",
+  taskWorktreePath: "/tmp/bridge/session-supervisor", state: "pending_adoption",
+  head: "2b43aaad9b36", baseCommit: "307729bf075c", baseBranch: "bridge/session-supervisor",
+  baselineDirtyPaths: [], changedPaths: ["src/components/Markdown.tsx", "src/index.css"],
+  diffstat: "2 file(s) changed, 284 insertion(s), 31 deletion(s)", dirty: false,
+  detail: null, createdAt: now, updatedAt: now,
+};
+
 function mockForest(sessionId: string): SessionForestSnapshot {
   const existing = mockForests[sessionId];
   if (existing) return structuredClone(existing);
@@ -451,7 +461,7 @@ export const bridgeApi = {
   // task checkout; adopting or discarding it is an explicit decision.
   pendingWorkerAdoptions: async (sessionId: string): Promise<WorkerRepositoryBinding[]> => {
     if (isTauri()) return call("worktrees/pending_worker_adoptions", { sessionId });
-    return [];
+    return sessionId === "session-1" ? [structuredClone(mockPendingAdoption)] : [];
   },
   adoptWorkerWorktree: async (sessionId: string): Promise<WorkerRepositoryBinding> => {
     if (isTauri()) return call("worktrees/adopt_worker_worktree", { sessionId });

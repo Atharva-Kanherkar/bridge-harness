@@ -644,6 +644,20 @@ pub fn commit_worker_worktree(
     ))
 }
 
+/// Would integrating this worker be a pure fast-forward? True when the task
+/// worktree's HEAD is already an ancestor of the worker's commit, i.e. the task
+/// branch has not advanced since the worker branched.
+pub fn integration_is_fast_forward(
+    task_worktree: &Path,
+    worker_worktree: &Path,
+) -> Result<bool, BridgeError> {
+    let worker_commit = run(worker_worktree, ["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
+    let task_commit = run(task_worktree, ["rev-parse", "HEAD"])?.trim().to_owned();
+    is_ancestor(task_worktree, &task_commit, &worker_commit)
+}
+
 pub fn integrate_worker_changes(
     task_worktree: &Path,
     worker_worktree: &Path,

@@ -37,6 +37,10 @@ pub const STATE_ADOPTED: &str = "adopted";
 pub const STATE_DISCARDED: &str = "discarded";
 /// Isolated worker finished without touching the repository.
 pub const STATE_EMPTY: &str = "empty";
+/// Claimed by an in-flight adopt or discard. Git runs with the database lock
+/// released, so the claim is what stops a second call from merging and then
+/// recording a discard — or removing the worktree the first call is merging from.
+pub const STATE_SETTLING: &str = "settling";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -428,9 +432,12 @@ pub fn pending_for_parent(
     parent_session_id: &str,
 ) -> Result<Vec<WorkerRepositoryBinding>, BridgeError> {
     let mut statement = db.prepare(&format!(
-        "{SELECT} WHERE parent_session_id=?1 AND state=?2 ORDER BY created_at,session_id"
+        "{SELECT} WHERE parent_session_id=?1 AND state IN (?2,?3) ORDER BY created_at,session_id"
     ))?;
-    let rows = statement.query_map(params![parent_session_id, STATE_PENDING], map_binding)?;
+    let rows = statement.query_map(
+        params![parent_session_id, STATE_PENDING, STATE_SETTLING],
+        map_binding,
+    )?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
@@ -445,6 +452,22 @@ pub struct AdoptionPlan {
     /// True when the state was already terminal: nothing to integrate, but a
     /// leaked worktree from an interrupted earlier attempt is still released.
     pub already_settled: bool,
+    /// The completion attempt bound to this worker, and the repository stamp it
+    /// was verified at. Adoption compares the tree it is about to merge with this;
+    /// anything else is not the verified tree and must not inherit its proof.
+    pub verified_attempt_id: Option<String>,
+    pub verified_stamp: Option<(String, String)>,
+}
+
+/// The result of integrating a worker's output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptionOutcome {
+    pub detail: String,
+    /// False when the adopted tree is provably not the verified one: the worker
+    /// checkout changed after verification, or the task branch advanced so the
+    /// merge produced a combined tree nobody verified. The completion gate is
+    /// re-opened rather than allowed to vouch for a tree it never saw.
+    pub verified_tree_preserved: bool,
 }
 
 /// Validate an adoption and capture the activity flags it needs. Database phase.
@@ -452,6 +475,11 @@ pub fn plan_adoption(db: &Connection, session_id: &str) -> Result<AdoptionPlan, 
     let binding_row = binding(db, session_id)?.ok_or_else(|| {
         BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
     })?;
+    if binding_row.state == STATE_SETTLING {
+        return Err(BridgeError::Invalid(format!(
+            "another adopt or discard is already settling worker {session_id}; wait for it to finish"
+        )));
+    }
     let already_settled = binding_row.state == STATE_ADOPTED;
     if !already_settled && binding_row.state != STATE_PENDING {
         return Err(BridgeError::Invalid(format!(
@@ -459,11 +487,81 @@ pub fn plan_adoption(db: &Connection, session_id: &str) -> Result<AdoptionPlan, 
             binding_row.state
         )));
     }
+    if !already_settled {
+        claim_for_settling(db, session_id, "adopt")?;
+    }
+    let (verified_attempt_id, verified_stamp) = verified_attempt(db, session_id)?;
     Ok(AdoptionPlan {
         task_active: session_is_active(db, &binding_row.parent_session_id)?,
-        worker_active: session_is_active(db, &binding_row.session_id)?,
+        worker_active: worker_is_reusable(db, &binding_row.session_id)?,
         already_settled,
+        verified_attempt_id,
+        verified_stamp,
         binding: binding_row,
+    })
+}
+
+/// Take exclusive ownership of an adopt/discard for this binding. The compare-and-set
+/// runs while the caller holds the database lock; Git then runs without it, so this
+/// claim is the only thing preventing two concurrent decisions from interleaving.
+fn claim_for_settling(
+    db: &Connection,
+    session_id: &str,
+    operation: &str,
+) -> Result<(), BridgeError> {
+    let claimed = db.execute(
+        "UPDATE worker_worktree_adoptions SET state=?2,detail=?3,updated_at=?4
+         WHERE session_id=?1 AND state=?5",
+        params![
+            session_id,
+            STATE_SETTLING,
+            format!("{operation} in progress"),
+            Utc::now().to_rfc3339(),
+            STATE_PENDING,
+        ],
+    )?;
+    if claimed != 1 {
+        return Err(BridgeError::Invalid(format!(
+            "another adopt or discard is already settling worker {session_id}; wait for it to finish"
+        )));
+    }
+    Ok(())
+}
+
+/// Release a claim without settling it, so a failed attempt can be retried.
+pub fn release_claim(db: &Connection, session_id: &str, reason: &str) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE worker_worktree_adoptions SET state=?2,detail=?3,updated_at=?4
+         WHERE session_id=?1 AND state=?5",
+        params![
+            session_id,
+            STATE_PENDING,
+            reason,
+            Utc::now().to_rfc3339(),
+            STATE_SETTLING,
+        ],
+    )?;
+    Ok(())
+}
+
+/// The live completion attempt for this worker's checkout, with the stamp it was
+/// evaluated at.
+fn verified_attempt(
+    db: &Connection,
+    session_id: &str,
+) -> Result<(Option<String>, Option<(String, String)>), BridgeError> {
+    let row: Option<(String, String, String)> = db
+        .query_row(
+            "SELECT id,repository_head,dirty_digest FROM eval_attempts
+             WHERE worker_session_id=?1 AND status NOT IN ('superseded')
+             ORDER BY started_at DESC,rowid DESC LIMIT 1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((id, head, dirty)) => (Some(id), Some((head, dirty))),
+        None => (None, None),
     })
 }
 
@@ -472,16 +570,33 @@ pub fn plan_discard(db: &Connection, session_id: &str) -> Result<AdoptionPlan, B
     let binding_row = binding(db, session_id)?.ok_or_else(|| {
         BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
     })?;
+    if binding_row.state == STATE_SETTLING {
+        return Err(BridgeError::Invalid(format!(
+            "another adopt or discard is already settling worker {session_id}; wait for it to finish"
+        )));
+    }
     let already_settled = binding_row.state == STATE_DISCARDED;
     if !already_settled && !binding_row.is_isolated() {
         return Err(BridgeError::Invalid(format!(
             "worker {session_id} wrote in place; there is no isolated output to discard"
         )));
     }
+    // Output the user already adopted has been merged; calling it discarded would
+    // record a decision that never happened and mislabel merged work.
+    if binding_row.state == STATE_ADOPTED {
+        return Err(BridgeError::Invalid(format!(
+            "worker {session_id} was already adopted; its changes are merged and cannot be discarded"
+        )));
+    }
+    if !already_settled {
+        claim_for_settling(db, session_id, "discard")?;
+    }
     Ok(AdoptionPlan {
         task_active: session_is_active(db, &binding_row.parent_session_id)?,
-        worker_active: session_is_active(db, &binding_row.session_id)?,
+        worker_active: worker_is_reusable(db, &binding_row.session_id)?,
         already_settled,
+        verified_attempt_id: None,
+        verified_stamp: None,
         binding: binding_row,
     })
 }
@@ -489,15 +604,42 @@ pub fn plan_discard(db: &Connection, session_id: &str) -> Result<AdoptionPlan, B
 /// Merge a planned worker worktree into the task checkout. **Git only** — safe to
 /// call with no database lock held. Integration refuses a dirty or active task
 /// worktree and a non-fast-forward, so a failure leaves the work pending.
-pub fn integrate(plan: &AdoptionPlan) -> Result<String, BridgeError> {
+pub fn integrate(plan: &AdoptionPlan) -> Result<AdoptionOutcome, BridgeError> {
     if plan.already_settled {
-        return Ok("already adopted".into());
+        return Ok(AdoptionOutcome {
+            detail: "already adopted".into(),
+            verified_tree_preserved: true,
+        });
     }
     let task = Path::new(&plan.binding.task_worktree_path);
     let worker = Path::new(&plan.binding.worktree_path);
-    // Capture anything the worker left uncommitted onto its own branch first: a
-    // coding harness usually does not commit, and integration requires a clean
-    // worker tree. Without this the normal case would never be adoptable.
+    let mut divergence = Vec::new();
+    // Does the checkout still hold exactly what was verified? The attempt stamped
+    // this path's HEAD and dirty digest; anything else has been touched since.
+    if let Some((head, dirty)) = &plan.verified_stamp {
+        let current = store::repository_state_for_path(worker);
+        let current_head = current.get("head").and_then(serde_json::Value::as_str);
+        let current_dirty = current.get("dirtyHash").and_then(serde_json::Value::as_str);
+        if current_head != Some(head.as_str()) || current_dirty != Some(dirty.as_str()) {
+            divergence.push(format!(
+                "the worker checkout changed after verification (verified {head}/{dirty}, found {}/{})",
+                current_head.unwrap_or("unavailable"),
+                current_dirty.unwrap_or("unavailable")
+            ));
+        }
+    }
+    // A three-way merge produces a tree that is neither the verified worker tree
+    // nor the previously verified task tree.
+    let fast_forward = git::integration_is_fast_forward(task, worker).unwrap_or(false);
+    if !fast_forward {
+        divergence.push(
+            "the task branch advanced after verification, so integration merges into a combined tree that was never verified"
+                .into(),
+        );
+    }
+    // Capture anything the worker left uncommitted onto its own branch: a coding
+    // harness usually does not commit, and integration requires a clean worker
+    // tree. Without this the normal case would never be adoptable.
     let captured = git::commit_worker_worktree(
         worker,
         &format!(
@@ -506,9 +648,19 @@ pub fn integrate(plan: &AdoptionPlan) -> Result<String, BridgeError> {
         ),
     )?;
     let result = git::integrate_worker_changes(task, worker, plan.task_active)?;
-    Ok(match captured {
+    let mut detail = match captured {
         Some(commit) => format!("{result:?} (captured uncommitted work as {commit})"),
         None => format!("{result:?}"),
+    };
+    if !divergence.is_empty() {
+        detail.push_str(&format!(
+            "; re-verification required because {}",
+            divergence.join(" and ")
+        ));
+    }
+    Ok(AdoptionOutcome {
+        detail,
+        verified_tree_preserved: divergence.is_empty(),
     })
 }
 
@@ -529,13 +681,95 @@ pub fn settle_plan(
         .ok_or_else(|| BridgeError::Invalid("settled worker binding disappeared".into()))
 }
 
+/// 10: a warm worker is idle, not finished — it can be resumed into this exact
+/// checkout. Removing it would resume the worker into a directory that no longer
+/// exists, so the worktree is retained until the worker is genuinely terminal;
+/// [`recover`] and [`release_terminal_worktrees`] collect it afterwards.
+fn worker_is_reusable(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT s.status IN ('starting','working','resuming','checkpointing','waiting','warm','restored')
+                 OR COALESCE(r.lifecycle_state,'') IN ('starting','working','resuming','checkpointing','waiting','warm','restored')
+             FROM sessions s LEFT JOIN worker_runtime r ON r.session_id=s.id WHERE s.id=?1",
+            params![session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(true))
+}
+
+/// Collect child worktrees whose binding is terminal and whose worker can no
+/// longer be resumed. Runs on the maintenance pass, because a worker that was
+/// warm at adoption time becomes collectable later.
+pub fn release_terminal_worktrees(db: &Connection) -> Result<usize, BridgeError> {
+    let terminal = {
+        let mut statement = db.prepare(&format!("{SELECT} WHERE state IN (?1,?2,?3)"))?;
+        let rows = statement.query_map(
+            params![STATE_ADOPTED, STATE_DISCARDED, STATE_EMPTY],
+            map_binding,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut released = 0;
+    for row in terminal {
+        if !row.is_isolated() || !Path::new(&row.worktree_path).exists() {
+            continue;
+        }
+        if worker_is_reusable(db, &row.session_id)? {
+            continue;
+        }
+        release_worktree(db, &row, false)?;
+        if !Path::new(&row.worktree_path).exists() {
+            released += 1;
+        }
+    }
+    Ok(released)
+}
+
 /// Single-connection convenience used by tests and by callers that already hold
 /// the only connection. Production goes through the phased pair so Git never runs
 /// under the shared database lock.
 pub fn adopt(db: &Connection, session_id: &str) -> Result<WorkerRepositoryBinding, BridgeError> {
     let plan = plan_adoption(db, session_id)?;
-    let detail = integrate(&plan)?;
-    settle_plan(db, &plan, STATE_ADOPTED, &detail)
+    match integrate(&plan) {
+        Ok(outcome) => {
+            let binding = settle_plan(db, &plan, STATE_ADOPTED, &outcome.detail)?;
+            if !outcome.verified_tree_preserved {
+                supersede_stale_proof(db, &plan, &outcome)?;
+            }
+            Ok(binding)
+        }
+        Err(error) => {
+            // Integration refused (dirty or active task worktree, conflict). The
+            // decision is still the user's, so hand the claim back.
+            let _ = release_claim(db, session_id, &error.to_string());
+            Err(error)
+        }
+    }
+}
+
+/// The adopted tree is not the tree the gate verified, so its proof must not
+/// carry over: the attempt is superseded and the parent goes back to verifying.
+pub fn supersede_stale_proof(
+    db: &Connection,
+    plan: &AdoptionPlan,
+    outcome: &AdoptionOutcome,
+) -> Result<(), BridgeError> {
+    let Some(attempt_id) = &plan.verified_attempt_id else {
+        return Ok(());
+    };
+    db.execute(
+        "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE id=?1 AND status NOT IN ('superseded')",
+        params![attempt_id, Utc::now().to_rfc3339()],
+    )?;
+    store::event(
+        db,
+        "completion",
+        "completion.proof_superseded_by_adoption",
+        &plan.binding.parent_session_id,
+        &outcome.detail,
+    )?;
+    Ok(())
 }
 
 /// Throw a worker's isolated output away on purpose.
@@ -624,11 +858,22 @@ fn session_is_active(db: &Connection, session_id: &str) -> Result<bool, BridgeEr
 /// parent from blocking forever on work that is already gone.
 pub fn recover(db: &Connection) -> Result<usize, BridgeError> {
     let pending = {
-        let mut statement = db.prepare(&format!("{SELECT} WHERE state=?1"))?;
-        let rows = statement.query_map(params![STATE_PENDING], map_binding)?;
+        let mut statement = db.prepare(&format!("{SELECT} WHERE state IN (?1,?2)"))?;
+        let rows = statement.query_map(params![STATE_PENDING, STATE_SETTLING], map_binding)?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
-    let mut reconciled = 0;
+    // A crash between claiming and settling leaves `settling` behind, which would
+    // block the parent and refuse every retry. Restart returns it to pending.
+    let unstuck = db.execute(
+        "UPDATE worker_worktree_adoptions SET state=?1,detail=?2,updated_at=?3 WHERE state=?4",
+        params![
+            STATE_PENDING,
+            "an adopt or discard was interrupted by a restart; the decision is still open",
+            Utc::now().to_rfc3339(),
+            STATE_SETTLING,
+        ],
+    )?;
+    let mut reconciled = unstuck;
     for row in pending {
         if Path::new(&row.worktree_path).exists() {
             continue;
@@ -845,6 +1090,192 @@ mod tests {
             STATE_DISCARDED
         );
         assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+    }
+
+    /// Record a live completion attempt bound to this worker at its current stamp,
+    /// so adoption can tell whether the tree it merges is the verified one.
+    fn verify_at_current_state(fixture: &Fixture, worker: &Path) -> String {
+        let state = store::repository_state_for_path(worker);
+        let attempt = uuid::Uuid::new_v4().to_string();
+        fixture.db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES('c','w','parent',1,'[\"ok\"]',0,'active','now','now')", []).unwrap();
+        fixture.db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('p','c',1,'low','{}','now')", []).unwrap();
+        fixture.db.execute(
+            "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,worker_session_id,started_at)
+             VALUES(?1,'p','parent',?2,?3,?4,'verified','child','now')",
+            params![
+                attempt,
+                state["head"].as_str().unwrap(),
+                state["dirtyHash"].as_str().unwrap(),
+                worker.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+        attempt
+    }
+
+    fn attempt_status(fixture: &Fixture, attempt: &str) -> String {
+        fixture
+            .db
+            .query_row("SELECT status FROM eval_attempts WHERE id=?1", params![attempt], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// Adoption may only hand its proof to the tree that was actually verified.
+    #[test]
+    fn adopting_the_verified_tree_keeps_its_proof() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        let attempt = verify_at_current_state(&fixture, &worker);
+
+        let plan = plan_adoption(&fixture.db, "child").unwrap();
+        let outcome = integrate(&plan).unwrap();
+        assert!(outcome.verified_tree_preserved, "{}", outcome.detail);
+        settle_plan(&fixture.db, &plan, STATE_ADOPTED, &outcome.detail).unwrap();
+        assert_eq!(attempt_status(&fixture, &attempt), "verified");
+    }
+
+    /// The worker checkout changed after verification: the merged tree is not the
+    /// verified tree, so the proof is superseded instead of silently transferred.
+    #[test]
+    fn a_worker_checkout_touched_after_verification_supersedes_its_proof() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "verified\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        let attempt = verify_at_current_state(&fixture, &worker);
+        // Something edits the checkout after the gate passed.
+        std::fs::write(worker.join("src/feature.txt"), "changed after verification\n").unwrap();
+
+        adopt(&fixture.db, "child").unwrap();
+
+        assert_eq!(attempt_status(&fixture, &attempt), "superseded");
+        let detail = binding(&fixture.db, "child").unwrap().unwrap().detail.unwrap();
+        assert!(detail.contains("changed after verification"), "{detail}");
+    }
+
+    /// The task branch advanced, so integration is a three-way merge producing a
+    /// combined tree nobody verified.
+    #[test]
+    fn a_three_way_merge_supersedes_the_proof_it_was_never_given() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        let attempt = verify_at_current_state(&fixture, &worker);
+        // The task branch moves on, disjointly, after verification.
+        std::fs::create_dir_all(fixture.task.join("docs")).unwrap();
+        std::fs::write(fixture.task.join("docs/notes.md"), "task side\n").unwrap();
+        git_cmd(&fixture.task, &["add", "."]);
+        git_cmd(&fixture.task, &["commit", "-q", "-m", "task edit"]);
+
+        adopt(&fixture.db, "child").unwrap();
+
+        assert_eq!(attempt_status(&fixture, &attempt), "superseded");
+        let detail = binding(&fixture.db, "child").unwrap().unwrap().detail.unwrap();
+        assert!(detail.contains("task branch advanced"), "{detail}");
+        // The merge still happened — the work is not lost, only re-verified.
+        assert!(fixture.task.join("src/feature.txt").exists());
+    }
+
+    /// Git runs with the database lock released, so two decisions must not
+    /// interleave into "merged, then recorded discarded".
+    #[test]
+    fn a_second_decision_cannot_interleave_with_one_in_flight() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+
+        let plan = plan_adoption(&fixture.db, "child").unwrap();
+        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_SETTLING);
+        // While that adoption is mid-Git, a concurrent discard must be refused.
+        let refused = plan_discard(&fixture.db, "child").unwrap_err().to_string();
+        assert!(refused.contains("already settling"), "{refused}");
+        assert!(plan_adoption(&fixture.db, "child").unwrap_err().to_string().contains("already settling"));
+        // A claimed binding still blocks the parent.
+        assert_eq!(pending_for_parent(&fixture.db, "parent").unwrap().len(), 1);
+
+        let outcome = integrate(&plan).unwrap();
+        settle_plan(&fixture.db, &plan, STATE_ADOPTED, &outcome.detail).unwrap();
+        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_ADOPTED);
+        // And adopted output can never be relabelled as discarded.
+        assert!(discard(&fixture.db, "child", "changed my mind")
+            .unwrap_err()
+            .to_string()
+            .contains("already adopted"));
+    }
+
+    #[test]
+    fn a_refused_integration_hands_the_decision_back_instead_of_wedging_it() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::write(worker.join("base.txt"), "worker version\n").unwrap();
+        git_cmd(&worker, &["commit", "-q", "-am", "worker edit"]);
+        std::fs::write(fixture.task.join("base.txt"), "task version\n").unwrap();
+        git_cmd(&fixture.task, &["commit", "-q", "-am", "task edit"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+
+        assert!(adopt(&fixture.db, "child").is_err());
+        // Still the user's decision to make, and still retryable.
+        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_PENDING);
+        assert!(discard(&fixture.db, "child", "conflicts with the task branch").is_ok());
+    }
+
+    /// A restart between claiming and settling must not wedge the decision.
+    #[test]
+    fn an_interrupted_decision_is_reopened_after_restart() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        let _claimed = plan_adoption(&fixture.db, "child").unwrap();
+
+        assert!(recover(&fixture.db).unwrap() >= 1);
+        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_PENDING);
+        assert!(adopt(&fixture.db, "child").is_ok());
+    }
+
+    /// A warm worker is idle, not finished: it can be resumed into this exact
+    /// checkout, so settling must not delete it out from under a later resume.
+    #[test]
+    fn a_warm_workers_checkout_survives_adoption_until_it_is_terminal() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        fixture.db.execute("UPDATE sessions SET status='warm' WHERE id='child'", []).unwrap();
+
+        adopt(&fixture.db, "child").unwrap();
+        assert!(
+            worker.exists(),
+            "a resumable worker must keep the checkout it would resume into"
+        );
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 0);
+
+        // Once it can no longer be resumed, the worktree is collected.
+        fixture.db.execute("UPDATE sessions SET status='stopped' WHERE id='child'", []).unwrap();
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 1);
+        assert!(!worker.exists());
     }
 
     #[test]
