@@ -27,6 +27,4 @@ regex = "1"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 zeroize = "1"
 cap-std = "4.0.2"
-
-[dev-dependencies]
 tempfile = { workspace = true }
