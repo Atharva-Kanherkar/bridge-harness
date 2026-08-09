@@ -3,13 +3,8 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
     "HarnessId": {
-      "description": "A harness identifier on the wire. Mirrors `bridge_core::model::Harness` variant for variant; an exhaustive conversion in bridge-core keeps the two from drifting.",
-      "enum": [
-        "claude",
-        "codex",
-        "opencode",
-        "shell"
-      ],
+      "description": "Which agent runs a session, e.g. 'claude', 'codex', 'gemini'. Identifies the agent only — how Bridge runs it is not encoded here.",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
       "type": "string"
     }
   },

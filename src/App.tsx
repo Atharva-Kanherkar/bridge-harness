@@ -16,7 +16,7 @@ import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog"
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { formatElapsed, tierRuntimeLabel } from "./utils";
+import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -57,13 +57,6 @@ function orderSessionTree(sessions: Session[]): Session[] {
 function StatusDot({ status }: { status: SessionStatus }) {
   const color = status === "working" ? "bg-success" : status === "waiting" ? "bg-warning" : status === "ready" ? "bg-info" : status === "failed" ? "bg-destructive" : "bg-ring";
   return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />;
-}
-
-function harnessLabel(harness?: string | null): string {
-  if (harness === "claude") return "Claude";
-  if (harness === "codex") return "Codex";
-  if (harness === "opencode") return "OpenCode";
-  return harness ? harness[0].toUpperCase() + harness.slice(1) : "Agent";
 }
 
 function errorMessage(value: unknown): string {

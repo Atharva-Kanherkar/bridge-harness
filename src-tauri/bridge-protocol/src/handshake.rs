@@ -20,7 +20,21 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// upgrade); a **minor** bump means additive changes (new methods,
 /// notifications, or optional fields). A server accepts a client when the
 /// majors match and the client's minor is not newer than the server's.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 8 };
+///
+/// **1.0 is a breaking bump, not a stability claim.** Opening `HarnessId`
+/// widened a value domain that appears in *results*: a session can now report
+/// `acp:<agent>`, which a 0.8-generated client decodes as an out-of-set enum
+/// value. Because `accepts` only compares majors and an upper minor bound,
+/// keeping this at 0.9 would let such a client handshake successfully and then
+/// fail decoding `state/get_state` — a silent success followed by a failure at
+/// the worst possible moment. Widening a result domain is precisely the
+/// "clients must upgrade" case this policy reserves the major for.
+///
+/// The alternative — serving 0.8-compatible responses per connection — was
+/// rejected: the only ways to make an `acp:` session fit a 0.8 client are to
+/// hide it or to rename it, and both break the guarantee that history never
+/// vanishes and is never re-attributed.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 0 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -147,8 +161,31 @@ mod tests {
     }
 
     #[test]
+    fn protocol_0_clients_are_refused_rather_than_served_values_they_cannot_decode() {
+        // The regression this major bump exists for: a 0.8 client's generated
+        // `HarnessId` is a closed enum over the four built-ins. A session can
+        // now report `acp:<agent>`, reachable through `sessions/create_chat`
+        // with no installer, so such a client must be turned away at the
+        // handshake rather than failing later inside `state/get_state`.
+        for stale in [request(0, 9), request(0, 8), request(0, 0)] {
+            let error = negotiate(&stale).unwrap_err();
+            assert_eq!(error.code, ErrorCode::IncompatibleProtocol.code());
+            let data = error.data.unwrap();
+            assert_eq!(
+                data["serverProtocolVersion"],
+                serde_json::to_value(PROTOCOL_VERSION).unwrap(),
+                "the rejection tells the client what to upgrade to"
+            );
+        }
+        assert!(
+            !PROTOCOL_VERSION.accepts(ProtocolVersion { major: 0, minor: 9 }),
+            "opening a result value domain is a breaking change"
+        );
+    }
+
+    #[test]
     fn handshake_shapes_round_trip() {
-        let request = request(0, 1);
+        let request = request(PROTOCOL_VERSION.major, 0);
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<HandshakeRequest>(&encoded).unwrap(), request);
         assert!(encoded.contains("protocolVersion"), "wire fields are camelCase");

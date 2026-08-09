@@ -3,6 +3,7 @@ import { ChevronRight, FolderGit2, FolderOpen, GitBranch, MessageSquarePlus, Pac
 import type { BridgeEvent, Session, SessionStatus, WorkerRuntimeRecord, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { SidebarWorkerPanel } from "./SidebarWorkerPanel";
+import { harnessLabel } from "../utils";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
@@ -21,13 +22,6 @@ function readWidth(): number {
 function StatusDot({ status }: { status: SessionStatus }) {
   const color = status === "working" ? "bg-emerald-400" : status === "waiting" ? "bg-amber-400" : status === "ready" ? "bg-sky-400" : status === "failed" ? "bg-red-400" : "bg-neutral-500";
   return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color)} />;
-}
-
-function harnessLabel(harness?: string | null): string {
-  if (harness === "claude") return "Claude";
-  if (harness === "codex") return "Codex";
-  if (harness === "opencode") return "OpenCode";
-  return harness ? harness[0].toUpperCase() + harness.slice(1) : "Agent";
 }
 
 function SidebarChatRow({ chat, active, collapsed, onClick }: { chat: Session; active: boolean; collapsed: boolean; onClick: () => void }) {

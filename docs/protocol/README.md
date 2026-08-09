@@ -142,7 +142,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.8**),
+- its `protocolVersion` (this document describes **1.0**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -151,6 +151,13 @@ request is answered with `invalid_request`. The server advertises:
 when majors match and the client's minor is not newer than the server's.
 Incompatible clients are rejected with the stable code **2000
 `incompatible_protocol`**, with both versions in `error.data`.
+
+**1.0 is a breaking bump, not a stability claim.** Opening `HarnessId` (below)
+widened a value domain that appears in *results*, so a 0.x client — whose
+generated `HarnessId` is a closed enum — would handshake successfully and then
+fail decoding a snapshot containing a `gemini` session. Widening a result domain
+is the "clients must upgrade" case the major is reserved for. 0.x clients are
+refused at the handshake rather than served values they cannot decode.
 
 Since 0.6 the request carries an optional `authToken`; hosts serving
 remote-capable transports (the daemon) require it, and nothing ever echoes it.
@@ -208,6 +215,45 @@ remaining domain snapshots (learning runs/state, model setup, the OpenCode
 catalog, the browser bridge snapshot, and the marketplace/skill catalogs).
 Commands returning no value use the explicit `UnitResult` contract
 (`result: null`).
+
+### Harness ids
+
+`HarnessId` is an **open** string naming **which agent** runs a session:
+
+```
+HarnessId := [a-z0-9][a-z0-9._-]{0,63}
+```
+
+`claude`, `codex`, `opencode`, `shell`, `gemini`, `cline`, … Through 0.8 this
+was an enum of the first four; every one of those values is unchanged. Do not
+generate a closed union over the values that exist today — an agent installed
+from the ACP registry did not exist when your client was compiled, which is
+the whole point.
+
+**The id is the agent, never how Bridge runs it.** Claude reached through the
+Agent SDK and Claude reached through an ACP shim are the same agent and share
+the id `claude`; the transport is Bridge's problem, recorded separately, and
+never something a user picks. This is why the live registry's `opencode` entry
+and Bridge's own OpenCode adapter are **one** harness with one id and one
+session history, rather than two competing products. It also means a bespoke
+adapter can replace a generic one later without renaming anything or migrating
+a single session.
+
+Whether an id is *runnable* is a separate question from whether it is *valid*.
+A well-formed id Bridge has no adapter for parses fine and fails at start with
+an error naming the harness.
+
+**Params and results use different types, and the schemas say so.** A
+parameter is `HarnessId`, whose schema carries the `pattern` above — a
+malformed id is `invalid_params`. A result carries `StoredHarnessId`, an
+**unconstrained** string: a session persisted by a newer Bridge, or one whose
+agent was uninstalled, still reports the id it was stored with, so history
+does not disappear because an agent was removed. Publishing the strict pattern
+on the result side would let `state/get_state` return a document that fails
+its own contract.
+
+So: read any string from `sessions[].harness`; send back only one that matches
+the grammar. An id outside the grammar is readable, never actionable.
 
 ## Cancellation
 

@@ -752,6 +752,48 @@ mod tests {
     }
 
     #[test]
+    fn every_live_registry_id_can_name_a_harness() {
+        // A catalog entry Bridge cannot name is an entry it can never install.
+        // Pinned against the captured index so upstream widening its id charset
+        // surfaces here rather than as an install that cannot start.
+        for agent in &index().agents {
+            let id = bridge_protocol::messages::HarnessId::parse(&agent.id)
+                .unwrap_or_else(|error| panic!("registry id {:?}: {error}", agent.id));
+            let harness = crate::model::Harness::from(id);
+            assert_eq!(harness.id(), agent.id, "the id is the agent, unchanged");
+            assert_eq!(crate::model::Harness::from_stored(&harness.id()), harness);
+        }
+    }
+
+    #[test]
+    fn a_registry_entry_sharing_a_builtin_name_is_the_same_agent() {
+        // `opencode` is a real entry in the live index, and Bridge also ships an
+        // OpenCode adapter. One agent reached two ways — so one id, one session
+        // history, and one entry a user ever sees. Installing from the registry
+        // must not mint a second, competing "OpenCode".
+        let index = index();
+        let shared: Vec<&str> = index
+            .agents
+            .iter()
+            .map(|agent| agent.id.as_str())
+            .filter(|id| bridge_protocol::messages::BUILTIN_HARNESS_IDS.contains(id))
+            .collect();
+        assert_eq!(
+            shared,
+            vec!["opencode"],
+            "the set of registry ids Bridge already has a bespoke adapter for changed"
+        );
+        for id in shared {
+            let harness = crate::model::Harness::from_stored(id);
+            assert!(
+                !matches!(harness, crate::model::Harness::Agent(_)),
+                "{id} resolved to a separate identity instead of the built-in"
+            );
+            assert_eq!(harness.id(), id);
+        }
+    }
+
+    #[test]
     fn parses_npx_uvx_and_binary_distributions() {
         let npx = agent("claude-acp").distribution.npx.expect("npx");
         assert!(npx

@@ -1,5 +1,7 @@
+use bridge_protocol::messages::{HarnessId, HarnessIdError, StoredHarnessId};
 use serde::ser::Error as _;
 use serde::{Deserialize, Serialize, Serializer};
+use std::borrow::Cow;
 
 pub(crate) fn serialize_js_safe_i64<S: Serializer>(
     value: &i64,
@@ -119,23 +121,139 @@ impl ResumeEligibility {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+/// Which harness runs a session.
+///
+/// Closed over the built-ins on purpose — each has a hand-written adapter and
+/// bespoke behaviour, so an exhaustive `match` must go on failing to compile
+/// until a new built-in is handled everywhere. The two open arms carry what a
+/// closed enum cannot express, and the wire type
+/// [`bridge_protocol::messages::HarnessId`] is open for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Harness {
     Claude,
     Codex,
     OpenCode,
     Shell,
+    /// Any other agent — installed from the registry and run through a
+    /// generic transport. Its id is validated on construction.
+    ///
+    /// **Construct only through [`Harness::parse`] or
+    /// [`Harness::from_stored`],** which route a built-in name to its own
+    /// variant first. `Agent(HarnessId("claude"))` built by hand would
+    /// serialize identically to [`Harness::Claude`] while comparing unequal to
+    /// it; the constructors cannot produce that.
+    Agent(HarnessId),
+    /// A stored harness id this build cannot interpret — a row written by a
+    /// newer Bridge, or a corrupted one. The raw value is preserved so the
+    /// session still lists and replays under its own name.
+    ///
+    /// Unreachable from the wire: [`Harness::parse`] rejects what
+    /// [`Harness::from_stored`] tolerates. It is never a guess about what the
+    /// user meant, and it is never runnable — looking it up in the adapter
+    /// registry misses, which is the legible failure.
+    ///
+    /// **Construct only through [`Harness::from_stored`].** Building it
+    /// directly with an id that *does* parse — `Harness::Unknown("claude")` —
+    /// makes a value that serializes identically to [`Harness::Claude`] while
+    /// comparing unequal to it. `from_stored` cannot produce that, and
+    /// `a_stored_harness_id_is_idempotent_through_its_canonical_form` pins it.
+    Unknown(String),
 }
 
 impl Harness {
-    pub fn label(&self) -> &'static str {
+    /// The canonical id: the wire value, the `sessions.harness` column value,
+    /// and the adapter-registry key. One spelling, one place it comes from.
+    pub fn id(&self) -> Cow<'static, str> {
         match self {
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
-            Self::OpenCode => "OpenCode",
-            Self::Shell => "Shell",
+            Self::Claude => Cow::Borrowed("claude"),
+            Self::Codex => Cow::Borrowed("codex"),
+            Self::OpenCode => Cow::Borrowed("opencode"),
+            Self::Shell => Cow::Borrowed("shell"),
+            Self::Agent(agent) => Cow::Owned(agent.as_str().to_owned()),
+            Self::Unknown(raw) => Cow::Owned(raw.clone()),
         }
+    }
+
+    /// Parse an id supplied by a caller. Strict: exactly what the wire type
+    /// accepts, so the daemon and the Tauri host validate identically. An
+    /// unrecognized id is an error here, never [`Harness::Unknown`].
+    pub fn parse(value: &str) -> Result<Self, HarnessIdError> {
+        HarnessId::parse(value).map(Self::from)
+    }
+
+    /// Interpret an id read back from storage. Total by necessity: a row that
+    /// this build cannot parse still has to load, so it becomes
+    /// [`Harness::Unknown`] carrying the raw value.
+    ///
+    /// This replaced a `_ => Harness::Shell` fallthrough, which turned a
+    /// corrupt or forward-dated row into a *runnable shell session*.
+    pub fn from_stored(value: &str) -> Self {
+        Self::parse(value).unwrap_or_else(|_| Self::Unknown(value.to_owned()))
+    }
+
+    pub fn label(&self) -> Cow<'static, str> {
+        match self {
+            Self::Claude => Cow::Borrowed("Claude"),
+            Self::Codex => Cow::Borrowed("Codex"),
+            Self::OpenCode => Cow::Borrowed("OpenCode"),
+            Self::Shell => Cow::Borrowed("Shell"),
+            // An agent Bridge has no bespoke adapter for has no display name
+            // of Bridge's invention; the id the user installed it by is what
+            // they are shown.
+            Self::Agent(agent) => Cow::Owned(agent.as_str().to_owned()),
+            Self::Unknown(raw) => Cow::Owned(raw.clone()),
+        }
+    }
+}
+
+impl From<HarnessId> for Harness {
+    /// Total. A built-in name routes to its own variant so the two spellings
+    /// can never both exist; everything else is an ordinary agent.
+    /// [`Harness::Unknown`] is not reachable through this conversion.
+    fn from(id: HarnessId) -> Self {
+        match id.as_str() {
+            "claude" => Self::Claude,
+            "codex" => Self::Codex,
+            "opencode" => Self::OpenCode,
+            "shell" => Self::Shell,
+            _ => Self::Agent(id),
+        }
+    }
+}
+
+impl TryFrom<&Harness> for HarnessId {
+    type Error = HarnessIdError;
+
+    /// Fallible in exactly one case: [`Harness::Unknown`] has no valid wire
+    /// id. That asymmetry is deliberate — such a session is still *serialized*
+    /// under its raw id so its history renders, but it can never be sent back
+    /// as a parameter, because nothing can be done with it.
+    fn try_from(harness: &Harness) -> Result<Self, Self::Error> {
+        HarnessId::parse(&harness.id())
+    }
+}
+
+impl From<&Harness> for StoredHarnessId {
+    /// Total, unlike the [`HarnessId`] conversion. This is the result-side id:
+    /// every harness a session can be in has one, including
+    /// [`Harness::Unknown`], because a session must remain readable even when
+    /// its harness cannot be acted on.
+    fn from(harness: &Harness) -> Self {
+        StoredHarnessId::new(harness.id().into_owned())
+    }
+}
+
+impl Serialize for Harness {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.id())
+    }
+}
+
+impl<'de> Deserialize<'de> for Harness {
+    /// Strict, matching the wire type. Storage reads use
+    /// [`Harness::from_stored`] instead.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 

@@ -5,6 +5,7 @@
 //! crosses that boundary. Workers return a versioned [`WorkerResult`].
 
 pub use crate::model::CapabilityTier;
+use crate::model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -804,12 +805,27 @@ fn bullet_list_or_none(items: &[String]) -> String {
     }
 }
 
+/// Fold a harness hint written by a model into a canonical harness id.
+///
+/// The alias arms exist because a model writes "Claude Code" or "anthropic"
+/// when it means `claude`. Any other well-formed agent id passes through
+/// unchanged — an installed agent is named by its id and has no aliases to
+/// fold.
+///
+/// `shell` is refused despite being a valid harness id. Admitting it would let
+/// a delegation directive spawn a shell worker where it previously could not,
+/// and widening what a model may delegate to is a product decision, not a side
+/// effect of opening an identifier.
 pub fn normalize_harness(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    let lowercased = value.trim().to_ascii_lowercase();
+    match lowercased.as_str() {
         "claude" | "claude-code" | "claudecode" | "anthropic" => Some("claude".into()),
         "codex" | "gpt" | "openai" => Some("codex".into()),
         "opencode" | "open-code" => Some("opencode".into()),
-        _ => None,
+        "shell" => None,
+        candidate => model::Harness::parse(candidate)
+            .ok()
+            .map(|harness| harness.id().into_owned()),
     }
 }
 
@@ -989,6 +1005,45 @@ mod tests {
         assert_eq!(typed.effort, Effort::Xhigh);
         assert_eq!(typed.runtime_harness(), "claude");
         assert_eq!(typed.model.as_deref(), Some("fable"));
+    }
+
+    #[test]
+    fn harness_hints_fold_aliases_and_admit_installed_agents() {
+        for (hint, expected) in [
+            ("claude-code", "claude"),
+            ("Anthropic", "claude"),
+            ("openai", "codex"),
+            ("open-code", "opencode"),
+            // Any installed agent is delegable by its own id — that is what
+            // puts the marketplace inside the delegation tree.
+            ("gemini", "gemini"),
+            ("  Gemini  ", "gemini"),
+            ("github-copilot-cli", "github-copilot-cli"),
+        ] {
+            assert_eq!(normalize_harness(hint).as_deref(), Some(expected), "hint {hint:?}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_harness_hint_is_refused_rather_than_defaulted() {
+        // `runtime_harness()` ends in `unwrap_or("codex")`, so a hint that
+        // normalizes to None must be rejected by `validate()` rather than
+        // silently becoming a Codex worker.
+        for hint in ["", "acp:gemini", "gpt 9", "-gemini", "gem/ini"] {
+            assert_eq!(normalize_harness(hint), None, "hint {hint:?}");
+        }
+    }
+
+    #[test]
+    fn a_delegation_directive_cannot_summon_a_shell_worker() {
+        // `shell` is a valid harness id but deliberately absent from the hint
+        // table: opening the identifier must not widen what a model is allowed
+        // to delegate to.
+        assert_eq!(normalize_harness("shell"), None);
+        assert_eq!(normalize_harness("Shell"), None);
+        assert_eq!(normalize_harness("  shell  "), None);
+        // ...while every other agent stays reachable.
+        assert_eq!(normalize_harness("goose").as_deref(), Some("goose"));
     }
 
     #[test]
