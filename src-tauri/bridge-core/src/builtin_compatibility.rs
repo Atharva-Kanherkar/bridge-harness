@@ -43,6 +43,7 @@ pub struct BuiltInAgentContract {
     pub sandbox_modes: &'static [SandboxMode],
     pub model_source: ModelSource,
     pub model_ids: &'static [&'static str],
+    pub default_model_id: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -95,6 +96,7 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         sandbox_modes: ALL_SANDBOXES,
         model_source: ModelSource::Static,
         model_ids: &["haiku", "sonnet", "opus", "fable"],
+        default_model_id: Some("sonnet"),
     },
     BuiltInAgentContract {
         id: "codex",
@@ -112,6 +114,7 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
             "gpt-5.6-sol",
             "gpt-5.3-codex",
         ],
+        default_model_id: Some("gpt-5.6-luna"),
     },
     BuiltInAgentContract {
         id: "opencode",
@@ -124,6 +127,7 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         sandbox_modes: OPENCODE_SANDBOXES,
         model_source: ModelSource::RuntimeCatalog,
         model_ids: &[],
+        default_model_id: None,
     },
 ];
 
@@ -175,10 +179,33 @@ mod builtin_compatibility_tests {
         title: Option<String>,
         #[serde(default)]
         text: Option<String>,
+        #[serde(default)]
+        request_id: Option<Value>,
+        #[serde(default)]
+        turn_id: Option<String>,
+        #[serde(default)]
+        input_tokens: Option<u64>,
+        #[serde(default)]
+        output_tokens: Option<u64>,
+        #[serde(default)]
+        cached_input_tokens: Option<u64>,
+        #[serde(default)]
+        reasoning_tokens: Option<u64>,
+        #[serde(default)]
+        cost: Option<Value>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        provider: Option<String>,
+        #[serde(default)]
+        will_retry: Option<bool>,
+        #[serde(default)]
+        is_error: Option<bool>,
     }
 
     impl From<NormalizedEvent> for NormalizedSummary {
         fn from(event: NormalizedEvent) -> Self {
+            let usage = event.data.get("usage").unwrap_or(&event.data);
             Self {
                 kind: event.kind,
                 item_id: event.item_id,
@@ -186,6 +213,47 @@ mod builtin_compatibility_tests {
                 status: event.status,
                 title: event.title,
                 text: event.text,
+                request_id: event.data.get("requestId").cloned(),
+                turn_id: event
+                    .data
+                    .get("turnId")
+                    .or_else(|| event.data.pointer("/turn/id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                input_tokens: usage
+                    .get("input_tokens")
+                    .or_else(|| usage.get("inputTokens"))
+                    .and_then(Value::as_u64),
+                output_tokens: usage
+                    .get("output_tokens")
+                    .or_else(|| usage.get("outputTokens"))
+                    .and_then(Value::as_u64),
+                cached_input_tokens: usage
+                    .get("cached_input_tokens")
+                    .or_else(|| usage.get("cachedInputTokens"))
+                    .and_then(Value::as_u64),
+                reasoning_tokens: usage
+                    .get("reasoning_tokens")
+                    .or_else(|| usage.get("reasoningTokens"))
+                    .and_then(Value::as_u64),
+                cost: event
+                    .data
+                    .get("cost")
+                    .or_else(|| event.data.get("totalCostUsd"))
+                    .filter(|value| !value.is_null())
+                    .cloned(),
+                model: event
+                    .data
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                provider: event
+                    .data
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                will_retry: event.data.get("willRetry").and_then(Value::as_bool),
+                is_error: event.data.get("is_error").and_then(Value::as_bool),
             }
         }
     }
@@ -253,6 +321,12 @@ mod builtin_compatibility_tests {
             match contract.model_source {
                 ModelSource::Static => {
                     assert_eq!(model_ids, contract.model_ids, "{} models", contract.id);
+                    assert_eq!(
+                        descriptor.default_model.as_deref(),
+                        contract.default_model_id,
+                        "{} default model",
+                        contract.id
+                    );
                 }
                 ModelSource::RuntimeCatalog => assert!(contract.model_ids.is_empty()),
             }
@@ -261,12 +335,29 @@ mod builtin_compatibility_tests {
 
     #[test]
     fn compatibility_report_is_deterministic_and_schema_versioned() {
-        let first = serde_json::to_string_pretty(&compatibility_report()).unwrap();
-        let second = serde_json::to_string_pretty(&compatibility_report()).unwrap();
-        assert_eq!(first, second);
-        let value: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let actual = serde_json::to_string_pretty(&compatibility_report()).unwrap();
+        let expected =
+            include_str!("../../../testing/fixtures/builtin-compatibility-report-v1.json")
+                .trim_end();
+        assert_eq!(actual, expected);
+        let value: serde_json::Value = serde_json::from_str(&actual).unwrap();
         assert_eq!(value["schemaVersion"], SCHEMA_VERSION);
         assert_eq!(value["agents"].as_array().unwrap().len(), 3);
+        let lowercase = actual.to_ascii_lowercase();
+        for forbidden in [
+            "api_key",
+            "apikey",
+            "access_token",
+            "authorization",
+            "bearer ",
+            "password",
+            "sk-ant-",
+        ] {
+            assert!(
+                !lowercase.contains(forbidden),
+                "compatibility report contains secret-shaped field {forbidden:?}"
+            );
+        }
     }
 
     #[test]
@@ -277,6 +368,14 @@ mod builtin_compatibility_tests {
         .unwrap();
         assert_eq!(fixtures.schema_version, 1);
         assert_eq!(fixtures.providers.len(), 3);
+        assert_eq!(
+            fixtures
+                .providers
+                .iter()
+                .map(|fixture| fixture.id.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["claude", "codex", "opencode"])
+        );
 
         for fixture in fixtures.providers {
             let actual = normalize_fixture(&fixture.id, &fixture.messages)
