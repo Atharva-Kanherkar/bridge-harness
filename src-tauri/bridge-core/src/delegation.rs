@@ -1009,6 +1009,44 @@ mod tests {
     }
 
     #[test]
+    fn harness_hints_fold_aliases_and_admit_installed_agents() {
+        for (hint, expected) in [
+            ("claude-code", "claude"),
+            ("Anthropic", "claude"),
+            ("openai", "codex"),
+            ("open-code", "opencode"),
+            ("acp:gemini", "acp:gemini"),
+            ("  ACP:Gemini  ", "acp:gemini"),
+        ] {
+            assert_eq!(
+                normalize_harness(hint).as_deref(),
+                Some(expected),
+                "hint {hint:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_harness_hint_is_refused_rather_than_defaulted() {
+        // `runtime_harness()` ends in `unwrap_or("codex")`, so a hint that
+        // normalizes to None must be rejected by `validate()` rather than
+        // silently becoming a Codex worker.
+        for hint in ["gemini", "acp:", "acp:Gemini!", "gpt-9", ""] {
+            assert_eq!(normalize_harness(hint), None, "hint {hint:?}");
+        }
+    }
+
+    #[test]
+    fn a_delegation_directive_cannot_summon_a_shell_worker() {
+        // `shell` parses as a harness id but is deliberately absent from the
+        // hint table: opening the identifier must not widen what a model is
+        // allowed to delegate to.
+        assert_eq!(normalize_harness("shell"), None);
+        assert_eq!(normalize_harness("Shell"), None);
+        assert_eq!(normalize_harness("acp:shell"), Some("acp:shell".into()));
+    }
+
+    #[test]
     fn malformed_output_requests_one_same_session_repair_then_unstructured_fallback() {
         let mut tracker = ResultRepairTracker::default();
         let sends = Cell::new(0);
