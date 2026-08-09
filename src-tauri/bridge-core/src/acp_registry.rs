@@ -422,6 +422,129 @@ pub fn write_cache(path: &Path, cached: &CachedCatalog) -> Result<(), BridgeErro
     }
 }
 
+/// How much time a catalog refresh may take before it is treated as offline.
+/// The catalog is never on a critical path — a slow CDN must degrade to the
+/// cached copy rather than hold anything up.
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What a refresh actually did, so a caller can distinguish new data from
+/// unchanged data from "we could not reach upstream".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "detail")]
+pub enum RefreshOutcome {
+    /// Upstream served a new document and the cache was replaced.
+    Fetched,
+    /// Upstream confirmed the cached copy is current; nothing was rewritten.
+    NotModified,
+    /// Upstream was unreachable or unusable; the cached copy is being served.
+    /// Carries the reason so a client can say *why* the catalog is old.
+    Offline(String),
+}
+
+/// The result of a refresh: a usable catalog, and what it took to get one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refresh {
+    pub catalog: Catalog,
+    pub outcome: RefreshOutcome,
+}
+
+/// Refresh the catalog for a data directory, against the upstream index.
+pub fn refresh(data_dir: &Path) -> Result<Refresh, BridgeError> {
+    refresh_from(REGISTRY_INDEX_URL, &cache_path(data_dir))
+}
+
+/// Refresh from an explicit URL and cache path.
+///
+/// Never fatal while a usable cache exists: a fetch that fails, times out, or
+/// returns something unparseable degrades to the cached copy marked stale. It is
+/// an error only when there is nothing to fall back to.
+pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
+    // A cache recorded against a different index URL is not this catalog, so it
+    // is neither reused nor revalidated against.
+    let cached = read_cache(cache).filter(|entry| entry.source_url == url);
+
+    let fallback = |reason: String| match &cached {
+        Some(entry) => Ok(Refresh {
+            catalog: entry.to_catalog(true)?,
+            outcome: RefreshOutcome::Offline(reason),
+        }),
+        None => Err(BridgeError::Invalid(format!(
+            "cannot load the ACP registry catalog and no cached copy exists: {reason}"
+        ))),
+    };
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => return fallback(error.to_string()),
+    };
+
+    let mut request = client.get(url);
+    if let Some(etag) = cached.as_ref().and_then(|entry| entry.etag.as_deref()) {
+        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+
+    let response = match request.send() {
+        Ok(response) => response,
+        Err(error) => return fallback(error.to_string()),
+    };
+
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        // Only reachable when a cache supplied the ETag, but do not assume it.
+        return match &cached {
+            Some(entry) => Ok(Refresh {
+                catalog: entry.to_catalog(false)?,
+                outcome: RefreshOutcome::NotModified,
+            }),
+            None => fallback("upstream sent 304 with no cached copy to reuse".into()),
+        };
+    }
+
+    if !response.status().is_success() {
+        return fallback(format!("upstream returned {}", response.status()));
+    }
+
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+
+    let document = match response.text() {
+        Ok(body) => body,
+        Err(error) => return fallback(error.to_string()),
+    };
+
+    // Parse before writing. A document we cannot read must not replace a cached
+    // one we can — otherwise a bad upstream publish costs the user their
+    // last-good catalog as well as this refresh.
+    let index = match parse_index(&document) {
+        Ok(index) => index,
+        Err(error) => return fallback(error.to_string()),
+    };
+
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let entry = CachedCatalog {
+        fetched_at: fetched_at.clone(),
+        source_url: url.to_owned(),
+        etag,
+        document,
+    };
+    write_cache(cache, &entry)?;
+
+    Ok(Refresh {
+        catalog: Catalog {
+            index,
+            fetched_at,
+            stale: false,
+        },
+        outcome: RefreshOutcome::Fetched,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,6 +864,214 @@ mod tests {
         assert!(stale.stale);
         assert_eq!(stale.fetched_at, "2026-08-09T00:00:00Z");
         assert_eq!(stale.index.agents.len(), 38, "stale still means usable");
+    }
+
+    /// A scripted response the fake upstream will serve, in order.
+    enum Canned {
+        Ok { body: String, etag: Option<String> },
+        NotModified,
+        Status(u16),
+    }
+
+    /// A local upstream, so no test in this suite touches the live CDN — CI has
+    /// to be deterministic and has to pass offline. Serves exactly `script.len()`
+    /// requests and then exits, which closes the socket without extra plumbing.
+    fn spawn_upstream(script: Vec<Canned>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>) {
+        use std::sync::{Arc, Mutex};
+
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let port = server.server_addr().to_ip().expect("ip").port();
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+
+        std::thread::spawn(move || {
+            for canned in script {
+                let Ok(request) = server.recv() else { return };
+                let if_none_match = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("If-None-Match"))
+                    .map(|header| header.value.as_str().to_owned());
+                recorded.lock().unwrap().push(if_none_match);
+
+                let _ = match canned {
+                    Canned::Ok { body, etag } => {
+                        let mut response = tiny_http::Response::from_string(body);
+                        if let Some(etag) = etag {
+                            response = response.with_header(
+                                tiny_http::Header::from_bytes(&b"ETag"[..], etag.as_bytes())
+                                    .expect("etag header"),
+                            );
+                        }
+                        request.respond(response.with_status_code(200))
+                    }
+                    Canned::NotModified => request.respond(tiny_http::Response::empty(304)),
+                    Canned::Status(code) => request.respond(tiny_http::Response::empty(code)),
+                };
+            }
+        });
+
+        (format!("http://127.0.0.1:{port}/registry.json"), seen)
+    }
+
+    #[test]
+    fn refresh_populates_an_empty_cache_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![Canned::Ok {
+            body: FIXTURE.into(),
+            etag: Some("\"v1\"".into()),
+        }]);
+
+        let refreshed = refresh_from(&url, &cache).expect("first refresh");
+
+        assert_eq!(refreshed.outcome, RefreshOutcome::Fetched);
+        assert!(!refreshed.catalog.stale);
+        assert_eq!(refreshed.catalog.index.agents.len(), 38);
+
+        let written = read_cache(&cache).expect("cache written");
+        assert_eq!(written.etag.as_deref(), Some("\"v1\""));
+        assert_eq!(written.source_url, url);
+    }
+
+    #[test]
+    fn second_refresh_sends_if_none_match_and_a_304_reuses_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, seen) = spawn_upstream(vec![
+            Canned::Ok {
+                body: FIXTURE.into(),
+                etag: Some("\"v1\"".into()),
+            },
+            Canned::NotModified,
+        ]);
+
+        refresh_from(&url, &cache).expect("first refresh");
+        let before = fs::read(&cache).unwrap();
+
+        let second = refresh_from(&url, &cache).expect("second refresh");
+
+        assert_eq!(second.outcome, RefreshOutcome::NotModified);
+        assert!(!second.catalog.stale, "304 confirms the copy is current");
+        assert_eq!(second.catalog.index.agents.len(), 38);
+        assert_eq!(
+            fs::read(&cache).unwrap(),
+            before,
+            "a 304 must not rewrite the cache"
+        );
+
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0], None, "nothing to revalidate on a cold cache");
+        assert_eq!(
+            requests[1].as_deref(),
+            Some("\"v1\""),
+            "the stored ETag must be replayed as If-None-Match"
+        );
+    }
+
+    #[test]
+    fn stale_cache_is_served_when_the_fetch_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![Canned::Ok {
+            body: FIXTURE.into(),
+            etag: None,
+        }]);
+        refresh_from(&url, &cache).expect("seed the cache");
+
+        // The scripted server has exited; the port no longer accepts.
+        let offline = refresh_from(&url, &cache).expect("a cached catalog is still usable");
+
+        assert!(matches!(offline.outcome, RefreshOutcome::Offline(_)));
+        assert!(offline.catalog.stale, "the caller must be able to say it is old");
+        assert_eq!(offline.catalog.index.agents.len(), 38);
+    }
+
+    #[test]
+    fn fetch_failure_without_cache_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // Port 1 is reserved and unbound: connection refused, fast.
+        let error = refresh_from("http://127.0.0.1:1/registry.json", &cache_path(dir.path()))
+            .expect_err("no catalog and no cache is a genuine failure");
+        assert!(matches!(error, BridgeError::Invalid(_)));
+    }
+
+    #[test]
+    fn an_upstream_error_status_falls_back_instead_of_caching_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![
+            Canned::Ok {
+                body: FIXTURE.into(),
+                etag: None,
+            },
+            Canned::Status(503),
+        ]);
+        refresh_from(&url, &cache).expect("seed");
+
+        let degraded = refresh_from(&url, &cache).expect("still serves the cache");
+        match degraded.outcome {
+            RefreshOutcome::Offline(reason) => assert!(reason.contains("503"), "reason: {reason}"),
+            other => panic!("expected Offline, got {other:?}"),
+        }
+        assert_eq!(read_cache(&cache).unwrap().document, FIXTURE);
+    }
+
+    #[test]
+    fn an_unparseable_response_does_not_overwrite_a_good_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![
+            Canned::Ok {
+                body: FIXTURE.into(),
+                etag: None,
+            },
+            Canned::Ok {
+                body: "{\"version\":\"2.0.0\"}".into(),
+                etag: Some("\"v2\"".into()),
+            },
+        ]);
+        refresh_from(&url, &cache).expect("seed");
+
+        let degraded = refresh_from(&url, &cache).expect("falls back rather than failing");
+
+        assert!(matches!(degraded.outcome, RefreshOutcome::Offline(_)));
+        assert_eq!(
+            degraded.catalog.index.agents.len(),
+            38,
+            "a bad upstream publish must not cost the user their last-good catalog"
+        );
+        assert_eq!(read_cache(&cache).unwrap().document, FIXTURE);
+    }
+
+    #[test]
+    fn a_cache_recorded_against_a_different_url_is_not_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        write_cache(
+            &cache,
+            &CachedCatalog {
+                source_url: "https://example.invalid/other-registry.json".into(),
+                etag: Some("\"foreign\"".into()),
+                ..sample_cache()
+            },
+        )
+        .unwrap();
+
+        let (url, seen) = spawn_upstream(vec![Canned::Ok {
+            body: FIXTURE.into(),
+            etag: Some("\"v1\"".into()),
+        }]);
+        let refreshed = refresh_from(&url, &cache).expect("refresh");
+
+        assert_eq!(refreshed.outcome, RefreshOutcome::Fetched);
+        assert_eq!(
+            seen.lock().unwrap()[0],
+            None,
+            "a foreign cache's ETag must not be replayed as If-None-Match"
+        );
+        assert_eq!(read_cache(&cache).unwrap().source_url, url);
     }
 
     #[test]
