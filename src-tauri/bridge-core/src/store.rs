@@ -1430,13 +1430,11 @@ pub fn status(value: &str) -> SessionStatus {
         _ => SessionStatus::Idle,
     }
 }
+/// Interpret the `harness` column. Never guesses: an id this build cannot
+/// parse is preserved as [`Harness::Unknown`] rather than being read as some
+/// other harness. See [`Harness::from_stored`].
 pub fn harness(value: &str) -> Harness {
-    match value {
-        "claude" => Harness::Claude,
-        "codex" => Harness::Codex,
-        "opencode" => Harness::OpenCode,
-        _ => Harness::Shell,
-    }
+    Harness::from_stored(value)
 }
 fn capability_tier(value: Option<String>) -> Option<CapabilityTier> {
     match value.as_deref() {
@@ -1469,13 +1467,10 @@ fn continuation_fidelity(value: &str) -> ContinuationFidelity {
         _ => ContinuationFidelity::Native,
     }
 }
-pub fn harness_name(value: &Harness) -> &'static str {
-    match value {
-        Harness::Claude => "claude",
-        Harness::Codex => "codex",
-        Harness::OpenCode => "opencode",
-        Harness::Shell => "shell",
-    }
+/// The value written to the `harness` column, which is also the wire id and
+/// the adapter-registry key. See [`Harness::id`].
+pub fn harness_name(value: &Harness) -> std::borrow::Cow<'static, str> {
+    value.id()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2268,6 +2263,86 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_harness_column_round_trips_every_shape() {
+        // The column is TEXT and always has been, so opening the identifier
+        // needs no schema migration — only an honest reading of what is there.
+        for stored in [
+            "claude",
+            "codex",
+            "opencode",
+            "shell",
+            "acp:gemini",
+            "acp:opencode",
+            "acp:github-copilot-cli",
+        ] {
+            let parsed = harness(stored);
+            assert_eq!(
+                harness_name(&parsed),
+                stored,
+                "{stored:?} did not survive the column round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_harness_row_never_becomes_a_runnable_harness() {
+        // Regression for `_ => Harness::Shell`: an id this build cannot
+        // interpret used to load as Shell, which is a real, runnable harness.
+        for stored in ["gemini", "", "acp:", "SHELL", "claude-code"] {
+            let parsed = harness(stored);
+            assert_eq!(parsed, Harness::Unknown(stored.to_owned()), "{stored:?}");
+            assert_ne!(parsed, Harness::Shell, "{stored:?} was read as Shell");
+            assert_eq!(harness_name(&parsed), stored, "{stored:?} lost its raw id");
+        }
+    }
+
+    #[test]
+    fn a_session_of_an_uninstalled_harness_still_loads_with_its_history() {
+        // The acceptance criterion in miniature: uninstalling an agent must
+        // not make its sessions vanish or be re-attributed to another harness.
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) \
+             VALUES('s-acp','w','acp:gemini','Gemini','ready','estimated')",
+            [],
+        )
+        .unwrap();
+        append_session_entry(
+            &db,
+            "s-acp",
+            None,
+            "assistant.message",
+            &json!({"text":"history that must survive"}),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+
+        let state = state(&db).unwrap();
+        let session = state
+            .sessions
+            .iter()
+            .find(|session| session.id == "s-acp")
+            .expect("the session still loads");
+        assert_eq!(
+            session.harness,
+            Harness::Acp(bridge_protocol::messages::AcpAgentId::parse("gemini").unwrap())
+        );
+        assert_eq!(
+            serde_json::to_value(&session.harness).unwrap(),
+            json!("acp:gemini"),
+            "it renders under its own id"
+        );
+
+        let events = session_events_after(&db, "s-acp", 0, 10).unwrap();
+        assert_eq!(events.len(), 1, "replay still returns its history");
+        assert_eq!(events[0].text.as_deref(), Some("history that must survive"));
+    }
 
     fn seed_workspace(db: &Connection) {
         db.execute(

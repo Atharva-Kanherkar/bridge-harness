@@ -110,29 +110,10 @@ impl From<&BridgeError> for bridge_protocol::ErrorCode {
     }
 }
 
-impl From<bridge_protocol::messages::HarnessId> for model::Harness {
-    /// Exhaustive both ways — adding a harness must fail to compile until
-    /// the protocol contract names it.
-    fn from(id: bridge_protocol::messages::HarnessId) -> Self {
-        match id {
-            bridge_protocol::messages::HarnessId::Claude => model::Harness::Claude,
-            bridge_protocol::messages::HarnessId::Codex => model::Harness::Codex,
-            bridge_protocol::messages::HarnessId::OpenCode => model::Harness::OpenCode,
-            bridge_protocol::messages::HarnessId::Shell => model::Harness::Shell,
-        }
-    }
-}
-
-impl From<&model::Harness> for bridge_protocol::messages::HarnessId {
-    fn from(harness: &model::Harness) -> Self {
-        match harness {
-            model::Harness::Claude => bridge_protocol::messages::HarnessId::Claude,
-            model::Harness::Codex => bridge_protocol::messages::HarnessId::Codex,
-            model::Harness::OpenCode => bridge_protocol::messages::HarnessId::OpenCode,
-            model::Harness::Shell => bridge_protocol::messages::HarnessId::Shell,
-        }
-    }
-}
+// The `HarnessId` ↔ `model::Harness` conversions live beside `Harness` in
+// `model.rs`, because the wire id is now an open validated newtype rather than
+// an enum mirrored variant for variant. See `model::Harness` for why core
+// stays closed over the built-ins while the wire does not.
 
 #[cfg(test)]
 mod tests {

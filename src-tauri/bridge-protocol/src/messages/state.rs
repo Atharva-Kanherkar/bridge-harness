@@ -6,8 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::common::JsSafeI64;
-use super::sessions::HarnessId;
+use super::common::{HarnessId, JsSafeI64};
 
 /// Mirrors `bridge_core::model::SessionStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -225,7 +224,7 @@ mod tests {
             sessions: vec![Session {
                 id: "s-1".into(),
                 workspace_id: Some("w-1".into()),
-                harness: HarnessId::Codex,
+                harness: HarnessId::parse("codex").unwrap(),
                 label: "Orchestrator".into(),
                 status: SessionStatus::Waiting,
                 started_at: Some("now".into()),

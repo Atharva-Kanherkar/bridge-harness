@@ -278,7 +278,7 @@ impl BridgeCore {
         model: Option<&str>,
     ) -> Result<Option<ChatModelChange>, BridgeError> {
         let adapter_id = store::harness_name(harness);
-        if !agent_config::is_harness_enabled(&self.db.lock().unwrap(), adapter_id) {
+        if !agent_config::is_harness_enabled(&self.db.lock().unwrap(), &adapter_id) {
             return Err(BridgeError::Invalid(format!(
                 "{} is disabled in Settings",
                 harness.label()
@@ -365,7 +365,7 @@ impl BridgeCore {
         }
         Ok(Some(ChatModelChange {
             session_id: session_id.to_owned(),
-            adapter_id: adapter_id.to_owned(),
+            adapter_id: adapter_id.into_owned(),
             kind,
             previous_harness,
             previous_model,

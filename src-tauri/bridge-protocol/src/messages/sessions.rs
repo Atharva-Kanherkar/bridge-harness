@@ -5,20 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+use super::common::HarnessId;
+
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
 pub const MAX_REPLAY_EVENT_LIMIT: u32 = 1_000;
-
-/// A harness identifier on the wire. Mirrors `bridge_core::model::Harness`
-/// variant for variant; an exhaustive conversion in bridge-core keeps the two
-/// from drifting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum HarnessId {
-    Claude,
-    Codex,
-    OpenCode,
-    Shell,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -210,14 +200,14 @@ mod tests {
 
     #[test]
     fn session_params_round_trip_and_omit_absent_options() {
-        let create = CreateChatParams { harness: HarnessId::Codex, model: None, title: None };
+        let create = CreateChatParams { harness: HarnessId::parse("codex").unwrap(), model: None, title: None };
         let wire = serde_json::to_value(&create).unwrap();
         assert_eq!(wire, json!({"harness": "codex"}), "absent options stay off the wire");
         assert_eq!(round_trip(&create), create);
 
         let update = UpdateChatModelParams {
             session_id: "s-1".into(),
-            harness: HarnessId::OpenCode,
+            harness: HarnessId::parse("opencode").unwrap(),
             model: Some("kimi-k2.5".into()),
         };
         let wire = serde_json::to_value(&update).unwrap();
@@ -243,7 +233,7 @@ mod tests {
 
         let start = StartSessionParams {
             workspace_id: "w-1".into(),
-            harness: Some(HarnessId::Claude),
+            harness: Some(HarnessId::parse("claude").unwrap()),
             model: None,
         };
         assert_eq!(

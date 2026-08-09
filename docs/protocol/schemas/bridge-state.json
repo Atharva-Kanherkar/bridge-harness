@@ -53,13 +53,8 @@
       "type": "string"
     },
     "HarnessId": {
-      "description": "A harness identifier on the wire. Mirrors `bridge_core::model::Harness` variant for variant; an exhaustive conversion in bridge-core keeps the two from drifting.",
-      "enum": [
-        "claude",
-        "codex",
-        "opencode",
-        "shell"
-      ],
+      "description": "A built-in harness ('claude', 'codex', 'opencode', 'shell') or an installed ACP agent ('acp:' + its registry id).",
+      "pattern": "^(claude|codex|opencode|shell|acp:[a-z0-9][a-z0-9._-]{0,63})$",
       "type": "string"
     },
     "JsSafeI64": {

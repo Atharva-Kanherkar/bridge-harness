@@ -163,7 +163,7 @@ pub fn start_session(
     // An explicit chat choice wins. Without one, the persisted Standard
     // orchestrator profile remains the default.
     let selection = if let Some(harness) = harness {
-        let adapter_id = store::harness_name(&harness).to_owned();
+        let adapter_id = store::harness_name(&harness).into_owned();
         let db = state.db.lock().unwrap();
         if !agent_config::is_harness_enabled(&db, &adapter_id) {
             return Err(BridgeError::Invalid(format!(
@@ -201,10 +201,10 @@ pub fn start_session(
                 .ok_or_else(|| BridgeError::Invalid(format!("{} has no standard model", descriptor.label)))?
         };
         sessions::OrchestratorSelection {
-            adapter_id,
+            adapter_id: adapter_id.clone(),
             model: selected.id,
             tier: selected.tier,
-            effort: agent_config::harness_config(&db, store::harness_name(&harness))
+            effort: agent_config::harness_config(&db, &adapter_id)
                 .and_then(|config| config.effort),
             label: agent_config::default_orchestrator(&db)
                 .map(|agent| agent.name)

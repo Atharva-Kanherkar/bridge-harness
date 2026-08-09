@@ -142,7 +142,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.8**),
+- its `protocolVersion` (this document describes **0.9**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -208,6 +208,32 @@ remaining domain snapshots (learning runs/state, model setup, the OpenCode
 catalog, the browser bridge snapshot, and the marketplace/skill catalogs).
 Commands returning no value use the explicit `UnitResult` contract
 (`result: null`).
+
+### Harness ids
+
+`HarnessId` is an **open** string, not a closed set. Two shapes and no third:
+
+```
+HarnessId := "claude" | "codex" | "opencode" | "shell"   (built-in)
+           | "acp:" <registry-id>                        (installed ACP agent)
+<registry-id> := [a-z0-9][a-z0-9._-]{0,63}
+```
+
+Do not generate a closed union over the values that exist today. A harness
+installed from the ACP registry did not exist when your client was compiled,
+which is the whole point; render an unrecognized id under its own name rather
+than falling back to a built-in. Through 0.8 this was an enum of the four
+built-ins, and every one of those values is unchanged here.
+
+The bare namespace is reserved for built-ins, so a registry entry can never
+shadow one — the live registry does publish an agent whose id is `opencode`,
+which Bridge names `acp:opencode`.
+
+Ids are validated on the way **in**: a malformed one is `invalid_params`.
+On the way **out** a session may carry an id this server cannot interpret —
+a row written by a newer Bridge, or an agent since uninstalled. Such a session
+still lists and replays under its own id, and cannot be sent back as a
+parameter. History does not disappear because an agent was removed.
 
 ## Cancellation
 

@@ -51,7 +51,7 @@ fn assert_same_wire_value(core: &impl Serialize, mirror: &impl Serialize) {
 }
 
 fn mirror_harness(harness: &model::Harness) -> wire::HarnessId {
-    wire::HarnessId::from(harness)
+    wire::HarnessId::try_from(harness).expect("harness has a wire id")
 }
 
 fn mirror_effort(effort: delegation::Effort) -> wire::Effort {
@@ -162,10 +162,100 @@ fn harness_ids_round_trip_with_identical_wire_values() {
         model::Harness::Codex,
         model::Harness::OpenCode,
         model::Harness::Shell,
+        model::Harness::Acp(wire::AcpAgentId::parse("gemini").unwrap()),
     ] {
         let id = mirror_harness(&harness);
         assert_same_wire_value(&harness, &id);
         assert_eq!(model::Harness::from(id), harness);
+    }
+}
+
+#[test]
+fn builtin_harnesses_keep_the_wire_values_protocol_0_8_published() {
+    // These four strings are persisted in `sessions.harness` and keyed on in
+    // the adapter registry. Opening the identifier must not have moved one.
+    for (harness, expected) in [
+        (model::Harness::Claude, "claude"),
+        (model::Harness::Codex, "codex"),
+        (model::Harness::OpenCode, "opencode"),
+        (model::Harness::Shell, "shell"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(&harness).unwrap(),
+            serde_json::json!(expected)
+        );
+    }
+}
+
+#[test]
+fn a_registry_agent_named_like_a_builtin_stays_distinct_on_the_wire() {
+    // The live ACP registry ships an entry whose id is `opencode`. It must
+    // never serialize as, compare equal to, or convert into the built-in.
+    let builtin = model::Harness::OpenCode;
+    let from_registry = model::Harness::Acp(wire::AcpAgentId::parse("opencode").unwrap());
+    assert_ne!(builtin, from_registry);
+    assert_eq!(serde_json::to_value(&builtin).unwrap(), serde_json::json!("opencode"));
+    assert_eq!(
+        serde_json::to_value(&from_registry).unwrap(),
+        serde_json::json!("acp:opencode")
+    );
+    assert_eq!(model::Harness::parse("acp:opencode").unwrap(), from_registry);
+    assert_eq!(model::Harness::parse("opencode").unwrap(), builtin);
+}
+
+#[test]
+fn unknown_harnesses_serialize_under_their_own_id_but_are_not_valid_parameters() {
+    // The deliberate asymmetry: outbound tolerant so a session whose harness
+    // this build cannot interpret still lists and replays under its own name;
+    // inbound strict, because nothing can be done with such an id.
+    let unknown = model::Harness::from_stored("gemini");
+    assert_eq!(unknown, model::Harness::Unknown("gemini".into()));
+    assert_eq!(serde_json::to_value(&unknown).unwrap(), serde_json::json!("gemini"));
+    assert_eq!(unknown.label(), "gemini");
+    assert!(wire::HarnessId::try_from(&unknown).is_err());
+    assert!(model::Harness::parse("gemini").is_err());
+    assert!(serde_json::from_value::<model::Harness>(serde_json::json!("gemini")).is_err());
+}
+
+#[test]
+fn a_stored_harness_id_is_idempotent_through_its_canonical_form() {
+    // Reading a row and writing it back must be a fixed point, and a value
+    // `from_stored` produces must never alias a different variant: two
+    // harnesses that serialize the same are the same harness.
+    let ids = [
+        "claude", "codex", "opencode", "shell", "acp:gemini", "acp:opencode", "gemini", "",
+        "shel1",
+    ];
+    let mut seen: Vec<(String, model::Harness)> = Vec::new();
+    for raw in ids {
+        let harness = model::Harness::from_stored(raw);
+        let canonical = harness.id().into_owned();
+        assert_eq!(canonical, raw, "{raw:?} is not its own canonical form");
+        assert_eq!(
+            model::Harness::from_stored(&canonical),
+            harness,
+            "{raw:?} is not a fixed point"
+        );
+        if let Some((_, other)) = seen.iter().find(|(id, _)| id == &canonical) {
+            assert_eq!(other, &harness, "{canonical:?} names two different harnesses");
+        }
+        seen.push((canonical, harness));
+    }
+}
+
+#[test]
+fn a_stored_harness_id_is_never_read_as_a_different_harness() {
+    // Regression for the removed `_ => Harness::Shell` fallthrough, which
+    // turned a corrupt or forward-dated row into a runnable shell session.
+    for raw in ["", "gemini", "acp:", "acp:Gemini", "SHELL", "shel1", "claude "] {
+        let restored = model::Harness::from_stored(raw);
+        assert_eq!(
+            restored,
+            model::Harness::Unknown(raw.to_owned()),
+            "{raw:?} was interpreted as {restored:?}"
+        );
+        // Whatever it is, it round-trips back to the same stored bytes.
+        assert_eq!(restored.id(), raw);
     }
 }
 

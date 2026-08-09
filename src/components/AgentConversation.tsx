@@ -7,13 +7,10 @@ import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { highlightDiff, looksLikeDiff } from "./highlight";
 import { Markdown } from "./Markdown";
+import { harnessLabel } from "../utils";
 
 function providerLabel(harness?: string | null): string | undefined {
-  if (!harness) return undefined;
-  if (harness === "claude") return "Claude";
-  if (harness === "codex") return "Codex";
-  if (harness === "opencode") return "OpenCode";
-  return harness.charAt(0).toUpperCase() + harness.slice(1);
+  return harness ? harnessLabel(harness) : undefined;
 }
 
 // Codex-style conversation: prose messages, live tool-call cards, clickable

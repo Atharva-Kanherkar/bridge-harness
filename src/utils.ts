@@ -9,6 +9,29 @@ export function tierRuntimeLabel(tier?: CapabilityTier | null, model?: string | 
   return `${routing}${effort ? ` · ${effort}` : ""} · runtime ${modelLabel(model)}`;
 }
 
+const BUILTIN_HARNESS_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", shell: "Shell" };
+
+/**
+ * Display name for a harness id.
+ *
+ * The id space is open: `claude` | `codex` | `opencode` | `shell`, or `acp:`
+ * plus an installed agent's registry id. An agent Bridge did not write an
+ * adapter for has no display name of Bridge's invention, so it is shown under
+ * the id the user installed it by — never relabelled as something else, and
+ * never left reading as the literal `Acp:gemini`.
+ *
+ * One implementation on purpose: three near-copies of this used to live in
+ * App, the sidebar, and the conversation view, which is how the next harness
+ * ends up mislabelled in two of the three.
+ */
+export function harnessLabel(harness?: string | null): string {
+  if (!harness) return "Agent";
+  const builtin = BUILTIN_HARNESS_LABELS[harness];
+  if (builtin) return builtin;
+  const agent = harness.startsWith("acp:") ? harness.slice("acp:".length) : harness;
+  return agent ? agent[0].toUpperCase() + agent.slice(1) : "Agent";
+}
+
 export function safeSlug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "task";
 }

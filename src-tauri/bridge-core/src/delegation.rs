@@ -5,6 +5,7 @@
 //! crosses that boundary. Workers return a versioned [`WorkerResult`].
 
 pub use crate::model::CapabilityTier;
+use crate::model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -804,11 +805,27 @@ fn bullet_list_or_none(items: &[String]) -> String {
     }
 }
 
+/// Fold a harness hint written by a model into a canonical harness id.
+///
+/// The alias table stays explicit rather than deferring to
+/// [`model::Harness::parse`] for everything: `shell` is a real harness that
+/// parses, and admitting it here would let a delegation directive spawn a
+/// shell worker where it previously could not. Widening what a model may
+/// delegate to is not this function's decision to make.
+///
+/// An installed ACP agent is named by its canonical id and has no aliases to
+/// fold — it validates or it does not.
 pub fn normalize_harness(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    let lowercased = value.trim().to_ascii_lowercase();
+    match lowercased.as_str() {
         "claude" | "claude-code" | "claudecode" | "anthropic" => Some("claude".into()),
         "codex" | "gpt" | "openai" => Some("codex".into()),
         "opencode" | "open-code" => Some("opencode".into()),
+        candidate if candidate.starts_with(bridge_protocol::messages::ACP_HARNESS_PREFIX) => {
+            model::Harness::parse(candidate)
+                .ok()
+                .map(|harness| harness.id().into_owned())
+        }
         _ => None,
     }
 }

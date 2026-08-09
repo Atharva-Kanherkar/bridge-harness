@@ -752,6 +752,48 @@ mod tests {
     }
 
     #[test]
+    fn every_live_registry_id_can_name_a_harness() {
+        // A catalog entry Bridge cannot name is an entry it can never install.
+        // Pinned against the captured index so upstream widening its id
+        // charset surfaces here rather than as an install that cannot start.
+        let index = index();
+        for agent in &index.agents {
+            let id = bridge_protocol::messages::AcpAgentId::parse(&agent.id)
+                .unwrap_or_else(|error| panic!("registry id {:?}: {error}", agent.id));
+            let harness = crate::model::Harness::Acp(id);
+            assert_eq!(harness.id(), format!("acp:{}", agent.id));
+            // Round-trips through the wire form the session column stores.
+            assert_eq!(crate::model::Harness::from_stored(&harness.id()), harness);
+        }
+    }
+
+    #[test]
+    fn a_registry_id_matching_a_builtin_does_not_shadow_it() {
+        // `opencode` is a real entry in the live index and collides with
+        // Bridge's own OpenCode adapter. The namespaces keep both nameable.
+        let index = index();
+        let colliding: Vec<&str> = index
+            .agents
+            .iter()
+            .map(|agent| agent.id.as_str())
+            .filter(|id| bridge_protocol::messages::BUILTIN_HARNESS_IDS.contains(id))
+            .collect();
+        assert_eq!(
+            colliding,
+            vec!["opencode"],
+            "the set of built-in-shadowing registry ids changed"
+        );
+        for id in colliding {
+            let agent = crate::model::Harness::Acp(
+                bridge_protocol::messages::AcpAgentId::parse(id).unwrap(),
+            );
+            let builtin = crate::model::Harness::from_stored(id);
+            assert_ne!(agent, builtin);
+            assert_ne!(agent.id(), builtin.id());
+        }
+    }
+
+    #[test]
     fn parses_npx_uvx_and_binary_distributions() {
         let npx = agent("claude-acp").distribution.npx.expect("npx");
         assert!(npx

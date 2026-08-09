@@ -310,6 +310,82 @@ fn dispatch_validates_params_against_the_contract() {
 }
 
 #[test]
+fn a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc() {
+    // The acceptance criterion for opening `HarnessId`: an id that no build
+    // of Bridge has ever named must survive create → persist → replay →
+    // snapshot, driven over the socket with no desktop app running. `acp:` ids
+    // are reachable this way before any installer exists, so the contract is
+    // provable now rather than after #156.
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+
+    let (created, _) = client.call(
+        1,
+        "sessions/create_chat",
+        Some(json!({"harness": "acp:gemini", "title": "Gemini"})),
+    );
+    let sessions = created["result"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    let session_id = sessions[0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        sessions[0]["harness"],
+        json!("acp:gemini"),
+        "the id comes back exactly as it was sent"
+    );
+
+    // Persisted, not merely echoed: a fresh read of the snapshot agrees.
+    let (state, _) = client.call(2, "state/get_state", None);
+    let persisted = state["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == json!(session_id))
+        .expect("the session is in the snapshot");
+    assert_eq!(persisted["harness"], json!("acp:gemini"));
+
+    // Replay is reachable for it like any other session.
+    let (replayed, _) = client.call(
+        3,
+        "sessions/replay_session_events",
+        Some(json!({"sessionId": session_id, "afterSequence": 0})),
+    );
+    assert!(replayed["result"].is_array(), "{replayed}");
+
+    // Starting it fails by naming the harness, not by quietly running another
+    // one. No installer exists yet, so every `acp:` id is "uninstalled" here —
+    // which is exactly the uninstalled-agent case the criterion asks about.
+    let (start, _) = client.call(4, "sessions/start_chat", Some(json!({"sessionId": session_id})));
+    let message = start["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("acp:gemini"),
+        "starting an uninstalled harness must name it: {start}"
+    );
+
+    // The bare namespace stays reserved: the same agent without its prefix is
+    // refused, so a registry entry can never shadow a built-in.
+    let (rejected, _) = client.call(5, "sessions/create_chat", Some(json!({"harness": "gemini"})));
+    assert_eq!(rejected["error"]["code"], json!(-32602));
+    let message = rejected["error"]["message"].as_str().unwrap();
+    assert!(message.contains("gemini"), "{message}");
+
+    // And a built-in id still means the built-in, never the registry entry
+    // that shares its name.
+    let (builtin, _) = client.call(6, "sessions/create_chat", Some(json!({"harness": "opencode"})));
+    let harnesses: Vec<&str> = builtin["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| session["harness"].as_str().unwrap())
+        .collect();
+    assert!(harnesses.contains(&"opencode"), "{harnesses:?}");
+    assert!(harnesses.contains(&"acp:gemini"), "{harnesses:?}");
+
+    running.stop();
+}
+
+#[test]
 fn a_second_owner_of_the_data_directory_is_refused_with_identity() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());
