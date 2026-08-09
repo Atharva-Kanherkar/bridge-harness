@@ -78,6 +78,35 @@ Prefixing makes the collision the issue asks us to validate against
 - Protocol minor bump 0.8 → 0.9, TypeScript regenerated, `HarnessId` becomes
   `string` in `src/protocol/generated/protocol.ts`.
 
+### Amendments — two sites the contract did not anticipate
+
+Both were found by following acceptance criterion 4 ("no `match` on harness
+falls through to a default that misrepresents it") through code the original
+contract had not looked at. Recorded here rather than shipped silently.
+
+1. **`delegation::normalize_harness`** folds a model-written harness hint into
+   a canonical id, and `runtime_harness()` ends `.unwrap_or_else(|| "codex")`.
+   A valid id the table did not recognize was therefore rewritten to Codex —
+   the exact failure mode the criterion names. It is currently unreachable only
+   because `validate()` rejects unrecognized hints first, which is an invariant
+   held by call order rather than by types. `acp:` ids are now accepted, which
+   both closes that gap and makes an installed agent delegable at all —
+   without it the marketplace never reaches the delegation tree, which is the
+   epic's whole point.
+
+   `shell` is deliberately **not** added to the table even though it now
+   parses. Admitting it would let a delegation directive spawn a shell worker
+   where it previously could not; widening what a model may delegate to is a
+   product decision, not a side effect of opening an identifier.
+
+2. **Frontend harness labels.** Three near-identical `harnessLabel` copies
+   lived in `App.tsx`, `BridgeSidebar.tsx`, and `AgentConversation.tsx`, each
+   ending in a capitalize-the-id fallback that renders `acp:gemini` as
+   `Acp:gemini`. They are now one `utils.harnessLabel` that strips the
+   namespace and shows the agent under the id it was installed by. Three
+   divergent copies is how the next harness ends up mislabelled in two of the
+   three, so this is consolidated rather than patched three times.
+
 ### Compatibility caveat, recorded deliberately
 
 Widening a value domain that appears in *results* is not purely additive for a
@@ -90,46 +119,72 @@ before #156 lands, this becomes a major bump.
 
 ## Unit Tests
 
-- `messages::sessions::tests::harness_ids_accept_builtins_and_acp_ids` — the
-  four built-ins and a representative `acp:` id parse; each serializes back to
-  the identical string.
-- `messages::sessions::tests::harness_ids_reject_malformed_values` — empty,
+`HarnessId` landed in `messages/common.rs` rather than `messages/sessions.rs`:
+`common.rs` is documented as "wire types more than one domain needs" (both
+`sessions` and `state` use it), and `JsSafeI64` there is the exact precedent —
+a validated newtype with transparent `Serialize`, a hand-written `Deserialize`,
+and a custom `JsonSchema`. The module convention of one file per *method
+domain* is preserved by not inventing a `harness` domain module. Test paths
+below reflect that.
+
+- `messages::common::tests::harness_ids_accept_builtins_and_acp_ids`
+- `messages::common::tests::harness_ids_reject_malformed_values` — empty,
   over-length, uppercase, leading punctuation, whitespace, an unknown bare id,
   a bare `acp:`, and a nested `acp:acp:x` are all refused.
-- `messages::sessions::tests::builtin_harness_ids_serialize_exactly_as_protocol_0_8`
+- `messages::common::tests::builtin_harness_ids_serialize_exactly_as_protocol_0_8`
   — pins the four legacy strings against a literal, so a refactor cannot
   silently rename a persisted value.
-- `messages::sessions::tests::acp_prefix_makes_builtin_collision_unrepresentable`
+- `messages::common::tests::acp_prefix_makes_builtin_collision_unrepresentable`
   — the registry's real `opencode` entry maps to `acp:opencode` and is never
   equal to the built-in `opencode`.
-- `lib::tests::harness_id_and_core_harness_convert_in_both_directions` — the
-  conversion is total over built-ins and `Acp`, and round-trips.
-- `lib::tests::unknown_harnesses_are_not_representable_on_the_wire` —
-  `Harness::Unknown` cannot produce a valid `HarnessId`; the failure is
-  explicit rather than a coercion to Shell.
-- `store::tests::harness_column_round_trips_every_shape` — built-in, `acp:`,
-  and unknown values survive write → read → write byte-identically.
-- `store::tests::unknown_harness_rows_do_not_become_shell` — the regression
-  test for the removed fallthrough; asserts a corrupt row is `Unknown`, not a
-  runnable harness.
-- `acp_registry::tests::every_live_registry_id_is_a_valid_harness_id` — all 38
-  ids in the pinned fixture produce valid `acp:` harness ids, so the catalog
-  cannot contain an entry Bridge is structurally unable to name.
-- `protocol_mirror::tests::*` — existing mirror assertions extended over the
-  new arms; core and wire continue to agree on every value.
+- `messages::common::tests::rejection_names_the_value_without_echoing_an_unbounded_one`
+  — added while writing the error type: the rejection must name what was sent
+  without letting a 10 KB payload inflate the error it provokes.
+- `messages::common::tests::harness_id_schema_publishes_the_grammar_as_a_string`
+  — the published schema carries a `pattern` and **no** `enum`, so a generated
+  client cannot close the set over today's values.
+- `protocol_mirror::harness_ids_round_trip_with_identical_wire_values` — the
+  existing mirror assertion, extended over `Acp`.
+- `protocol_mirror::builtin_harnesses_keep_the_wire_values_protocol_0_8_published`
+- `protocol_mirror::a_registry_agent_named_like_a_builtin_stays_distinct_on_the_wire`
+- `protocol_mirror::unknown_harnesses_serialize_under_their_own_id_but_are_not_valid_parameters`
+  — the deliberate outbound-tolerant / inbound-strict asymmetry.
+- `protocol_mirror::a_stored_harness_id_is_never_read_as_a_different_harness`
+
+  The two conversion tests the contract placed in `lib::tests` live in
+  `protocol_mirror` instead, beside the existing core↔wire mirror assertions
+  they belong with; `lib.rs` no longer holds harness code at all.
+
+- `store::tests::the_harness_column_round_trips_every_shape`
+- `store::tests::an_unreadable_harness_row_never_becomes_a_runnable_harness` —
+  the regression test for the removed fallthrough.
+- `store::tests::a_session_of_an_uninstalled_harness_still_loads_with_its_history`
+  — a real SQLite round trip: the session appears in the snapshot and replays
+  its entry.
+- `acp_registry::tests::every_live_registry_id_can_name_a_harness` — all 38 ids
+  in the pinned fixture produce valid `acp:` harness ids, so the catalog cannot
+  contain an entry Bridge is structurally unable to name.
+- `acp_registry::tests::a_registry_id_matching_a_builtin_does_not_shadow_it` —
+  pins the colliding set to exactly `["opencode"]`, so a second collision
+  appearing upstream is a test failure rather than a surprise.
+- `utils.test.ts` → `harnessLabel` — five cases covering built-ins, an `acp:`
+  agent, the built-in/registry pair that share a name, an uninterpretable id,
+  and the no-harness fallback.
 
 ## Integration / Functional Tests
 
-- A session created with an `acp:` harness id round-trips
-  create → persist → reload → replay → snapshot, and the id in the
-  `BridgeState` result equals the id sent. This is the issue's headline
-  acceptance criterion — an id unknown at compile time surviving the whole
-  path — exercised without an installer by writing the id directly.
-- A `sessions.harness` row holding an uninstalled `acp:` id loads, appears in
-  the state snapshot, and replays its events; `start_session` on it returns an
-  adapter error naming the harness rather than starting a different one.
-- Dispatch rejects a malformed harness id in `sessions/create_chat` with
-  `invalid_params` before any core call.
+- `bridged/tests/daemon.rs::a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc`
+  — the issue's headline acceptance criterion, driven over the Unix socket
+  with no desktop app running: `sessions/create_chat` with `acp:gemini`, the id
+  echoed back unchanged, a fresh `state/get_state` agreeing, replay reachable,
+  the unprefixed `gemini` refused, and `opencode` still resolving to the
+  built-in. `create_chat` needs no registered adapter, so this is provable now
+  rather than after #156's installer exists.
+- `store::tests::a_session_of_an_uninstalled_harness_still_loads_with_its_history`
+  covers the storage half: the row loads, snapshots, and replays.
+- Dispatch rejects a malformed harness id with `invalid_params`; the existing
+  `dispatch_validates_params_against_the_contract` already asserted this for a
+  bare unknown id and still passes unchanged.
 - The existing daemon and client suites pass unchanged, proving the built-in
   path is untouched.
 
@@ -139,8 +194,13 @@ before #156 lands, this becomes a major bump.
   branch; the count must rise and none may fail.
 - `cargo test -p bridge-protocol -p bridge-client -p bridged`.
 - `cargo build -p bridge-core -p bridge-protocol -p bridge-client -p bridged`.
-  (`--workspace` fails on `bridge-deck` for a missing `binaries/bridged-*`
-  sidecar; that is pre-existing and out of scope.)
+- `cargo test -p bridge-deck`. The contract first wrote this off as blocked by
+  the missing `binaries/bridged-*` sidecar, but that crate holds the gate that
+  asserts `generate_handler![...]` matches the method registry, and it is the
+  one place `Harness` is mapped to the `HarnessId` schema reference
+  (`src-tauri/src/lib.rs:1464`) — exactly what this change touches. Running
+  `sh scripts/prepare-daemon.sh debug` stages the sidecar and the gate runs.
+  Nothing is committed: `src-tauri/binaries` is gitignored.
 - The generated-TypeScript freshness test passes after regenerating with
   `cargo run --manifest-path src-tauri/Cargo.toml -p bridge-protocol --bin generate-protocol-artifacts`.
 - `bun run build` and `bun run test` succeed.
