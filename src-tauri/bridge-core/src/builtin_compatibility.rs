@@ -142,7 +142,53 @@ pub fn compatibility_report() -> BuiltInCompatibilityReport {
 mod builtin_compatibility_tests {
     use super::*;
     use crate::adapters::AdapterRegistry;
+    use crate::agent::{self, ClaudeStreamState, NormalizedEvent, OpenCodeStreamState};
+    use serde::Deserialize;
+    use serde_json::Value;
     use std::collections::{HashMap, HashSet};
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventFixtureDocument {
+        schema_version: u32,
+        providers: Vec<ProviderEventFixture>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ProviderEventFixture {
+        id: String,
+        messages: Vec<Value>,
+        expected: Vec<NormalizedSummary>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    struct NormalizedSummary {
+        kind: String,
+        #[serde(default)]
+        item_id: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+    }
+
+    impl From<NormalizedEvent> for NormalizedSummary {
+        fn from(event: NormalizedEvent) -> Self {
+            Self {
+                kind: event.kind,
+                item_id: event.item_id,
+                role: event.role,
+                status: event.status,
+                title: event.title,
+                text: event.text,
+            }
+        }
+    }
 
     #[test]
     fn built_in_contract_has_exactly_the_existing_agents() {
@@ -221,5 +267,59 @@ mod builtin_compatibility_tests {
         let value: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(value["schemaVersion"], SCHEMA_VERSION);
         assert_eq!(value["agents"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn representative_provider_streams_match_normalized_snapshots() {
+        let fixtures: EventFixtureDocument = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/builtin-adapter-events-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixtures.schema_version, 1);
+        assert_eq!(fixtures.providers.len(), 3);
+
+        for fixture in fixtures.providers {
+            let actual = normalize_fixture(&fixture.id, &fixture.messages)
+                .into_iter()
+                .map(NormalizedSummary::from)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, fixture.expected, "{} fixture drifted", fixture.id);
+        }
+    }
+
+    fn normalize_fixture(id: &str, messages: &[Value]) -> Vec<NormalizedEvent> {
+        match id {
+            "claude" => {
+                let mut state = ClaudeStreamState::default();
+                messages
+                    .iter()
+                    .flat_map(|message| {
+                        agent::normalize_claude_message_with_state(message, &mut state)
+                    })
+                    .collect()
+            }
+            "codex" => messages
+                .iter()
+                .flat_map(|message| {
+                    if message.get("id").is_some() && message.get("method").is_some() {
+                        agent::normalize_codex_request(message)
+                            .into_iter()
+                            .collect()
+                    } else {
+                        agent::normalize_codex_message(message)
+                    }
+                })
+                .collect(),
+            "opencode" => {
+                let mut state = OpenCodeStreamState::default();
+                messages
+                    .iter()
+                    .flat_map(|message| {
+                        agent::normalize_opencode_message_with_state(message, &mut state)
+                    })
+                    .collect()
+            }
+            other => panic!("unknown built-in fixture {other}"),
+        }
     }
 }
