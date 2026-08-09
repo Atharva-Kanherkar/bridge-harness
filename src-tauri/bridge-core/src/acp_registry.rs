@@ -14,17 +14,43 @@
 //! doc alone would drop real agents on the floor.
 
 use crate::BridgeError;
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{IgnoredAny, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
 /// The upstream index. Republished hourly from npm, PyPI, and GitHub releases.
 pub const REGISTRY_INDEX_URL: &str =
     "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
+
+/// Maximum decompressed size of an upstream registry document.
+///
+/// The captured registry is about 48 KiB. Five MiB leaves ample room for
+/// growth while preventing a broken or compromised upstream from making the
+/// desktop process buffer an unbounded response.
+const MAX_REGISTRY_DOCUMENT_BYTES: u64 = 5 * 1024 * 1024;
+
+/// A cached document is JSON-escaped inside its envelope, so its on-disk form
+/// can be larger than the original document. Six bytes per input byte covers
+/// JSON's largest escape form, with room for envelope metadata.
+const MAX_CACHE_FILE_BYTES: u64 = MAX_REGISTRY_DOCUMENT_BYTES * 6 + 64 * 1024;
+
+/// Maximum number of entries accepted in one registry document. The live
+/// catalog has 38; this allows more than tenfold growth while bounding the
+/// allocation amplification of a compact array full of tiny invalid entries.
+const MAX_REGISTRY_AGENTS: usize = 512;
+
+/// Refresh spans the conditional read, network fetch, and atomic replacement.
+/// Serializing that whole sequence prevents a slower request that started
+/// earlier from overwriting the result of a newer completed refresh.
+static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// One of the six platform targets the registry names for binary builds.
 ///
@@ -213,6 +239,55 @@ struct RawIndex {
     agents: Vec<Value>,
 }
 
+/// First-pass shape used to reject an oversized `agents` sequence before
+/// materializing it as `Vec<Value>`. `IgnoredAny` streams over each entry
+/// without allocating its object graph.
+#[derive(Deserialize)]
+struct IndexSizeProbe {
+    #[serde(rename = "agents")]
+    _agents: CappedAgentSequence,
+}
+
+struct CappedAgentSequence;
+
+impl<'de> Deserialize<'de> for CappedAgentSequence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CappedAgentVisitor;
+
+        impl<'de> Visitor<'de> for CappedAgentVisitor {
+            type Value = CappedAgentSequence;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    formatter,
+                    "at most {MAX_REGISTRY_AGENTS} ACP registry agents"
+                )
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut count = 0;
+                while sequence.next_element::<IgnoredAny>()?.is_some() {
+                    count += 1;
+                    if count > MAX_REGISTRY_AGENTS {
+                        return Err(serde::de::Error::custom(format!(
+                            "ACP registry contains more than {MAX_REGISTRY_AGENTS} agents"
+                        )));
+                    }
+                }
+                Ok(CappedAgentSequence)
+            }
+        }
+
+        deserializer.deserialize_seq(CappedAgentVisitor)
+    }
+}
+
 /// The per-entry shape, kept separate from [`RegistryAgent`] so a distribution
 /// with unrecognized keys can be repaired rather than rejected.
 #[derive(Deserialize)]
@@ -234,21 +309,23 @@ struct RawAgent {
 /// Parse the upstream index.
 ///
 /// Fails only when the *document* is unusable. A single bad entry is skipped and
-/// counted — the same rule #144 applies to durable replay, for the same reason:
-/// one malformed row must not deny a client the other thirty-seven.
+/// counted. One malformed row must not deny a client the remaining catalog.
 pub fn parse_index(raw: &str) -> Result<RegistryIndex, BridgeError> {
-    let parsed: RawIndex = serde_json::from_str(raw)
-        .map_err(|error| BridgeError::Invalid(format!("ACP registry index is not valid: {error}")))?;
+    let _probe: IndexSizeProbe = serde_json::from_str(raw).map_err(|error| {
+        BridgeError::Invalid(format!("ACP registry index is not valid: {error}"))
+    })?;
+
+    let parsed: RawIndex = serde_json::from_str(raw).map_err(|error| {
+        BridgeError::Invalid(format!("ACP registry index is not valid: {error}"))
+    })?;
 
     let mut agents = Vec::with_capacity(parsed.agents.len());
     let mut skipped = Vec::new();
+    let mut seen_ids = BTreeSet::new();
 
     for (index, entry) in parsed.agents.into_iter().enumerate() {
         // Recovered before deserializing so a rejected entry can still name itself.
-        let declared_id = entry
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let declared_id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
 
         let raw_agent: RawAgent = match serde_json::from_value(entry) {
             Ok(agent) => agent,
@@ -262,6 +339,15 @@ pub fn parse_index(raw: &str) -> Result<RegistryIndex, BridgeError> {
             }
         };
 
+        if let Some(field) = empty_required_agent_field(&raw_agent) {
+            skipped.push(SkippedEntry {
+                index,
+                id: declared_id,
+                reason: format!("{field} must not be empty"),
+            });
+            continue;
+        }
+
         let distribution = parse_distribution(&raw_agent.distribution);
         if distribution.is_empty() {
             skipped.push(SkippedEntry {
@@ -271,6 +357,15 @@ pub fn parse_index(raw: &str) -> Result<RegistryIndex, BridgeError> {
                     "no install method Bridge understands (offered: {})",
                     describe_keys(&raw_agent.distribution)
                 ),
+            });
+            continue;
+        }
+
+        if !seen_ids.insert(raw_agent.id.clone()) {
+            skipped.push(SkippedEntry {
+                index,
+                id: Some(raw_agent.id),
+                reason: "duplicate agent id".into(),
             });
             continue;
         }
@@ -296,6 +391,18 @@ pub fn parse_index(raw: &str) -> Result<RegistryIndex, BridgeError> {
     })
 }
 
+fn empty_required_agent_field(agent: &RawAgent) -> Option<&'static str> {
+    [
+        ("id", agent.id.as_str()),
+        ("name", agent.name.as_str()),
+        ("version", agent.version.as_str()),
+        ("description", agent.description.as_str()),
+        ("license", agent.license.as_str()),
+    ]
+    .into_iter()
+    .find_map(|(field, value)| value.trim().is_empty().then_some(field))
+}
+
 /// Keep every method that parses; ignore the rest.
 ///
 /// An unrecognized distribution key, or a platform target this build does not
@@ -305,6 +412,7 @@ fn parse_distribution(raw: &BTreeMap<String, Value>) -> Distribution {
     let package = |key: &str| {
         raw.get(key)
             .and_then(|value| serde_json::from_value::<PackageDistribution>(value.clone()).ok())
+            .filter(|distribution| !distribution.package.trim().is_empty())
     };
 
     let binary = raw
@@ -316,6 +424,9 @@ fn parse_distribution(raw: &BTreeMap<String, Value>) -> Distribution {
                 .filter_map(|(key, value)| {
                     let target = PlatformTarget::from_key(key)?;
                     let build = serde_json::from_value::<BinaryBuild>(value.clone()).ok()?;
+                    if build.archive.trim().is_empty() || build.cmd.trim().is_empty() {
+                        return None;
+                    }
                     Some((target, build))
                 })
                 .collect()
@@ -333,7 +444,10 @@ fn describe_keys(raw: &BTreeMap<String, Value>) -> String {
     if raw.is_empty() {
         return "none".into();
     }
-    raw.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+    raw.keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A cached copy of the upstream index.
@@ -390,7 +504,16 @@ pub fn cache_path(data_dir: &Path) -> PathBuf {
 /// absence of a cache. A half-written or hand-edited file must not be able to
 /// keep Bridge from starting, so anything that fails to decode is discarded.
 pub fn read_cache(path: &Path) -> Option<CachedCatalog> {
-    let raw = fs::read_to_string(path).ok()?;
+    let mut raw = Vec::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_CACHE_FILE_BYTES + 1)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > MAX_CACHE_FILE_BYTES {
+        return None;
+    }
+    let raw = String::from_utf8(raw).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -400,26 +523,36 @@ pub fn read_cache(path: &Path) -> Option<CachedCatalog> {
 /// mid-write leaves either the previous cache or the new one — never a truncated
 /// document that would read as corrupt on the next start.
 pub fn write_cache(path: &Path, cached: &CachedCatalog) -> Result<(), BridgeError> {
+    write_cache_with(path, cached, |temp, destination| {
+        temp.persist(destination)
+            .map(|_| ())
+            .map_err(|error| error.error)
+    })
+}
+
+fn write_cache_with<F>(path: &Path, cached: &CachedCatalog, persist: F) -> Result<(), BridgeError>
+where
+    F: FnOnce(tempfile::NamedTempFile, &Path) -> std::io::Result<()>,
+{
     let parent = path.parent().ok_or_else(|| {
-        BridgeError::Invalid(format!("registry cache path has no parent: {}", path.display()))
+        BridgeError::Invalid(format!(
+            "registry cache path has no parent: {}",
+            path.display()
+        ))
     })?;
     fs::create_dir_all(parent)?;
 
     let encoded = serde_json::to_string(cached)
         .map_err(|error| BridgeError::Invalid(format!("cannot encode registry cache: {error}")))?;
 
-    // Same directory as the destination, so the rename stays within one
-    // filesystem and is therefore atomic.
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, encoded)?;
-    match fs::rename(&temp, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            // Never leave the scratch file behind to be mistaken for a cache.
-            let _ = fs::remove_file(&temp);
-            Err(error.into())
-        }
-    }
+    // Every writer gets its own sibling temp file. Keeping it beside the
+    // destination makes replacement atomic without making concurrent refreshes
+    // race over one shared `index.json.tmp` path.
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(encoded.as_bytes())?;
+    temp.as_file().sync_all()?;
+    persist(temp, path)?;
+    Ok(())
 }
 
 /// How much time a catalog refresh may take before it is treated as offline.
@@ -436,6 +569,10 @@ pub enum RefreshOutcome {
     Fetched,
     /// Upstream confirmed the cached copy is current; nothing was rewritten.
     NotModified,
+    /// Upstream served a usable document, but it could not be persisted. The
+    /// returned catalog is fresh for this process; the reason explains why the
+    /// next process may need to fetch it again.
+    FetchedUncached(String),
     /// Upstream was unreachable or unusable; the cached copy is being served.
     /// Carries the reason so a client can say *why* the catalog is old.
     Offline(String),
@@ -460,15 +597,34 @@ pub fn refresh(data_dir: &Path) -> Result<Refresh, BridgeError> {
 /// returns something unparseable degrades to the cached copy marked stale. It is
 /// an error only when there is nothing to fall back to.
 pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
+    let _refresh_guard = REFRESH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    refresh_from_with_writer(url, cache, write_cache)
+}
+
+fn refresh_from_with_writer<F>(url: &str, cache: &Path, write: F) -> Result<Refresh, BridgeError>
+where
+    F: FnOnce(&Path, &CachedCatalog) -> Result<(), BridgeError>,
+{
     // A cache recorded against a different index URL is not this catalog, so it
     // is neither reused nor revalidated against.
-    let cached = read_cache(cache).filter(|entry| entry.source_url == url);
+    let cached = read_cache(cache)
+        .filter(|entry| entry.source_url == url)
+        .and_then(|entry| {
+            let catalog = entry.to_catalog(false).ok()?;
+            Some((entry, catalog))
+        });
 
     let fallback = |reason: String| match &cached {
-        Some(entry) => Ok(Refresh {
-            catalog: entry.to_catalog(true)?,
-            outcome: RefreshOutcome::Offline(reason),
-        }),
+        Some((_, catalog)) => {
+            let mut catalog = catalog.clone();
+            catalog.stale = true;
+            Ok(Refresh {
+                catalog,
+                outcome: RefreshOutcome::Offline(reason),
+            })
+        }
         None => Err(BridgeError::Invalid(format!(
             "cannot load the ACP registry catalog and no cached copy exists: {reason}"
         ))),
@@ -483,7 +639,7 @@ pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
     };
 
     let mut request = client.get(url);
-    if let Some(etag) = cached.as_ref().and_then(|entry| entry.etag.as_deref()) {
+    if let Some(etag) = cached.as_ref().and_then(|(entry, _)| entry.etag.as_deref()) {
         request = request.header(reqwest::header::IF_NONE_MATCH, etag);
     }
 
@@ -495,8 +651,8 @@ pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         // Only reachable when a cache supplied the ETag, but do not assume it.
         return match &cached {
-            Some(entry) => Ok(Refresh {
-                catalog: entry.to_catalog(false)?,
+            Some((_, catalog)) => Ok(Refresh {
+                catalog: catalog.clone(),
                 outcome: RefreshOutcome::NotModified,
             }),
             None => fallback("upstream sent 304 with no cached copy to reuse".into()),
@@ -513,9 +669,22 @@ pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
 
-    let document = match response.text() {
-        Ok(body) => body,
-        Err(error) => return fallback(error.to_string()),
+    let mut document = Vec::new();
+    if let Err(error) = response
+        .take(MAX_REGISTRY_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut document)
+    {
+        return fallback(error.to_string());
+    }
+    if document.len() as u64 > MAX_REGISTRY_DOCUMENT_BYTES {
+        return fallback(format!(
+            "upstream registry exceeds the {} byte limit",
+            MAX_REGISTRY_DOCUMENT_BYTES
+        ));
+    }
+    let document = match String::from_utf8(document) {
+        Ok(document) => document,
+        Err(error) => return fallback(format!("upstream registry is not UTF-8: {error}")),
     };
 
     // Parse before writing. A document we cannot read must not replace a cached
@@ -525,6 +694,9 @@ pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
         Ok(index) => index,
         Err(error) => return fallback(error.to_string()),
     };
+    if index.agents.is_empty() {
+        return fallback("upstream registry contains no usable agent entries".into());
+    }
 
     let fetched_at = chrono::Utc::now().to_rfc3339();
     let entry = CachedCatalog {
@@ -533,7 +705,7 @@ pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
         etag,
         document,
     };
-    write_cache(cache, &entry)?;
+    let write_error = write(cache, &entry).err();
 
     Ok(Refresh {
         catalog: Catalog {
@@ -541,7 +713,10 @@ pub fn refresh_from(url: &str, cache: &Path) -> Result<Refresh, BridgeError> {
             fetched_at,
             stale: false,
         },
-        outcome: RefreshOutcome::Fetched,
+        outcome: match write_error {
+            Some(error) => RefreshOutcome::FetchedUncached(error.to_string()),
+            None => RefreshOutcome::Fetched,
+        },
     })
 }
 
@@ -550,6 +725,7 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../../../testing/fixtures/acp-registry-v1.json");
+    const EXPECTED_AGENT_COUNT: usize = 38;
 
     fn index() -> RegistryIndex {
         parse_index(FIXTURE).expect("fixture parses")
@@ -567,7 +743,7 @@ mod tests {
     fn parses_the_live_index_fixture() {
         let index = index();
         assert_eq!(index.version, "1.0.0");
-        assert_eq!(index.agents.len(), 38);
+        assert_eq!(index.agents.len(), EXPECTED_AGENT_COUNT);
         assert!(
             index.skipped.is_empty(),
             "every upstream entry should parse, skipped: {:?}",
@@ -578,7 +754,9 @@ mod tests {
     #[test]
     fn parses_npx_uvx_and_binary_distributions() {
         let npx = agent("claude-acp").distribution.npx.expect("npx");
-        assert!(npx.package.starts_with("@agentclientprotocol/claude-agent-acp@"));
+        assert!(npx
+            .package
+            .starts_with("@agentclientprotocol/claude-agent-acp@"));
 
         let uvx = agent("minion-code").distribution.uvx.expect("uvx");
         assert!(uvx.package.starts_with("minion-code@"));
@@ -599,7 +777,10 @@ mod tests {
         // these, and the installer would lose a working fallback.
         for id in ["kilo", "sigit"] {
             let distribution = agent(id).distribution;
-            assert!(distribution.npx.is_some(), "{id} should keep its npx method");
+            assert!(
+                distribution.npx.is_some(),
+                "{id} should keep its npx method"
+            );
             assert!(
                 !distribution.binary.is_empty(),
                 "{id} should keep its binary builds"
@@ -637,7 +818,9 @@ mod tests {
     fn npx_entry_with_env_is_valid() {
         let npx = agent("auggie").distribution.npx.expect("npx");
         assert_eq!(
-            npx.env.get("AUGMENT_DISABLE_AUTO_UPDATE").map(String::as_str),
+            npx.env
+                .get("AUGMENT_DISABLE_AUTO_UPDATE")
+                .map(String::as_str),
             Some("1"),
             "env belongs on package distributions, not only on binary builds"
         );
@@ -658,13 +841,59 @@ mod tests {
         }"#;
         let index = parse_index(raw).expect("document is well formed");
         assert_eq!(
-            index.agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            index
+                .agents
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>(),
             ["good-one", "good-two"]
         );
         assert_eq!(index.skipped.len(), 1);
         assert_eq!(index.skipped[0].id.as_deref(), Some("broken"));
         assert_eq!(index.skipped[0].index, 1);
         assert!(index.skipped[0].reason.contains("version"));
+    }
+
+    #[test]
+    fn skips_entries_with_empty_required_values() {
+        let raw = r#"{
+            "version": "1.0.0",
+            "agents": [{
+                "id":"empty-package","name":"Agent","version":"1",
+                "description":"d","license":"MIT",
+                "distribution":{"npx":{"package":"  "}}
+            }, {
+                "id":"","name":"Agent","version":"1","description":"d",
+                "license":"MIT","distribution":{"npx":{"package":"agent@1"}}
+            }]
+        }"#;
+        let index = parse_index(raw).expect("document parses");
+
+        assert!(index.agents.is_empty());
+        assert_eq!(index.skipped.len(), 2);
+        assert!(index.skipped[0].reason.contains("no install method"));
+        assert!(index.skipped[1].reason.contains("id must not be empty"));
+    }
+
+    #[test]
+    fn duplicate_agent_ids_are_skipped() {
+        let raw = r#"{
+            "version": "1.0.0",
+            "agents": [{
+                "id":"same","name":"First","version":"1","description":"d",
+                "license":"MIT","distribution":{"npx":{"package":"first@1"}}
+            }, {
+                "id":"same","name":"Second","version":"2","description":"d",
+                "license":"MIT","distribution":{"npx":{"package":"second@2"}}
+            }]
+        }"#;
+        let index = parse_index(raw).expect("document parses");
+
+        assert_eq!(index.agents.len(), 1);
+        assert_eq!(index.agents[0].name, "First");
+        assert_eq!(index.skipped.len(), 1);
+        assert_eq!(index.skipped[0].id.as_deref(), Some("same"));
+        assert!(index.skipped[0].reason.contains("duplicate"));
     }
 
     #[test]
@@ -680,7 +909,10 @@ mod tests {
             }]
         }"#;
         let index = parse_index(raw).expect("parses");
-        assert!(index.skipped.is_empty(), "one odd platform must not skip the agent");
+        assert!(
+            index.skipped.is_empty(),
+            "one odd platform must not skip the agent"
+        );
         let binary = &index.agents[0].distribution.binary;
         assert_eq!(binary.len(), 1);
         assert!(binary.contains_key(&PlatformTarget::DarwinAarch64));
@@ -718,7 +950,11 @@ mod tests {
         let index = parse_index(raw).expect("parses");
         assert!(index.skipped.is_empty());
         assert_eq!(
-            index.agents[0].distribution.npx.as_ref().map(|p| p.package.as_str()),
+            index.agents[0]
+                .distribution
+                .npx
+                .as_ref()
+                .map(|p| p.package.as_str()),
             Some("mixed@1")
         );
     }
@@ -728,6 +964,19 @@ mod tests {
         let error = parse_index(r#"{"version":"1.0.0"}"#)
             .expect_err("a document without agents is unusable, not an empty catalog");
         assert!(matches!(error, BridgeError::Invalid(_)));
+    }
+
+    #[test]
+    fn rejects_an_excessive_agent_count_before_materializing_entries() {
+        let agents = vec![serde_json::json!({}); MAX_REGISTRY_AGENTS + 1];
+        let raw = serde_json::json!({"version": "1.0.0", "agents": agents}).to_string();
+
+        let error = parse_index(&raw).expect_err("the entry count is bounded");
+
+        assert!(
+            error.to_string().contains(&MAX_REGISTRY_AGENTS.to_string()),
+            "error should name the limit: {error}"
+        );
     }
 
     #[test]
@@ -752,8 +1001,8 @@ mod tests {
     fn the_parsed_index_survives_a_json_round_trip() {
         // `PlatformTarget` is a *map key* inside `Distribution`, a shape serde
         // only accepts because the variants serialize as plain strings. The RPC
-        // layer (#157) has to put this whole type on the wire, so prove it here
-        // rather than there.
+        // layer has to put this whole type on the wire, so prove it here rather
+        // than there.
         let parsed = index();
         let encoded = serde_json::to_string(&parsed).expect("index serializes");
         let decoded: RegistryIndex = serde_json::from_str(&encoded).expect("index deserializes");
@@ -784,7 +1033,10 @@ mod tests {
 
         assert_eq!(read, cached);
         assert_eq!(read.etag.as_deref(), Some("\"abc123\""));
-        assert_eq!(read.to_catalog(false).unwrap().index.agents.len(), 38);
+        assert_eq!(
+            read.to_catalog(false).unwrap().index.agents.len(),
+            EXPECTED_AGENT_COUNT
+        );
     }
 
     #[test]
@@ -806,6 +1058,17 @@ mod tests {
                 "a cache Bridge cannot decode must read as absent, not panic: {garbage:?}"
             );
         }
+    }
+
+    #[test]
+    fn oversized_cache_is_discarded_without_being_fully_buffered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_CACHE_FILE_BYTES + 1).unwrap();
+
+        assert!(read_cache(&path).is_none());
     }
 
     #[test]
@@ -839,21 +1102,59 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_write_leaves_the_previous_cache_intact() {
-        // The observable half of atomicity: a write that cannot complete must
-        // not degrade what was already there.
+    fn a_failed_replacement_leaves_the_previous_cache_intact() {
         let dir = tempfile::tempdir().unwrap();
         let path = cache_path(dir.path());
-        write_cache(&path, &sample_cache()).expect("first write");
+        let original = sample_cache();
+        write_cache(&path, &original).expect("first write");
 
-        // A directory where the destination file should be makes the rename fail
-        // without touching the good cache we just wrote.
-        let blocked = dir.path().join("acp-registry-blocked").join("index.json");
-        fs::create_dir_all(&blocked).unwrap();
-        assert!(write_cache(&blocked, &sample_cache()).is_err());
+        let mut replacement = sample_cache();
+        replacement.fetched_at = "2026-08-09T01:00:00Z".into();
+        let result = write_cache_with(&path, &replacement, |_temp, _destination| {
+            Err(std::io::Error::other("injected replacement failure"))
+        });
+        assert!(result.is_err());
 
         let survivor = read_cache(&path).expect("the good cache is untouched");
-        assert_eq!(survivor, sample_cache());
+        assert_eq!(survivor, original);
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "index.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file survived: {leftovers:?}");
+    }
+
+    #[test]
+    fn concurrent_writers_leave_one_complete_cache() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path(dir.path());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut first = sample_cache();
+        first.fetched_at = "2026-08-09T01:00:00Z".into();
+        let mut second = sample_cache();
+        second.fetched_at = "2026-08-09T02:00:00Z".into();
+
+        let handles: Vec<_> = [first.clone(), second.clone()]
+            .into_iter()
+            .map(|cached| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_cache(&path, &cached)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("writer panicked").expect("write");
+        }
+        let written = read_cache(&path).expect("one complete cache remains");
+        assert!(written == first || written == second);
     }
 
     #[test]
@@ -863,7 +1164,11 @@ mod tests {
         let stale = cached.to_catalog(true).unwrap();
         assert!(stale.stale);
         assert_eq!(stale.fetched_at, "2026-08-09T00:00:00Z");
-        assert_eq!(stale.index.agents.len(), 38, "stale still means usable");
+        assert_eq!(
+            stale.index.agents.len(),
+            EXPECTED_AGENT_COUNT,
+            "stale still means usable"
+        );
     }
 
     /// A scripted response the fake upstream will serve, in order.
@@ -876,7 +1181,12 @@ mod tests {
     /// A local upstream, so no test in this suite touches the live CDN — CI has
     /// to be deterministic and has to pass offline. Serves exactly `script.len()`
     /// requests and then exits, which closes the socket without extra plumbing.
-    fn spawn_upstream(script: Vec<Canned>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>) {
+    fn spawn_upstream(
+        script: Vec<Canned>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    ) {
         use std::sync::{Arc, Mutex};
 
         let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
@@ -927,7 +1237,7 @@ mod tests {
 
         assert_eq!(refreshed.outcome, RefreshOutcome::Fetched);
         assert!(!refreshed.catalog.stale);
-        assert_eq!(refreshed.catalog.index.agents.len(), 38);
+        assert_eq!(refreshed.catalog.index.agents.len(), EXPECTED_AGENT_COUNT);
 
         let written = read_cache(&cache).expect("cache written");
         assert_eq!(written.etag.as_deref(), Some("\"v1\""));
@@ -953,7 +1263,7 @@ mod tests {
 
         assert_eq!(second.outcome, RefreshOutcome::NotModified);
         assert!(!second.catalog.stale, "304 confirms the copy is current");
-        assert_eq!(second.catalog.index.agents.len(), 38);
+        assert_eq!(second.catalog.index.agents.len(), EXPECTED_AGENT_COUNT);
         assert_eq!(
             fs::read(&cache).unwrap(),
             before,
@@ -984,8 +1294,11 @@ mod tests {
         let offline = refresh_from(&url, &cache).expect("a cached catalog is still usable");
 
         assert!(matches!(offline.outcome, RefreshOutcome::Offline(_)));
-        assert!(offline.catalog.stale, "the caller must be able to say it is old");
-        assert_eq!(offline.catalog.index.agents.len(), 38);
+        assert!(
+            offline.catalog.stale,
+            "the caller must be able to say it is old"
+        );
+        assert_eq!(offline.catalog.index.agents.len(), EXPECTED_AGENT_COUNT);
     }
 
     #[test]
@@ -1039,7 +1352,7 @@ mod tests {
         assert!(matches!(degraded.outcome, RefreshOutcome::Offline(_)));
         assert_eq!(
             degraded.catalog.index.agents.len(),
-            38,
+            EXPECTED_AGENT_COUNT,
             "a bad upstream publish must not cost the user their last-good catalog"
         );
         assert_eq!(read_cache(&cache).unwrap().document, FIXTURE);
@@ -1072,6 +1385,112 @@ mod tests {
             "a foreign cache's ETag must not be replayed as If-None-Match"
         );
         assert_eq!(read_cache(&cache).unwrap().source_url, url);
+    }
+
+    #[test]
+    fn invalid_cached_document_is_not_revalidated() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, seen) = spawn_upstream(vec![Canned::Ok {
+            body: FIXTURE.into(),
+            etag: Some("\"fresh\"".into()),
+        }]);
+        write_cache(
+            &cache,
+            &CachedCatalog {
+                source_url: url.clone(),
+                etag: Some("\"invalid-cache\"".into()),
+                document: r#"{"version":"1.0.0"}"#.into(),
+                ..sample_cache()
+            },
+        )
+        .unwrap();
+
+        let refreshed = refresh_from(&url, &cache).expect("fetches without revalidating");
+
+        assert_eq!(refreshed.outcome, RefreshOutcome::Fetched);
+        assert_eq!(seen.lock().unwrap()[0], None);
+        assert_eq!(
+            read_cache(&cache).unwrap().etag.as_deref(),
+            Some("\"fresh\"")
+        );
+    }
+
+    #[test]
+    fn oversized_response_falls_back_without_overwriting_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![
+            Canned::Ok {
+                body: FIXTURE.into(),
+                etag: None,
+            },
+            Canned::Ok {
+                body: "x".repeat(MAX_REGISTRY_DOCUMENT_BYTES as usize + 1),
+                etag: Some("\"oversized\"".into()),
+            },
+        ]);
+        refresh_from(&url, &cache).expect("seed");
+
+        let degraded = refresh_from(&url, &cache).expect("falls back");
+
+        assert!(matches!(degraded.outcome, RefreshOutcome::Offline(_)));
+        assert_eq!(degraded.catalog.index.agents.len(), EXPECTED_AGENT_COUNT);
+        assert_eq!(read_cache(&cache).unwrap().document, FIXTURE);
+    }
+
+    #[test]
+    fn response_with_no_usable_agents_does_not_replace_a_good_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![
+            Canned::Ok {
+                body: FIXTURE.into(),
+                etag: None,
+            },
+            Canned::Ok {
+                body: r#"{"version":"2.0.0","agents":[{
+                    "id":"","name":"","version":"","description":"",
+                    "license":"","distribution":{"npx":{"package":""}}
+                }]}"#
+                    .into(),
+                etag: Some("\"empty\"".into()),
+            },
+        ]);
+        refresh_from(&url, &cache).expect("seed");
+
+        let degraded = refresh_from(&url, &cache).expect("falls back");
+
+        assert!(matches!(degraded.outcome, RefreshOutcome::Offline(_)));
+        assert_eq!(degraded.catalog.index.agents.len(), EXPECTED_AGENT_COUNT);
+        assert_eq!(read_cache(&cache).unwrap().document, FIXTURE);
+    }
+
+    #[test]
+    fn cache_write_failure_returns_the_fresh_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = cache_path(dir.path());
+        let (url, _) = spawn_upstream(vec![Canned::Ok {
+            body: FIXTURE.into(),
+            etag: Some("\"v1\"".into()),
+        }]);
+
+        let refreshed = refresh_from_with_writer(&url, &cache, |_path, _entry| {
+            Err(BridgeError::Io(std::io::Error::other(
+                "injected cache write failure",
+            )))
+        })
+        .expect("fresh network data is still usable");
+
+        assert!(!refreshed.catalog.stale);
+        assert_eq!(refreshed.catalog.index.agents.len(), EXPECTED_AGENT_COUNT);
+        match refreshed.outcome {
+            RefreshOutcome::FetchedUncached(reason) => {
+                assert!(reason.contains("injected cache write failure"));
+            }
+            other => panic!("expected FetchedUncached, got {other:?}"),
+        }
+        assert!(read_cache(&cache).is_none());
     }
 
     #[test]
