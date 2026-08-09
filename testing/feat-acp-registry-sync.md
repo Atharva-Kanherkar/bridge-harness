@@ -22,16 +22,21 @@ Source of truth: `https://cdn.agentclientprotocol.com/registry/v1/latest/registr
 1. **Parse is tolerant, not strict.** A malformed or unrecognized agent entry is *skipped and
    counted*, never fatal. One bad entry must not void the catalog. (Same lesson as #144, where
    one bad row fails a whole replay page.)
-2. **Optional fields are genuinely optional.** Verified against live data: `sha256` is absent on
-   real binary entries (Devin has none), and `icon` / `website` are inconsistent across entries.
-   The published FORMAT.md and the live index do not perfectly agree — the parser follows the
-   data, not the doc.
-3. **Three distribution types**, each a single-key object under `distribution`:
-   - `npx` → `{ package }`, optional `args`
-   - `uvx` → `{ package }`, optional `args`
+2. **Optional fields are genuinely optional.** Measured over the captured fixture (38 agents):
+   `id`, `name`, `version`, `description`, `authors`, `license`, `icon`, `distribution` present
+   on all 38; `repository` on 32; `website` on 31. `sha256` on only 48 of 90 binary builds.
+   The published FORMAT.md and the live index do not agree — FORMAT.md lists `repository` and
+   `website` as required, and the data disagrees. **The parser follows the data, not the doc.**
+3. **`distribution` is a set, not a choice.** An agent may offer more than one method —
+   verified: `kilo` and `sigit` each ship both `binary` and `npx`. The parser models every
+   method the entry offers; *selecting* one is the installer's job (#156 §3), not this PR's.
+   - `npx` → `{ package }`, optional `args`, optional `env`
+   - `uvx` → `{ package }`, optional `args`, optional `env`
    - `binary` → map of platform target → `{ archive, cmd, args?, sha256?, env? }`
 4. **Six platform targets**: `darwin-aarch64`, `darwin-x86_64`, `linux-aarch64`, `linux-x86_64`,
    `windows-aarch64`, `windows-x86_64`. An unknown target string is skipped, not fatal.
+   Coverage is uneven and "no build for your platform" is a common state, not an edge case —
+   `windows-aarch64` appears on only 8 of the 17 binary-distributed agents.
 5. **Conditional fetch.** Send `If-None-Match` when a cached ETag exists. `304 Not Modified`
    reuses the cache without reparsing.
 6. **Offline serves last-good cache, marked stale.** A fetch failure with a cache present is not
@@ -45,12 +50,14 @@ Source of truth: `https://cdn.agentclientprotocol.com/registry/v1/latest/registr
 
 Module under test: `bridge_core::acp_registry`.
 
-- `parses_the_live_index_fixture` — the checked-in fixture parses, yielding the expected agent
-  count with zero skips.
+- `parses_the_live_index_fixture` — the checked-in 38-agent fixture parses with zero skips.
 - `parses_npx_uvx_and_binary_distributions` — one agent of each type; `uvx` args survive; binary
   platform map is keyed correctly.
+- `agent_offering_both_npx_and_binary_keeps_both` — `kilo`/`sigit` shape; neither method is
+  silently dropped by an enum that can only hold one.
 - `binary_entry_without_sha256_is_valid` — Devin-shaped entry parses with `sha256: None`.
-- `entry_missing_optional_icon_and_website_is_valid` — minion-code-shaped entry parses.
+- `entry_missing_optional_repository_and_website_is_valid` — parses with both `None`.
+- `npx_entry_with_env_is_valid` — `env` is carried on npx/uvx, not only on binary builds.
 - `skips_malformed_entry_and_keeps_the_rest` — an index of 3 agents where one lacks a required
   field yields 2 agents and 1 recorded skip naming the offending id/index.
 - `skips_unknown_platform_target_without_failing_the_entry` — an entry with one bogus platform
