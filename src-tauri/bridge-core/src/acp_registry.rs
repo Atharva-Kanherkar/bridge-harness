@@ -16,7 +16,11 @@
 use crate::BridgeError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// The upstream index. Republished hourly from npm, PyPI, and GitHub releases.
 pub const REGISTRY_INDEX_URL: &str =
@@ -332,6 +336,92 @@ fn describe_keys(raw: &BTreeMap<String, Value>) -> String {
     raw.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
 }
 
+/// A cached copy of the upstream index.
+///
+/// The **verbatim document** is stored, not our parse of it. Two reasons: the
+/// cache stays a faithful copy of what upstream actually served, and a later
+/// improvement to [`parse_index`] takes effect on the next read instead of
+/// waiting for a network fetch to re-understand entries we previously skipped.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedCatalog {
+    /// RFC 3339, when this document was received.
+    pub fetched_at: String,
+    /// Where it came from — recorded so a cache written against a different
+    /// index URL is not silently reused.
+    pub source_url: String,
+    /// Upstream's ETag, replayed as `If-None-Match` on the next fetch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// The upstream document, byte for byte.
+    pub document: String,
+}
+
+/// A catalog handed to a caller, carrying its own freshness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Catalog {
+    pub index: RegistryIndex,
+    pub fetched_at: String,
+    /// True when this came from cache after a failed refresh. A client must be
+    /// able to say the catalog is old rather than quietly showing stale data.
+    pub stale: bool,
+}
+
+impl CachedCatalog {
+    /// Parse the cached document into a catalog.
+    pub fn to_catalog(&self, stale: bool) -> Result<Catalog, BridgeError> {
+        Ok(Catalog {
+            index: parse_index(&self.document)?,
+            fetched_at: self.fetched_at.clone(),
+            stale,
+        })
+    }
+}
+
+/// Where the cache lives under a data directory.
+pub fn cache_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("acp-registry").join("index.json")
+}
+
+/// Read the cache, or `None` when there isn't a usable one.
+///
+/// A missing, unreadable, or corrupt cache is not an error — it is simply the
+/// absence of a cache. A half-written or hand-edited file must not be able to
+/// keep Bridge from starting, so anything that fails to decode is discarded.
+pub fn read_cache(path: &Path) -> Option<CachedCatalog> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// Write the cache atomically.
+///
+/// Writes a sibling temp file and renames it over the destination, so a crash
+/// mid-write leaves either the previous cache or the new one — never a truncated
+/// document that would read as corrupt on the next start.
+pub fn write_cache(path: &Path, cached: &CachedCatalog) -> Result<(), BridgeError> {
+    let parent = path.parent().ok_or_else(|| {
+        BridgeError::Invalid(format!("registry cache path has no parent: {}", path.display()))
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let encoded = serde_json::to_string(cached)
+        .map_err(|error| BridgeError::Invalid(format!("cannot encode registry cache: {error}")))?;
+
+    // Same directory as the destination, so the rename stays within one
+    // filesystem and is therefore atomic.
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, encoded)?;
+    match fs::rename(&temp, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Never leave the scratch file behind to be mistaken for a cache.
+            let _ = fs::remove_file(&temp);
+            Err(error.into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,10 +627,10 @@ mod tests {
 
     #[test]
     fn the_parsed_index_survives_a_json_round_trip() {
-        // The on-disk cache stores a `RegistryIndex` as JSON, and `PlatformTarget`
-        // is a *map key* there — a shape serde only accepts because the variants
-        // serialize as plain strings. Proving it here keeps the cache from being
-        // the place this is discovered.
+        // `PlatformTarget` is a *map key* inside `Distribution`, a shape serde
+        // only accepts because the variants serialize as plain strings. The RPC
+        // layer (#157) has to put this whole type on the wire, so prove it here
+        // rather than there.
         let parsed = index();
         let encoded = serde_json::to_string(&parsed).expect("index serializes");
         let decoded: RegistryIndex = serde_json::from_str(&encoded).expect("index deserializes");
@@ -549,6 +639,108 @@ mod tests {
             encoded.contains("\"darwin-aarch64\""),
             "platform keys must round-trip as their registry spelling"
         );
+    }
+
+    fn sample_cache() -> CachedCatalog {
+        CachedCatalog {
+            fetched_at: "2026-08-09T00:00:00Z".into(),
+            source_url: REGISTRY_INDEX_URL.into(),
+            etag: Some("\"abc123\"".into()),
+            document: FIXTURE.into(),
+        }
+    }
+
+    #[test]
+    fn cache_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path(dir.path());
+        let cached = sample_cache();
+
+        write_cache(&path, &cached).expect("write");
+        let read = read_cache(&path).expect("cache is present");
+
+        assert_eq!(read, cached);
+        assert_eq!(read.etag.as_deref(), Some("\"abc123\""));
+        assert_eq!(read.to_catalog(false).unwrap().index.agents.len(), 38);
+    }
+
+    #[test]
+    fn absent_cache_reads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_cache(&cache_path(dir.path())).is_none());
+    }
+
+    #[test]
+    fn corrupt_cache_is_discarded_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        for garbage in ["", "{", "not json at all", r#"{"fetchedAt":"x"}"#] {
+            fs::write(&path, garbage).unwrap();
+            assert!(
+                read_cache(&path).is_none(),
+                "a cache Bridge cannot decode must read as absent, not panic: {garbage:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cached_document_that_no_longer_parses_surfaces_as_an_error() {
+        // Distinct from a corrupt *envelope*: the cache decoded fine, but what
+        // upstream served is no longer usable. That is worth reporting rather
+        // than silently pretending there is no cache.
+        let cached = CachedCatalog {
+            document: r#"{"version":"1.0.0"}"#.into(),
+            ..sample_cache()
+        };
+        assert!(matches!(
+            cached.to_catalog(true),
+            Err(BridgeError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn successful_write_leaves_no_temp_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path(dir.path());
+        write_cache(&path, &sample_cache()).expect("write");
+
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file survived: {leftovers:?}");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_previous_cache_intact() {
+        // The observable half of atomicity: a write that cannot complete must
+        // not degrade what was already there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = cache_path(dir.path());
+        write_cache(&path, &sample_cache()).expect("first write");
+
+        // A directory where the destination file should be makes the rename fail
+        // without touching the good cache we just wrote.
+        let blocked = dir.path().join("acp-registry-blocked").join("index.json");
+        fs::create_dir_all(&blocked).unwrap();
+        assert!(write_cache(&blocked, &sample_cache()).is_err());
+
+        let survivor = read_cache(&path).expect("the good cache is untouched");
+        assert_eq!(survivor, sample_cache());
+    }
+
+    #[test]
+    fn stale_is_carried_on_the_catalog_not_inferred_by_the_caller() {
+        let cached = sample_cache();
+        assert!(!cached.to_catalog(false).unwrap().stale);
+        let stale = cached.to_catalog(true).unwrap();
+        assert!(stale.stale);
+        assert_eq!(stale.fetched_at, "2026-08-09T00:00:00Z");
+        assert_eq!(stale.index.agents.len(), 38, "stale still means usable");
     }
 
     #[test]
