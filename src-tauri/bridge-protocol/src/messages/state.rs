@@ -6,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::common::{HarnessId, JsSafeI64};
+use super::common::{JsSafeI64, StoredHarnessId};
 
 /// Mirrors `bridge_core::model::SessionStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -97,7 +97,9 @@ pub struct Workspace {
 pub struct Session {
     pub id: String,
     pub workspace_id: Option<String>,
-    pub harness: HarnessId,
+    /// Tolerant on purpose: a session whose agent this build cannot interpret
+    /// still reports the id it was stored with. See [`StoredHarnessId`].
+    pub harness: StoredHarnessId,
     pub label: String,
     pub status: SessionStatus,
     pub started_at: Option<String>,
@@ -224,7 +226,7 @@ mod tests {
             sessions: vec![Session {
                 id: "s-1".into(),
                 workspace_id: Some("w-1".into()),
-                harness: HarnessId::parse("codex").unwrap(),
+                harness: StoredHarnessId::new("codex"),
                 label: "Orchestrator".into(),
                 status: SessionStatus::Waiting,
                 started_at: Some("now".into()),

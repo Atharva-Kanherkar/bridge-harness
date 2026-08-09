@@ -204,6 +204,42 @@ fn a_registry_agent_named_like_a_builtin_stays_distinct_on_the_wire() {
 }
 
 #[test]
+fn the_state_snapshot_mirrors_a_session_whose_harness_cannot_be_interpreted() {
+    // `assert_mirrors` deserializes what core emits into the wire type, so this
+    // is the gate that catches a result violating its own published schema.
+    // `Session.harness` is deliberately the tolerant `StoredHarnessId`: a
+    // session persisted by a newer Bridge, or one whose agent was uninstalled,
+    // must still appear in the snapshot. Were it the strict `HarnessId`, this
+    // panics — which is exactly the bug this test exists to prevent.
+    for harness in [
+        model::Harness::from_stored("gemini"),
+        model::Harness::from_stored("acp:gemini"),
+        model::Harness::from_stored(""),
+        model::Harness::Codex,
+    ] {
+        let expected = harness.id().into_owned();
+        let state = model::BridgeState {
+            projects: Vec::new(),
+            workspaces: Vec::new(),
+            sessions: vec![model::Session { harness, ..populated_session() }],
+            events: Vec::new(),
+        };
+        assert_mirrors::<wire::BridgeState>(&state);
+
+        let mirrored: wire::BridgeState =
+            serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+        assert_eq!(mirrored.sessions[0].harness.as_str(), expected);
+        // The strict id is available only when the value actually satisfies
+        // the grammar, so a client can tell "actionable" from "readable only".
+        assert_eq!(
+            mirrored.sessions[0].harness.interpreted().is_some(),
+            model::Harness::parse(&expected).is_ok(),
+            "{expected:?}"
+        );
+    }
+}
+
+#[test]
 fn unknown_harnesses_serialize_under_their_own_id_but_are_not_valid_parameters() {
     // The deliberate asymmetry: outbound tolerant so a session whose harness
     // this build cannot interpret still lists and replays under its own name;

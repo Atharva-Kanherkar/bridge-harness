@@ -52,11 +52,6 @@
       ],
       "type": "string"
     },
-    "HarnessId": {
-      "description": "A built-in harness ('claude', 'codex', 'opencode', 'shell') or an installed ACP agent ('acp:' + its registry id).",
-      "pattern": "^(claude|codex|opencode|shell|acp:[a-z0-9][a-z0-9._-]{0,63})$",
-      "type": "string"
-    },
     "JsSafeI64": {
       "maximum": 9007199254740991.0,
       "minimum": -9007199254740991.0,
@@ -147,7 +142,12 @@
           ]
         },
         "harness": {
-          "$ref": "#/definitions/HarnessId"
+          "allOf": [
+            {
+              "$ref": "#/definitions/StoredHarnessId"
+            }
+          ],
+          "description": "Tolerant on purpose: a session whose agent this build cannot interpret still reports the id it was stored with. See [`StoredHarnessId`]."
         },
         "id": {
           "type": "string"
@@ -253,6 +253,10 @@
         "completed",
         "cancelled"
       ],
+      "type": "string"
+    },
+    "StoredHarnessId": {
+      "description": "The harness a session runs under. Usually a HarnessId, but unconstrained on purpose: a session persisted by a newer Bridge, or one whose agent was uninstalled, still reports the id it was stored with so its history stays readable. Such an id cannot be sent back as a parameter.",
       "type": "string"
     },
     "Workspace": {

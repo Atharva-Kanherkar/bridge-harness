@@ -1,4 +1,6 @@
-use bridge_protocol::messages::{AcpAgentId, HarnessId, HarnessIdError, ACP_HARNESS_PREFIX};
+use bridge_protocol::messages::{
+    AcpAgentId, HarnessId, HarnessIdError, StoredHarnessId, ACP_HARNESS_PREFIX,
+};
 use serde::ser::Error as _;
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Cow;
@@ -233,6 +235,16 @@ impl TryFrom<&Harness> for HarnessId {
     /// as a parameter, because nothing can be done with it.
     fn try_from(harness: &Harness) -> Result<Self, Self::Error> {
         HarnessId::parse(&harness.id())
+    }
+}
+
+impl From<&Harness> for StoredHarnessId {
+    /// Total, unlike the [`HarnessId`] conversion. This is the result-side id:
+    /// every harness a session can be in has one, including
+    /// [`Harness::Unknown`], because a session must remain readable even when
+    /// its harness cannot be acted on.
+    fn from(harness: &Harness) -> Self {
+        StoredHarnessId::new(harness.id().into_owned())
     }
 }
 

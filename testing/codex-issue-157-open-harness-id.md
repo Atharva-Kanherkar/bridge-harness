@@ -75,8 +75,11 @@ Prefixing makes the collision the issue asks us to validate against
   and is never silently re-attributed to a different agent.
 - `Harness::Unknown` is unreachable from the wire — only from reading a row
   written by a different build. It is never constructed as a guess.
-- Protocol minor bump 0.8 → 0.9, TypeScript regenerated, `HarnessId` becomes
-  `string` in `src/protocol/generated/protocol.ts`.
+- Protocol bump 0.8 → **1.0** (see Amendment 3), TypeScript regenerated.
+  `HarnessId` and `StoredHarnessId` both become `string`.
+- A result never claims a grammar it cannot keep: `state/get_state` validates
+  against its own published schema even for a harness this build cannot
+  interpret.
 
 ### Amendments — two sites the contract did not anticipate
 
@@ -107,15 +110,53 @@ contract had not looked at. Recorded here rather than shipped silently.
    divergent copies is how the next harness ends up mislabelled in two of the
    three, so this is consolidated rather than patched three times.
 
-### Compatibility caveat, recorded deliberately
+### Amendment 3 — the version bump, and a rationale that was wrong
 
-Widening a value domain that appears in *results* is not purely additive for a
-strictly-typed old client: a Rust client built against 0.8 deserializing a
-`BridgeState` containing `acp:gemini` would fail its enum decode. It is filed
-as a minor bump anyway because the new values are unreachable on this build —
-nothing can install an ACP agent until the installer lands in #156 — so the
-window in which a 0.8 client could meet one is empty. If that stops being true
-before #156 lands, this becomes a major bump.
+This contract originally filed the change as **minor** (0.8 -> 0.9), on the
+grounds that the new values were "unreachable on this build ... so the window
+in which a 0.8 client could meet one is empty."
+
+**That rationale is false, and this contract's own integration test disproves
+it.** `sessions/create_chat` accepts an `acp:` id with no adapter registered —
+which is exactly why the acceptance criterion is provable now. The same fact
+makes `acp:gemini` reachable *today*, so a 0.8 client can handshake
+successfully (`accepts` compares majors and an upper minor bound, so 0.8 <= 0.9
+passes) and then fail decoding `state/get_state`. Silent success followed by a
+later failure is the worst available failure mode.
+
+Two corrections:
+
+1. **Protocol 0.8 -> 1.0.** Widening a value domain that appears in results is
+   the "clients must upgrade" case the major is reserved for. 0.x clients are
+   now refused at the handshake with the stable `incompatible_protocol` code
+   and both versions in `data`, pinned by
+   `handshake::tests::protocol_0_clients_are_refused_rather_than_served_values_they_cannot_decode`.
+
+   1.0 is a *breaking* marker, not a stability claim. The alternative of
+   serving 0.8-compatible responses per connection was rejected: the only ways
+   to fit an `acp:` session into a 0.8 snapshot are to hide it or rename it,
+   and both break the guarantee that history never vanishes and is never
+   re-attributed. This diverges from #157's "Protocol minor bump" instruction;
+   the issue could not have anticipated that its own acceptance criterion makes
+   the new values immediately reachable.
+
+2. **Params and results no longer share a type.** `StoredHarnessId` is an
+   unconstrained string used in results; `HarnessId` keeps the strict pattern
+   and is used in params. Previously `state::Session.harness` was `HarnessId`,
+   so a `Harness::Unknown` session made `state/get_state` return a document
+   that **failed its own published schema** — `bridge-state.json` declared the
+   strict pattern while core deliberately emitted arbitrary stored values. The
+   tolerant/strict asymmetry was described in this contract from the start but
+   was only implemented in core; the wire contract still claimed strictness on
+   both sides.
+
+   `protocol_mirror::the_state_snapshot_mirrors_a_session_whose_harness_cannot_be_interpreted`
+   is the gate: `assert_mirrors` deserializes what core emits into the wire
+   type, so it fails if the result type ever re-tightens.
+
+Both were caught in review, not by this contract. The lesson recorded for the
+next slice: a claim that a value is "unreachable" must be checked against the
+methods that construct it, not against the feature that motivates it.
 
 ## Unit Tests
 
@@ -143,6 +184,11 @@ below reflect that.
 - `messages::common::tests::harness_id_schema_publishes_the_grammar_as_a_string`
   — the published schema carries a `pattern` and **no** `enum`, so a generated
   client cannot close the set over today's values.
+- `messages::common::tests::stored_harness_ids_accept_what_parameters_refuse`
+  — the result type takes any string and its schema publishes no `pattern`,
+  while `interpreted()` still recovers the strict id when there is one.
+- `handshake::tests::protocol_0_clients_are_refused_rather_than_served_values_they_cannot_decode`
+- `protocol_mirror::the_state_snapshot_mirrors_a_session_whose_harness_cannot_be_interpreted`
 - `protocol_mirror::harness_ids_round_trip_with_identical_wire_values` — the
   existing mirror assertion, extended over `Acp`.
 - `protocol_mirror::builtin_harnesses_keep_the_wire_values_protocol_0_8_published`

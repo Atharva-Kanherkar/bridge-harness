@@ -142,7 +142,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **0.9**),
+- its `protocolVersion` (this document describes **1.0**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -151,6 +151,13 @@ request is answered with `invalid_request`. The server advertises:
 when majors match and the client's minor is not newer than the server's.
 Incompatible clients are rejected with the stable code **2000
 `incompatible_protocol`**, with both versions in `error.data`.
+
+**1.0 is a breaking bump, not a stability claim.** Opening `HarnessId` (below)
+widened a value domain that appears in *results*, so a 0.x client — whose
+generated `HarnessId` is a closed enum — would handshake successfully and then
+fail decoding a snapshot containing an `acp:` session. Widening a result domain
+is the "clients must upgrade" case the major is reserved for. 0.x clients are
+refused at the handshake rather than served values they cannot decode.
 
 Since 0.6 the request carries an optional `authToken`; hosts serving
 remote-capable transports (the daemon) require it, and nothing ever echoes it.
@@ -229,11 +236,17 @@ The bare namespace is reserved for built-ins, so a registry entry can never
 shadow one — the live registry does publish an agent whose id is `opencode`,
 which Bridge names `acp:opencode`.
 
-Ids are validated on the way **in**: a malformed one is `invalid_params`.
-On the way **out** a session may carry an id this server cannot interpret —
-a row written by a newer Bridge, or an agent since uninstalled. Such a session
-still lists and replays under its own id, and cannot be sent back as a
-parameter. History does not disappear because an agent was removed.
+**Params and results use different types, and the schemas say so.** A
+parameter is `HarnessId`, whose schema carries the `pattern` above — a
+malformed id is `invalid_params`. A result carries `StoredHarnessId`, an
+**unconstrained** string: a session persisted by a newer Bridge, or one whose
+agent was uninstalled, still reports the id it was stored with, so history
+does not disappear because an agent was removed. Publishing the strict pattern
+on the result side would let `state/get_state` return a document that fails
+its own contract.
+
+So: read any string from `sessions[].harness`; send back only one that matches
+the grammar. An id outside the grammar is readable, never actionable.
 
 ## Cancellation
 

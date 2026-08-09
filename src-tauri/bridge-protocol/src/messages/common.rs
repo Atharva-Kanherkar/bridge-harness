@@ -319,6 +319,69 @@ impl JsonSchema for HarnessId {
     }
 }
 
+/// A harness id as it appears in a **result**.
+///
+/// Deliberately *not* [`HarnessId`]. A stored session can carry an id this
+/// server cannot interpret — a row written by a newer Bridge, or an agent
+/// since uninstalled — and such a session must still list and replay under its
+/// own name rather than disappear. A result therefore cannot promise the
+/// [`HarnessId`] grammar, and **its schema must not claim to**: publishing the
+/// strict pattern here would let `state/get_state` return a document that
+/// fails its own contract.
+///
+/// Parameters keep the strict type. The asymmetry is the point — an id that
+/// cannot be acted on has no business being sent back as a request, but it
+/// must still be readable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StoredHarnessId(String);
+
+impl StoredHarnessId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The strict id, when this stored value satisfies the grammar. `None`
+    /// means the harness cannot be acted on — not that the session is invalid.
+    pub fn interpreted(&self) -> Option<HarnessId> {
+        HarnessId::parse(&self.0).ok()
+    }
+}
+
+impl From<HarnessId> for StoredHarnessId {
+    fn from(id: HarnessId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl std::fmt::Display for StoredHarnessId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl JsonSchema for StoredHarnessId {
+    fn schema_name() -> String {
+        "StoredHarnessId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        serde_json::from_value(serde_json::json!({
+            "type": "string",
+            "description": "The harness a session runs under. Usually a HarnessId, but \
+                            unconstrained on purpose: a session persisted by a newer Bridge, \
+                            or one whose agent was uninstalled, still reports the id it was \
+                            stored with so its history stays readable. Such an id cannot be \
+                            sent back as a parameter.",
+        }))
+        .unwrap()
+    }
+}
+
 /// A reasoning-effort level on the wire. Mirrors `bridge_core::delegation::Effort`
 /// variant for variant; a mirror test in bridge-core keeps the two from drifting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -460,6 +523,33 @@ mod tests {
         assert_eq!(schema["pattern"], serde_json::json!(HARNESS_ID_PATTERN));
         // No `enum` key: a generated client must not close the set over the
         // values that happen to exist today.
+        assert!(schema.get("enum").is_none(), "{schema}");
+    }
+
+    #[test]
+    fn stored_harness_ids_accept_what_parameters_refuse() {
+        // The result type must take anything the `sessions.harness` column can
+        // hold, or `state/get_state` returns a document failing its own
+        // schema. Its schema must publish no `pattern` for the same reason.
+        for stored in ["claude", "acp:gemini", "gemini", "", "shel1", "acp:"] {
+            let id = serde_json::from_value::<StoredHarnessId>(serde_json::json!(stored))
+                .unwrap_or_else(|error| panic!("{stored:?} must be readable: {error}"));
+            assert_eq!(id.as_str(), stored);
+            assert_eq!(round_trip(&id), id);
+            // Actionable exactly when it satisfies the parameter grammar.
+            assert_eq!(id.interpreted().is_some(), HarnessId::parse(stored).is_ok(), "{stored:?}");
+            // ...and the strict type refuses precisely the difference.
+            if id.interpreted().is_none() {
+                assert!(serde_json::from_value::<HarnessId>(serde_json::json!(stored)).is_err());
+            }
+        }
+
+        let schema = serde_json::to_value(schemars::schema_for!(StoredHarnessId)).unwrap();
+        assert_eq!(schema["type"], serde_json::json!("string"));
+        assert!(
+            schema.get("pattern").is_none(),
+            "a result must not publish a grammar it cannot keep: {schema}"
+        );
         assert!(schema.get("enum").is_none(), "{schema}");
     }
 
