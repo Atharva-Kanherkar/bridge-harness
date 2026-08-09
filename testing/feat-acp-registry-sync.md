@@ -70,20 +70,35 @@ Module under test: `bridge_core::acp_registry`.
   rather than panicking or picking a wrong arch.
 - `cache_round_trips` — write then read returns an identical index plus its ETag.
 - `corrupt_cache_is_discarded_not_fatal` — garbage bytes on disk read as "no cache".
-- `cache_write_is_atomic` — no partial file is observable under an interrupted write; a temp
-  artifact does not survive a successful write.
+- Atomic write, split into the two halves that are actually observable:
+  `successful_write_leaves_no_temp_artifact` and `a_failed_write_leaves_the_previous_cache_intact`.
+  The third property — no torn read when the process dies mid-write — is a guarantee of
+  `rename(2)`, not something a unit test can assert, so it is stated in the code rather than
+  pretended in a test.
 - `stale_cache_is_served_when_the_fetch_fails` — fetch error + cache present → cached index,
   `stale = true`.
 - `fetch_failure_without_cache_is_an_error` — fetch error + no cache → `BridgeError`.
-- `not_modified_reuses_cache_without_reparsing` — a 304 path returns the cached index and does
-  not rewrite the cache file.
+- `second_refresh_sends_if_none_match_and_a_304_reuses_the_cache` — a 304 returns the cached
+  catalog and leaves the cache file **byte-identical** (asserted on contents, not mtime, which
+  is coarse and filesystem-dependent).
+  **A 304 does reparse the cached document, deliberately.** The cache stores upstream's verbatim
+  bytes rather than our parse of it, so that a later parser improvement re-understands
+  previously-skipped entries without a network round trip. Reparsing 48 KB is not a cost worth
+  trading that for.
 
 ## Integration / Functional Tests
 
 - `refresh_populates_an_empty_cache_dir` — against a local HTTP server (not the live CDN),
   a first refresh writes a cache file and returns a non-stale index.
-- `second_refresh_sends_if_none_match` — the recorded request carries `If-None-Match` matching
-  the stored ETag, and a 304 response leaves the cache file's mtime unchanged.
+- `second_refresh_sends_if_none_match_and_a_304_reuses_the_cache` — the recorded request carries
+  `If-None-Match` matching the stored ETag; the cold-cache request carries none.
+- `an_upstream_error_status_falls_back_instead_of_caching_it` — a 5xx degrades to the cache and
+  does not overwrite it.
+- `an_unparseable_response_does_not_overwrite_a_good_cache` — the response is parsed *before* the
+  cache is replaced, so a bad upstream publish cannot cost the user their last-good catalog on
+  top of the failed refresh.
+- `a_cache_recorded_against_a_different_url_is_not_reused` — a cache whose `sourceUrl` does not
+  match is neither served nor used to supply a revalidation header.
 
 **No test hits the live CDN.** Network tests use a local `tiny_http` server (already a
 `bridge-core` dependency) so CI is deterministic and offline-safe.
