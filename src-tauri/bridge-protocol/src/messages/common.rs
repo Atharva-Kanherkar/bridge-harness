@@ -104,22 +104,24 @@ impl JsonSchema for JsSafeU64 {
     }
 }
 
-/// The harnesses Bridge implements itself, each with a hand-written adapter.
-/// The bare namespace on the wire holds exactly these and nothing else.
+
+/// The harnesses Bridge ships a hand-written adapter for today.
+///
+/// This is **not** a closed set of agents — it is the set Bridge currently has
+/// bespoke code for. An id outside it is an ordinary agent Bridge runs through
+/// a generic transport, and an id can move into this list later without its
+/// sessions changing identity.
 pub const BUILTIN_HARNESS_IDS: [&str; 4] = ["claude", "codex", "opencode", "shell"];
 
-/// Namespace separating a registry-installed ACP agent from a built-in.
-pub const ACP_HARNESS_PREFIX: &str = "acp:";
-
-/// Upper bound on a registry agent id. The live catalog's longest is 18
-/// characters (`github-copilot-cli`); 64 leaves room for growth without
-/// letting an arbitrary string become a session's harness.
-const MAX_ACP_AGENT_ID: usize = 64;
+/// Upper bound on a harness id. The live ACP registry's longest is 18
+/// characters (`github-copilot-cli`); 64 leaves room without letting an
+/// arbitrary string become a session's harness.
+const MAX_HARNESS_ID: usize = 64;
 
 /// The regular expression published in the JSON Schema. Kept beside
-/// [`AcpAgentId::parse`], which is the enforcing implementation — the pattern
+/// [`HarnessId::parse`], which is the enforcing implementation — the pattern
 /// documents the grammar for generated clients, it does not define it.
-const HARNESS_ID_PATTERN: &str = r"^(claude|codex|opencode|shell|acp:[a-z0-9][a-z0-9._-]{0,63})$";
+const HARNESS_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9._-]{0,63}$";
 
 /// Why a harness id was refused. Carries the offending value so a client is
 /// told what it actually sent, bounded so an oversized payload cannot inflate
@@ -149,36 +151,50 @@ impl std::fmt::Display for HarnessIdError {
 
 impl std::error::Error for HarnessIdError {}
 
-/// The bare id of an ACP agent as the registry publishes it, e.g. `gemini`.
+/// A harness identifier: **which agent**, never how Bridge runs it.
 ///
-/// Validated on construction so an id that reached a session, an install
-/// record, or an adapter-registry key is known to be well-formed. Defined here
-/// rather than in bridge-core so the wire contract and the runtime share one
-/// definition of what an agent may be called.
+/// ```text
+/// HarnessId := [a-z0-9][a-z0-9._-]{0,63}
+/// ```
+///
+/// **Open on purpose.** This was a closed enum of four built-ins through
+/// protocol 0.8. A marketplace installs agents that did not exist when a
+/// client was compiled, so a closed set is the one shape that cannot work.
+///
+/// **One id per agent, not per integration.** Claude reached through the
+/// Agent SDK sidecar and Claude reached through an ACP shim are the same
+/// agent, so they share the id `claude`; which path served a session is
+/// recorded separately and is Bridge's problem, not the user's. An earlier
+/// draft namespaced registry-installed agents as `acp:<id>`, which leaked the
+/// transport into identity: it made one agent look like two competing
+/// products, and it would have forced a migration the first time a bespoke
+/// adapter replaced a generic one. Adding a hand-written adapter for `gemini`
+/// changes how it runs, never what it is called, and never breaks the sessions
+/// it already owns.
+///
+/// Every value protocol 0.8 could carry parses here unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
-pub struct AcpAgentId(String);
+pub struct HarnessId(String);
 
-impl AcpAgentId {
-    /// Accepts the charset the registry actually uses: ASCII lowercase
+impl HarnessId {
+    /// Accepts the charset the ACP registry actually uses: ASCII lowercase
     /// alphanumerics, `-`, `.`, and `_`, opening on an alphanumeric. Every one
-    /// of the 38 live entries satisfies this; a test pins that against the
-    /// captured index so upstream widening its ids is a test failure rather
-    /// than a catalog entry Bridge cannot name.
+    /// of the 38 live entries satisfies it, and so do all four built-ins.
     pub fn parse(value: &str) -> Result<Self, HarnessIdError> {
         if value.is_empty() {
-            return Err(HarnessIdError::new(value, "an agent id cannot be empty"));
+            return Err(HarnessIdError::new(value, "a harness id cannot be empty"));
         }
-        if value.len() > MAX_ACP_AGENT_ID {
+        if value.len() > MAX_HARNESS_ID {
             return Err(HarnessIdError::new(
                 value,
-                "an agent id may not exceed 64 characters",
+                "a harness id may not exceed 64 characters",
             ));
         }
         if !value.starts_with(|first: char| first.is_ascii_lowercase() || first.is_ascii_digit()) {
             return Err(HarnessIdError::new(
                 value,
-                "an agent id must start with a lowercase letter or digit",
+                "a harness id must start with a lowercase letter or digit",
             ));
         }
         if !value
@@ -187,86 +203,10 @@ impl AcpAgentId {
         {
             return Err(HarnessIdError::new(
                 value,
-                "an agent id may only contain lowercase letters, digits, '-', '.', and '_'",
+                "a harness id may only contain lowercase letters, digits, '-', '.', and '_'",
             ));
         }
         Ok(Self(value.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for AcpAgentId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for AcpAgentId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::parse(&String::deserialize(deserializer)?).map_err(de::Error::custom)
-    }
-}
-
-impl JsonSchema for AcpAgentId {
-    fn schema_name() -> String {
-        "AcpAgentId".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        serde_json::from_value(serde_json::json!({
-            "type": "string",
-            "pattern": r"^[a-z0-9][a-z0-9._-]{0,63}$",
-            "description": "The bare id of an ACP agent as its registry entry publishes it.",
-        }))
-        .unwrap()
-    }
-}
-
-/// A harness identifier on the wire.
-///
-/// Exactly two shapes, and no third:
-///
-/// ```text
-/// HarnessId := "claude" | "codex" | "opencode" | "shell"   (built-in)
-///            | "acp:" <AcpAgentId>                         (ACP agent)
-/// ```
-///
-/// **Open on purpose.** This was a closed enum through protocol 0.8, mirroring
-/// `bridge_core::model::Harness` variant for variant. A marketplace installs
-/// agents that did not exist when a client was compiled, so a closed set is
-/// the one shape that cannot work — the exhaustive `match` that is a feature
-/// elsewhere in this codebase is precisely what a catalog of agents breaks.
-/// Core keeps its enum (built-ins have bespoke behaviour and deserve
-/// compile-time exhaustiveness); the wire does not.
-///
-/// **The bare namespace is reserved for built-ins.** A bare id that is not a
-/// built-in is rejected rather than read as an agent, because otherwise
-/// `gemini` is permanently ambiguous: a future built-in, or an agent installed
-/// today. The `acp:` prefix is not decoration — the live registry publishes an
-/// entry whose id is `opencode`, colliding head-on with Bridge's built-in
-/// OpenCode adapter. Prefixing makes that collision unrepresentable instead of
-/// merely detected.
-///
-/// Every value protocol 0.8 could carry serializes byte-identically here.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
-pub struct HarnessId(String);
-
-impl HarnessId {
-    pub fn parse(value: &str) -> Result<Self, HarnessIdError> {
-        if BUILTIN_HARNESS_IDS.contains(&value) {
-            return Ok(Self(value.to_owned()));
-        }
-        match value.strip_prefix(ACP_HARNESS_PREFIX) {
-            Some(agent) => AcpAgentId::parse(agent).map(Self::from),
-            None => Err(HarnessIdError::new(
-                value,
-                "expected a built-in harness or an 'acp:'-prefixed agent id",
-            )),
-        }
     }
 
     /// The canonical string: the wire value, the `sessions.harness` column
@@ -275,19 +215,10 @@ impl HarnessId {
         &self.0
     }
 
+    /// Whether Bridge ships a hand-written adapter for this agent *today*.
+    /// A presentation and capability hint — never part of its identity.
     pub fn is_builtin(&self) -> bool {
         BUILTIN_HARNESS_IDS.contains(&self.0.as_str())
-    }
-
-    /// The bare agent id, for an ACP harness only.
-    pub fn acp_agent_id(&self) -> Option<&str> {
-        self.0.strip_prefix(ACP_HARNESS_PREFIX)
-    }
-}
-
-impl From<AcpAgentId> for HarnessId {
-    fn from(agent: AcpAgentId) -> Self {
-        Self(format!("{ACP_HARNESS_PREFIX}{agent}"))
     }
 }
 
@@ -312,12 +243,13 @@ impl JsonSchema for HarnessId {
         serde_json::from_value(serde_json::json!({
             "type": "string",
             "pattern": HARNESS_ID_PATTERN,
-            "description": "A built-in harness ('claude', 'codex', 'opencode', 'shell') \
-                            or an installed ACP agent ('acp:' + its registry id).",
+            "description": "Which agent runs a session, e.g. 'claude', 'codex', 'gemini'. \
+                            Identifies the agent only — how Bridge runs it is not encoded here.",
         }))
         .unwrap()
     }
 }
+
 
 /// A harness id as it appears in a **result**.
 ///
@@ -428,92 +360,86 @@ mod tests {
     }
 
     #[test]
-    fn harness_ids_accept_builtins_and_acp_ids() {
+    fn harness_ids_name_agents_including_ones_this_build_never_heard_of() {
         for builtin in BUILTIN_HARNESS_IDS {
             let id = HarnessId::parse(builtin).unwrap();
             assert!(id.is_builtin(), "{builtin}");
-            assert_eq!(id.acp_agent_id(), None);
             assert_eq!(id.as_str(), builtin);
             assert_eq!(round_trip(&id), id);
         }
-        let agent = HarnessId::parse("acp:github-copilot-cli").unwrap();
-        assert!(!agent.is_builtin());
-        assert_eq!(agent.acp_agent_id(), Some("github-copilot-cli"));
-        assert_eq!(round_trip(&agent), agent);
+        for agent in ["gemini", "github-copilot-cli", "mistral-vibe", "pi-acp", "vtcode"] {
+            let id = HarnessId::parse(agent).unwrap();
+            assert!(!id.is_builtin(), "{agent}");
+            assert_eq!(id.as_str(), agent);
+            assert_eq!(round_trip(&id), id);
+        }
     }
 
     #[test]
     fn builtin_harness_ids_serialize_exactly_as_protocol_0_8() {
-        // Pinned against literals: these four strings are persisted in the
-        // `sessions.harness` column and keyed on in the adapter registry, so a
-        // refactor must never quietly rename one.
+        // These four strings are persisted in the `sessions.harness` column and
+        // keyed on in the adapter registry. Opening the identifier must not
+        // have moved one.
         assert_eq!(BUILTIN_HARNESS_IDS, ["claude", "codex", "opencode", "shell"]);
         for builtin in BUILTIN_HARNESS_IDS {
             let id = HarnessId::parse(builtin).unwrap();
             assert_eq!(serde_json::to_value(&id).unwrap(), serde_json::json!(builtin));
         }
-        let agent = HarnessId::parse("acp:gemini").unwrap();
-        assert_eq!(serde_json::to_value(&agent).unwrap(), serde_json::json!("acp:gemini"));
+    }
+
+    #[test]
+    fn an_agent_id_does_not_encode_how_bridge_runs_it() {
+        // One id per agent. The registry publishes an `opencode` entry and
+        // Bridge ships an OpenCode adapter; they are the same agent reached
+        // two ways, so they share one id and one session history. An earlier
+        // draft spelled the registry-installed one `acp:opencode`, which made
+        // one agent look like two products — that spelling is now invalid.
+        let opencode = HarnessId::parse("opencode").unwrap();
+        assert!(opencode.is_builtin());
+        assert!(HarnessId::parse("acp:opencode").is_err());
+        assert!(HarnessId::parse("acp:gemini").is_err());
+
+        // `is_builtin` is a capability hint, never identity: the day Bridge
+        // ships a bespoke Gemini adapter, the id is unchanged.
+        let gemini = HarnessId::parse("gemini").unwrap();
+        assert!(!gemini.is_builtin());
+        assert_eq!(gemini.as_str(), "gemini");
     }
 
     #[test]
     fn harness_ids_reject_malformed_values() {
         let rejected = [
-            "",                          // empty
-            "acp:",                      // prefix with no agent
-            "acp:acp:gemini",            // nested prefix — ':' is not in the charset
-            "gemini",                    // bare namespace is reserved for built-ins
-            "Claude",                    // built-ins are lowercase
-            "acp:Gemini",                // agent ids are lowercase
-            "acp:-gemini",               // must open on an alphanumeric
-            "acp:.gemini",               //  "
-            "acp:gem ini",               // no whitespace
-            "acp:gem/ini",               // no path separators
-            "acp:gem:ini",               // no colons
-            " claude",                   // not trimmed for the caller
-            "claude ",                   //  "
-            "shell\n",                   //  "
+            "",                 // empty
+            "Claude",           // ids are lowercase
+            "-gemini",          // must open on an alphanumeric
+            ".gemini",          //  "
+            "gem ini",          // no whitespace
+            "gem/ini",          // no path separators
+            "acp:gemini",       // ':' is not in the charset
+            " claude",          // not trimmed for the caller
+            "claude ",          //  "
+            "shell\n",          //  "
         ];
         for value in rejected {
-            assert!(
-                HarnessId::parse(value).is_err(),
-                "{value:?} should not be a harness id"
-            );
+            assert!(HarnessId::parse(value).is_err(), "{value:?} should not be a harness id");
             assert!(
                 serde_json::from_value::<HarnessId>(serde_json::json!(value)).is_err(),
                 "{value:?} should not deserialize"
             );
         }
-        let too_long = format!("acp:{}", "a".repeat(MAX_ACP_AGENT_ID + 1));
-        assert!(HarnessId::parse(&too_long).is_err());
-        assert!(HarnessId::parse(&format!("acp:{}", "a".repeat(MAX_ACP_AGENT_ID))).is_ok());
+        assert!(HarnessId::parse(&"a".repeat(MAX_HARNESS_ID)).is_ok());
+        assert!(HarnessId::parse(&"a".repeat(MAX_HARNESS_ID + 1)).is_err());
     }
 
     #[test]
     fn rejection_names_the_value_without_echoing_an_unbounded_one() {
-        let error = HarnessId::parse("gemini").unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("gemini"), "{message}");
-        assert!(message.contains("acp:"), "{message}");
+        let error = HarnessId::parse("Claude").unwrap_err();
+        assert!(error.to_string().contains("Claude"), "{error}");
 
         let huge = "z".repeat(10_000);
-        let message = AcpAgentId::parse(&huge).unwrap_err().to_string();
+        let message = HarnessId::parse(&huge).unwrap_err().to_string();
         assert!(message.len() < 200, "error echoed an unbounded value: {}", message.len());
         assert!(message.contains('…'), "{message}");
-    }
-
-    #[test]
-    fn acp_prefix_makes_builtin_collision_unrepresentable() {
-        // The live registry ships an entry with id `opencode`, which collides
-        // with Bridge's own OpenCode adapter. The namespaces keep both nameable
-        // and never equal.
-        let builtin = HarnessId::parse("opencode").unwrap();
-        let from_registry = HarnessId::from(AcpAgentId::parse("opencode").unwrap());
-        assert_eq!(from_registry.as_str(), "acp:opencode");
-        assert_ne!(builtin, from_registry);
-        assert!(builtin.is_builtin());
-        assert!(!from_registry.is_builtin());
-        assert_eq!(from_registry.acp_agent_id(), Some("opencode"));
     }
 
     #[test]
@@ -531,7 +457,7 @@ mod tests {
         // The result type must take anything the `sessions.harness` column can
         // hold, or `state/get_state` returns a document failing its own
         // schema. Its schema must publish no `pattern` for the same reason.
-        for stored in ["claude", "acp:gemini", "gemini", "", "shel1", "acp:"] {
+        for stored in ["claude", "gemini", "acp:gemini", "", "shel1", "Claude"] {
             let id = serde_json::from_value::<StoredHarnessId>(serde_json::json!(stored))
                 .unwrap_or_else(|error| panic!("{stored:?} must be readable: {error}"));
             assert_eq!(id.as_str(), stored);

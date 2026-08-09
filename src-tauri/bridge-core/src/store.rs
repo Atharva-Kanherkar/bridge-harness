@@ -2273,9 +2273,9 @@ mod tests {
             "codex",
             "opencode",
             "shell",
-            "acp:gemini",
-            "acp:opencode",
-            "acp:github-copilot-cli",
+            "gemini",
+            "github-copilot-cli",
+            "mistral-vibe",
         ] {
             let parsed = harness(stored);
             assert_eq!(
@@ -2290,7 +2290,7 @@ mod tests {
     fn an_unreadable_harness_row_never_becomes_a_runnable_harness() {
         // Regression for `_ => Harness::Shell`: an id this build cannot
         // interpret used to load as Shell, which is a real, runnable harness.
-        for stored in ["gemini", "", "acp:", "SHELL", "claude-code"] {
+        for stored in ["", "SHELL", "Claude", "acp:gemini", "gem ini"] {
             let parsed = harness(stored);
             assert_eq!(parsed, Harness::Unknown(stored.to_owned()), "{stored:?}");
             assert_ne!(parsed, Harness::Shell, "{stored:?} was read as Shell");
@@ -2307,7 +2307,7 @@ mod tests {
         seed_workspace(&db);
         db.execute(
             "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) \
-             VALUES('s-acp','w','acp:gemini','Gemini','ready','estimated')",
+             VALUES('s-acp','w','gemini','Gemini','ready','estimated')",
             [],
         )
         .unwrap();
@@ -2329,13 +2329,10 @@ mod tests {
             .iter()
             .find(|session| session.id == "s-acp")
             .expect("the session still loads");
-        assert_eq!(
-            session.harness,
-            Harness::Acp(bridge_protocol::messages::AcpAgentId::parse("gemini").unwrap())
-        );
+        assert_eq!(session.harness, Harness::from_stored("gemini"));
         assert_eq!(
             serde_json::to_value(&session.harness).unwrap(),
-            json!("acp:gemini"),
+            json!("gemini"),
             "it renders under its own id"
         );
 

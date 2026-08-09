@@ -28,28 +28,56 @@ break forward compatibility. The cost is one conversion boundary
 (`HarnessId ↔ Harness`) that must be total in both directions, which is
 covered by tests below rather than by the type system alone.
 
-## Grammar, and why collision checking is structural
-
-The wire id is one of exactly two shapes:
+## Grammar
 
 ```
-HarnessId := "claude" | "codex" | "opencode" | "shell"   (built-in)
-           | "acp:" <registry-id>                        (ACP agent)
-<registry-id> := [a-z0-9][a-z0-9._-]{0,63}
+HarnessId := [a-z0-9][a-z0-9._-]{0,63}
 ```
 
-The bare namespace is reserved for built-ins: a bare id that is not a built-in
-is **rejected**, not accepted as an agent. Without that rule `gemini` is
-permanently ambiguous — a future built-in, or an ACP agent installed today.
+`claude`, `codex`, `opencode`, `shell`, `gemini`, `cline`, … One id per
+**agent**. All four built-in values are unchanged from protocol 0.8, and every
+one of the 38 live registry ids parses.
 
-The `acp:` prefix is not decoration. **The live registry ships an entry whose
-id is `opencode`**, which collides head-on with Bridge's built-in OpenCode
-adapter (verified against `testing/fixtures/acp-registry-v1.json`, 38 entries).
-`AdapterRegistry::register` already rejects a duplicate id
-(`adapters.rs:329`), so an unprefixed scheme would have made that collision a
-runtime registration failure the first time anyone installed OpenCode over ACP.
-Prefixing makes the collision the issue asks us to validate against
-*structurally impossible* rather than merely detected.
+### Amendment 4 — the id names the agent, not the transport
+
+An earlier draft of this contract namespaced registry-installed agents as
+`acp:<registry-id>` and reserved the bare namespace for built-ins, justified by
+the live registry publishing an entry whose id is `opencode` — a "collision"
+with Bridge's own OpenCode adapter.
+
+**That framing was wrong, and the product owner corrected it.** The registry's
+`opencode` and Bridge's OpenCode adapter are not two competing products; they
+are one agent reachable two ways. Bridge's job is to pick a path that works and
+absorb the difference — *"if the user installs, it is no longer a Claude agent,
+it is Bridge"*. Encoding the transport in the identity produced exactly the
+failure the marketplace cannot afford: two entries named Claude, one of which
+works. If a user can pick the broken one, **Bridge looks broken, not the
+agent.**
+
+So the prefix is gone. Consequences, all improvements:
+
+- The `opencode` collision **dissolves** — one id, one adapter-registry key,
+  one session history. `AdapterRegistry::register` already rejects a duplicate
+  id, which becomes the normalization guard rather than a bug to design around.
+- Adding a bespoke adapter for an agent later changes **how** it runs, never
+  what it is called, and migrates no sessions. Under the prefixed scheme,
+  promoting `acp:gemini` to a built-in `gemini` would have rewritten every
+  persisted row.
+- Validation collapses to charset and length. There is no reserved bare
+  namespace, because the ambiguity it protected against ("a future built-in or
+  an agent installed today") is not a distinction the product makes.
+- `is_builtin()` survives as a **capability and presentation hint** — never
+  identity.
+
+A well-formed id Bridge cannot run is no longer a parse error. Naming and
+availability are different questions: `cursor` parses and fails at start with
+an error naming the harness. Two pre-existing tests asserted the old premise
+(`{"harness": "cursor"}` → `invalid_params`) and were updated deliberately.
+
+**Consequence for the epic, recorded here because it constrains #156/#158:**
+the catalog must list only agents Bridge can actually install, authenticate,
+and run a turn with. Shipping "38 agents" where some fail login means the user
+meets the broken one first. Ship N that work.
 
 ## Functional Behavior
 

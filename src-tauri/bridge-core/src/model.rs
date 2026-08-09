@@ -1,6 +1,4 @@
-use bridge_protocol::messages::{
-    AcpAgentId, HarnessId, HarnessIdError, StoredHarnessId, ACP_HARNESS_PREFIX,
-};
+use bridge_protocol::messages::{HarnessId, HarnessIdError, StoredHarnessId};
 use serde::ser::Error as _;
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Cow;
@@ -136,9 +134,15 @@ pub enum Harness {
     Codex,
     OpenCode,
     Shell,
-    /// An agent installed from the ACP registry. Its id is validated on
-    /// construction, so this arm can never hold something unnameable.
-    Acp(AcpAgentId),
+    /// Any other agent — installed from the registry and run through a
+    /// generic transport. Its id is validated on construction.
+    ///
+    /// **Construct only through [`Harness::parse`] or
+    /// [`Harness::from_stored`],** which route a built-in name to its own
+    /// variant first. `Agent(HarnessId("claude"))` built by hand would
+    /// serialize identically to [`Harness::Claude`] while comparing unequal to
+    /// it; the constructors cannot produce that.
+    Agent(HarnessId),
     /// A stored harness id this build cannot interpret — a row written by a
     /// newer Bridge, or a corrupted one. The raw value is preserved so the
     /// session still lists and replays under its own name.
@@ -165,7 +169,7 @@ impl Harness {
             Self::Codex => Cow::Borrowed("codex"),
             Self::OpenCode => Cow::Borrowed("opencode"),
             Self::Shell => Cow::Borrowed("shell"),
-            Self::Acp(agent) => Cow::Owned(format!("{ACP_HARNESS_PREFIX}{agent}")),
+            Self::Agent(agent) => Cow::Owned(agent.as_str().to_owned()),
             Self::Unknown(raw) => Cow::Owned(raw.clone()),
         }
     }
@@ -193,35 +197,26 @@ impl Harness {
             Self::Codex => Cow::Borrowed("Codex"),
             Self::OpenCode => Cow::Borrowed("OpenCode"),
             Self::Shell => Cow::Borrowed("Shell"),
-            // An agent Bridge did not write an adapter for has no display name
-            // of Bridge's invention; the registry id is what the user chose it
-            // by, so it is what they are shown.
-            Self::Acp(agent) => Cow::Owned(agent.as_str().to_owned()),
+            // An agent Bridge has no bespoke adapter for has no display name
+            // of Bridge's invention; the id the user installed it by is what
+            // they are shown.
+            Self::Agent(agent) => Cow::Owned(agent.as_str().to_owned()),
             Self::Unknown(raw) => Cow::Owned(raw.clone()),
         }
     }
 }
 
 impl From<HarnessId> for Harness {
-    /// Total: the wire type admits exactly the built-ins and `acp:` ids, so
-    /// every value it can hold has a home here. [`Harness::Unknown`] is not
-    /// reachable through this conversion by construction.
+    /// Total. A built-in name routes to its own variant so the two spellings
+    /// can never both exist; everything else is an ordinary agent.
+    /// [`Harness::Unknown`] is not reachable through this conversion.
     fn from(id: HarnessId) -> Self {
-        match id.acp_agent_id() {
-            Some(agent) => match AcpAgentId::parse(agent) {
-                Ok(agent) => Self::Acp(agent),
-                // Unreachable: `HarnessId` only holds an `acp:` prefix after
-                // that same parse succeeded. Preserving the raw id beats a
-                // panic if that invariant is ever broken.
-                Err(_) => Self::Unknown(id.as_str().to_owned()),
-            },
-            None => match id.as_str() {
-                "claude" => Self::Claude,
-                "codex" => Self::Codex,
-                "opencode" => Self::OpenCode,
-                "shell" => Self::Shell,
-                other => Self::Unknown(other.to_owned()),
-            },
+        match id.as_str() {
+            "claude" => Self::Claude,
+            "codex" => Self::Codex,
+            "opencode" => Self::OpenCode,
+            "shell" => Self::Shell,
+            _ => Self::Agent(id),
         }
     }
 }

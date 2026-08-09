@@ -268,9 +268,14 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_value::<CreateChatParams>(json!({})).is_err());
+        // `cursor` is a well-formed agent id — a real ACP registry entry — so
+        // it parses. Whether Bridge can *run* it is an adapter-registry
+        // question answered later, with an error naming the harness. Only a
+        // malformed id fails here.
+        assert!(serde_json::from_value::<CreateChatParams>(json!({"harness": "cursor"})).is_ok());
         assert!(
-            serde_json::from_value::<CreateChatParams>(json!({"harness": "cursor"})).is_err(),
-            "unknown harness ids must be rejected"
+            serde_json::from_value::<CreateChatParams>(json!({"harness": "Cursor"})).is_err(),
+            "malformed harness ids must be rejected"
         );
         assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({})).is_err());
         assert!(serde_json::from_value::<UpdateChatModelParams>(json!({"sessionId": "s"})).is_err());

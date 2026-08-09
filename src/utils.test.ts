@@ -42,15 +42,14 @@ describe("harnessLabel", () => {
     expect(harnessLabel("shell")).toBe("Shell");
   });
   it("shows an installed agent under the id it was installed by", () => {
-    expect(harnessLabel("acp:gemini")).toBe("Gemini");
-    expect(harnessLabel("acp:github-copilot-cli")).toBe("Github-copilot-cli");
+    expect(harnessLabel("gemini")).toBe("Gemini");
+    expect(harnessLabel("github-copilot-cli")).toBe("Github-copilot-cli");
   });
-  it("keeps a registry agent distinct from the built-in it shares a name with", () => {
+  it("gives a registry agent sharing a built-in name the one built-in label", () => {
     expect(harnessLabel("opencode")).toBe("OpenCode");
-    expect(harnessLabel("acp:opencode")).toBe("Opencode");
   });
   it("renders a harness this build cannot interpret under its own id", () => {
-    expect(harnessLabel("gemini")).toBe("Gemini");
+    expect(harnessLabel("acp:gemini")).toBe("Acp:gemini");
   });
   it("falls back only when there is no harness at all", () => {
     expect(harnessLabel(null)).toBe("Agent");

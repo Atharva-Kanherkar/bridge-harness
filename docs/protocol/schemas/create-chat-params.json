@@ -3,8 +3,8 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
     "HarnessId": {
-      "description": "A built-in harness ('claude', 'codex', 'opencode', 'shell') or an installed ACP agent ('acp:' + its registry id).",
-      "pattern": "^(claude|codex|opencode|shell|acp:[a-z0-9][a-z0-9._-]{0,63})$",
+      "description": "Which agent runs a session, e.g. 'claude', 'codex', 'gemini'. Identifies the agent only — how Bridge runs it is not encoded here.",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
       "type": "string"
     }
   },

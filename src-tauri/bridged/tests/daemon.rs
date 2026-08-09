@@ -285,8 +285,11 @@ fn dispatch_validates_params_against_the_contract() {
     );
     assert_eq!(response["error"]["code"], json!(-32602));
 
-    // Unknown enum value.
-    let (response, _) = client.call(4, "sessions/create_chat", Some(json!({"harness": "cursor"})));
+    // Malformed harness id. `harness` stopped being a closed enum when the
+    // marketplace opened it, so a *well-formed* id Bridge cannot run — like
+    // `cursor`, a real registry agent — parses here and fails later with an
+    // error naming the harness. Only a malformed one is `invalid_params`.
+    let (response, _) = client.call(4, "sessions/create_chat", Some(json!({"harness": "Cursor"})));
     assert_eq!(response["error"]["code"], json!(-32602));
 
     // Unknown field on an otherwise valid payload — 0.5-era contracts reject
@@ -311,11 +314,9 @@ fn dispatch_validates_params_against_the_contract() {
 
 #[test]
 fn a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc() {
-    // The acceptance criterion for opening `HarnessId`: an id that no build
-    // of Bridge has ever named must survive create → persist → replay →
-    // snapshot, driven over the socket with no desktop app running. `acp:` ids
-    // are reachable this way before any installer exists, so the contract is
-    // provable now rather than after #156.
+    // The acceptance criterion for opening `HarnessId`: an id that no build of
+    // Bridge has ever named must survive create -> persist -> replay ->
+    // snapshot, driven over the socket with no desktop app running.
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());
     let mut client = Client::connect(&running.socket_path);
@@ -324,15 +325,15 @@ fn a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc() {
     let (created, _) = client.call(
         1,
         "sessions/create_chat",
-        Some(json!({"harness": "acp:gemini", "title": "Gemini"})),
+        Some(json!({"harness": "gemini", "title": "Gemini"})),
     );
     let sessions = created["result"]["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1);
     let session_id = sessions[0]["id"].as_str().unwrap().to_owned();
     assert_eq!(
         sessions[0]["harness"],
-        json!("acp:gemini"),
-        "the id comes back exactly as it was sent"
+        json!("gemini"),
+        "the id comes back exactly as it was sent — the agent, not how it is run"
     );
 
     // Persisted, not merely echoed: a fresh read of the snapshot agrees.
@@ -343,7 +344,7 @@ fn a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc() {
         .iter()
         .find(|session| session["id"] == json!(session_id))
         .expect("the session is in the snapshot");
-    assert_eq!(persisted["harness"], json!("acp:gemini"));
+    assert_eq!(persisted["harness"], json!("gemini"));
 
     // Replay is reachable for it like any other session.
     let (replayed, _) = client.call(
@@ -354,24 +355,23 @@ fn a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc() {
     assert!(replayed["result"].is_array(), "{replayed}");
 
     // Starting it fails by naming the harness, not by quietly running another
-    // one. No installer exists yet, so every `acp:` id is "uninstalled" here —
-    // which is exactly the uninstalled-agent case the criterion asks about.
+    // one. Nothing installs agents yet, so every non-built-in id is
+    // uninstalled here — exactly the uninstalled-agent case.
     let (start, _) = client.call(4, "sessions/start_chat", Some(json!({"sessionId": session_id})));
     let message = start["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains("acp:gemini"),
+        message.contains("gemini"),
         "starting an uninstalled harness must name it: {start}"
     );
 
-    // The bare namespace stays reserved: the same agent without its prefix is
-    // refused, so a registry entry can never shadow a built-in.
-    let (rejected, _) = client.call(5, "sessions/create_chat", Some(json!({"harness": "gemini"})));
+    // A malformed id is refused; a well-formed one Bridge cannot run is not a
+    // parse error. Naming and availability are different questions.
+    let (rejected, _) = client.call(5, "sessions/create_chat", Some(json!({"harness": "Gemini"})));
     assert_eq!(rejected["error"]["code"], json!(-32602));
-    let message = rejected["error"]["message"].as_str().unwrap();
-    assert!(message.contains("gemini"), "{message}");
+    assert!(rejected["error"]["message"].as_str().unwrap().contains("Gemini"));
 
-    // And a built-in id still means the built-in, never the registry entry
-    // that shares its name.
+    // A registry agent that shares a built-in's name is that built-in — one
+    // agent, one id, one history, never two competing entries.
     let (builtin, _) = client.call(6, "sessions/create_chat", Some(json!({"harness": "opencode"})));
     let harnesses: Vec<&str> = builtin["result"]["sessions"]
         .as_array()
@@ -380,7 +380,7 @@ fn a_harness_unknown_at_compile_time_round_trips_entirely_over_rpc() {
         .map(|session| session["harness"].as_str().unwrap())
         .collect();
     assert!(harnesses.contains(&"opencode"), "{harnesses:?}");
-    assert!(harnesses.contains(&"acp:gemini"), "{harnesses:?}");
+    assert!(harnesses.contains(&"gemini"), "{harnesses:?}");
 
     running.stop();
 }

@@ -807,26 +807,25 @@ fn bullet_list_or_none(items: &[String]) -> String {
 
 /// Fold a harness hint written by a model into a canonical harness id.
 ///
-/// The alias table stays explicit rather than deferring to
-/// [`model::Harness::parse`] for everything: `shell` is a real harness that
-/// parses, and admitting it here would let a delegation directive spawn a
-/// shell worker where it previously could not. Widening what a model may
-/// delegate to is not this function's decision to make.
+/// The alias arms exist because a model writes "Claude Code" or "anthropic"
+/// when it means `claude`. Any other well-formed agent id passes through
+/// unchanged — an installed agent is named by its id and has no aliases to
+/// fold.
 ///
-/// An installed ACP agent is named by its canonical id and has no aliases to
-/// fold — it validates or it does not.
+/// `shell` is refused despite being a valid harness id. Admitting it would let
+/// a delegation directive spawn a shell worker where it previously could not,
+/// and widening what a model may delegate to is a product decision, not a side
+/// effect of opening an identifier.
 pub fn normalize_harness(value: &str) -> Option<String> {
     let lowercased = value.trim().to_ascii_lowercase();
     match lowercased.as_str() {
         "claude" | "claude-code" | "claudecode" | "anthropic" => Some("claude".into()),
         "codex" | "gpt" | "openai" => Some("codex".into()),
         "opencode" | "open-code" => Some("opencode".into()),
-        candidate if candidate.starts_with(bridge_protocol::messages::ACP_HARNESS_PREFIX) => {
-            model::Harness::parse(candidate)
-                .ok()
-                .map(|harness| harness.id().into_owned())
-        }
-        _ => None,
+        "shell" => None,
+        candidate => model::Harness::parse(candidate)
+            .ok()
+            .map(|harness| harness.id().into_owned()),
     }
 }
 
@@ -1015,14 +1014,13 @@ mod tests {
             ("Anthropic", "claude"),
             ("openai", "codex"),
             ("open-code", "opencode"),
-            ("acp:gemini", "acp:gemini"),
-            ("  ACP:Gemini  ", "acp:gemini"),
+            // Any installed agent is delegable by its own id — that is what
+            // puts the marketplace inside the delegation tree.
+            ("gemini", "gemini"),
+            ("  Gemini  ", "gemini"),
+            ("github-copilot-cli", "github-copilot-cli"),
         ] {
-            assert_eq!(
-                normalize_harness(hint).as_deref(),
-                Some(expected),
-                "hint {hint:?}"
-            );
+            assert_eq!(normalize_harness(hint).as_deref(), Some(expected), "hint {hint:?}");
         }
     }
 
@@ -1031,19 +1029,21 @@ mod tests {
         // `runtime_harness()` ends in `unwrap_or("codex")`, so a hint that
         // normalizes to None must be rejected by `validate()` rather than
         // silently becoming a Codex worker.
-        for hint in ["gemini", "acp:", "acp:Gemini!", "gpt-9", ""] {
+        for hint in ["", "acp:gemini", "gpt 9", "-gemini", "gem/ini"] {
             assert_eq!(normalize_harness(hint), None, "hint {hint:?}");
         }
     }
 
     #[test]
     fn a_delegation_directive_cannot_summon_a_shell_worker() {
-        // `shell` parses as a harness id but is deliberately absent from the
-        // hint table: opening the identifier must not widen what a model is
-        // allowed to delegate to.
+        // `shell` is a valid harness id but deliberately absent from the hint
+        // table: opening the identifier must not widen what a model is allowed
+        // to delegate to.
         assert_eq!(normalize_harness("shell"), None);
         assert_eq!(normalize_harness("Shell"), None);
-        assert_eq!(normalize_harness("acp:shell"), Some("acp:shell".into()));
+        assert_eq!(normalize_harness("  shell  "), None);
+        // ...while every other agent stays reachable.
+        assert_eq!(normalize_harness("goose").as_deref(), Some("goose"));
     }
 
     #[test]

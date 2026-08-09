@@ -162,7 +162,7 @@ fn harness_ids_round_trip_with_identical_wire_values() {
         model::Harness::Codex,
         model::Harness::OpenCode,
         model::Harness::Shell,
-        model::Harness::Acp(wire::AcpAgentId::parse("gemini").unwrap()),
+        model::Harness::from_stored("gemini"),
     ] {
         let id = mirror_harness(&harness);
         assert_same_wire_value(&harness, &id);
@@ -188,19 +188,26 @@ fn builtin_harnesses_keep_the_wire_values_protocol_0_8_published() {
 }
 
 #[test]
-fn a_registry_agent_named_like_a_builtin_stays_distinct_on_the_wire() {
-    // The live ACP registry ships an entry whose id is `opencode`. It must
-    // never serialize as, compare equal to, or convert into the built-in.
-    let builtin = model::Harness::OpenCode;
-    let from_registry = model::Harness::Acp(wire::AcpAgentId::parse("opencode").unwrap());
-    assert_ne!(builtin, from_registry);
-    assert_eq!(serde_json::to_value(&builtin).unwrap(), serde_json::json!("opencode"));
+fn a_registry_agent_sharing_a_builtin_name_is_one_identity_not_two() {
+    // The live ACP registry ships an entry whose id is `opencode`, and Bridge
+    // ships an OpenCode adapter. They are the same agent reached two ways, so
+    // they are one harness with one id and one history. An earlier draft
+    // spelled the registry one `acp:opencode`, which made a single agent look
+    // like two competing products and leaked the transport into identity.
+    let from_registry = model::Harness::from_stored("opencode");
+    assert_eq!(from_registry, model::Harness::OpenCode);
     assert_eq!(
         serde_json::to_value(&from_registry).unwrap(),
-        serde_json::json!("acp:opencode")
+        serde_json::json!("opencode")
     );
-    assert_eq!(model::Harness::parse("acp:opencode").unwrap(), from_registry);
-    assert_eq!(model::Harness::parse("opencode").unwrap(), builtin);
+    assert!(model::Harness::parse("acp:opencode").is_err());
+
+    // An agent with no bespoke adapter is named by its own id, not by how it
+    // is run — so writing one later changes nothing about its sessions.
+    let gemini = model::Harness::from_stored("gemini");
+    assert_eq!(gemini, model::Harness::Agent(wire::HarnessId::parse("gemini").unwrap()));
+    assert_eq!(gemini.id(), "gemini");
+    assert_eq!(mirror_harness(&gemini).as_str(), "gemini");
 }
 
 #[test]
@@ -244,13 +251,13 @@ fn unknown_harnesses_serialize_under_their_own_id_but_are_not_valid_parameters()
     // The deliberate asymmetry: outbound tolerant so a session whose harness
     // this build cannot interpret still lists and replays under its own name;
     // inbound strict, because nothing can be done with such an id.
-    let unknown = model::Harness::from_stored("gemini");
-    assert_eq!(unknown, model::Harness::Unknown("gemini".into()));
-    assert_eq!(serde_json::to_value(&unknown).unwrap(), serde_json::json!("gemini"));
-    assert_eq!(unknown.label(), "gemini");
+    let unknown = model::Harness::from_stored("acp:gemini");
+    assert_eq!(unknown, model::Harness::Unknown("acp:gemini".into()));
+    assert_eq!(serde_json::to_value(&unknown).unwrap(), serde_json::json!("acp:gemini"));
+    assert_eq!(unknown.label(), "acp:gemini");
     assert!(wire::HarnessId::try_from(&unknown).is_err());
-    assert!(model::Harness::parse("gemini").is_err());
-    assert!(serde_json::from_value::<model::Harness>(serde_json::json!("gemini")).is_err());
+    assert!(model::Harness::parse("acp:gemini").is_err());
+    assert!(serde_json::from_value::<model::Harness>(serde_json::json!("acp:gemini")).is_err());
 }
 
 #[test]
@@ -259,8 +266,8 @@ fn a_stored_harness_id_is_idempotent_through_its_canonical_form() {
     // `from_stored` produces must never alias a different variant: two
     // harnesses that serialize the same are the same harness.
     let ids = [
-        "claude", "codex", "opencode", "shell", "acp:gemini", "acp:opencode", "gemini", "",
-        "shel1",
+        "claude", "codex", "opencode", "shell", "gemini", "github-copilot-cli", "",
+        "acp:gemini", "Gemini",
     ];
     let mut seen: Vec<(String, model::Harness)> = Vec::new();
     for raw in ids {
@@ -283,7 +290,7 @@ fn a_stored_harness_id_is_idempotent_through_its_canonical_form() {
 fn a_stored_harness_id_is_never_read_as_a_different_harness() {
     // Regression for the removed `_ => Harness::Shell` fallthrough, which
     // turned a corrupt or forward-dated row into a runnable shell session.
-    for raw in ["", "gemini", "acp:", "acp:Gemini", "SHELL", "shel1", "claude "] {
+    for raw in ["", "acp:gemini", "Gemini", "SHELL", "gem ini", "claude "] {
         let restored = model::Harness::from_stored(raw);
         assert_eq!(
             restored,

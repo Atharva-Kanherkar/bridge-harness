@@ -14,11 +14,9 @@ const BUILTIN_HARNESS_LABELS: Record<string, string> = { claude: "Claude", codex
 /**
  * Display name for a harness id.
  *
- * The id space is open: `claude` | `codex` | `opencode` | `shell`, or `acp:`
- * plus an installed agent's registry id. An agent Bridge did not write an
- * adapter for has no display name of Bridge's invention, so it is shown under
- * the id the user installed it by — never relabelled as something else, and
- * never left reading as the literal `Acp:gemini`.
+ * The id space is open and names the *agent*, never how Bridge runs it. An
+ * agent Bridge has no bespoke label for is shown under the id it was installed
+ * by — never relabelled as something else.
  *
  * One implementation on purpose: three near-copies of this used to live in
  * App, the sidebar, and the conversation view, which is how the next harness
@@ -26,10 +24,7 @@ const BUILTIN_HARNESS_LABELS: Record<string, string> = { claude: "Claude", codex
  */
 export function harnessLabel(harness?: string | null): string {
   if (!harness) return "Agent";
-  const builtin = BUILTIN_HARNESS_LABELS[harness];
-  if (builtin) return builtin;
-  const agent = harness.startsWith("acp:") ? harness.slice("acp:".length) : harness;
-  return agent ? agent[0].toUpperCase() + agent.slice(1) : "Agent";
+  return BUILTIN_HARNESS_LABELS[harness] ?? harness[0].toUpperCase() + harness.slice(1);
 }
 
 export function safeSlug(value: string): string {

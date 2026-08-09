@@ -155,7 +155,7 @@ Incompatible clients are rejected with the stable code **2000
 **1.0 is a breaking bump, not a stability claim.** Opening `HarnessId` (below)
 widened a value domain that appears in *results*, so a 0.x client — whose
 generated `HarnessId` is a closed enum — would handshake successfully and then
-fail decoding a snapshot containing an `acp:` session. Widening a result domain
+fail decoding a snapshot containing a `gemini` session. Widening a result domain
 is the "clients must upgrade" case the major is reserved for. 0.x clients are
 refused at the handshake rather than served values they cannot decode.
 
@@ -218,23 +218,30 @@ Commands returning no value use the explicit `UnitResult` contract
 
 ### Harness ids
 
-`HarnessId` is an **open** string, not a closed set. Two shapes and no third:
+`HarnessId` is an **open** string naming **which agent** runs a session:
 
 ```
-HarnessId := "claude" | "codex" | "opencode" | "shell"   (built-in)
-           | "acp:" <registry-id>                        (installed ACP agent)
-<registry-id> := [a-z0-9][a-z0-9._-]{0,63}
+HarnessId := [a-z0-9][a-z0-9._-]{0,63}
 ```
 
-Do not generate a closed union over the values that exist today. A harness
-installed from the ACP registry did not exist when your client was compiled,
-which is the whole point; render an unrecognized id under its own name rather
-than falling back to a built-in. Through 0.8 this was an enum of the four
-built-ins, and every one of those values is unchanged here.
+`claude`, `codex`, `opencode`, `shell`, `gemini`, `cline`, … Through 0.8 this
+was an enum of the first four; every one of those values is unchanged. Do not
+generate a closed union over the values that exist today — an agent installed
+from the ACP registry did not exist when your client was compiled, which is
+the whole point.
 
-The bare namespace is reserved for built-ins, so a registry entry can never
-shadow one — the live registry does publish an agent whose id is `opencode`,
-which Bridge names `acp:opencode`.
+**The id is the agent, never how Bridge runs it.** Claude reached through the
+Agent SDK and Claude reached through an ACP shim are the same agent and share
+the id `claude`; the transport is Bridge's problem, recorded separately, and
+never something a user picks. This is why the live registry's `opencode` entry
+and Bridge's own OpenCode adapter are **one** harness with one id and one
+session history, rather than two competing products. It also means a bespoke
+adapter can replace a generic one later without renaming anything or migrating
+a single session.
+
+Whether an id is *runnable* is a separate question from whether it is *valid*.
+A well-formed id Bridge has no adapter for parses fine and fails at start with
+an error naming the harness.
 
 **Params and results use different types, and the schemas say so.** A
 parameter is `HarnessId`, whose schema carries the `pattern` above — a
