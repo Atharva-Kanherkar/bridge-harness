@@ -15,6 +15,8 @@
     "prepare:daemon:dev": "sh scripts/prepare-daemon.sh debug",
     "prepare:safari-extension": "sh scripts/prepare-safari-extension.sh",
     "check": "tsc -b --pretty false && cargo check --manifest-path src-tauri/Cargo.toml --workspace",
+    "check:builtin-adapters": "sh scripts/check-builtin-adapters.sh",
+    "smoke:builtin-adapters": "sh scripts/smoke-builtin-adapters.sh",
     "test": "npm test --prefix sidecar/claude-agent && vitest run && cargo test --manifest-path src-tauri/Cargo.toml --workspace",
     "tauri": "tauri"
   },

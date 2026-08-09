@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "transport": "claude_agent_sdk_sidecar",
+      "runtimeSource": "@anthropic-ai/claude-agent-sdk via Bridge Node sidecar",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_runtime_available",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "tools",
+        "commands",
+        "approvals",
+        "usage",
+        "interrupt"
+      ],
+      "sandboxModes": [
+        "read_only",
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "static",
+      "modelIds": [
+        "haiku",
+        "sonnet",
+        "opus",
+        "fable"
+      ],
+      "defaultModelId": "sonnet"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "transport": "codex_app_server_stdio",
+      "runtimeSource": "codex app-server --listen stdio://",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_protocol_advertises",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt"
+      ],
+      "sandboxModes": [
+        "read_only",
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "static",
+      "modelIds": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt-5.3-codex"
+      ],
+      "defaultModelId": "gpt-5.6-luna"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "transport": "opencode_authenticated_loopback_http",
+      "runtimeSource": "opencode serve --hostname 127.0.0.1 --port <bridge-port>",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_catalog_discovered",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt"
+      ],
+      "sandboxModes": [
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
+    }
+  ]
+}

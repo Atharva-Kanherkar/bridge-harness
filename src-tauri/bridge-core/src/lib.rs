@@ -13,6 +13,7 @@ pub mod agent_config;
 pub mod api;
 pub mod binary;
 pub mod browser_bridge;
+pub mod builtin_compatibility;
 pub mod claude_adapter;
 pub mod codex_adapter;
 pub mod compaction_controller;
