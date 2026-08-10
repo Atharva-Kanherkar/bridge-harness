@@ -3,6 +3,41 @@
 //! This module deliberately has no network, RPC, UI, or vendor-authentication
 //! concerns. Callers provide an already resolved artifact plus its expected
 //! integrity. Bridge stages and owns only what it can prove through receipts.
+//!
+//! # Integrity digest
+//!
+//! A payload's digest describes the *logical tree* that lands in
+//! `<installation>/payload`, so the same artifact digests identically on every
+//! host. Entries are sorted by their canonical relative path and folded in as
+//! `dir\0<path>\0` or `file\0<path>\0<len><bytes>`. Three properties matter:
+//!
+//!   * Paths are joined with `/` and must be valid UTF-8 — never the platform
+//!     separator, and never a lossy conversion that could collide.
+//!   * Directories are hashed too, so an added or removed empty directory is
+//!     drift rather than an invisible change.
+//!   * File bytes stream through the hasher, so memory stays flat regardless of
+//!     payload size. A real runtime tree is hundreds of megabytes.
+//!
+//! Permission bits are deliberately *not* hashed: they do not survive every
+//! transport a recipe may arrive over, and hashing them would make a digest
+//! platform-specific. The one bit that matters — is the entrypoint
+//! executable — is enforced on install and checked by [`ManagedPayloadStore::status`]
+//! instead.
+//!
+//! # Serialization
+//!
+//! Lifecycle operations serialize per managed root and agent through an
+//! in-process mutex. That is sufficient *because* [`crate::ownership`] already
+//! guarantees a single owner process per data directory; callers that place a
+//! managed root outside a leased data directory do not get cross-process
+//! exclusion. Promotion still tolerates a lost race: a rename onto an existing
+//! installation falls back to verifying and adopting it.
+//!
+//! Symlink rejection here is check-then-use rather than capability-based, and
+//! `sync_directory` is a no-op off Unix, so the durability half of atomic
+//! promotion is weaker on Windows. Both are recorded rather than hidden;
+//! migrating this module onto `cap-std` (already used by
+//! [`crate::workspace_files`]) is deliberately left out of this slice.
 
 use crate::BridgeError;
 use chrono::Utc;
@@ -18,6 +53,14 @@ use std::{
 use uuid::Uuid;
 
 pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
+
+/// Staging subtree under the managed root, one directory per agent.
+const STAGING_DIR_NAME: &str = ".staging";
+/// Read granularity while streaming payload bytes through the hasher.
+const HASH_CHUNK_BYTES: usize = 128 * 1024;
+/// Ceiling on a receipt read. Receipts are small, fixed-shape JSON documents;
+/// bounding the read keeps a corrupt or hostile file from being loaded whole.
+const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +114,7 @@ pub enum RepairReason {
     ReceiptChainMismatch,
     MissingPayload,
     MissingEntrypoint,
+    EntrypointNotExecutable,
     IntegrityDrift,
     UnsafeManagedPath,
 }
@@ -115,6 +159,22 @@ impl InstallOutcome {
     }
 }
 
+impl ManagedPayloadReceipt {
+    /// The single installation directory this receipt authorizes, relative to
+    /// the managed root.
+    ///
+    /// `owned_paths` is a list for forward compatibility but is required to
+    /// hold exactly one entry (see [`validate_receipt_ownership`]). Reading it
+    /// through this accessor keeps a hand-written or truncated receipt from
+    /// panicking a caller that forgot to validate first.
+    pub fn owned_root(&self) -> Result<&PathBuf, RepairReason> {
+        match self.owned_paths.as_slice() {
+            [owned] => Ok(owned),
+            _ => Err(RepairReason::ActiveReceiptMismatch),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ManagedPayloadStore {
     root: PathBuf,
@@ -152,25 +212,23 @@ impl ManagedPayloadStore {
 
     pub fn install(&self, recipe: &PayloadRecipe) -> Result<InstallOutcome, BridgeError> {
         let recipe = recipe.validate()?;
-        let lock = agent_lock(&self.root, &recipe.agent_id)?;
-        let _guard = lock
-            .lock()
-            .map_err(|_| BridgeError::Invalid("managed payload agent lock was poisoned".into()))?;
+        let lock = agent_lock(&self.root, &recipe.agent_id);
+        let _guard = lock_agent(&lock);
         self.install_locked(&recipe)
     }
 
     pub fn status(&self, agent_id: &str) -> Result<ManagedPayloadStatus, BridgeError> {
         validate_component("agent id", agent_id)?;
+        let lock = agent_lock(&self.root, agent_id);
+        let _guard = lock_agent(&lock);
         ensure_root_is_not_symlink(&self.root)?;
         self.status_locked(agent_id)
     }
 
     pub fn repair(&self, recipe: &PayloadRecipe) -> Result<RepairOutcome, BridgeError> {
         let recipe = recipe.validate()?;
-        let lock = agent_lock(&self.root, &recipe.agent_id)?;
-        let _guard = lock
-            .lock()
-            .map_err(|_| BridgeError::Invalid("managed payload agent lock was poisoned".into()))?;
+        let lock = agent_lock(&self.root, &recipe.agent_id);
+        let _guard = lock_agent(&lock);
 
         if let ManagedPayloadStatus::Installed { receipt, .. } =
             self.status_locked(&recipe.agent_id)?
@@ -215,6 +273,15 @@ impl ManagedPayloadStore {
                 return Ok(RepairOutcome::Repaired(receipt));
             }
         }
+        // Replacing the deterministic path means deleting whatever sits there.
+        // A receipt proves Bridge *created* that path, but a corrupt embedded
+        // receipt means the directory itself is no longer self-describing — so
+        // require it to still look like a Bridge installation before removing
+        // it. Anything carrying foreign content fails closed rather than
+        // taking user files down with the repair.
+        if path_exists_no_follow(&installation_root)? {
+            ensure_directory_is_bridge_shaped(&installation_root)?;
+        }
         remove_path_if_present(&installation_root, true)?;
         remove_path_if_present(&active_path, false)?;
         let installed = self.install_locked(&recipe)?.receipt().clone();
@@ -223,33 +290,34 @@ impl ManagedPayloadStore {
 
     pub fn uninstall(&self, agent_id: &str) -> Result<UninstallOutcome, BridgeError> {
         validate_component("agent id", agent_id)?;
-        let lock = agent_lock(&self.root, agent_id)?;
-        let _guard = lock
-            .lock()
-            .map_err(|_| BridgeError::Invalid("managed payload agent lock was poisoned".into()))?;
+        let lock = agent_lock(&self.root, agent_id);
+        let _guard = lock_agent(&lock);
         ensure_root_is_not_symlink(&self.root)?;
 
         let active_relative = PathBuf::from("agents").join(agent_id).join("active.json");
         ensure_safe_managed_descendant(&self.root, &active_relative)?;
         let active_path = self.root.join(&active_relative);
-        let bytes = match fs::read(&active_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let receipt = match read_receipt_strict(&active_path) {
+            Ok(receipt) => receipt,
+            Err(BridgeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(UninstallOutcome::AlreadyAbsent);
             }
-            Err(error) => return Err(BridgeError::Io(error)),
+            Err(error) => {
+                return Err(BridgeError::Invalid(format!(
+                    "managed payload uninstall refused corrupt active receipt: {error}"
+                )));
+            }
         };
-        let receipt: ManagedPayloadReceipt = serde_json::from_slice(&bytes).map_err(|error| {
-            BridgeError::Invalid(format!(
-                "managed payload uninstall refused corrupt active receipt: {error}"
-            ))
-        })?;
         validate_receipt_ownership(&receipt, agent_id).map_err(|reason| {
             BridgeError::Invalid(format!(
                 "managed payload uninstall refused unsafe receipt: {reason:?}"
             ))
         })?;
-        let owned_relative = &receipt.owned_paths[0];
+        let owned_relative = receipt.owned_root().map_err(|reason| {
+            BridgeError::Invalid(format!(
+                "managed payload uninstall refused unsafe receipt: {reason:?}"
+            ))
+        })?;
         ensure_safe_managed_descendant(&self.root, owned_relative)?;
         let installation_root = self.root.join(owned_relative);
 
@@ -276,6 +344,11 @@ impl ManagedPayloadStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(BridgeError::Io(error)),
         }
+        // Superseded versions of this agent are Bridge-owned too, and nothing
+        // else can ever reach them once the active receipt is gone. Reclaim
+        // every installation whose own receipt proves Bridge installed it for
+        // this agent; unreceipted directories are left strictly alone.
+        prune_owned_installations(&self.root, agent_id, None)?;
         remove_path_if_present(&active_path, false)?;
         Ok(UninstallOutcome::Uninstalled)
     }
@@ -288,15 +361,11 @@ impl ManagedPayloadStore {
             });
         }
         let active_path = self.root.join(&active_relative);
-        let bytes = match fs::read(&active_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let receipt = match read_receipt_strict(&active_path) {
+            Ok(receipt) => receipt,
+            Err(BridgeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(ManagedPayloadStatus::NotInstalled);
             }
-            Err(error) => return Err(BridgeError::Io(error)),
-        };
-        let receipt: ManagedPayloadReceipt = match serde_json::from_slice(&bytes) {
-            Ok(receipt) => receipt,
             Err(_) => {
                 return Ok(ManagedPayloadStatus::Repairable {
                     reason: RepairReason::CorruptActiveReceipt,
@@ -306,7 +375,10 @@ impl ManagedPayloadStore {
         if let Err(reason) = validate_receipt_ownership(&receipt, agent_id) {
             return Ok(ManagedPayloadStatus::Repairable { reason });
         }
-        let owned_relative = &receipt.owned_paths[0];
+        let owned_relative = match receipt.owned_root() {
+            Ok(owned) => owned,
+            Err(reason) => return Ok(ManagedPayloadStatus::Repairable { reason }),
+        };
         if ensure_safe_managed_descendant(&self.root, owned_relative).is_err() {
             return Ok(ManagedPayloadStatus::Repairable {
                 reason: RepairReason::UnsafeManagedPath,
@@ -355,6 +427,14 @@ impl ManagedPayloadStore {
                 reason: RepairReason::UnsafeManagedPath,
             });
         }
+        // The leaf checks above only cover their own final component, so walk
+        // the entrypoint's own ancestry too: an intermediate directory swapped
+        // for a symlink would otherwise be resolved silently.
+        if ensure_safe_managed_descendant(&self.root, &receipt.entrypoint).is_err() {
+            return Ok(ManagedPayloadStatus::Repairable {
+                reason: RepairReason::UnsafeManagedPath,
+            });
+        }
         let entrypoint = self.root.join(&receipt.entrypoint);
         let entrypoint_metadata = match fs::symlink_metadata(&entrypoint) {
             Ok(metadata) => metadata,
@@ -370,7 +450,15 @@ impl ManagedPayloadStore {
                 reason: RepairReason::UnsafeManagedPath,
             });
         }
-        let digest = match receipt_payload_digest(&self.root, &receipt) {
+        // Mode is outside the digest, so a stripped executable bit is drift the
+        // hash cannot see. Reporting `Installed` for a payload that can only
+        // fail with EACCES at spawn time would make the status meaningless.
+        if !path_is_executable(&entrypoint) {
+            return Ok(ManagedPayloadStatus::Repairable {
+                reason: RepairReason::EntrypointNotExecutable,
+            });
+        }
+        let digest = match payload_tree_digest(&payload) {
             Ok(digest) => digest,
             Err(_) => {
                 return Ok(ManagedPayloadStatus::Repairable {
@@ -391,7 +479,6 @@ impl ManagedPayloadStore {
 
     fn install_locked(&self, recipe: &ValidatedRecipe) -> Result<InstallOutcome, BridgeError> {
         ensure_root_is_not_symlink(&self.root)?;
-        verify_recipe_source_integrity(recipe)?;
 
         let agent_root = self.root.join("agents").join(&recipe.agent_id);
         let installations_root = agent_root.join("installations");
@@ -420,27 +507,28 @@ impl ManagedPayloadStore {
             });
         }
 
-        fs::create_dir_all(&installations_root)?;
-        let staging_root = self.root.join(".staging");
-        ensure_safe_managed_descendant(&self.root, Path::new(".staging"))?;
+        // Staging is per-agent so that reaping what a killed process left
+        // behind cannot touch another agent's in-flight staging directory. The
+        // agent lock already excludes a second staging attempt for *this*
+        // agent, and agent ids cannot contain `/`, so this subtree is ours.
+        let staging_relative = PathBuf::from(STAGING_DIR_NAME).join(&recipe.agent_id);
+        ensure_safe_managed_descendant(&self.root, &staging_relative)?;
+        let staging_root = self.root.join(&staging_relative);
+        reap_staging_root(&staging_root)?;
         fs::create_dir_all(&staging_root)?;
-        let staging_path =
-            staging_root.join(format!("{}-{}", recipe.agent_id, Uuid::new_v4().simple()));
+        let staging_path = staging_root.join(Uuid::new_v4().simple().to_string());
         fs::create_dir(&staging_path)?;
         let mut staging = StagingGuard {
             path: staging_path.clone(),
             armed: true,
         };
         let staged_payload = staging_path.join("payload");
+        // The source digest is deliberately *not* computed here: verifying the
+        // representation actually stored is what matters, and hashing the source
+        // as well would double every install's read and hash cost for no added
+        // guarantee.
         copy_payload(recipe, &staged_payload)?;
         sync_tree_files(&staged_payload)?;
-        let staged_digest = installed_payload_digest(&staged_payload, recipe)?;
-        if staged_digest != recipe.expected_sha256 {
-            return Err(BridgeError::Invalid(format!(
-                "managed payload staged integrity mismatch: expected {}, got {staged_digest}",
-                recipe.expected_sha256
-            )));
-        }
         let staged_entrypoint = staged_payload.join(&recipe.entrypoint);
         if !staged_entrypoint.is_file() {
             return Err(BridgeError::Invalid(format!(
@@ -448,10 +536,21 @@ impl ManagedPayloadStore {
                 recipe.entrypoint.display()
             )));
         }
+        ensure_executable(&staged_entrypoint)?;
+        let staged_digest = payload_tree_digest(&staged_payload)?;
+        if staged_digest != recipe.expected_sha256 {
+            return Err(BridgeError::Invalid(format!(
+                "managed payload staged integrity mismatch: expected {}, got {staged_digest}",
+                recipe.expected_sha256
+            )));
+        }
 
         let receipt = fresh_receipt(recipe);
         write_json_atomic(&staging_path.join("receipt.json"), &receipt)?;
         sync_directory(&staging_path)?;
+        // Created only once the staged tree has proven itself, so a rejected
+        // payload leaves no trace of the agent under the managed root.
+        fs::create_dir_all(&installations_root)?;
         match fs::rename(&staging_path, &installation_root) {
             Ok(()) => {
                 staging.armed = false;
@@ -477,6 +576,11 @@ impl ManagedPayloadStore {
         }
 
         write_json_atomic(&active_path, &receipt)?;
+        // An upgrade supersedes whatever version was active. Nothing can reach
+        // the old installation once this receipt is published, so reclaim it
+        // now rather than leaving hundreds of megabytes of unreferenced runtime
+        // on disk for every version the user ever installed.
+        prune_owned_installations(&self.root, &recipe.agent_id, Some(&recipe.installation_id))?;
         Ok(InstallOutcome::Installed(receipt))
     }
 
@@ -499,16 +603,146 @@ fn verify_recipe_source_integrity(recipe: &ValidatedRecipe) -> Result<(), Bridge
     Ok(())
 }
 
-fn agent_lock(root: &Path, agent_id: &str) -> Result<Arc<Mutex<()>>, BridgeError> {
+/// Serialization lock for one agent under one managed root.
+///
+/// `Path` hashes by component, so equivalent spellings of the same root share a
+/// lock. Poisoning is deliberately tolerated in both this registry and the
+/// per-agent lock below: the mutex guards no data, so a panic under it leaves
+/// nothing inconsistent, and mapping `PoisonError` to a hard error would brick
+/// every later install, repair, and uninstall for the rest of the process.
+fn agent_lock(root: &Path, agent_id: &str) -> Arc<Mutex<()>> {
     let key = root.join("agents").join(agent_id);
     let mut locks = AGENT_LOCKS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .map_err(|_| BridgeError::Invalid("managed payload lock registry was poisoned".into()))?;
-    Ok(locks
+        .unwrap_or_else(|error| error.into_inner());
+    locks
         .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone())
+        .clone()
+}
+
+fn lock_agent(lock: &Arc<Mutex<()>>) -> std::sync::MutexGuard<'_, ()> {
+    lock.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// Remove every installation of `agent_id` whose own embedded receipt proves
+/// Bridge installed it, except `keep`.
+///
+/// Ownership is re-proven per directory from its own receipt, so a directory
+/// Bridge did not write — a user's own folder, a hand-made sibling, an external
+/// runtime someone dropped in — is never a candidate. A single unreadable entry
+/// is skipped rather than failing the caller: reclaiming disk must never be the
+/// reason an install or uninstall reports failure.
+fn prune_owned_installations(
+    root: &Path,
+    agent_id: &str,
+    keep: Option<&str>,
+) -> Result<(), BridgeError> {
+    let installations_relative = PathBuf::from("agents").join(agent_id).join("installations");
+    if ensure_safe_managed_descendant(root, &installations_relative).is_err() {
+        return Ok(());
+    }
+    let installations_root = root.join(&installations_relative);
+    let children = match fs::read_dir(&installations_root) {
+        Ok(children) => children,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(BridgeError::Io(error)),
+    };
+    for child in children {
+        let Ok(child) = child else { continue };
+        let path = child.path();
+        let Some(name) = child.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if keep == Some(name.as_str()) || validate_component("installation id", &name).is_err() {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let Ok(receipt) = read_receipt_strict(&path.join("receipt.json")) else {
+            continue;
+        };
+        // The receipt has to describe *this* directory for this agent, or it is
+        // not proof of anything.
+        if validate_receipt_ownership(&receipt, agent_id).is_err()
+            || receipt.installation_id != name
+        {
+            continue;
+        }
+        let _ = fs::remove_dir_all(&path);
+    }
+    Ok(())
+}
+
+/// Discard staging directories a previous process left behind.
+///
+/// Called under the agent lock, immediately before staging, so nothing live for
+/// this agent can be in here. Without this, every crash between `create_dir`
+/// and promotion leaks a partial payload copy that nothing ever reclaims.
+fn reap_staging_root(staging_root: &Path) -> Result<(), BridgeError> {
+    let children = match fs::read_dir(staging_root) {
+        Ok(children) => children,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(BridgeError::Io(error)),
+    };
+    for child in children {
+        let Ok(child) = child else { continue };
+        let path = child.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let _ = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+    }
+    Ok(())
+}
+
+/// Refuse to treat a directory as a replaceable Bridge installation unless it
+/// still has the shape Bridge writes: a `payload` directory, and nothing at the
+/// top level except that and `receipt.json`.
+///
+/// This is the weaker sibling of a valid embedded receipt, used only on the
+/// repair path where the receipt itself is what went bad. It keeps a corrupt
+/// receipt recoverable without letting repair delete foreign content that
+/// happens to occupy the deterministic path.
+fn ensure_directory_is_bridge_shaped(path: &Path) -> Result<(), BridgeError> {
+    let refuse = || {
+        BridgeError::Invalid(format!(
+            "managed payload repair refused to replace {} because it does not have the shape of a Bridge installation",
+            path.display()
+        ))
+    };
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(refuse());
+    }
+    let mut has_payload = false;
+    for child in fs::read_dir(path)? {
+        let child = child?;
+        match child.file_name().to_str() {
+            Some("payload") => {
+                let payload = fs::symlink_metadata(child.path())?;
+                if payload.file_type().is_symlink() || !payload.is_dir() {
+                    return Err(refuse());
+                }
+                has_payload = true;
+            }
+            Some("receipt.json") => {}
+            _ => return Err(refuse()),
+        }
+    }
+    if !has_payload {
+        return Err(refuse());
+    }
+    Ok(())
 }
 
 fn ensure_root_is_not_symlink(root: &Path) -> Result<(), BridgeError> {
@@ -590,23 +824,18 @@ fn validate_receipt_ownership(
     Ok(())
 }
 
-fn receipt_payload_digest(
-    root: &Path,
-    receipt: &ManagedPayloadReceipt,
-) -> Result<String, BridgeError> {
-    let payload_root = root.join(&receipt.owned_paths[0]).join("payload");
-    match receipt.payload_shape {
-        PayloadShape::File => source_digest(
-            &payload_root.join(&receipt.payload_entrypoint),
-            PayloadShape::File,
-            &receipt.payload_entrypoint,
-        ),
-        PayloadShape::Directory => source_digest(
-            &payload_root,
-            PayloadShape::Directory,
-            &receipt.payload_entrypoint,
-        ),
-    }
+/// Digest of an installed `payload` directory.
+///
+/// Always the full tree, for both payload shapes. Hashing only the entrypoint
+/// for file-shaped payloads left everything else under `payload/` outside
+/// integrity, so a planted sibling — a dylib next to a binary, say — was
+/// invisible to drift detection. The tree walk is digest-compatible with the
+/// file-shaped source digest, which synthesizes the same entry set.
+fn payload_tree_digest(payload_root: &Path) -> Result<String, BridgeError> {
+    validate_source_root(payload_root, PayloadShape::Directory)?;
+    let mut entries = Vec::new();
+    collect_tree_entries(payload_root, payload_root, &mut entries)?;
+    hash_entries(entries)
 }
 
 fn remove_path_if_present(path: &Path, directory: bool) -> Result<(), BridgeError> {
@@ -666,7 +895,18 @@ fn read_receipt_strict(path: &Path) -> Result<ManagedPayloadReceipt, BridgeError
             path.display()
         )));
     }
-    serde_json::from_slice(&fs::read(path)?).map_err(|error| {
+    if metadata.len() > MAX_RECEIPT_BYTES {
+        return Err(BridgeError::Invalid(format!(
+            "managed payload receipt is implausibly large ({} bytes): {}",
+            metadata.len(),
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_RECEIPT_BYTES)
+        .read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes).map_err(|error| {
         BridgeError::Invalid(format!("managed payload receipt is corrupt: {error}"))
     })
 }
@@ -699,20 +939,38 @@ fn verify_existing_installation(
         ));
     }
     let payload = installation_root.join("payload");
-    let digest = installed_payload_digest(&payload, recipe)?;
+    let digest = payload_tree_digest(&payload)?;
     if digest != recipe.expected_sha256 {
         return Err(BridgeError::Invalid(
             "managed payload installation exists but its integrity has drifted".into(),
         ));
     }
-    if !root.join(&receipt.entrypoint).is_file() {
+    ensure_safe_managed_descendant(root, &receipt.entrypoint)?;
+    let entrypoint = root.join(&receipt.entrypoint);
+    if !entrypoint.is_file() {
         return Err(BridgeError::Invalid(
             "managed payload installation exists but its entrypoint is missing".into(),
+        ));
+    }
+    if !path_is_executable(&entrypoint) {
+        return Err(BridgeError::Invalid(
+            "managed payload installation exists but its entrypoint is not executable".into(),
         ));
     }
     Ok(receipt)
 }
 
+/// Does this receipt describe the installation the recipe asks for?
+///
+/// `source` is excluded on purpose. It records where the bytes came from, not
+/// which bytes they are — `integrity_sha256` already pins that, and
+/// `installation_id` is derived from agent, version, platform, and integrity
+/// without it. Comparing it here meant that relabelling provenance for a
+/// byte-identical artifact (a mirror becoming a vendor CDN, say) mapped to the
+/// same installation directory and then failed its own ownership check: install
+/// and repair both errored while status still reported `Installed`, and only a
+/// full uninstall could clear it. The receipt keeps the provenance of the bytes
+/// as first installed, which is the accurate record.
 fn receipt_matches_recipe(
     receipt: &ManagedPayloadReceipt,
     expected: &ManagedPayloadReceipt,
@@ -721,7 +979,6 @@ fn receipt_matches_recipe(
         && receipt.agent_id == expected.agent_id
         && receipt.version == expected.version
         && receipt.platform == expected.platform
-        && receipt.source == expected.source
         && receipt.integrity_sha256 == expected.integrity_sha256
         && receipt.installation_id == expected.installation_id
         && receipt.owned_paths == expected.owned_paths
@@ -730,20 +987,46 @@ fn receipt_matches_recipe(
         && receipt.payload_entrypoint == expected.payload_entrypoint
 }
 
-fn installed_payload_digest(
-    payload_root: &Path,
-    recipe: &ValidatedRecipe,
-) -> Result<String, BridgeError> {
-    match recipe.shape {
-        PayloadShape::File => source_digest(
-            &payload_root.join(&recipe.entrypoint),
-            PayloadShape::File,
-            &recipe.entrypoint,
-        ),
-        PayloadShape::Directory => {
-            source_digest(payload_root, PayloadShape::Directory, &recipe.entrypoint)
+/// Is `path` executable by somebody?
+///
+/// Mirrors [`external_candidate_is_executable`] so a Bridge-managed entrypoint
+/// is held to the same standard as an external runtime. Off Unix there is no
+/// permission bit to read, so a regular file is as much as can be asserted.
+fn path_is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// Make a staged entrypoint executable.
+///
+/// A recipe's source may arrive from a transport that drops permission bits, and
+/// mode is outside the integrity digest by design, so install asserts the one
+/// bit that decides whether the installation can run at all.
+fn ensure_executable(path: &Path) -> Result<(), BridgeError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        let mode = permissions.mode();
+        if mode & 0o111 != 0o111 {
+            permissions.set_mode(mode | 0o111);
+            fs::set_permissions(path, permissions)?;
         }
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -796,6 +1079,12 @@ impl PayloadRecipe {
     }
 }
 
+/// Digest of a payload source, as it will exist under `payload/` once installed.
+///
+/// For a file-shaped source that means the entry set of a tree containing the
+/// single file at `entrypoint`, including the directories `entrypoint` implies —
+/// so `source_digest` of the source and [`payload_tree_digest`] of the
+/// installation agree by construction.
 pub fn source_digest(
     source: &Path,
     shape: PayloadShape,
@@ -803,12 +1092,18 @@ pub fn source_digest(
 ) -> Result<String, BridgeError> {
     validate_relative_path("entrypoint", entrypoint)?;
     validate_source_root(source, shape)?;
-    let mut entries = Vec::new();
-    match shape {
-        PayloadShape::File => hash_file_entry(source, entrypoint, &mut entries)?,
-        PayloadShape::Directory => collect_source_entries(source, source, &mut entries)?,
-    }
-    Ok(hash_entries(entries))
+    let entries = match shape {
+        PayloadShape::File => {
+            let length = fs::symlink_metadata(source)?.len();
+            file_shape_entries(source, entrypoint, length)?
+        }
+        PayloadShape::Directory => {
+            let mut entries = Vec::new();
+            collect_tree_entries(source, source, &mut entries)?;
+            entries
+        }
+    };
+    hash_entries(entries)
 }
 
 fn validate_component(label: &str, value: &str) -> Result<(), BridgeError> {
@@ -878,10 +1173,43 @@ fn validate_source_root(source: &Path, shape: PayloadShape) -> Result<(), Bridge
     Ok(())
 }
 
-fn collect_source_entries(
+/// One entry of a payload tree: a directory, or a file to stream from `source`.
+struct PayloadEntry {
+    /// Canonical `/`-joined relative path.
+    path: String,
+    /// `None` for a directory.
+    source: Option<(PathBuf, u64)>,
+}
+
+/// Render a relative path as the digest's canonical form.
+///
+/// Rejects non-UTF-8 rather than folding through `to_string_lossy`, where two
+/// distinct names both become `U+FFFD` and collide, and joins with `/` so a
+/// tree digests the same on Windows as it does on Unix.
+fn canonical_relative(label: &str, relative: &Path) -> Result<String, BridgeError> {
+    validate_relative_path(label, relative)?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(BridgeError::Invalid(format!(
+                "managed payload {label} is not a normal relative path"
+            )));
+        };
+        let part = part.to_str().ok_or_else(|| {
+            BridgeError::Invalid(format!(
+                "managed payload {label} must be valid UTF-8: {}",
+                relative.display()
+            ))
+        })?;
+        parts.push(part);
+    }
+    Ok(parts.join("/"))
+}
+
+fn collect_tree_entries(
     root: &Path,
     directory: &Path,
-    entries: &mut Vec<(PathBuf, Vec<u8>)>,
+    entries: &mut Vec<PayloadEntry>,
 ) -> Result<(), BridgeError> {
     let mut children = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     children.sort_by_key(|entry| entry.file_name());
@@ -894,13 +1222,21 @@ fn collect_source_entries(
                 path.display()
             )));
         }
+        let relative = path.strip_prefix(root).map_err(|_| {
+            BridgeError::Invalid("managed payload source escaped its root".into())
+        })?;
+        let canonical = canonical_relative("artifact path", relative)?;
         if metadata.is_dir() {
-            collect_source_entries(root, &path, entries)?;
+            entries.push(PayloadEntry {
+                path: canonical,
+                source: None,
+            });
+            collect_tree_entries(root, &path, entries)?;
         } else if metadata.is_file() {
-            let relative = path.strip_prefix(root).map_err(|_| {
-                BridgeError::Invalid("managed payload source escaped its root".into())
-            })?;
-            hash_file_entry(&path, relative, entries)?;
+            entries.push(PayloadEntry {
+                path: canonical,
+                source: Some((path, metadata.len())),
+            });
         } else {
             return Err(BridgeError::Invalid(format!(
                 "managed payload source contains an unsupported filesystem entry: {}",
@@ -911,30 +1247,83 @@ fn collect_source_entries(
     Ok(())
 }
 
-fn hash_file_entry(
-    path: &Path,
-    relative: &Path,
-    entries: &mut Vec<(PathBuf, Vec<u8>)>,
-) -> Result<(), BridgeError> {
-    validate_relative_path("artifact path", relative)?;
-    let mut bytes = Vec::new();
-    fs::File::open(path)?.read_to_end(&mut bytes)?;
-    entries.push((relative.to_path_buf(), bytes));
-    Ok(())
+/// The entry set a single-file payload will have once staged under `payload/`.
+fn file_shape_entries(
+    source: &Path,
+    entrypoint: &Path,
+    length: u64,
+) -> Result<Vec<PayloadEntry>, BridgeError> {
+    let canonical = canonical_relative("entrypoint", entrypoint)?;
+    let mut parts = canonical.split('/').collect::<Vec<_>>();
+    let file = parts.pop().unwrap_or_default().to_owned();
+    let mut entries = Vec::new();
+    let mut ancestor = String::new();
+    for part in parts {
+        if !ancestor.is_empty() {
+            ancestor.push('/');
+        }
+        ancestor.push_str(part);
+        entries.push(PayloadEntry {
+            path: ancestor.clone(),
+            source: None,
+        });
+    }
+    let path = if ancestor.is_empty() {
+        file
+    } else {
+        format!("{ancestor}/{file}")
+    };
+    entries.push(PayloadEntry {
+        path,
+        source: Some((source.to_path_buf(), length)),
+    });
+    Ok(entries)
 }
 
-fn hash_entries(mut entries: Vec<(PathBuf, Vec<u8>)>) -> String {
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
+fn hash_entries(mut entries: Vec<PayloadEntry>) -> Result<String, BridgeError> {
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
     let mut digest = Sha256::new();
-    for (path, bytes) in entries {
-        let path = path.to_string_lossy();
-        digest.update(b"file\0");
-        digest.update(path.as_bytes());
-        digest.update(b"\0");
-        digest.update((bytes.len() as u64).to_le_bytes());
-        digest.update(&bytes);
+    for entry in &entries {
+        match &entry.source {
+            None => {
+                digest.update(b"dir\0");
+                digest.update(entry.path.as_bytes());
+                digest.update(b"\0");
+            }
+            Some((path, length)) => {
+                digest.update(b"file\0");
+                digest.update(entry.path.as_bytes());
+                digest.update(b"\0");
+                digest.update(length.to_le_bytes());
+                let streamed = stream_file_into(path, &mut digest)?;
+                // The length is committed to before the bytes, so a file that
+                // changes size underneath the walk would otherwise produce a
+                // digest that describes neither the old nor the new content.
+                if streamed != *length {
+                    return Err(BridgeError::Invalid(format!(
+                        "managed payload file changed size while hashing: {}",
+                        path.display()
+                    )));
+                }
+            }
+        }
     }
-    format!("{:x}", digest.finalize())
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Fold a file's bytes into `digest` without holding them in memory.
+fn stream_file_into(path: &Path, digest: &mut Sha256) -> Result<u64, BridgeError> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = vec![0u8; HASH_CHUNK_BYTES];
+    let mut total = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(total);
+        }
+        digest.update(&buffer[..read]);
+        total += read as u64;
+    }
 }
 
 fn installation_id(agent: &str, version: &str, platform: &str, integrity: &str) -> String {
@@ -989,6 +1378,13 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), BridgeError> 
     Ok(())
 }
 
+/// Flush the staged tree, then its directories, in a pass of its own.
+///
+/// Deliberately separate from [`copy_payload`]: flushing each file immediately
+/// after writing it turns every file into its own disk barrier, which measured
+/// ~20x slower on a four-thousand-file payload than copying first and flushing
+/// after. The fsync count is the same either way — it is the cost of the
+/// durability the promotion relies on — but the ordering is not free.
 fn sync_tree_files(path: &Path) -> Result<(), BridgeError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
@@ -1557,5 +1953,380 @@ mod tests {
         }
         assert!(sibling.join("keep").exists());
         assert!(external.exists());
+    }
+
+    /// Provenance is not identity. Relabelling a byte-identical artifact used
+    /// to map onto the same installation and then fail its own ownership check,
+    /// leaving install and repair permanently erroring while status still said
+    /// `Installed`.
+    #[test]
+    fn relabelled_provenance_converges_instead_of_wedging_the_agent() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let mirrored = file_recipe(fixture.path());
+        let first = store.install(&mirrored).unwrap().receipt().clone();
+
+        let mut vendored = mirrored.clone();
+        vendored.source = "https://cdn.example/agent-1.2.3".into();
+        assert_eq!(
+            mirrored.validate().unwrap().installation_id,
+            vendored.validate().unwrap().installation_id,
+            "identity must not depend on the provenance label"
+        );
+
+        assert!(matches!(
+            store.install(&vendored).unwrap(),
+            InstallOutcome::AlreadyInstalled(_)
+        ));
+        assert!(matches!(
+            store.repair(&vendored).unwrap(),
+            RepairOutcome::AlreadyHealthy(_)
+        ));
+        assert!(matches!(
+            store.status(&vendored.agent_id).unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        // The receipt keeps where the installed bytes actually came from.
+        let active =
+            read_receipt_if_valid(&store.root().join("agents/fixture-agent/active.json")).unwrap();
+        assert_eq!(active.source, first.source);
+        assert_eq!(active.source, "fixture://agent-bin");
+    }
+
+    /// The digest describes the whole payload tree for both shapes, so nothing
+    /// planted beside a single-file entrypoint is invisible any more.
+    #[test]
+    fn integrity_covers_the_whole_payload_tree_for_both_shapes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let recipe = file_recipe(fixture.path());
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        let payload = store.root().join(&receipt.owned_paths[0]).join("payload");
+
+        // Hashing the source and hashing the installed tree agree by
+        // construction, including the directories the entrypoint implies.
+        assert_eq!(
+            payload_tree_digest(&payload).unwrap(),
+            receipt.integrity_sha256
+        );
+
+        fs::write(payload.join("libevil.dylib"), b"planted").unwrap();
+        assert_eq!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            },
+            "a file planted beside a file-shaped entrypoint is drift"
+        );
+
+        // Directories are hashed too, so losing an empty one is drift rather
+        // than an invisible change.
+        let tree_fixture = tempfile::tempdir().unwrap();
+        let mut tree = directory_recipe(tree_fixture.path());
+        fs::create_dir_all(tree.source_path.join("plugins")).unwrap();
+        tree.expected_sha256 =
+            source_digest(&tree.source_path, PayloadShape::Directory, &tree.entrypoint).unwrap();
+        let tree_store = ManagedPayloadStore::new(tree_fixture.path().join("managed"));
+        let tree_receipt = tree_store.install(&tree).unwrap().receipt().clone();
+        fs::remove_dir(
+            tree_store
+                .root()
+                .join(&tree_receipt.owned_paths[0])
+                .join("payload/plugins"),
+        )
+        .unwrap();
+        assert_eq!(
+            tree_store.status(&tree.agent_id).unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            }
+        );
+    }
+
+    /// The digest is a wire format the moment a recipe ships an expected value,
+    /// so pin it: `/`-joined UTF-8 paths, directories included, no lossy
+    /// conversion that could let two different trees collide.
+    #[test]
+    fn digest_format_is_pinned_and_platform_independent() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("tree");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("empty")).unwrap();
+        fs::write(root.join("bin/agent"), b"agent").unwrap();
+        fs::write(root.join("README"), b"readme").unwrap();
+        assert_eq!(
+            source_digest(&root, PayloadShape::Directory, Path::new("bin/agent")).unwrap(),
+            "b64fedab1a3c93e8c23441041c8d478a537ee71c3f04547763b94c6bb720612c",
+            "changing the digest format invalidates every published recipe"
+        );
+
+        assert_eq!(
+            canonical_relative("entrypoint", Path::new("bin/agent")).unwrap(),
+            "bin/agent"
+        );
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            // Two distinct non-UTF-8 names both became U+FFFD under
+            // `to_string_lossy`, which let different trees share a digest.
+            assert!(
+                canonical_relative("artifact path", Path::new(OsStr::from_bytes(b"bin/\xff")))
+                    .is_err()
+            );
+        }
+    }
+
+    /// Mode is outside the digest by design, so install asserts the entrypoint
+    /// is runnable and status reports it when that stops being true.
+    #[test]
+    #[cfg(unix)]
+    fn entrypoint_executability_is_enforced_and_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let recipe = file_recipe(fixture.path());
+        // Arrive over a transport that dropped the permission bits.
+        fs::set_permissions(&recipe.source_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        let entrypoint = store.root().join(&receipt.entrypoint);
+        assert!(
+            fs::metadata(&entrypoint).unwrap().permissions().mode() & 0o111 != 0,
+            "install must produce a runnable entrypoint"
+        );
+
+        fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o444)).unwrap();
+        assert_eq!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::EntrypointNotExecutable
+            },
+            "an unrunnable install is not Installed"
+        );
+
+        assert!(matches!(
+            store.repair(&recipe).unwrap(),
+            RepairOutcome::Repaired(_)
+        ));
+        assert!(matches!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+    }
+
+    /// Superseded versions are Bridge-owned and unreachable once the active
+    /// receipt moves on, so both install and uninstall reclaim them — and
+    /// neither touches a directory whose ownership is unproven.
+    #[test]
+    fn superseded_installations_are_reclaimed_but_unproven_ones_are_not() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let installations = store.root().join("agents/fixture-agent/installations");
+        let v1 = file_recipe(fixture.path());
+        let old = store.install(&v1).unwrap().receipt().clone();
+
+        let v2_source = fixture.path().join("agent-bin-v2");
+        fs::write(&v2_source, b"fixture agent v2").unwrap();
+        make_executable(&v2_source);
+        let mut v2 = v1.clone();
+        v2.version = "2.0.0".into();
+        v2.source_path = v2_source;
+        v2.expected_sha256 =
+            source_digest(&v2.source_path, PayloadShape::File, &v2.entrypoint).unwrap();
+
+        let unproven = installations.join("hand-made");
+        fs::create_dir_all(&unproven).unwrap();
+        fs::write(unproven.join("keep"), b"keep").unwrap();
+
+        let new = store.install(&v2).unwrap().receipt().clone();
+        assert!(!store.root().join(&old.owned_paths[0]).exists(), "upgrade reclaims the old version");
+        assert!(store.root().join(&new.owned_paths[0]).is_dir());
+        assert!(unproven.join("keep").exists(), "unproven content is never pruned");
+
+        // A receipt-owned installation that nothing points at is still ours.
+        let orphan_recipe = v1.validate().unwrap();
+        let orphan_root = installations.join(&orphan_recipe.installation_id);
+        fs::create_dir_all(orphan_root.join("payload")).unwrap();
+        write_json_atomic(
+            &orphan_root.join("receipt.json"),
+            &fresh_receipt(&orphan_recipe),
+        )
+        .unwrap();
+
+        store.uninstall("fixture-agent").unwrap();
+        assert!(!store.root().join(&new.owned_paths[0]).exists());
+        assert!(!orphan_root.exists(), "uninstall reclaims owned orphans");
+        assert!(unproven.join("keep").exists());
+        assert_eq!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::NotInstalled
+        );
+    }
+
+    /// A process killed mid-install leaves a partial copy behind. The next
+    /// install for that agent discards it, and cannot reach another agent's.
+    #[test]
+    fn staging_orphans_are_reaped_without_crossing_agents() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let recipe = file_recipe(fixture.path());
+        store.install(&recipe).unwrap();
+
+        let ours = store
+            .root()
+            .join(".staging/fixture-agent/deadbeefcrash");
+        // A prefix-matching agent id must not be collateral: staging is keyed
+        // by directory, not by name prefix.
+        let theirs = store
+            .root()
+            .join(".staging/fixture-agent-sidecar/inflight");
+        fs::create_dir_all(&ours).unwrap();
+        fs::write(ours.join("payload-fragment"), b"partial").unwrap();
+        fs::create_dir_all(&theirs).unwrap();
+        fs::write(theirs.join("payload-fragment"), b"partial").unwrap();
+
+        store.uninstall("fixture-agent").unwrap();
+        store.install(&recipe).unwrap();
+        assert!(!ours.exists(), "our own staging orphan is reaped");
+        assert!(theirs.join("payload-fragment").exists());
+    }
+
+    /// The agent lock guards no data, so a panic under it must not brick every
+    /// later lifecycle call for the rest of the process.
+    #[test]
+    fn lifecycle_survives_a_poisoned_agent_lock() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("managed");
+        let store = ManagedPayloadStore::new(&root);
+        let recipe = file_recipe(fixture.path());
+        store.install(&recipe).unwrap();
+
+        let lock = agent_lock(&root, "fixture-agent");
+        assert!(std::thread::spawn(move || {
+            let _held = lock.lock().unwrap();
+            panic!("poison the agent lock");
+        })
+        .join()
+        .is_err());
+
+        assert!(matches!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+        assert!(matches!(
+            store.install(&recipe).unwrap(),
+            InstallOutcome::AlreadyInstalled(_)
+        ));
+        assert!(matches!(
+            store.repair(&recipe).unwrap(),
+            RepairOutcome::AlreadyHealthy(_)
+        ));
+        assert_eq!(
+            store.uninstall("fixture-agent").unwrap(),
+            UninstallOutcome::Uninstalled
+        );
+    }
+
+    /// Repairing a corrupt embedded receipt means replacing the directory it
+    /// was supposed to describe. That is allowed only while the directory still
+    /// looks like a Bridge installation — never when it holds foreign content.
+    #[test]
+    fn repair_refuses_to_replace_a_directory_holding_foreign_content() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let recipe = file_recipe(fixture.path());
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        let installation = store.root().join(&receipt.owned_paths[0]);
+
+        fs::write(installation.join("receipt.json"), b"corrupt").unwrap();
+        fs::write(installation.join("user-sentinel"), b"do not delete").unwrap();
+        assert_eq!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::CorruptEmbeddedReceipt
+            }
+        );
+
+        let refused = store.repair(&recipe).unwrap_err().to_string();
+        assert!(
+            refused.contains("shape of a Bridge installation"),
+            "unexpected error: {refused}"
+        );
+        assert!(installation.join("user-sentinel").exists());
+
+        // Without the foreign file, a corrupt receipt is still recoverable.
+        fs::remove_file(installation.join("user-sentinel")).unwrap();
+        assert!(matches!(
+            store.repair(&recipe).unwrap(),
+            RepairOutcome::Repaired(_)
+        ));
+        assert!(matches!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+    }
+
+    /// Install verifies the bytes it actually stored, not the bytes it was
+    /// promised — the one check that survives a source swapped mid-copy.
+    #[test]
+    fn install_verifies_the_stored_representation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let managed = fixture.path().join("managed");
+        let store = ManagedPayloadStore::new(&managed);
+        let recipe = file_recipe(fixture.path());
+        fs::write(&recipe.source_path, b"tampered after recipe resolution").unwrap();
+
+        let error = store.install(&recipe).unwrap_err().to_string();
+        assert!(
+            error.contains("staged integrity mismatch"),
+            "unexpected error: {error}"
+        );
+        assert!(!managed.join("agents/fixture-agent/active.json").exists());
+        assert!(!managed.join("agents/fixture-agent/installations").exists());
+        // Staging is discarded rather than left for the next install to find.
+        assert!(
+            fs::read_dir(managed.join(".staging/fixture-agent"))
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+                == 0
+        );
+    }
+
+    /// Receipt reads are bounded, and a receipt that does not name exactly one
+    /// owned path is a repair reason rather than an index panic.
+    #[test]
+    fn receipts_are_bounded_and_owned_paths_are_checked() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let recipe = file_recipe(fixture.path());
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        let active_path = store.root().join("agents/fixture-agent/active.json");
+
+        let mut oversized = serde_json::to_vec(&receipt).unwrap();
+        oversized.extend(std::iter::repeat_n(b' ', MAX_RECEIPT_BYTES as usize + 1));
+        fs::write(&active_path, &oversized).unwrap();
+        assert_eq!(
+            store.status("fixture-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::CorruptActiveReceipt
+            }
+        );
+        assert!(store.uninstall("fixture-agent").is_err());
+
+        for owned in [vec![], vec![receipt.owned_paths[0].clone(); 2]] {
+            let mut forged = receipt.clone();
+            forged.owned_paths = owned;
+            write_json_atomic(&active_path, &forged).unwrap();
+            assert_eq!(
+                store.status("fixture-agent").unwrap(),
+                ManagedPayloadStatus::Repairable {
+                    reason: RepairReason::ActiveReceiptMismatch
+                }
+            );
+            assert!(store.uninstall("fixture-agent").is_err());
+        }
+        assert!(store.root().join(&receipt.owned_paths[0]).is_dir());
     }
 }
