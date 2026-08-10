@@ -38,6 +38,7 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::OnceLock,
 };
 
 /// Read granularity while streaming bytes through a hasher.
@@ -550,6 +551,40 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, BridgeError> {
     Ok(relative)
 }
 
+/// The managed root the host registered at boot, if any.
+///
+/// A process-wide registration rather than a store threaded through every
+/// adapter constructor: the adapters are built by [`crate::adapters::AdapterRegistry`]
+/// with no access to the data directory, and widening all of those signatures to
+/// reach one optional lookup would touch far more than this issue should. The
+/// resolution logic itself lives in [`resolve_runtime`], which takes a store
+/// explicitly and is what the tests drive.
+static MANAGED_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Register where managed payloads live. Called once, at boot, before adapters run.
+pub fn register_managed_root(root: impl Into<PathBuf>) {
+    let _ = MANAGED_ROOT.set(root.into());
+}
+
+pub fn managed_root() -> Option<&'static Path> {
+    MANAGED_ROOT.get().map(PathBuf::as_path)
+}
+
+/// The entrypoint of an agent's Bridge-managed payload, if one is installed and
+/// healthy.
+///
+/// Returns `None` — never an error — when there is no managed root, no payload,
+/// or the payload needs repair. A managed payload that is not currently usable
+/// must fall through to whatever the user already had working, not break the
+/// agent.
+pub fn managed_entrypoint(agent_id: &str) -> Option<PathBuf> {
+    let root = managed_root()?;
+    match ManagedPayloadStore::new(root).status(agent_id) {
+        Ok(ManagedPayloadStatus::Installed { entrypoint, .. }) => Some(entrypoint),
+        _ => None,
+    }
+}
+
 /// Remove npm's `node_modules/.bin` shim directories.
 ///
 /// npm creates those shims as symlinks, and the payload engine rejects a tree
@@ -834,7 +869,7 @@ mod tests {
 
     fn padded(bytes: &[u8]) -> Vec<u8> {
         let mut out = bytes.to_vec();
-        while out.len() % 512 != 0 {
+        while !out.len().is_multiple_of(512) {
             out.push(0);
         }
         out
@@ -1142,6 +1177,156 @@ mod tests {
         );
         // The downloaded archive is not left lying around in staging.
         assert!(!fixture.path().join("staging/download.part").exists());
+    }
+
+    fn executable_at(path: &Path, bytes: &[u8]) -> PathBuf {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path.to_path_buf()
+    }
+
+    /// Install a managed payload for `agent_id` from a fixture binary.
+    fn install_managed(store: &ManagedPayloadStore, fixture: &Path, agent_id: &str) -> PathBuf {
+        let source = executable_at(&fixture.join(format!("{agent_id}-src")), b"managed runtime");
+        let entrypoint = PathBuf::from("bin/agent");
+        let recipe = crate::managed_payload::PayloadRecipe {
+            agent_id: agent_id.into(),
+            version: "1.0.0".into(),
+            platform: "darwin-arm64".into(),
+            source: format!("npm:{agent_id}@1.0.0"),
+            expected_sha256: crate::managed_payload::source_digest(
+                &source,
+                PayloadShape::File,
+                &entrypoint,
+            )
+            .unwrap(),
+            source_path: source,
+            shape: PayloadShape::File,
+            entrypoint,
+        };
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        store.root().join(&receipt.entrypoint)
+    }
+
+    #[test]
+    fn resolution_prefers_explicit_then_managed_then_bundled_then_path() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let explicit = executable_at(&fixture.path().join("custom/agent"), b"custom");
+        let bundled = executable_at(&fixture.path().join("bundle/agent"), b"bundled");
+        let system = executable_at(&fixture.path().join("usr/local/bin/agent"), b"system");
+        let managed = install_managed(&store, fixture.path(), "codex");
+
+        // All four tiers present.
+        assert_eq!(
+            resolve_runtime("codex", Some(&explicit), &store, std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            RuntimeResolution::Explicit(explicit.clone())
+        );
+        // No explicit config: the managed payload wins.
+        assert_eq!(
+            resolve_runtime("codex", None, &store, std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            RuntimeResolution::Managed(managed.clone())
+        );
+        // No managed payload: the bundled copy.
+        let empty = ManagedPayloadStore::new(fixture.path().join("empty"));
+        assert_eq!(
+            resolve_runtime("codex", None, &empty, std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            RuntimeResolution::Bundled(bundled)
+        );
+        // Nothing but PATH: external, and explicitly not owned.
+        let resolution =
+            resolve_runtime("codex", None, &empty, &[], Some(system.clone())).unwrap();
+        assert_eq!(resolution, RuntimeResolution::External(system));
+        assert!(!resolution.is_bridge_owned());
+        // Nothing at all: an error naming the agent.
+        let error = resolve_runtime("codex", None, &empty, &[], None).unwrap_err();
+        assert!(error.to_string().contains("codex"), "{error}");
+
+        // A configured path that is not executable is an error, not a silent
+        // fallback: the user asked for that binary specifically.
+        let broken = fixture.path().join("custom/missing");
+        assert!(resolve_runtime("codex", Some(&broken), &store, &[], None).is_err());
+    }
+
+    #[test]
+    fn path_runtimes_are_never_claimed_as_managed() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let system = executable_at(&fixture.path().join("usr/bin/agent"), b"user's own copy");
+
+        let resolution = resolve_runtime("codex", None, &store, &[], Some(system.clone())).unwrap();
+        assert!(matches!(resolution, RuntimeResolution::External(_)));
+        assert!(!resolution.is_bridge_owned());
+        // No receipt was written anywhere for it.
+        assert!(!store.root().join("agents").exists());
+        assert_eq!(
+            fs::read(&system).unwrap(),
+            b"user's own copy",
+            "resolution must not touch the binary"
+        );
+    }
+
+    #[test]
+    fn a_custom_executable_outranks_a_managed_payload_and_is_never_touched() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let explicit = executable_at(&fixture.path().join("custom/agent"), b"user's build");
+        install_managed(&store, fixture.path(), "opencode");
+
+        assert_eq!(
+            resolve_runtime("opencode", Some(&explicit), &store, &[], None).unwrap(),
+            RuntimeResolution::Explicit(explicit.clone())
+        );
+        // Removing the managed payload leaves the configured one untouched.
+        store.uninstall("opencode").unwrap();
+        assert_eq!(fs::read(&explicit).unwrap(), b"user's build");
+        assert_eq!(
+            resolve_runtime("opencode", Some(&explicit), &store, &[], None).unwrap(),
+            RuntimeResolution::Explicit(explicit)
+        );
+    }
+
+    #[test]
+    fn uninstall_falls_back_to_the_external_copy_without_altering_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let system = executable_at(&fixture.path().join("usr/bin/agent"), b"external copy");
+        let managed = install_managed(&store, fixture.path(), "claude");
+
+        assert_eq!(
+            resolve_runtime("claude", None, &store, &[], Some(system.clone())).unwrap(),
+            RuntimeResolution::Managed(managed.clone())
+        );
+
+        store.uninstall("claude").unwrap();
+        assert!(!managed.exists(), "the managed payload is gone");
+        assert_eq!(
+            resolve_runtime("claude", None, &store, &[], Some(system.clone())).unwrap(),
+            RuntimeResolution::External(system.clone()),
+            "resolution must fall back to what the user already had"
+        );
+        assert_eq!(fs::read(&system).unwrap(), b"external copy");
+    }
+
+    #[test]
+    fn a_drifted_managed_payload_falls_back_rather_than_breaking_the_agent() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let system = executable_at(&fixture.path().join("usr/bin/agent"), b"external copy");
+        let managed = install_managed(&store, fixture.path(), "codex");
+        fs::write(&managed, b"tampered").unwrap();
+
+        // The payload is repairable, not usable, so resolution must not hand it
+        // out — but it must not break the agent either.
+        assert_eq!(
+            resolve_runtime("codex", None, &store, &[], Some(system.clone())).unwrap(),
+            RuntimeResolution::External(system)
+        );
     }
 
     #[test]

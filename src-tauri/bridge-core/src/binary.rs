@@ -32,7 +32,14 @@ pub fn resolve(name: &str) -> Option<PathBuf> {
 }
 
 pub fn version(name: &str) -> Option<String> {
-    let binary = resolve(name)?;
+    version_at(&resolve(name)?)
+}
+
+/// Read `--version` from a specific executable.
+///
+/// Separate from [`version`] so a caller that already chose which copy to launch
+/// reports that copy's version rather than whatever happens to be on PATH.
+pub fn version_at(binary: &Path) -> Option<String> {
     let output = Command::new(binary).arg("--version").output().ok()?;
     output
         .status

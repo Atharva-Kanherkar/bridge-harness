@@ -119,9 +119,12 @@ the supply-chain guarantee genuinely vendor-supplied, and drops a dependency.
   name an exact version, and declare a relative entrypoint.
 - `a_failed_fetch_leaves_no_payload_and_names_the_stage` — fetch, integrity, and
   extraction failures each report their own stage and leave no active receipt.
-- `managed_installs_do_not_change_adapter_descriptors` — descriptor capabilities,
-  sandbox modes, and model lists are identical with and without a managed
-  payload, so the #162 contract cannot drift.
+- `managed_installs_do_not_change_the_162_contract` — capabilities, sandbox modes,
+  and model lists are identical with and without a managed payload, which is what
+  the #162 gate asserts. The reported *version* is deliberately not invariant: it
+  describes whichever copy will actually launch, so a managed payload is never
+  described by whatever happens to be on PATH. The gate does not snapshot version,
+  so this cannot move it.
 
 ## Integration / Functional Tests
 

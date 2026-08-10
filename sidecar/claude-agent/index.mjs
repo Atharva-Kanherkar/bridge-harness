@@ -17,8 +17,20 @@
 //   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers }
 
 import { createInterface } from "node:readline";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { pathToFileURL } from "node:url";
 import { buildOptions } from "./options.mjs";
+
+// Which copy of the Agent SDK to load.
+//
+// With a Bridge-managed payload installed, the Rust side sets
+// BRIDGE_CLAUDE_SDK_ENTRY to that installation's `sdk.mjs`. Unset — the default,
+// and the case for every existing install — this resolves the bundled dependency
+// exactly as it did before. ESM ignores NODE_PATH, so an explicit module entry is
+// the only way to redirect a bare specifier.
+const sdkEntry = process.env.BRIDGE_CLAUDE_SDK_ENTRY;
+const { query } = sdkEntry
+  ? await import(pathToFileURL(sdkEntry).href)
+  : await import("@anthropic-ai/claude-agent-sdk");
 
 function fail(message) {
   process.stdout.write(JSON.stringify({ type: "result", subtype: "error_sidecar", is_error: true, result: message }) + "\n");

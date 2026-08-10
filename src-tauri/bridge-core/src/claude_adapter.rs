@@ -116,6 +116,14 @@ fn launch(
             .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
+        // With a managed payload installed, point the sidecar at that copy of the
+        // SDK. ESM ignores NODE_PATH, so the module is selected by an explicit
+        // entry rather than by environment path injection. Absent a managed
+        // payload the variable is unset and the sidecar imports its bundled
+        // dependency exactly as before.
+        if let Some(module) = managed_sdk_module() {
+            command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
+        }
         if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
             if let Some(token) = claude_oauth_token()? {
                 command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
@@ -489,6 +497,28 @@ impl Drop for ClaudeRuntime {
 pub fn binary_version() -> Option<String> {
     sidecar_entry().ok()?;
     binary::version("node").map(|version| format!("Agent SDK (Node {version})"))
+}
+
+/// The managed Claude SDK module to import, if a managed payload is installed.
+///
+/// Derived from the payload's receipt entrypoint — the platform binary — by
+/// walking back to the payload root, so the module and the binary always come
+/// from the same installation.
+pub fn managed_sdk_module() -> Option<PathBuf> {
+    let entrypoint = crate::managed_runtime::managed_entrypoint("claude")?;
+    let payload_root = entrypoint
+        .components()
+        .collect::<Vec<_>>()
+        .iter()
+        .position(|component| component.as_os_str() == "node_modules")
+        .map(|index| {
+            entrypoint
+                .components()
+                .take(index)
+                .collect::<PathBuf>()
+        })?;
+    let module = payload_root.join(crate::managed_runtime::claude_sdk_module());
+    module.is_file().then_some(module)
 }
 
 pub fn unavailable_reason() -> Option<String> {
