@@ -27,4 +27,8 @@ regex = "1"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 zeroize = "1"
 cap-std = "4.0.2"
+# Archive handling for managed runtime payloads. Entries are validated before
+# being written, which a shell-out to `tar` cannot express.
+tar = "0.4"
+flate2 = "1"
 tempfile = { workspace = true }
