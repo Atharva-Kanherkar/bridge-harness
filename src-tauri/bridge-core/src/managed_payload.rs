@@ -105,7 +105,7 @@ pub enum InstallOutcome {
     Recovered(ManagedPayloadReceipt),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepairReason {
     CorruptActiveReceipt,
     ActiveReceiptMismatch,
