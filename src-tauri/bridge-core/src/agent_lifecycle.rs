@@ -22,6 +22,7 @@
 //! no credential store, no OAuth client, and no logout path.
 
 use crate::managed_payload::{ManagedPayloadStatus, RepairReason};
+use crate::secret_interception;
 use std::{error::Error, fmt, path::PathBuf, str::FromStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -426,6 +427,111 @@ impl LifecycleObservation {
     }
 }
 
+/// How many consecutive failures a agent may accumulate before Bridge stops
+/// relaunching it on its own.
+pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 3;
+/// Ceiling on a retained failure context. A stderr tail is already bounded by
+/// [`crate::adapters::StderrTail`]; this bounds anything else a caller hands in.
+pub const FAILURE_CONTEXT_MAX_BYTES: usize = 2_000;
+
+/// Why an agent failed, in a form that is safe to keep in lifecycle state.
+///
+/// The context has been through [`secret_interception::sanitize`] and truncated,
+/// because the most useful failure context available — a provider's stderr tail —
+/// is also the most likely place for a token to appear.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactedFailure {
+    pub context: String,
+    /// Which consecutive attempt this was, 1-based.
+    pub attempt: u32,
+}
+
+/// A bounded budget for consecutive failures, so a crash loop stops on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureBudget {
+    max_consecutive: u32,
+    consecutive: u32,
+    last: Option<RedactedFailure>,
+}
+
+impl Default for FailureBudget {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_CONSECUTIVE_FAILURES)
+    }
+}
+
+impl FailureBudget {
+    pub const fn new(max_consecutive: u32) -> Self {
+        Self {
+            max_consecutive,
+            consecutive: 0,
+            last: None,
+        }
+    }
+
+    pub const fn consecutive(&self) -> u32 {
+        self.consecutive
+    }
+
+    pub const fn max_consecutive(&self) -> u32 {
+        self.max_consecutive
+    }
+
+    /// Has Bridge stopped relaunching this agent on its own?
+    pub const fn is_exhausted(&self) -> bool {
+        self.consecutive >= self.max_consecutive
+    }
+
+    /// May Bridge attempt another launch without an explicit operator retry?
+    pub const fn may_retry(&self) -> bool {
+        !self.is_exhausted()
+    }
+
+    pub const fn last_failure(&self) -> Option<&RedactedFailure> {
+        self.last.as_ref()
+    }
+
+    /// Record a failure, redacting and bounding its context.
+    ///
+    /// Counting saturates so a long-lived agent cannot wrap the counter back
+    /// into a state where Bridge would start relaunching it again.
+    pub fn record_failure(&mut self, context: Option<&str>) -> &RedactedFailure {
+        self.consecutive = self.consecutive.saturating_add(1);
+        self.last = Some(RedactedFailure {
+            context: redact_failure_context(context.unwrap_or("no failure context reported")),
+            attempt: self.consecutive,
+        });
+        self.last.as_ref().expect("failure was just recorded")
+    }
+
+    /// A run got far enough to count as working. Clears the streak but keeps the
+    /// last failure, which is still the useful thing to show after a flap.
+    pub fn record_success(&mut self) {
+        self.consecutive = 0;
+    }
+
+    /// An operator asked to try again, which is the only thing that clears an
+    /// exhausted budget.
+    pub fn reset(&mut self) {
+        self.consecutive = 0;
+        self.last = None;
+    }
+}
+
+/// Redact and bound a failure context.
+fn redact_failure_context(raw: &str) -> String {
+    let mut redacted = secret_interception::sanitize(raw).text;
+    if redacted.len() > FAILURE_CONTEXT_MAX_BYTES {
+        let mut cut = FAILURE_CONTEXT_MAX_BYTES;
+        while cut > 0 && !redacted.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        redacted.truncate(cut);
+        redacted.push('…');
+    }
+    redacted
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentLifecycle {
     state: AgentLifecycleState,
@@ -804,6 +910,74 @@ mod tests {
                 AgentLifecycleState::Repairable
             );
         }
+    }
+
+    #[test]
+    fn failure_budget_bounds_crash_loops_and_redacts_context() {
+        let mut budget = FailureBudget::new(3);
+        assert!(budget.may_retry() && !budget.is_exhausted());
+        assert_eq!(budget.last_failure(), None);
+
+        for attempt in 1..=3 {
+            let recorded = budget.record_failure(Some("exit status: 1")).clone();
+            assert_eq!(recorded.attempt, attempt);
+            assert_eq!(budget.consecutive(), attempt);
+        }
+        assert!(budget.is_exhausted(), "three failures must exhaust a budget of three");
+        assert!(
+            !budget.may_retry(),
+            "Bridge must stop relaunching once the budget is spent"
+        );
+
+        // Counting saturates rather than wrapping back into a retryable state.
+        for _ in 0..5 {
+            budget.record_failure(None);
+        }
+        assert!(budget.is_exhausted());
+        assert_eq!(
+            budget.last_failure().unwrap().context,
+            "no failure context reported"
+        );
+
+        // A working run clears the streak but keeps the last failure to show.
+        budget.record_success();
+        assert!(budget.may_retry() && !budget.is_exhausted());
+        assert_eq!(budget.consecutive(), 0);
+        assert!(budget.last_failure().is_some());
+
+        // An operator retry is the only thing that clears the record too.
+        budget.reset();
+        assert_eq!(budget.last_failure(), None);
+        assert_eq!(FailureBudget::default().max_consecutive(), 3);
+    }
+
+    #[test]
+    fn retained_failure_context_is_redacted_and_bounded() {
+        let mut budget = FailureBudget::default();
+        let leaky = "Provider process exit status: 1. Stderr tail:\n\
+             auth failed for sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n\
+             OPENAI_API_KEY=sk-proj-YYYYYYYYYYYYYYYYYYYYYYYYYY\n\
+             Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345";
+        let context = budget.record_failure(Some(leaky)).context.clone();
+
+        assert!(
+            !context.contains("sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"),
+            "an Anthropic key must not survive into lifecycle state: {context}"
+        );
+        assert!(!context.contains("sk-proj-YYYYYYYYYYYYYYYYYYYYYYYYYY"));
+        assert!(!context.contains("abcdefghijklmnopqrstuvwxyz012345"));
+        assert!(
+            context.contains("exit status: 1"),
+            "the useful part of the context must survive: {context}"
+        );
+
+        // Bounded, and truncated on a character boundary rather than mid-glyph.
+        let mut long = FailureBudget::default();
+        let oversized = format!("{}é", "s".repeat(FAILURE_CONTEXT_MAX_BYTES));
+        let bounded = long.record_failure(Some(&oversized)).context.clone();
+        assert!(bounded.len() <= FAILURE_CONTEXT_MAX_BYTES + '…'.len_utf8());
+        assert!(bounded.ends_with('…'));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
     }
 
     #[test]
