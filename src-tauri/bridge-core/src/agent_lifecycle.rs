@@ -608,6 +608,11 @@ pub trait ProcessSupervisor: Send + Sync {
     /// Request that a process stop. The coordinator confirms the result through
     /// [`Self::is_running`] before it clears process state or removes a payload.
     fn stop(&self, pid: u32, reason: ShutdownReason) -> bool;
+    /// Escalate an app-shutdown stop and wait for the process to reap.
+    ///
+    /// Called only after [`Self::stop`] left a process live. Returning `true`
+    /// is not itself proof of success; the coordinator checks liveness again.
+    fn force_stop(&self, pid: u32, reason: ShutdownReason) -> bool;
 }
 
 /// What a caller sees. Nothing here represents vendor credentials.
@@ -791,7 +796,8 @@ impl AgentLifecycleCoordinator {
             .clone()
     }
 
-    pub fn store(&self) -> &ManagedPayloadStore {
+    #[cfg(test)]
+    fn store(&self) -> &ManagedPayloadStore {
         &self.store
     }
 
@@ -871,10 +877,7 @@ impl AgentLifecycleCoordinator {
             // operator retries, and reporting readiness would invite a caller to
             // keep asking. Both edges used here are in the matrix.
             None if record.is_some_and(|record| record.budget.is_exhausted())
-                && matches!(
-                    settled,
-                    AgentLifecycleState::Ready | AgentLifecycleState::Installed
-                ) =>
+                && settled == AgentLifecycleState::Ready =>
             {
                 AgentLifecycleState::Broken
             }
@@ -928,6 +931,21 @@ impl AgentLifecycleCoordinator {
         Ok(())
     }
 
+    /// Clear an `installing` operation after a store or rollback failure.
+    ///
+    /// The payload engine remains the source of truth for whether anything
+    /// landed. Every target here is an explicit edge out of `installing`, so an
+    /// error can never strand an agent in a synthetic in-flight state.
+    fn finish_failed_install(&self, agent_id: &str) -> Result<(), LifecycleError> {
+        let settled = match self.store.status(agent_id) {
+            Ok(ManagedPayloadStatus::NotInstalled) => AgentLifecycleState::NotInstalled,
+            Ok(ManagedPayloadStatus::Installed { .. }) => AgentLifecycleState::Installed,
+            Ok(ManagedPayloadStatus::Repairable { .. }) => AgentLifecycleState::Repairable,
+            Err(_) => AgentLifecycleState::Broken,
+        };
+        self.finish(agent_id, AgentLifecycleState::Installing, settled)
+    }
+
     /// Install a managed payload.
     ///
     /// `cancelled` is polled before staging and again after promotion; a
@@ -974,7 +992,10 @@ impl AgentLifecycleCoordinator {
         let outcome = match installed {
             Ok(_) if cancelled.is_cancelled() => {
                 // Landed, then cancelled: roll back so no active receipt survives.
-                self.store.uninstall(agent_id)?;
+                if let Err(error) = self.store.uninstall(agent_id) {
+                    self.finish_failed_install(agent_id)?;
+                    return Err(error.into());
+                }
                 self.finish(
                     agent_id,
                     AgentLifecycleState::Installing,
@@ -983,23 +1004,21 @@ impl AgentLifecycleCoordinator {
                 return self.status(agent_id, external_candidates);
             }
             Ok(_) => {
-                let observation = self.observe(agent_id, external_candidates)?;
+                let observation = match self.observe(agent_id, external_candidates) {
+                    Ok(observation) => observation,
+                    Err(error) => {
+                        self.finish_failed_install(agent_id)?;
+                        return Err(error);
+                    }
+                };
                 match observation.settled_state() {
                     AgentLifecycleState::Repairable => AgentLifecycleState::Repairable,
                     _ => AgentLifecycleState::Installed,
                 }
             }
             Err(error) => {
-                let mut records = self.records();
-                let record = records.entry(agent_id.to_owned()).or_default();
-                record.budget.record_failure(Some(&error.to_string()));
-                drop(records);
-                // A failed install that left nothing behind is not broken, it
-                // simply did not happen.
-                match self.store.status(agent_id)? {
-                    ManagedPayloadStatus::NotInstalled => AgentLifecycleState::NotInstalled,
-                    _ => AgentLifecycleState::Broken,
-                }
+                self.finish_failed_install(agent_id)?;
+                return Err(error.into());
             }
         };
         self.finish(agent_id, AgentLifecycleState::Installing, outcome)?;
@@ -1278,17 +1297,44 @@ impl AgentLifecycleCoordinator {
 
     /// Stop every running agent. Called on app shutdown.
     ///
-    /// Best-effort by design: one agent refusing to die must not leave the rest
-    /// running, so failures are collected and reported after the sweep.
+    /// A graceful stop that leaves a child alive is escalated before moving on
+    /// to the next agent. Failures are still collected so one unkillable child
+    /// does not prevent cleanup of the rest.
     pub fn shutdown(&self) -> Vec<LifecycleError> {
         let agent_ids = self.records().keys().cloned().collect::<Vec<_>>();
         let mut errors = Vec::new();
         for agent_id in agent_ids {
-            if let Err(error) = self.stop(&agent_id, ShutdownReason::AppShutdown, &[]) {
+            if let Err(error) = self.shutdown_agent(&agent_id) {
                 errors.push(error);
             }
         }
         errors
+    }
+
+    fn shutdown_agent(&self, agent_id: &str) -> Result<AgentStatus, LifecycleError> {
+        let lock = self.operation_lock(agent_id);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        match self.stop_locked(agent_id, ShutdownReason::AppShutdown, &[]) {
+            Ok(status) => Ok(status),
+            Err(LifecycleError::StopFailed { pid, .. }) => {
+                let _force_requested = self.supervisor.force_stop(pid, ShutdownReason::AppShutdown);
+                if self.supervisor.is_running(pid) {
+                    return Err(LifecycleError::StopFailed {
+                        agent_id: agent_id.to_owned(),
+                        pid,
+                    });
+                }
+                let mut records = self.records();
+                if let Some(record) = records.get_mut(agent_id) {
+                    if record.process.is_some_and(|process| process.pid == pid) {
+                        record.process = None;
+                    }
+                }
+                drop(records);
+                self.status(agent_id, &[])
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Stop agents idle beyond the configured timeout.
@@ -1882,6 +1928,15 @@ mod tests {
             self.running.lock().unwrap().remove(&pid);
             true
         }
+
+        fn force_stop(&self, pid: u32, reason: ShutdownReason) -> bool {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("force-stop:{pid}:{}", reason.as_str()));
+            self.running.lock().unwrap().remove(&pid);
+            true
+        }
     }
 
     fn managed_recipe(fixture: &Path, agent_id: &str) -> PayloadRecipe {
@@ -2205,6 +2260,83 @@ mod tests {
             .unwrap_or(false));
     }
 
+    #[test]
+    fn failed_install_returns_an_error_and_never_strands_installing() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        fs::write(&recipe.source_path, b"tampered after recipe resolution").unwrap();
+
+        let error = harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::Payload(BridgeError::Invalid(_))));
+        assert_eq!(
+            harness
+                .coordinator
+                .status("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::NotInstalled,
+            "a failed install must not report a synthetic in-flight state"
+        );
+
+        // A corrected recipe can run immediately, proving the failed operation
+        // cleared its in-flight state rather than wedging all future work.
+        let corrected = managed_recipe(&harness.fixture_path, "fixture-agent");
+        assert_eq!(
+            harness
+                .coordinator
+                .install(&corrected, NO_CANDIDATES, &go())
+                .unwrap()
+                .state,
+            AgentLifecycleState::Ready
+        );
+    }
+
+    #[test]
+    fn failed_cancellation_rollback_never_strands_installing() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        let cancellation = CorruptRollbackCancel::new(
+            harness
+                .coordinator
+                .store()
+                .root()
+                .join("agents/fixture-agent/active.json"),
+        );
+
+        // The second cancellation poll runs after promotion. Corrupting the
+        // active receipt makes the rollback correctly fail closed.
+        assert!(matches!(
+            harness
+                .coordinator
+                .install(&recipe, NO_CANDIDATES, &cancellation)
+                .unwrap_err(),
+            LifecycleError::Payload(_)
+        ));
+        assert_eq!(
+            harness
+                .coordinator
+                .status("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Repairable,
+            "rollback failure must expose the payload condition, not installing"
+        );
+
+        // The embedded receipt still proves ownership, so the next explicit
+        // install repairs it instead of being blocked by stale coordinator state.
+        assert_eq!(
+            harness
+                .coordinator
+                .install(&recipe, NO_CANDIDATES, &go())
+                .unwrap()
+                .state,
+            AgentLifecycleState::Ready
+        );
+    }
+
     /// Cancelled only after the first poll, so the pre-staging check passes and
     /// the post-promotion check fires — the case that needs a rollback.
     struct LateCancel {
@@ -2227,6 +2359,35 @@ mod tests {
             let mut polls = self.polls.lock().unwrap();
             *polls += 1;
             *polls > 1
+        }
+    }
+
+    /// Cancels after promotion while making the rollback's active receipt
+    /// corrupt, so the payload engine must refuse the rollback.
+    struct CorruptRollbackCancel {
+        polls: Mutex<u32>,
+        active_receipt: PathBuf,
+    }
+
+    impl CorruptRollbackCancel {
+        fn new(active_receipt: PathBuf) -> Self {
+            Self {
+                polls: Mutex::new(0),
+                active_receipt,
+            }
+        }
+    }
+
+    impl CancellationSignal for CorruptRollbackCancel {
+        fn is_cancelled(&self) -> bool {
+            let mut polls = self.polls.lock().unwrap();
+            *polls += 1;
+            if *polls == 2 {
+                fs::write(&self.active_receipt, b"corrupt receipt for rollback test").unwrap();
+                true
+            } else {
+                false
+            }
         }
     }
 
@@ -2266,6 +2427,41 @@ mod tests {
         assert!(
             stops.iter().all(|entry| entry.contains("app_shutdown")),
             "every stop must be attributed to app shutdown: {stops:?}"
+        );
+    }
+
+    #[test]
+    fn app_shutdown_escalates_a_process_that_refuses_graceful_stop() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let running = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        let pid = running.process_id.expect("launch returns a pid");
+
+        harness.supervisor.refuse_stop(true);
+        assert!(
+            harness.coordinator.shutdown().is_empty(),
+            "shutdown must escalate instead of leaving a live child behind"
+        );
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert!(!status.state.may_have_process());
+        assert_eq!(status.process_id, None);
+        assert!(
+            harness
+                .supervisor
+                .log()
+                .iter()
+                .any(|entry| entry == &format!("force-stop:{pid}:app_shutdown")),
+            "a refusing child must receive the shutdown escalation"
         );
     }
 
@@ -2402,6 +2598,41 @@ mod tests {
             .ensure_running("fixture-agent", NO_CANDIDATES)
             .unwrap();
         assert_eq!(status.state, AgentLifecycleState::Running);
+    }
+
+    #[test]
+    fn exhausted_retry_budget_does_not_recast_vendor_auth_as_bridge_failure() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        harness.supervisor.fail_launch_with("process repeatedly crashed");
+        for _ in 0..DEFAULT_MAX_CONSECUTIVE_FAILURES {
+            assert!(matches!(
+                harness
+                    .coordinator
+                    .ensure_running("fixture-agent", NO_CANDIDATES)
+                    .unwrap_err(),
+                LifecycleError::LaunchFailed { .. }
+            ));
+        }
+        harness.probe.set(ReadinessOutcome::VendorBlocked {
+            vendor_message: "Run `codex login` first.".into(),
+        });
+
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(
+            status.state,
+            AgentLifecycleState::Installed,
+            "the vendor login state must outrank the retry breaker"
+        );
+        assert_eq!(status.vendor_message(), Some("Run `codex login` first."));
+        assert_eq!(status.consecutive_failures, DEFAULT_MAX_CONSECUTIVE_FAILURES);
     }
 
     #[test]
