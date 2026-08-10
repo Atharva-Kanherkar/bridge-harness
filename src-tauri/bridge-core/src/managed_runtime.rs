@@ -363,7 +363,13 @@ pub fn prepare(
             // against its recorded integrity. That is the supply-chain check for
             // this source kind; the tree digest below is drift detection.
             let output = Command::new("npm")
-                .args(["ci", "--omit=dev", "--no-audit", "--no-fund"])
+                .args([
+                    "ci",
+                    "--omit=dev",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                ])
                 .current_dir(&tree)
                 .output()
                 .map_err(|error| {
@@ -386,6 +392,7 @@ pub fn prepare(
                     )),
                 ));
             }
+            prune_npm_bin_shims(&tree).map_err(|error| (PrepareStage::Install, error))?;
             ensure_entrypoint_present(&tree, entrypoint)
                 .map_err(|error| (PrepareStage::Install, error))?;
             let digest = tree_digest(&tree, entrypoint)
@@ -541,6 +548,153 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, BridgeError> {
         ));
     }
     Ok(relative)
+}
+
+/// Remove npm's `node_modules/.bin` shim directories.
+///
+/// npm creates those shims as symlinks, and the payload engine rejects a tree
+/// containing any symlink — correctly, since a symlink inside Bridge-owned
+/// storage can point anywhere. The shims are pure convenience: Bridge launches a
+/// platform binary by path or loads a module directly, and never resolves through
+/// `.bin`. They are also regenerable by npm, so removing them loses nothing.
+///
+/// Only directories named `.bin` directly inside a `node_modules` directory are
+/// removed, at any depth, so a package that legitimately ships a `.bin` file
+/// elsewhere is left alone.
+fn prune_npm_bin_shims(root: &Path) -> Result<(), BridgeError> {
+    fn walk(directory: &Path, inside_node_modules: bool) -> Result<(), BridgeError> {
+        let children = match fs::read_dir(directory) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        for child in children {
+            let child = child?;
+            let path = child.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            let name = child.file_name();
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                if inside_node_modules && name == ".bin" {
+                    fs::remove_dir_all(&path)?;
+                    continue;
+                }
+                walk(&path, name == "node_modules")?;
+            }
+        }
+        Ok(())
+    }
+    walk(root, false)
+}
+
+/// The platform component vendors use in their per-platform package names.
+///
+/// Resolved for the host rather than hardcoded, and `None` on a platform none of
+/// them publish for — which surfaces as an unavailable runtime rather than a
+/// recipe pointing at a package that cannot exist.
+pub fn npm_platform_suffix() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        _ => None,
+    }
+}
+
+/// Rust target triple as Codex's vendor tree names it.
+fn codex_vendor_triple() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        _ => None,
+    }
+}
+
+/// Pinned version of the Claude Agent SDK closure.
+pub const CLAUDE_SDK_VERSION: &str = "0.3.209";
+/// Pinned version of the Codex runtime closure.
+pub const CODEX_VERSION: &str = "0.147.0";
+/// Pinned version of the OpenCode runtime closure.
+pub const OPENCODE_VERSION: &str = "1.18.16";
+
+const CLAUDE_MANIFEST: &str = include_str!("../../../runtimes/claude/package.json");
+const CLAUDE_LOCKFILE: &str = include_str!("../../../runtimes/claude/package-lock.json");
+const CODEX_MANIFEST: &str = include_str!("../../../runtimes/codex/package.json");
+const CODEX_LOCKFILE: &str = include_str!("../../../runtimes/codex/package-lock.json");
+const OPENCODE_MANIFEST: &str = include_str!("../../../runtimes/opencode/package.json");
+const OPENCODE_LOCKFILE: &str = include_str!("../../../runtimes/opencode/package-lock.json");
+
+/// The Claude Agent SDK closure.
+///
+/// The entrypoint is the platform package's `claude` executable rather than the
+/// SDK's `sdk.mjs`: the receipt's entrypoint has to be an executable file for
+/// #167's readiness check, and that binary is what actually runs. The module the
+/// sidecar imports is derived from the payload root by [`claude_sdk_module`].
+pub fn claude_recipe() -> Option<RuntimeSource> {
+    let suffix = npm_platform_suffix()?;
+    Some(RuntimeSource::NpmClosure {
+        package: "@anthropic-ai/claude-agent-sdk".into(),
+        version: CLAUDE_SDK_VERSION.into(),
+        manifest: CLAUDE_MANIFEST,
+        lockfile: CLAUDE_LOCKFILE,
+        entrypoint: PathBuf::from("node_modules/@anthropic-ai")
+            .join(format!("claude-agent-sdk-{suffix}"))
+            .join("claude"),
+    })
+}
+
+/// The ESM entry the Claude sidecar imports, relative to the payload root.
+pub fn claude_sdk_module() -> PathBuf {
+    PathBuf::from("node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs")
+}
+
+/// The Codex runtime closure.
+pub fn codex_recipe() -> Option<RuntimeSource> {
+    let suffix = npm_platform_suffix()?;
+    let triple = codex_vendor_triple()?;
+    Some(RuntimeSource::NpmClosure {
+        package: "@openai/codex".into(),
+        version: CODEX_VERSION.into(),
+        manifest: CODEX_MANIFEST,
+        lockfile: CODEX_LOCKFILE,
+        entrypoint: PathBuf::from("node_modules/@openai")
+            .join(format!("codex-{suffix}"))
+            .join("vendor")
+            .join(triple)
+            .join("bin/codex"),
+    })
+}
+
+/// The OpenCode runtime closure.
+///
+/// The binary ships inside the platform package, which is why the closure can be
+/// installed with `--ignore-scripts`: OpenCode's postinstall only copies that
+/// binary into a convenience location Bridge does not use.
+pub fn opencode_recipe() -> Option<RuntimeSource> {
+    let suffix = npm_platform_suffix()?;
+    Some(RuntimeSource::NpmClosure {
+        package: "opencode-ai".into(),
+        version: OPENCODE_VERSION.into(),
+        manifest: OPENCODE_MANIFEST,
+        lockfile: OPENCODE_LOCKFILE,
+        entrypoint: PathBuf::from(format!("node_modules/opencode-{suffix}")).join("bin/opencode"),
+    })
+}
+
+/// Every built-in managed runtime, by agent id.
+pub fn builtin_recipes() -> Vec<(&'static str, RuntimeSource)> {
+    [
+        ("claude", claude_recipe()),
+        ("codex", codex_recipe()),
+        ("opencode", opencode_recipe()),
+    ]
+    .into_iter()
+    .filter_map(|(id, source)| source.map(|source| (id, source)))
+    .collect()
 }
 
 /// Where a runtime Bridge will launch actually came from.
@@ -988,6 +1142,158 @@ mod tests {
         );
         // The downloaded archive is not left lying around in staging.
         assert!(!fixture.path().join("staging/download.part").exists());
+    }
+
+    #[test]
+    fn npm_bin_symlinks_are_pruned_before_digesting() {
+        let fixture = tempfile::tempdir().unwrap();
+        let tree = fixture.path().join("closure");
+        let modules = tree.join("node_modules");
+        fs::create_dir_all(modules.join(".bin")).unwrap();
+        fs::create_dir_all(modules.join("pkg/node_modules/.bin")).unwrap();
+        fs::create_dir_all(modules.join("pkg/lib")).unwrap();
+        // A directory legitimately named .bin that is *not* an npm shim dir.
+        fs::create_dir_all(modules.join("pkg/lib/.bin")).unwrap();
+        fs::write(modules.join("pkg/lib/.bin/keep"), b"not a shim").unwrap();
+        fs::write(modules.join("pkg/index.js"), b"module").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("../pkg/cli.js", modules.join(".bin/tool")).unwrap();
+            std::os::unix::fs::symlink("../../cli.js", modules.join("pkg/node_modules/.bin/x"))
+                .unwrap();
+        }
+
+        // Before pruning the engine refuses the tree, because it contains symlinks.
+        #[cfg(unix)]
+        assert!(
+            crate::managed_payload::source_digest(
+                &tree,
+                PayloadShape::Directory,
+                Path::new("node_modules/pkg/index.js")
+            )
+            .is_err(),
+            "a tree with .bin symlinks must be rejected before pruning"
+        );
+
+        prune_npm_bin_shims(&tree).unwrap();
+
+        assert!(!modules.join(".bin").exists());
+        assert!(!modules.join("pkg/node_modules/.bin").exists());
+        assert!(
+            modules.join("pkg/lib/.bin/keep").exists(),
+            "a .bin directory that is not an npm shim dir must be left alone"
+        );
+        assert!(modules.join("pkg/index.js").exists());
+        // And now the engine accepts it.
+        assert!(crate::managed_payload::source_digest(
+            &tree,
+            PayloadShape::Directory,
+            Path::new("node_modules/pkg/index.js")
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn each_agent_recipe_pins_an_exact_version_and_entrypoint() {
+        let recipes = builtin_recipes();
+        assert_eq!(
+            recipes.len(),
+            3,
+            "all three agents must have a recipe on a supported platform"
+        );
+        for (agent_id, source) in recipes {
+            source
+                .validate()
+                .unwrap_or_else(|error| panic!("{agent_id} recipe is invalid: {error}"));
+            assert_eq!(source.shape(), PayloadShape::Directory);
+
+            let RuntimeSource::NpmClosure {
+                package,
+                version,
+                lockfile,
+                entrypoint,
+                ..
+            } = &source
+            else {
+                panic!("{agent_id} must install from npm");
+            };
+            assert!(version_is_exact(version), "{agent_id} version {version} is not exact");
+            assert!(
+                lockfile.contains("\"integrity\""),
+                "{agent_id} lockfile pins no integrity"
+            );
+            // The lockfile must actually pin the version the recipe claims.
+            assert!(
+                lockfile.contains(&format!("\"version\": \"{version}\"")),
+                "{agent_id} lockfile does not contain version {version}"
+            );
+            assert!(lockfile.contains(package), "{agent_id} lockfile does not name {package}");
+            // The entrypoint lives inside the closure and names a platform package.
+            let entrypoint = entrypoint.to_string_lossy();
+            assert!(entrypoint.starts_with("node_modules/"), "{agent_id}: {entrypoint}");
+            assert!(
+                entrypoint.contains(npm_platform_suffix().unwrap()),
+                "{agent_id} entrypoint must name the host platform package: {entrypoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_staged_runtime_installs_through_the_payload_engine() {
+        // The bridge between this module and #174, asserted by actually installing
+        // rather than by validating a recipe in isolation.
+        let fixture = tempfile::tempdir().unwrap();
+        let platform = npm_platform_suffix().unwrap();
+        let bytes = tarball(&[("bin/codex", b"#!/bin/sh\nexec codex\n", 0o755)], &[]);
+        let staged = prepare(
+            &RuntimeSource::ReleaseArtifact {
+                url: "https://example.com/codex.tar.gz".into(),
+                sha256: digest_of(&bytes),
+                kind: ArtifactKind::TarGz,
+                entrypoint: PathBuf::from("bin/codex"),
+            },
+            &fixture.path().join("staging"),
+            &FixtureFetcher { bytes, fail: false },
+        )
+        .unwrap();
+
+        let store =
+            crate::managed_payload::ManagedPayloadStore::new(fixture.path().join("managed"));
+        let outcome = store
+            .install(&crate::managed_payload::PayloadRecipe {
+                agent_id: "codex".into(),
+                version: CODEX_VERSION.into(),
+                platform: platform.into(),
+                source: format!("npm:@openai/codex@{CODEX_VERSION}"),
+                expected_sha256: staged.sha256.clone(),
+                source_path: staged.source_path.clone(),
+                shape: staged.shape,
+                entrypoint: staged.entrypoint.clone(),
+            })
+            .expect("a staged runtime must install through the engine");
+
+        // The digest this module computed is the one the engine recorded, so the
+        // two agree without a translation step.
+        assert_eq!(outcome.receipt().integrity_sha256, staged.sha256);
+        assert!(matches!(
+            store.status("codex").unwrap(),
+            crate::managed_payload::ManagedPayloadStatus::Installed { .. }
+        ));
+        // And the platform component is a safe path component for the engine.
+        assert!(!platform.contains('/'));
+    }
+
+    #[test]
+    fn claude_sdk_module_points_inside_the_closure() {
+        let module = claude_sdk_module();
+        assert!(module.starts_with("node_modules"));
+        assert!(module.ends_with("sdk.mjs"));
+        // Distinct from the receipt entrypoint, which must be an executable.
+        let RuntimeSource::NpmClosure { entrypoint, .. } = claude_recipe().unwrap() else {
+            panic!("claude installs from npm");
+        };
+        assert_ne!(entrypoint, module);
+        assert!(entrypoint.ends_with("claude"));
     }
 
     #[test]

@@ -28,6 +28,15 @@
   SHA-256 over a single published file — because it is what a future non-npm
   runtime will need. It is simply not what these three use.
 
+- No archive format is accepted implicitly. Entries are validated before being
+  written, never after: absolute paths, `..` components, symlinks, hardlinks,
+  device nodes, and oversized entries are rejected while extracting, so a hostile
+  or malformed archive cannot write outside the staging directory.
+- Fetching is injected behind a trait. Every test in this PR runs offline against
+  fixtures; no test reaches the network, npm, or a vendor endpoint.
+- Out of scope: RPC (#169), UI (#170), any auth system, any credential storage,
+  and any change to how the three integrations talk to their agents.
+
 ### Why this changed
 
 The contract originally had Codex and OpenCode installing from GitHub release
@@ -39,14 +48,6 @@ digest would have to be one Bridge computed itself, which is not a
 publisher-pinned guarantee at all; and both are on npm at the identical version
 with SRI integrity already published. Using npm for all three is uniform, keeps
 the supply-chain guarantee genuinely vendor-supplied, and drops a dependency.
-- No archive format is accepted implicitly. Entries are validated before being
-  written, never after: absolute paths, `..` components, symlinks, hardlinks,
-  device nodes, and oversized entries are rejected while extracting, so a hostile
-  or malformed archive cannot write outside the staging directory.
-- Fetching is injected behind a trait. Every test in this PR runs offline against
-  fixtures; no test reaches the network, npm, or a vendor endpoint.
-- Out of scope: RPC (#169), UI (#170), any auth system, any credential storage,
-  and any change to how the three integrations talk to their agents.
 
 ## Functional Behavior
 
