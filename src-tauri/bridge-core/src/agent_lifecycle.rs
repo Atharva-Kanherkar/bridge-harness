@@ -749,6 +749,13 @@ pub struct AgentLifecycleCoordinator {
     /// Opt-in. `None` means a long-untouched process is left alone.
     idle_timeout: Option<Duration>,
     records: Mutex<HashMap<String, AgentRecord>>,
+    /// One lock per agent, so a launch cannot interleave with a removal.
+    ///
+    /// Without this, `ensure_running` could observe `ready`, an `uninstall`
+    /// could complete, and the launch would then be handed an entrypoint that no
+    /// longer exists — the second half of the issue's race requirement, which
+    /// stopping first does not address on its own.
+    operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl AgentLifecycleCoordinator {
@@ -764,7 +771,22 @@ impl AgentLifecycleCoordinator {
             supervisor,
             idle_timeout,
             records: Mutex::new(HashMap::new()),
+            operations: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Serialize operations for one agent.
+    ///
+    /// Poisoning is tolerated: the lock guards ordering, not data, so a panic
+    /// under it leaves nothing inconsistent and refusing every later operation
+    /// would be strictly worse.
+    fn operation_lock(&self, agent_id: &str) -> Arc<Mutex<()>> {
+        self.operations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(agent_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     pub fn store(&self) -> &ManagedPayloadStore {
@@ -915,6 +937,17 @@ impl AgentLifecycleCoordinator {
         external_candidates: &[PathBuf],
         cancelled: &dyn CancellationSignal,
     ) -> Result<AgentStatus, LifecycleError> {
+        let lock = self.operation_lock(&recipe.agent_id);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        self.install_locked(recipe, external_candidates, cancelled)
+    }
+
+    fn install_locked(
+        &self,
+        recipe: &PayloadRecipe,
+        external_candidates: &[PathBuf],
+        cancelled: &dyn CancellationSignal,
+    ) -> Result<AgentStatus, LifecycleError> {
         let agent_id = recipe.agent_id.as_str();
         let from = self.current_state(agent_id, external_candidates)?;
         self.begin(agent_id, from, AgentLifecycleState::Installing)?;
@@ -966,6 +999,16 @@ impl AgentLifecycleCoordinator {
 
     /// Spawn-on-use. Only a `ready` agent launches.
     pub fn ensure_running(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
+        let lock = self.operation_lock(agent_id);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        self.ensure_running_locked(agent_id, external_candidates)
+    }
+
+    fn ensure_running_locked(
         &self,
         agent_id: &str,
         external_candidates: &[PathBuf],
@@ -1074,6 +1117,17 @@ impl AgentLifecycleCoordinator {
         reason: ShutdownReason,
         external_candidates: &[PathBuf],
     ) -> Result<AgentStatus, LifecycleError> {
+        let lock = self.operation_lock(agent_id);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        self.stop_locked(agent_id, reason, external_candidates)
+    }
+
+    fn stop_locked(
+        &self,
+        agent_id: &str,
+        reason: ShutdownReason,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
         let pid = match self.live_process(agent_id) {
             ProcessCondition::Running { pid } => pid,
             ProcessCondition::None => return self.status(agent_id, external_candidates),
@@ -1130,6 +1184,16 @@ impl AgentLifecycleCoordinator {
         agent_id: &str,
         external_candidates: &[PathBuf],
     ) -> Result<AgentStatus, LifecycleError> {
+        let lock = self.operation_lock(agent_id);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        self.uninstall_locked(agent_id, external_candidates)
+    }
+
+    fn uninstall_locked(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
         let observation = self.observe(agent_id, external_candidates)?;
         let state = self.status_from(agent_id, observation.clone()).state;
 
@@ -1151,7 +1215,7 @@ impl AgentLifecycleCoordinator {
         // the only way through, and it is what keeps the removal off a live
         // process.
         let state = if state == AgentLifecycleState::Running {
-            self.stop(agent_id, ShutdownReason::Replaced, external_candidates)?
+            self.stop_locked(agent_id, ShutdownReason::Replaced, external_candidates)?
                 .state
         } else {
             state
@@ -1693,6 +1757,10 @@ mod tests {
         refuse_stop: Mutex<bool>,
         /// Checked at stop time to prove the payload had not been removed yet.
         watched_payload: Mutex<Option<PathBuf>>,
+        /// When held shut, `launch` blocks inside the call. Lets a test park a
+        /// launch mid-flight and run a removal to completion underneath it.
+        launch_gate_open: Mutex<bool>,
+        launch_gated: Mutex<bool>,
     }
 
     impl RecordingSupervisor {
@@ -1704,6 +1772,8 @@ mod tests {
                 launch_error: Mutex::new(None),
                 refuse_stop: Mutex::new(false),
                 watched_payload: Mutex::new(None),
+                launch_gate_open: Mutex::new(true),
+                launch_gated: Mutex::new(false),
             })
         }
         fn log(&self) -> Vec<String> {
@@ -1721,6 +1791,17 @@ mod tests {
         fn refuse_stop(&self, refuse: bool) {
             *self.refuse_stop.lock().unwrap() = refuse;
         }
+        /// Hold every subsequent launch inside the call until `open_launch_gate`.
+        fn gate_launches(&self) {
+            *self.launch_gate_open.lock().unwrap() = false;
+        }
+        fn open_launch_gate(&self) {
+            *self.launch_gate_open.lock().unwrap() = true;
+        }
+        /// Did a launch actually reach the gate, i.e. get past every guard?
+        fn launch_reached_gate(&self) -> bool {
+            *self.launch_gated.lock().unwrap()
+        }
     }
 
     impl ProcessSupervisor for RecordingSupervisor {
@@ -1728,6 +1809,16 @@ mod tests {
             if let Some(error) = self.launch_error.lock().unwrap().clone() {
                 self.log.lock().unwrap().push(format!("launch-failed:{agent_id}"));
                 return Err(error);
+            }
+            if !*self.launch_gate_open.lock().unwrap() {
+                *self.launch_gated.lock().unwrap() = true;
+                // Bounded so a regression fails the assertion rather than hanging.
+                for _ in 0..400 {
+                    if *self.launch_gate_open.lock().unwrap() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
             }
             let mut next = self.next_pid.lock().unwrap();
             *next += 1;
@@ -2241,6 +2332,27 @@ mod tests {
         let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
         let unrelated = harness.fixture_path.join("managed/unrelated-file");
 
+        // A user-managed runtime sits beside the managed one for the whole walk:
+        // the managed payload is what Bridge launches, and the user's own copy
+        // must still be there at the end.
+        let external = harness.fixture_path.join("user-installed-agent");
+        fs::write(&external, b"user's own runtime").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&external, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let candidates = vec![external.clone()];
+
+        assert_eq!(
+            harness
+                .coordinator
+                .status("fixture-agent", &candidates)
+                .unwrap()
+                .state,
+            AgentLifecycleState::External,
+            "with nothing managed, the discoverable runtime is what there is"
+        );
         assert_eq!(
             harness
                 .coordinator
@@ -2252,17 +2364,18 @@ mod tests {
         assert_eq!(
             harness
                 .coordinator
-                .install(&recipe, NO_CANDIDATES, &go())
+                .install(&recipe, &candidates, &go())
                 .unwrap()
                 .state,
-            AgentLifecycleState::Ready
+            AgentLifecycleState::Ready,
+            "a managed payload outranks a discoverable external runtime"
         );
         fs::write(&unrelated, b"keep").unwrap();
 
         assert_eq!(
             harness
                 .coordinator
-                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .ensure_running("fixture-agent", &candidates)
                 .unwrap()
                 .state,
             AgentLifecycleState::Running
@@ -2270,7 +2383,7 @@ mod tests {
         assert_eq!(
             harness
                 .coordinator
-                .stop("fixture-agent", ShutdownReason::UserStopped, NO_CANDIDATES)
+                .stop("fixture-agent", ShutdownReason::UserStopped, &candidates)
                 .unwrap()
                 .state,
             AgentLifecycleState::Ready
@@ -2279,23 +2392,25 @@ mod tests {
         assert_eq!(
             harness
                 .coordinator
-                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .ensure_running("fixture-agent", &candidates)
                 .unwrap()
                 .state,
             AgentLifecycleState::Running
         );
         harness
             .coordinator
-            .stop("fixture-agent", ShutdownReason::UserStopped, NO_CANDIDATES)
+            .stop("fixture-agent", ShutdownReason::UserStopped, &candidates)
             .unwrap();
 
+        // Removing the managed payload reveals the external runtime again rather
+        // than reporting nothing, and never touches the user's own copy.
         assert_eq!(
             harness
                 .coordinator
-                .uninstall("fixture-agent", NO_CANDIDATES)
+                .uninstall("fixture-agent", &candidates)
                 .unwrap()
                 .state,
-            AgentLifecycleState::NotInstalled
+            AgentLifecycleState::External
         );
         assert!(!harness
             .coordinator
@@ -2304,8 +2419,21 @@ mod tests {
             .join("agents/fixture-agent/active.json")
             .exists());
         assert!(unrelated.exists(), "unrelated managed-root content survives");
+        assert_eq!(
+            fs::read(&external).unwrap(),
+            b"user's own runtime",
+            "the user's runtime must be byte-identical after a managed uninstall"
+        );
 
-        // Uninstalling again converges rather than erroring.
+        // Uninstalling again converges rather than erroring — and now that only
+        // the external runtime is left, it is refused rather than repeated.
+        assert!(matches!(
+            harness
+                .coordinator
+                .uninstall("fixture-agent", &candidates)
+                .unwrap_err(),
+            LifecycleError::ExternalRuntimeNotRemovable { .. }
+        ));
         assert_eq!(
             harness
                 .coordinator
@@ -2314,6 +2442,7 @@ mod tests {
                 .state,
             AgentLifecycleState::NotInstalled
         );
+        assert!(external.exists());
     }
 
     #[test]
@@ -2386,6 +2515,145 @@ mod tests {
             .unwrap();
         assert_eq!(status.state, AgentLifecycleState::Ready);
         assert_eq!(status.vendor_message(), None);
+    }
+
+    #[test]
+    fn a_launch_can_never_race_an_uninstall_onto_a_deleted_payload() {
+        // The stopping-first rule keeps a removal off a process that is *already*
+        // running. This covers the other half of the issue's requirement: a
+        // launch starting while a removal runs must not end up holding an
+        // entrypoint that no longer exists.
+        //
+        // The interleaving is forced rather than raced for. The launcher thread
+        // is parked inside `launch`, the removal is run to completion underneath
+        // it, and only then is the launch released — so if operations are not
+        // serialized per agent, the launch returns a live process whose payload
+        // is already gone. Verified to fail when the operation lock is removed.
+        let harness = Arc::new(new_harness(None));
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let receipt = read_active_receipt(harness.coordinator.store(), "fixture-agent");
+        let installation = harness
+            .coordinator
+            .store()
+            .root()
+            .join(&receipt.owned_paths[0]);
+
+        harness.supervisor.gate_launches();
+        let launcher = {
+            let harness = Arc::clone(&harness);
+            std::thread::spawn(move || {
+                harness
+                    .coordinator
+                    .ensure_running("fixture-agent", NO_CANDIDATES)
+                    .map(|status| status.process_id)
+            })
+        };
+
+        // Give the launcher time to get as far as it is allowed to.
+        std::thread::sleep(Duration::from_millis(80));
+        let removed = harness.coordinator.uninstall("fixture-agent", NO_CANDIDATES);
+        harness.supervisor.open_launch_gate();
+        let launched = launcher.join().unwrap();
+
+        // Either order is safe, and serialization is what makes both safe:
+        //
+        //   * the launch won the agent, so the removal waited, stopped the
+        //     process it found, and only then removed the payload; or
+        //   * the removal won, so the launch re-observed an absent payload and
+        //     was refused.
+        //
+        // The invariant is the same either way and is what the missing lock
+        // breaks: a live process and a removed payload must never coexist.
+        let payload_present = installation.exists();
+        let live = harness.coordinator.live_process("fixture-agent");
+        assert!(
+            payload_present || matches!(live, ProcessCondition::None),
+            "a process is alive with no payload behind it (launched={launched:?}, \
+             removed={:?}, reached_supervisor={})",
+            removed.as_ref().map(|status| status.state),
+            harness.supervisor.launch_reached_gate()
+        );
+        if let Ok(Some(pid)) = launched {
+            assert!(
+                payload_present || !harness.supervisor.is_running(pid),
+                "launched pid {pid} outlived its payload"
+            );
+        }
+        // And the removal itself must have converged rather than been starved.
+        assert!(
+            removed.is_ok(),
+            "uninstall failed: {:?}",
+            removed.err().map(|error| error.to_string())
+        );
+        assert!(
+            !payload_present,
+            "uninstall reported success but the payload is still on disk"
+        );
+        assert!(
+            matches!(live, ProcessCondition::None),
+            "nothing may still be running once the payload is gone"
+        );
+    }
+
+    #[test]
+    fn a_process_exiting_on_its_own_returns_the_agent_to_ready() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+
+        // A clean exit: back to ready, and spawn-on-use works again.
+        harness
+            .coordinator
+            .note_process_exit("fixture-agent", None)
+            .unwrap();
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Ready);
+        assert_eq!(status.process_id, None);
+        assert_eq!(status.consecutive_failures, 0);
+        assert_eq!(
+            harness
+                .coordinator
+                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Running
+        );
+
+        // A crash counts against the budget and keeps redacted context, but one
+        // crash is not a loop: the agent is still launchable.
+        harness
+            .coordinator
+            .note_process_exit(
+                "fixture-agent",
+                Some("segfault; GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            )
+            .unwrap();
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.consecutive_failures, 1);
+        assert_eq!(status.state, AgentLifecycleState::Ready);
+        let context = status.last_failure.unwrap().context;
+        assert!(context.contains("segfault"));
+        assert!(
+            !context.contains("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            "a token in an exit context must not reach lifecycle state: {context}"
+        );
     }
 
     fn read_active_receipt(
