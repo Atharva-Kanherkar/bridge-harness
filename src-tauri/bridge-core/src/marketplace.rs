@@ -831,7 +831,7 @@ fn codex_marketplace_path(binary_path: &Path, marketplace: &str) -> Option<PathB
 pub fn app_auth_states() -> Result<Vec<MarketplaceAppAuthState>, BridgeError> {
     let mut states = Vec::new();
     let mut provider_available = false;
-    if let Some(binary_path) = binary::resolve("codex") {
+    if let Some(binary_path) = crate::codex_adapter::resolve_runtime() {
         provider_available = true;
         if let Ok(result) = codex_app_server_request(
             &binary_path,

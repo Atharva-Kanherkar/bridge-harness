@@ -36,9 +36,10 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
+    time::Duration,
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::OnceLock,
+    sync::RwLock,
 };
 
 /// Read granularity while streaming bytes through a hasher.
@@ -50,6 +51,9 @@ pub const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Ceiling on entry count, so a pathological archive cannot exhaust inodes.
 pub const MAX_ENTRIES: usize = 200_000;
+/// Ceiling on a single download, enforced while streaming and therefore before
+/// the digest can be known.
+pub const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// What kind of file a release artifact is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,10 +187,20 @@ fn version_is_exact(version: &str) -> bool {
             .bytes()
             .next()
             .is_some_and(|byte| byte.is_ascii_digit())
-        && !version
-            .bytes()
-            .any(|byte| matches!(byte, b'^' | b'~' | b'*' | b'>' | b'<' | b'=' | b' ' | b'|'))
+        && !version.bytes().any(|byte| {
+            // `x` and `X` are npm wildcards just as much as `*` is: `1.2.x`
+            // floats the patch version and would make the installed tree depend
+            // on when the user clicked install.
+            matches!(
+                byte,
+                b'^' | b'~' | b'*' | b'>' | b'<' | b'=' | b' ' | b'|' | b'x' | b'X'
+            )
+        })
         && version.split('.').count() >= 3
+        && version
+            .split('.')
+            .take(3)
+            .all(|part| !part.is_empty() && part.bytes().next().is_some_and(|b| b.is_ascii_digit()))
 }
 
 fn validate_relative_entrypoint(entrypoint: &Path) -> Result<(), BridgeError> {
@@ -240,6 +254,15 @@ pub struct HttpsArtifactFetcher;
 impl ArtifactFetcher for HttpsArtifactFetcher {
     fn fetch_to(&self, url: &str, destination: &Path) -> Result<(), BridgeError> {
         let mut response = reqwest::blocking::Client::builder()
+            // `https_only` applies to redirect hops too, so a vendor CDN cannot
+            // walk the download down to plaintext. Redirects themselves are
+            // allowed but bounded: vendor release URLs commonly redirect to a
+            // CDN, and the bytes are verified against a pinned digest before
+            // anything uses them, so a redirect cannot substitute content.
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(600))
             .build()
             .and_then(|client| client.get(url).send())
             .map_err(|error| {
@@ -251,10 +274,20 @@ impl ArtifactFetcher for HttpsArtifactFetcher {
                 response.status()
             )));
         }
+        // Bounded before the digest is known, because an unbounded body would
+        // let a hostile or misconfigured endpoint fill the disk before integrity
+        // could reject anything.
         let mut file = fs::File::create(destination)?;
-        response
-            .copy_to(&mut file)
-            .map_err(|error| BridgeError::Invalid(format!("managed runtime fetch failed: {error}")))?;
+        let copied = std::io::copy(&mut response.by_ref().take(MAX_DOWNLOAD_BYTES + 1), &mut file)
+            .map_err(|error| {
+                BridgeError::Invalid(format!("managed runtime fetch failed: {error}"))
+            })?;
+        if copied > MAX_DOWNLOAD_BYTES {
+            let _ = fs::remove_file(destination);
+            return Err(BridgeError::Invalid(format!(
+                "managed runtime download from {url} exceeded {MAX_DOWNLOAD_BYTES} bytes"
+            )));
+        }
         Ok(())
     }
 }
@@ -276,6 +309,21 @@ pub struct StagedRuntime {
 /// Nothing is written outside `staging`, and a failure at any stage names that
 /// stage rather than collapsing into a generic error.
 pub fn prepare(
+    source: &RuntimeSource,
+    staging: &Path,
+    fetcher: &dyn ArtifactFetcher,
+) -> Result<StagedRuntime, (PrepareStage, BridgeError)> {
+    let outcome = prepare_into(source, staging, fetcher);
+    if outcome.is_err() {
+        // Leave nothing a later attempt at this path could mistake for its own
+        // work. Half a download and half an unpacked tree are exactly the inputs
+        // that make a retry succeed against the wrong bytes.
+        let _ = fs::remove_dir_all(staging);
+    }
+    outcome
+}
+
+fn prepare_into(
     source: &RuntimeSource,
     staging: &Path,
     fetcher: &dyn ArtifactFetcher,
@@ -321,10 +369,22 @@ pub fn prepare(
                     }
                     fs::rename(&download, &destination)
                         .map_err(|error| (PrepareStage::Extract, error.into()))?;
+                    // Two different digests, and conflating them broke this path:
+                    // `actual` is the publisher's digest over the raw bytes, which
+                    // is what verifies the download, while the payload engine
+                    // recomputes its own shape-aware digest over what was stored.
+                    // `StagedRuntime.sha256` has to be the latter or the install
+                    // fails its own integrity check.
+                    let staged_digest = crate::managed_payload::source_digest(
+                        &destination,
+                        PayloadShape::File,
+                        entrypoint,
+                    )
+                    .map_err(|error| (PrepareStage::Integrity, error))?;
                     Ok(StagedRuntime {
                         source_path: destination,
                         shape: PayloadShape::File,
-                        sha256: actual,
+                        sha256: staged_digest,
                         entrypoint: entrypoint.clone(),
                     })
                 }
@@ -363,7 +423,8 @@ pub fn prepare(
             // `npm ci` installs exactly the lockfile, verifying each tarball
             // against its recorded integrity. That is the supply-chain check for
             // this source kind; the tree digest below is drift detection.
-            let output = Command::new("npm")
+            let mut command = Command::new("npm");
+            command
                 .args([
                     "ci",
                     "--omit=dev",
@@ -371,7 +432,20 @@ pub fn prepare(
                     "--no-audit",
                     "--no-fund",
                 ])
-                .current_dir(&tree)
+                .current_dir(&tree);
+            // `--ignore-scripts` stops package lifecycle scripts, but it does not
+            // stop Node from preloading code named by the *ambient* environment.
+            // Anything that can inject into the install has to be cleared here.
+            for variable in [
+                "NODE_OPTIONS",
+                "NODE_REPL_EXTERNAL_MODULE",
+                "npm_config_node_options",
+                "npm_config_ignore_scripts",
+                "npm_config_script_shell",
+            ] {
+                command.env_remove(variable);
+            }
+            let output = command
                 .output()
                 .map_err(|error| {
                     (
@@ -436,6 +510,29 @@ fn file_digest(path: &Path) -> Result<String, BridgeError> {
     }
 }
 
+/// Ceilings applied while extracting.
+///
+/// Injectable because the production values are deliberately far larger than any
+/// fixture can reach — which is precisely how they went untested. Tests drive the
+/// same code path with small values; [`ExtractLimits::default`] is what callers
+/// get.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtractLimits {
+    pub max_entry_bytes: u64,
+    pub max_total_bytes: u64,
+    pub max_entries: usize,
+}
+
+impl Default for ExtractLimits {
+    fn default() -> Self {
+        Self {
+            max_entry_bytes: MAX_ENTRY_BYTES,
+            max_total_bytes: MAX_TOTAL_BYTES,
+            max_entries: MAX_ENTRIES,
+        }
+    }
+}
+
 /// Extract a gzipped tarball, validating every entry *before* writing it.
 ///
 /// Validating after the fact would be too late: a tarbomb with `../` entries or
@@ -444,6 +541,14 @@ fn file_digest(path: &Path) -> Result<String, BridgeError> {
 /// way to point Bridge-owned storage at something Bridge does not own, and the
 /// payload engine would reject the result anyway.
 pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), BridgeError> {
+    extract_tar_gz_with_limits(archive, destination, ExtractLimits::default())
+}
+
+pub fn extract_tar_gz_with_limits(
+    archive: &Path,
+    destination: &Path,
+    limits: ExtractLimits,
+) -> Result<(), BridgeError> {
     use tar::EntryType;
 
     fs::create_dir_all(destination)?;
@@ -455,9 +560,10 @@ pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), BridgeEr
     for entry in tar.entries()? {
         let mut entry = entry?;
         count += 1;
-        if count > MAX_ENTRIES {
+        if count > limits.max_entries {
             return Err(BridgeError::Invalid(format!(
-                "managed runtime archive has more than {MAX_ENTRIES} entries"
+                "managed runtime archive has more than {} entries",
+                limits.max_entries
             )));
         }
 
@@ -470,15 +576,19 @@ pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), BridgeEr
 
         let path = entry.path()?.into_owned();
         let relative = safe_archive_path(&path)?;
-        let size = entry.header().size()?;
-        if size > MAX_ENTRY_BYTES {
+        // `Entry::size` is the effective size, which a PAX extended header can
+        // set independently of the ustar header field. Charging the header field
+        // while copying the effective size let a PAX archive declare 64 bytes and
+        // write megabytes.
+        let size = entry.size();
+        if size > limits.max_entry_bytes {
             return Err(BridgeError::Invalid(format!(
                 "managed runtime archive entry {} exceeds the size ceiling",
                 relative.display()
             )));
         }
         total = total.saturating_add(size);
-        if total > MAX_TOTAL_BYTES {
+        if total > limits.max_total_bytes {
             return Err(BridgeError::Invalid(
                 "managed runtime archive exceeds the total size ceiling".into(),
             ));
@@ -493,7 +603,15 @@ pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), BridgeEr
             fs::create_dir_all(parent)?;
         }
         let mut out = fs::File::create(&target)?;
-        std::io::copy(&mut entry, &mut out)?;
+        // Capped independently of any header claim, so the bytes written can
+        // never exceed what was charged against the ceilings above.
+        let written = std::io::copy(&mut entry.by_ref().take(size), &mut out)?;
+        if written != size {
+            return Err(BridgeError::Invalid(format!(
+                "managed runtime archive entry {} declared {size} bytes but produced {written}",
+                relative.display()
+            )));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -559,15 +677,32 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, BridgeError> {
 /// reach one optional lookup would touch far more than this issue should. The
 /// resolution logic itself lives in [`resolve_runtime`], which takes a store
 /// explicitly and is what the tests drive.
-static MANAGED_ROOT: OnceLock<PathBuf> = OnceLock::new();
+///
+/// A lock rather than a `OnceLock` because [`crate::BridgeCore::boot`] can run
+/// more than once in a process — every test that boots a core does — and a
+/// write-once cell would silently pin the first data directory, leaving a second
+/// core resolving payloads out of the first one's storage.
+static MANAGED_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-/// Register where managed payloads live. Called once, at boot, before adapters run.
+/// Register where managed payloads live. Called by `BridgeCore::boot`.
 pub fn register_managed_root(root: impl Into<PathBuf>) {
-    let _ = MANAGED_ROOT.set(root.into());
+    *MANAGED_ROOT
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = Some(root.into());
 }
 
-pub fn managed_root() -> Option<&'static Path> {
-    MANAGED_ROOT.get().map(PathBuf::as_path)
+/// Forget any registered root. Used when a core shuts down, and by tests.
+pub fn clear_managed_root() {
+    *MANAGED_ROOT
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+}
+
+pub fn managed_root() -> Option<PathBuf> {
+    MANAGED_ROOT
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
 }
 
 /// The entrypoint of an agent's Bridge-managed payload, if one is installed and
@@ -621,19 +756,46 @@ fn prune_npm_bin_shims(root: &Path) -> Result<(), BridgeError> {
     walk(root, false)
 }
 
-/// The platform component vendors use in their per-platform package names.
+/// How a vendor names the platform component of its per-platform npm package.
 ///
-/// Resolved for the host rather than hardcoded, and `None` on a platform none of
-/// them publish for — which surfaces as an unavailable runtime rather than a
-/// recipe pointing at a package that cannot exist.
-pub fn npm_platform_suffix() -> Option<&'static str> {
+/// Not one scheme: Anthropic and OpenAI publish `win32-*`, while OpenCode
+/// publishes `windows-*` — its own postinstall maps `win32` to `windows`. A
+/// single shared suffix silently produced package names that do not exist, so
+/// the naming is per-vendor and each recipe asks for its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlatformNaming {
+    /// `darwin-arm64`, `win32-x64` — npm's `process.platform` values.
+    NodePlatform,
+    /// `darwin-arm64`, `windows-x64` — OpenCode's spelling.
+    WindowsSpelled,
+}
+
+/// The platform component for `naming` on this host, or `None` where no vendor
+/// publishes a build.
+pub fn npm_platform_suffix(naming: PlatformNaming) -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("darwin-arm64"),
         ("macos", "x86_64") => Some("darwin-x64"),
         ("linux", "aarch64") => Some("linux-arm64"),
         ("linux", "x86_64") => Some("linux-x64"),
-        ("windows", "x86_64") => Some("win32-x64"),
+        ("windows", "aarch64") => Some(match naming {
+            PlatformNaming::NodePlatform => "win32-arm64",
+            PlatformNaming::WindowsSpelled => "windows-arm64",
+        }),
+        ("windows", "x86_64") => Some(match naming {
+            PlatformNaming::NodePlatform => "win32-x64",
+            PlatformNaming::WindowsSpelled => "windows-x64",
+        }),
         _ => None,
+    }
+}
+
+/// Executable file name for this host — vendors ship `.exe` on Windows.
+fn executable_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_owned()
     }
 }
 
@@ -644,6 +806,7 @@ fn codex_vendor_triple() -> Option<&'static str> {
         ("macos", "x86_64") => Some("x86_64-apple-darwin"),
         ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
         ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
         ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
         _ => None,
     }
@@ -670,7 +833,7 @@ const OPENCODE_LOCKFILE: &str = include_str!("../../../runtimes/opencode/package
 /// #167's readiness check, and that binary is what actually runs. The module the
 /// sidecar imports is derived from the payload root by [`claude_sdk_module`].
 pub fn claude_recipe() -> Option<RuntimeSource> {
-    let suffix = npm_platform_suffix()?;
+    let suffix = npm_platform_suffix(PlatformNaming::NodePlatform)?;
     Some(RuntimeSource::NpmClosure {
         package: "@anthropic-ai/claude-agent-sdk".into(),
         version: CLAUDE_SDK_VERSION.into(),
@@ -678,7 +841,7 @@ pub fn claude_recipe() -> Option<RuntimeSource> {
         lockfile: CLAUDE_LOCKFILE,
         entrypoint: PathBuf::from("node_modules/@anthropic-ai")
             .join(format!("claude-agent-sdk-{suffix}"))
-            .join("claude"),
+            .join(executable_name("claude")),
     })
 }
 
@@ -689,7 +852,7 @@ pub fn claude_sdk_module() -> PathBuf {
 
 /// The Codex runtime closure.
 pub fn codex_recipe() -> Option<RuntimeSource> {
-    let suffix = npm_platform_suffix()?;
+    let suffix = npm_platform_suffix(PlatformNaming::NodePlatform)?;
     let triple = codex_vendor_triple()?;
     Some(RuntimeSource::NpmClosure {
         package: "@openai/codex".into(),
@@ -700,7 +863,8 @@ pub fn codex_recipe() -> Option<RuntimeSource> {
             .join(format!("codex-{suffix}"))
             .join("vendor")
             .join(triple)
-            .join("bin/codex"),
+            .join("bin")
+            .join(executable_name("codex")),
     })
 }
 
@@ -710,13 +874,15 @@ pub fn codex_recipe() -> Option<RuntimeSource> {
 /// installed with `--ignore-scripts`: OpenCode's postinstall only copies that
 /// binary into a convenience location Bridge does not use.
 pub fn opencode_recipe() -> Option<RuntimeSource> {
-    let suffix = npm_platform_suffix()?;
+    let suffix = npm_platform_suffix(PlatformNaming::WindowsSpelled)?;
     Some(RuntimeSource::NpmClosure {
         package: "opencode-ai".into(),
         version: OPENCODE_VERSION.into(),
         manifest: OPENCODE_MANIFEST,
         lockfile: OPENCODE_LOCKFILE,
-        entrypoint: PathBuf::from(format!("node_modules/opencode-{suffix}")).join("bin/opencode"),
+        entrypoint: PathBuf::from(format!("node_modules/opencode-{suffix}"))
+            .join("bin")
+            .join(executable_name("opencode")),
     })
 }
 
@@ -990,8 +1156,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(staged.shape, PayloadShape::File);
-        assert_eq!(staged.sha256, digest_of(&bytes));
         assert!(staged.source_path.is_file());
+        // The staged digest is the engine's shape-aware digest, NOT the raw
+        // publisher digest that verified the download. Asserting the raw digest
+        // here is what hid a real bug: the engine would have rejected the install.
+        assert_ne!(
+            staged.sha256,
+            digest_of(&bytes),
+            "a raw file digest is not what the engine recomputes"
+        );
+        assert_eq!(
+            staged.sha256,
+            crate::managed_payload::source_digest(
+                &staged.source_path,
+                PayloadShape::File,
+                Path::new("bin/agent")
+            )
+            .unwrap()
+        );
 
         // Wrong digest: refused at the integrity stage, nothing left staged.
         let staging = fixture.path().join("bad");
@@ -1329,6 +1511,273 @@ mod tests {
         );
     }
 
+    /// Build a PAX record with the self-describing length prefix the format
+    /// requires: `"<len> key=value\n"` where `<len>` counts its own digits.
+    fn pax_record(key: &str, value: &str) -> String {
+        let mut len = 0;
+        loop {
+            let candidate = format!("{len} {key}={value}\n");
+            if candidate.len() == len {
+                return candidate;
+            }
+            len = candidate.len();
+        }
+    }
+
+    /// PAX extended headers can set an entry's size independently of the ustar
+    /// header field. Charging the header field while copying the effective size
+    /// let an archive declare a tiny entry and write an unbounded one.
+    #[test]
+    fn pax_size_overrides_cannot_bypass_the_entry_ceiling() {
+        let fixture = tempfile::tempdir().unwrap();
+        // The override claims one byte past the ceiling while the ustar header
+        // understates it as 64. Charging the header would let this through; only
+        // charging the effective size refuses it. No body is needed, because the
+        // refusal must happen before anything is written.
+        let oversized = (MAX_ENTRY_BYTES + 1).to_string();
+        let record = pax_record("size", &oversized);
+        let mut raw = raw_tar_header("PaxHeaders/big", b'x', record.len() as u64, 0o644, "");
+        raw.extend(padded(record.as_bytes()));
+        raw.extend(raw_tar_header("big", b'0', 64, 0o644, ""));
+        raw.extend([0u8; 1024]);
+
+        let archive = fixture.path().join("pax.tgz");
+        fs::write(&archive, gzip(&raw)).unwrap();
+        let out = fixture.path().join("out");
+        let error = extract_tar_gz(&archive, &out).expect_err(
+            "a PAX size override past the ceiling must be refused, not charged at its \
+             understated ustar size",
+        );
+        assert!(
+            error.to_string().contains("size ceiling"),
+            "unexpected error: {error}"
+        );
+        assert!(!out.join("big").exists(), "nothing may be written");
+    }
+
+    #[test]
+    fn extraction_is_bounded_by_total_size_and_entry_count() {
+        let fixture = tempfile::tempdir().unwrap();
+        let body = vec![7u8; 512];
+        let archive = fixture.path().join("three.tgz");
+        fs::write(
+            &archive,
+            tarball(
+                &[
+                    ("a", &body, 0o644),
+                    ("b", &body, 0o644),
+                    ("c", &body, 0o644),
+                ],
+                &[],
+            ),
+        )
+        .unwrap();
+
+        // The same three-entry archive, refused three different ways.
+        let cases = [
+            (
+                ExtractLimits {
+                    max_entries: 2,
+                    ..ExtractLimits::default()
+                },
+                "more than 2 entries",
+            ),
+            (
+                ExtractLimits {
+                    max_total_bytes: 1024,
+                    ..ExtractLimits::default()
+                },
+                "total size ceiling",
+            ),
+            (
+                ExtractLimits {
+                    max_entry_bytes: 256,
+                    ..ExtractLimits::default()
+                },
+                "size ceiling",
+            ),
+        ];
+        for (limits, expected) in cases {
+            let out = fixture.path().join(format!("out-{}", limits.max_entries));
+            let error = extract_tar_gz_with_limits(&archive, &out, limits)
+                .expect_err(&format!("{expected} must refuse this archive"));
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected}, got: {error}"
+            );
+        }
+
+        // And under the production defaults the same archive is fine, so the
+        // refusals above are the ceilings and not something else.
+        extract_tar_gz(&archive, &fixture.path().join("ok")).unwrap();
+        assert_eq!(ExtractLimits::default().max_entry_bytes, MAX_ENTRY_BYTES);
+        assert_eq!(ExtractLimits::default().max_total_bytes, MAX_TOTAL_BYTES);
+        assert_eq!(ExtractLimits::default().max_entries, MAX_ENTRIES);
+    }
+
+    #[test]
+    fn a_raw_binary_release_installs_through_the_payload_engine() {
+        // The regression for the digest confusion: the publisher's digest verifies
+        // the download, and the engine recomputes its own. Handing it the former
+        // made every raw-binary install fail its own integrity check.
+        let fixture = tempfile::tempdir().unwrap();
+        let bytes = b"#!/bin/sh\nexec agent\n".to_vec();
+        let staged = prepare(
+            &RuntimeSource::ReleaseArtifact {
+                url: "https://example.com/agent".into(),
+                sha256: digest_of(&bytes),
+                kind: ArtifactKind::RawBinary,
+                entrypoint: PathBuf::from("bin/agent"),
+            },
+            &fixture.path().join("staging"),
+            &FixtureFetcher {
+                bytes: bytes.clone(),
+                fail: false,
+            },
+        )
+        .unwrap();
+
+        let store = ManagedPayloadStore::new(fixture.path().join("managed"));
+        let receipt = store
+            .install(&crate::managed_payload::PayloadRecipe {
+                agent_id: "raw-agent".into(),
+                version: "1.0.0".into(),
+                platform: "darwin-arm64".into(),
+                source: "https://example.com/agent".into(),
+                expected_sha256: staged.sha256.clone(),
+                source_path: staged.source_path.clone(),
+                shape: staged.shape,
+                entrypoint: staged.entrypoint.clone(),
+            })
+            .expect("a raw-binary release must install through the engine")
+            .receipt()
+            .clone();
+        assert_eq!(receipt.integrity_sha256, staged.sha256);
+        assert!(matches!(
+            store.status("raw-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+    }
+
+    #[test]
+    fn npm_wildcards_are_not_exact_versions() {
+        for exact in ["1.2.3", "0.3.209", "1.2.3-beta.1", "10.20.30"] {
+            assert!(version_is_exact(exact), "{exact} is exact");
+        }
+        for floating in [
+            "1.2.x", "1.X.3", "1.2.X", "x", "^1.2.3", "~1.2.3", ">=1.2.3", "1.2.*", "*", "latest",
+            "", "1.2", "next", "1..3", "v1.2.3",
+        ] {
+            assert!(!version_is_exact(floating), "{floating} must not be exact");
+        }
+    }
+
+    #[test]
+    fn a_failed_prepare_leaves_no_staging_residue() {
+        let fixture = tempfile::tempdir().unwrap();
+        let staging = fixture.path().join("staging");
+        let bytes = b"vendor bytes".to_vec();
+
+        // Integrity failure: nothing of the attempt may survive for a retry at the
+        // same path to adopt.
+        let (stage, _) = prepare(
+            &RuntimeSource::ReleaseArtifact {
+                url: "https://example.com/agent".into(),
+                sha256: "c".repeat(64),
+                kind: ArtifactKind::RawBinary,
+                entrypoint: PathBuf::from("bin/agent"),
+            },
+            &staging,
+            &FixtureFetcher { bytes, fail: false },
+        )
+        .unwrap_err();
+        assert_eq!(stage, PrepareStage::Integrity);
+        assert!(
+            !staging.exists(),
+            "a failed prepare must leave no residue at its staging path"
+        );
+    }
+
+    #[test]
+    fn platform_naming_follows_each_vendors_own_spelling() {
+        // The two schemes differ only on Windows, which is exactly why a single
+        // shared suffix silently produced package names that do not exist.
+        let node = npm_platform_suffix(PlatformNaming::NodePlatform);
+        let windows = npm_platform_suffix(PlatformNaming::WindowsSpelled);
+        assert!(node.is_some() && windows.is_some(), "this host must be supported");
+        if cfg!(windows) {
+            assert!(node.unwrap().starts_with("win32-"));
+            assert!(windows.unwrap().starts_with("windows-"));
+            assert_ne!(node, windows);
+            // And the executable name carries the extension vendors publish.
+            assert_eq!(executable_name("codex"), "codex.exe");
+        } else {
+            assert_eq!(node, windows, "only Windows spelling differs");
+            assert_eq!(executable_name("codex"), "codex");
+        }
+
+        // Every host arch the lockfiles pin must resolve, Windows arm64 included.
+        for lockfile in [CLAUDE_LOCKFILE, CODEX_LOCKFILE, OPENCODE_LOCKFILE] {
+            for arch in ["darwin-arm64", "darwin-x64"] {
+                assert!(lockfile.contains(arch), "lockfile must pin {arch}");
+            }
+        }
+        assert!(CLAUDE_LOCKFILE.contains("win32-arm64"));
+        assert!(OPENCODE_LOCKFILE.contains("windows-arm64"));
+    }
+
+    /// The managed launch tier is only live once a host registers a root, and
+    /// nothing registered one — so every adapter's managed preference resolved to
+    /// nothing and the whole tier was dead. `BridgeCore::boot` registers it now;
+    /// this proves the lookup works once it has.
+    ///
+    /// Takes the registration lock, since the root is process-wide by design and
+    /// this test both sets and clears it.
+    #[test]
+    fn registering_a_root_makes_the_managed_tier_live() {
+        let _guard = MANAGED_ROOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        clear_managed_root();
+        assert_eq!(
+            managed_entrypoint("codex"),
+            None,
+            "with no registered root the tier must be inert, not guessing"
+        );
+
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("managed-runtimes");
+        let store = ManagedPayloadStore::new(&root);
+        let expected = install_managed(&store, fixture.path(), "codex");
+
+        // Still inert until a host registers, which is exactly the bug.
+        assert_eq!(managed_entrypoint("codex"), None);
+
+        register_managed_root(&root);
+        assert_eq!(
+            managed_entrypoint("codex"),
+            Some(expected.clone()),
+            "a registered root must surface the installed payload"
+        );
+
+        // A second registration wins, so a core that boots twice cannot resolve
+        // payloads out of the first core's directory.
+        let other = tempfile::tempdir().unwrap();
+        register_managed_root(other.path().join("managed-runtimes"));
+        assert_eq!(managed_entrypoint("codex"), None);
+
+        // Drift falls back rather than handing out a payload that needs repair.
+        register_managed_root(&root);
+        fs::write(&expected, b"tampered").unwrap();
+        assert_eq!(managed_entrypoint("codex"), None);
+
+        clear_managed_root();
+    }
+
+    /// The registration is process-wide, so any test that mutates it takes this
+    /// first rather than racing another under the default parallel runner.
+    static MANAGED_ROOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn npm_bin_symlinks_are_pruned_before_digesting() {
         let fixture = tempfile::tempdir().unwrap();
@@ -1416,9 +1865,26 @@ mod tests {
             // The entrypoint lives inside the closure and names a platform package.
             let entrypoint = entrypoint.to_string_lossy();
             assert!(entrypoint.starts_with("node_modules/"), "{agent_id}: {entrypoint}");
+            // Each vendor's own spelling, and the package must be one the
+            // lockfile actually pins — a suffix that does not exist upstream
+            // would install nothing.
+            let naming = if agent_id == "opencode" {
+                PlatformNaming::WindowsSpelled
+            } else {
+                PlatformNaming::NodePlatform
+            };
+            let suffix = npm_platform_suffix(naming).unwrap();
             assert!(
-                entrypoint.contains(npm_platform_suffix().unwrap()),
+                entrypoint.contains(suffix),
                 "{agent_id} entrypoint must name the host platform package: {entrypoint}"
+            );
+            let platform_package = entrypoint
+                .split('/')
+                .find(|part| part.ends_with(suffix))
+                .unwrap_or_default();
+            assert!(
+                lockfile.contains(platform_package),
+                "{agent_id} lockfile does not pin {platform_package}"
             );
         }
     }
@@ -1428,7 +1894,7 @@ mod tests {
         // The bridge between this module and #174, asserted by actually installing
         // rather than by validating a recipe in isolation.
         let fixture = tempfile::tempdir().unwrap();
-        let platform = npm_platform_suffix().unwrap();
+        let platform = npm_platform_suffix(PlatformNaming::NodePlatform).unwrap();
         let bytes = tarball(&[("bin/codex", b"#!/bin/sh\nexec codex\n", 0o755)], &[]);
         let staged = prepare(
             &RuntimeSource::ReleaseArtifact {

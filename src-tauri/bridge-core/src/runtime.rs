@@ -197,6 +197,11 @@ impl BridgeCore {
     /// browser supervision — everything the runtime needs before a host can
     /// serve requests against it.
     pub fn boot(config: BootConfig) -> Result<Self, BridgeError> {
+        // Managed payloads live under the leased data directory, registered here
+        // rather than in each host so a future host cannot forget to do it. Until
+        // this runs, every adapter's managed tier resolves to nothing and the
+        // agents behave exactly as they did before managed payloads existed.
+        crate::managed_runtime::register_managed_root(config.data_dir.join("managed-runtimes"));
         let db_path = config.data_dir.join("bridge.db");
         let telemetry_db_path = config.data_dir.join("bridge-telemetry.db");
         let snapshot_dir = config.data_dir.join("history-snapshots");
@@ -438,7 +443,7 @@ pub fn start_health_server(
                     "adapters": adapters,
                     "harnesses": {
                         "claude": binary::resolve("claude").is_some(),
-                        "codex": binary::resolve("codex").is_some(),
+                        "codex": crate::codex_adapter::resolve_runtime().is_some(),
                         "opencode": binary::resolve("opencode").is_some(),
                         "shell": true
                     }

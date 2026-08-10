@@ -1,5 +1,5 @@
 use crate::{
-    agent, binary, claude_adapter, codex_adapter,
+    agent, claude_adapter, codex_adapter,
     delegation::WriteMode,
     model::{AdapterDescriptor, CapabilityTier, ModelOption, SandboxMode},
     opencode_adapter,
@@ -704,7 +704,7 @@ impl HarnessAdapter for CodexAdapter {
             .map(str::to_owned)
             .collect(),
             sandbox_modes: SandboxMode::ALL.to_vec(),
-            unavailable_reason: binary::resolve("codex")
+            unavailable_reason: codex_adapter::resolve_runtime()
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
             models: model_options(&[

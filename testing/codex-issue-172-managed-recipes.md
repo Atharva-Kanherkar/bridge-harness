@@ -34,6 +34,18 @@
   or malformed archive cannot write outside the staging directory.
 - Fetching is injected behind a trait. Every test in this PR runs offline against
   fixtures; no test reaches the network, npm, or a vendor endpoint.
+- The real fetcher refuses a plaintext hop (`https_only`, which covers redirects),
+  bounds the body while streaming — before any digest can be known — and bounds
+  connect and total time. Redirects are allowed but limited, because vendor release
+  URLs commonly redirect to a CDN and the bytes are verified against a pinned
+  digest before anything uses them.
+- `npm ci` runs with the ambient Node-preload variables cleared. `--ignore-scripts`
+  stops package lifecycle scripts but not `NODE_OPTIONS`-class injection into the
+  install itself.
+- Managed payloads live under the leased data directory, registered by
+  `BridgeCore::boot` rather than by each host, so a future host cannot forget to do
+  it. Until a root is registered the managed tier is inert and the agents behave
+  exactly as they did before managed payloads existed.
 - Out of scope: RPC (#169), UI (#170), any auth system, any credential storage,
   and any change to how the three integrations talk to their agents.
 
@@ -92,8 +104,29 @@ the supply-chain guarantee genuinely vendor-supplied, and drops a dependency.
   `..` traversal, symlinks, hardlinks, device entries, and an entry exceeding the
   size ceiling are each rejected, and nothing is written outside the staging
   directory for any of them.
-- `extraction_is_bounded_by_total_size_and_entry_count` — an archive over either
-  ceiling is refused rather than filling the disk.
+- `extraction_is_bounded_by_total_size_and_entry_count` — one three-entry archive
+  refused three ways through injectable `ExtractLimits`, and accepted under the
+  production defaults so the refusals are provably the ceilings. The ceilings are
+  injectable precisely because production values are unreachable by any fixture,
+  which is how they went untested.
+- `pax_size_overrides_cannot_bypass_the_entry_ceiling` — a PAX `size=` record past
+  the ceiling with an understating ustar header is refused before anything is
+  written; ceilings charge the effective entry size, and the copy is capped
+  independently of any header claim.
+- `a_raw_binary_release_installs_through_the_payload_engine` — the publisher digest
+  verifies the download and the engine's shape-aware digest is what the recipe
+  carries, so a raw-binary release actually installs.
+- `npm_wildcards_are_not_exact_versions` — `x`/`X` wildcards, ranges, `latest`, and
+  partial versions are all refused; exact and prerelease versions are accepted.
+- `platform_naming_follows_each_vendors_own_spelling` — Anthropic and OpenAI
+  publish `win32-*`, OpenCode publishes `windows-*`, Windows leaves carry `.exe`,
+  and each recipe's platform package is one its own lockfile pins.
+- `registering_a_root_makes_the_managed_tier_live` — the managed tier is inert
+  until a host registers a root, live once it has, re-registerable so a second
+  `boot` cannot resolve out of the first core's directory, and inert again when the
+  payload drifts.
+- `a_failed_prepare_leaves_no_staging_residue` — a failed attempt leaves nothing at
+  its staging path for a retry to adopt.
 - `npm_closure_installs_are_pinned_by_lockfile_not_by_tree_digest` — an npm-shaped
   source is installed with an exact version and a lockfile, and its recorded
   integrity is the digest of the resulting tree rather than a pinned constant.

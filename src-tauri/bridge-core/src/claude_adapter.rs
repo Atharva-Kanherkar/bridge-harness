@@ -109,6 +109,19 @@ fn launch(
         // typed result, its last words are the failure context the parent
         // sees instead of a generic "ended without reporting".
         .stderr(Stdio::piped());
+    // Which copy of the SDK the sidecar loads applies to every launch, not just
+    // sandboxed ones: an interactive turn runs the same sidecar. The variable is
+    // also cleared when there is no managed payload, so a stale value inherited
+    // from the environment can never point the sidecar at something Bridge does
+    // not own.
+    match managed_sdk_module() {
+        Some(module) => {
+            command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
+        }
+        None => {
+            command.env_remove("BRIDGE_CLAUDE_SDK_ENTRY");
+        }
+    }
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -116,14 +129,6 @@ fn launch(
             .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        // With a managed payload installed, point the sidecar at that copy of the
-        // SDK. ESM ignores NODE_PATH, so the module is selected by an explicit
-        // entry rather than by environment path injection. Absent a managed
-        // payload the variable is unset and the sidecar imports its bundled
-        // dependency exactly as before.
-        if let Some(module) = managed_sdk_module() {
-            command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
-        }
         if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
             if let Some(token) = claude_oauth_token()? {
                 command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
@@ -510,7 +515,10 @@ pub fn managed_sdk_module() -> Option<PathBuf> {
         .components()
         .collect::<Vec<_>>()
         .iter()
-        .position(|component| component.as_os_str() == "node_modules")
+        // rposition, not position: the managed root itself may sit under a path
+        // containing `node_modules`, and taking the first boundary would re-root
+        // onto an unrelated project's SDK.
+        .rposition(|component| component.as_os_str() == "node_modules")
         .map(|index| {
             entrypoint
                 .components()
