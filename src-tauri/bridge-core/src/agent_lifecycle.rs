@@ -21,7 +21,8 @@
 //! rather than being recast as `broken` or promoted to `ready`. This module has
 //! no credential store, no OAuth client, and no logout path.
 
-use std::{error::Error, fmt, str::FromStr};
+use crate::managed_payload::{ManagedPayloadStatus, RepairReason};
+use std::{error::Error, fmt, path::PathBuf, str::FromStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentLifecycleState {
@@ -279,6 +280,152 @@ pub fn validate_transition(
     }
 }
 
+/// What the #165 payload engine says about the payload, reduced to what the
+/// lifecycle needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayloadCondition {
+    /// No Bridge-managed payload.
+    Absent,
+    /// Bridge owns a receipt-bound payload with a verified entrypoint.
+    Installed { entrypoint: PathBuf },
+    /// Bridge owns the payload but it no longer matches its receipt.
+    Repairable { reason: RepairReason },
+}
+
+impl PayloadCondition {
+    /// Reduce a [`ManagedPayloadStatus`] without reinterpreting it.
+    ///
+    /// Every repair reason stays a repair reason, including
+    /// `EntrypointNotExecutable`: an installed payload that cannot be executed
+    /// is drift to be repaired, never a `ready` agent.
+    pub fn from_status(status: ManagedPayloadStatus) -> Self {
+        match status {
+            ManagedPayloadStatus::NotInstalled => Self::Absent,
+            ManagedPayloadStatus::Installed { entrypoint, .. } => Self::Installed { entrypoint },
+            ManagedPayloadStatus::Repairable { reason } => Self::Repairable { reason },
+        }
+    }
+}
+
+/// A user-managed runtime Bridge can see but does not own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalRuntime {
+    pub candidate: PathBuf,
+}
+
+/// The result of an integration's own non-destructive readiness check.
+///
+/// Bridge does not implement these checks — Claude's is a Node and sidecar
+/// probe, Codex's is a `codex --version`, OpenCode's is its provider catalog —
+/// and this enum exists so their verdicts can be carried without being
+/// rewritten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadinessOutcome {
+    /// The integration can launch.
+    Ready { version: Option<String> },
+    /// The integration cannot launch for a reason reinstalling will not fix — a
+    /// missing runtime prerequisite, say.
+    Unavailable { reason: String },
+    /// The vendor reported that it needs a login or an API key.
+    ///
+    /// Deliberately distinct from [`Self::Unavailable`]: nothing is broken, the
+    /// user simply has not authenticated with the vendor. `vendor_message` is
+    /// the vendor's own text, carried verbatim, and Bridge stores no credential
+    /// state of its own for it.
+    VendorBlocked { vendor_message: String },
+    /// Not probed — there was no payload to probe.
+    NotProbed,
+}
+
+impl ReadinessOutcome {
+    /// Is this verdict the vendor's rather than Bridge's?
+    ///
+    /// Callers use this to keep a vendor auth prompt recognizable as a vendor
+    /// concern instead of reporting it as a Bridge failure.
+    pub const fn is_vendor_owned(&self) -> bool {
+        matches!(self, Self::VendorBlocked { .. })
+    }
+
+    /// The message to show, if any. Vendor text is never reworded.
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Self::Ready { .. } | Self::NotProbed => None,
+            Self::Unavailable { reason } => Some(reason),
+            Self::VendorBlocked { vendor_message } => Some(vendor_message),
+        }
+    }
+}
+
+/// Whether a process is alive right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessCondition {
+    None,
+    Running { pid: u32 },
+}
+
+/// The three independent facts, gathered from sources this module does not own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleObservation {
+    pub payload: PayloadCondition,
+    pub external: Option<ExternalRuntime>,
+    pub readiness: ReadinessOutcome,
+    pub process: ProcessCondition,
+}
+
+impl LifecycleObservation {
+    pub fn absent() -> Self {
+        Self {
+            payload: PayloadCondition::Absent,
+            external: None,
+            readiness: ReadinessOutcome::NotProbed,
+            process: ProcessCondition::None,
+        }
+    }
+
+    /// Resolve the settled state these facts describe.
+    ///
+    /// "Settled" means no operation is in flight: `installing`, `stopping`, and
+    /// `uninstalling` are owned by the coordinator driving an operation and are
+    /// never inferred from an observation.
+    ///
+    /// Precedence, in order, and each rule is load-bearing:
+    ///
+    /// 1. **A live process resolves to `running`, whatever the payload says.**
+    ///    `stopping` is only reachable from `running`, so any other answer would
+    ///    leave a live process in a state Bridge cannot legally stop it from. A
+    ///    payload that drifted or vanished underneath a running process becomes
+    ///    actionable once the process is reaped, and until then the observation
+    ///    still carries the payload condition for callers that want to warn.
+    /// 2. Drift outranks readiness. A `repairable` payload is never `ready`.
+    /// 3. A Bridge-managed payload outranks a discoverable external runtime,
+    ///    because the managed payload is the one Bridge would launch. `external`
+    ///    describes the case where there is nothing managed to launch.
+    /// 4. Readiness promotes `installed` to `ready`. A vendor auth block leaves
+    ///    the agent `installed` — owned, not launch-ready, nothing broken.
+    pub fn settled_state(&self) -> AgentLifecycleState {
+        if matches!(self.process, ProcessCondition::Running { .. }) {
+            return AgentLifecycleState::Running;
+        }
+        match &self.payload {
+            PayloadCondition::Repairable { .. } => AgentLifecycleState::Repairable,
+            PayloadCondition::Absent => {
+                if self.external.is_some() {
+                    AgentLifecycleState::External
+                } else {
+                    AgentLifecycleState::NotInstalled
+                }
+            }
+            PayloadCondition::Installed { .. } => match &self.readiness {
+                ReadinessOutcome::Ready { .. } => AgentLifecycleState::Ready,
+                ReadinessOutcome::Unavailable { .. } => AgentLifecycleState::Broken,
+                ReadinessOutcome::VendorBlocked { .. } | ReadinessOutcome::NotProbed => {
+                    AgentLifecycleState::Installed
+                }
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentLifecycle {
     state: AgentLifecycleState,
@@ -436,6 +583,227 @@ mod tests {
             "a broken agent must be reinstalled or repaired, never promoted straight to ready"
         );
         broken.transition_to(AgentLifecycleState::Installing).unwrap();
+    }
+
+    fn installed_payload() -> PayloadCondition {
+        PayloadCondition::Installed {
+            entrypoint: PathBuf::from("/managed/agents/a/installations/i/payload/bin/agent"),
+        }
+    }
+
+    fn external() -> Option<ExternalRuntime> {
+        Some(ExternalRuntime {
+            candidate: PathBuf::from("/usr/local/bin/agent"),
+        })
+    }
+
+    #[test]
+    fn settled_state_separates_payload_readiness_and_process() {
+        let cases: [(LifecycleObservation, AgentLifecycleState); 9] = [
+            (LifecycleObservation::absent(), AgentLifecycleState::NotInstalled),
+            (
+                LifecycleObservation {
+                    external: external(),
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::External,
+            ),
+            (
+                LifecycleObservation {
+                    payload: installed_payload(),
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Installed,
+            ),
+            (
+                LifecycleObservation {
+                    payload: installed_payload(),
+                    readiness: ReadinessOutcome::Ready {
+                        version: Some("1.2.3".into()),
+                    },
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Ready,
+            ),
+            (
+                LifecycleObservation {
+                    payload: installed_payload(),
+                    readiness: ReadinessOutcome::Unavailable {
+                        reason: "Node.js 18+ is required to run Claude models".into(),
+                    },
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Broken,
+            ),
+            (
+                LifecycleObservation {
+                    payload: installed_payload(),
+                    readiness: ReadinessOutcome::Ready { version: None },
+                    process: ProcessCondition::Running { pid: 4321 },
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Running,
+            ),
+            // Drift outranks readiness: an installed-but-unexecutable payload is
+            // repairable, never ready. This is the #165 EntrypointNotExecutable
+            // reason arriving through PayloadCondition::from_status.
+            (
+                LifecycleObservation {
+                    payload: PayloadCondition::Repairable {
+                        reason: RepairReason::EntrypointNotExecutable,
+                    },
+                    readiness: ReadinessOutcome::Ready { version: None },
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Repairable,
+            ),
+            // A managed payload outranks a discoverable external runtime.
+            (
+                LifecycleObservation {
+                    payload: installed_payload(),
+                    external: external(),
+                    readiness: ReadinessOutcome::Ready { version: None },
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Ready,
+            ),
+            // Liveness outranks the payload condition, because `stopping` is only
+            // reachable from `running`: resolving a live process to anything else
+            // would leave it in a state Bridge cannot legally stop it from.
+            (
+                LifecycleObservation {
+                    payload: PayloadCondition::Absent,
+                    process: ProcessCondition::Running { pid: 99 },
+                    ..LifecycleObservation::absent()
+                },
+                AgentLifecycleState::Running,
+            ),
+        ];
+
+        for (observation, expected) in cases {
+            assert_eq!(
+                observation.settled_state(),
+                expected,
+                "unexpected settled state for {observation:?}"
+            );
+        }
+
+        // And that last case really is recoverable rather than a dead end.
+        let mut stranded = AgentLifecycle::new(AgentLifecycleState::Running);
+        stranded.transition_to(AgentLifecycleState::Stopping).unwrap();
+        stranded
+            .transition_to(AgentLifecycleState::Uninstalling)
+            .unwrap();
+    }
+
+    #[test]
+    fn settled_state_never_infers_an_in_flight_operation() {
+        // installing/stopping/uninstalling belong to the coordinator driving an
+        // operation and must never be produced by observing the world.
+        for payload in [
+            PayloadCondition::Absent,
+            installed_payload(),
+            PayloadCondition::Repairable {
+                reason: RepairReason::IntegrityDrift,
+            },
+        ] {
+            for readiness in [
+                ReadinessOutcome::NotProbed,
+                ReadinessOutcome::Ready { version: None },
+                ReadinessOutcome::Unavailable { reason: "x".into() },
+                ReadinessOutcome::VendorBlocked {
+                    vendor_message: "y".into(),
+                },
+            ] {
+                for process in [ProcessCondition::None, ProcessCondition::Running { pid: 1 }] {
+                    for external in [None, external()] {
+                        let state = LifecycleObservation {
+                            payload: payload.clone(),
+                            external,
+                            readiness: readiness.clone(),
+                            process,
+                        }
+                        .settled_state();
+                        assert!(
+                            !matches!(
+                                state,
+                                AgentLifecycleState::Installing
+                                    | AgentLifecycleState::Stopping
+                                    | AgentLifecycleState::Uninstalling
+                            ),
+                            "observation must not infer the in-flight state {state}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vendor_auth_block_keeps_the_agent_installed_and_the_message_intact() {
+        let vendor_message =
+            "Not logged in. Run `codex login` to authenticate with your ChatGPT account.";
+        let readiness = ReadinessOutcome::VendorBlocked {
+            vendor_message: vendor_message.into(),
+        };
+        let observation = LifecycleObservation {
+            payload: installed_payload(),
+            readiness: readiness.clone(),
+            ..LifecycleObservation::absent()
+        };
+
+        assert_eq!(
+            observation.settled_state(),
+            AgentLifecycleState::Installed,
+            "a vendor auth prompt is not a Bridge failure and not readiness"
+        );
+        assert_ne!(observation.settled_state(), AgentLifecycleState::Broken);
+        assert!(readiness.is_vendor_owned());
+        assert_eq!(readiness.message(), Some(vendor_message));
+
+        // A Bridge-side unavailability is the opposite: not vendor-owned.
+        let bridge_side = ReadinessOutcome::Unavailable {
+            reason: "Node.js 18+ is required".into(),
+        };
+        assert!(!bridge_side.is_vendor_owned());
+        assert!(!ReadinessOutcome::Ready { version: None }.is_vendor_owned());
+        assert_eq!(ReadinessOutcome::Ready { version: None }.message(), None);
+    }
+
+    #[test]
+    fn payload_conditions_map_from_the_engine_without_reinterpretation() {
+        assert_eq!(
+            PayloadCondition::from_status(ManagedPayloadStatus::NotInstalled),
+            PayloadCondition::Absent
+        );
+        for reason in [
+            RepairReason::CorruptActiveReceipt,
+            RepairReason::ActiveReceiptMismatch,
+            RepairReason::MissingInstallation,
+            RepairReason::CorruptEmbeddedReceipt,
+            RepairReason::ReceiptChainMismatch,
+            RepairReason::MissingPayload,
+            RepairReason::MissingEntrypoint,
+            RepairReason::EntrypointNotExecutable,
+            RepairReason::IntegrityDrift,
+            RepairReason::UnsafeManagedPath,
+        ] {
+            let condition =
+                PayloadCondition::from_status(ManagedPayloadStatus::Repairable { reason });
+            assert_eq!(
+                condition,
+                PayloadCondition::Repairable { reason },
+                "repair reasons must survive the reduction unchanged"
+            );
+            assert_eq!(
+                LifecycleObservation {
+                    payload: condition,
+                    ..LifecycleObservation::absent()
+                }
+                .settled_state(),
+                AgentLifecycleState::Repairable
+            );
+        }
     }
 
     #[test]
