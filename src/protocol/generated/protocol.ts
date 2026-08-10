@@ -86,8 +86,6 @@ export type BridgeMethod =
   | "agents/install_managed_agent"
   | "agents/repair_managed_agent"
   | "agents/uninstall_managed_agent"
-  | "agents/start_managed_agent"
-  | "agents/stop_managed_agent"
   | "marketplace/marketplace_catalog"
   | "marketplace/marketplace_app_auth_states"
   | "marketplace/marketplace_action"
@@ -176,8 +174,6 @@ export const BRIDGE_METHODS = [
   { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
   { method: "agents/repair_managed_agent", domain: "agents", command: "repair_managed_agent" },
   { method: "agents/uninstall_managed_agent", domain: "agents", command: "uninstall_managed_agent" },
-  { method: "agents/start_managed_agent", domain: "agents", command: "start_managed_agent" },
-  { method: "agents/stop_managed_agent", domain: "agents", command: "stop_managed_agent" },
   { method: "marketplace/marketplace_catalog", domain: "marketplace", command: "marketplace_catalog" },
   { method: "marketplace/marketplace_app_auth_states", domain: "marketplace", command: "marketplace_app_auth_states" },
   { method: "marketplace/marketplace_action", domain: "marketplace", command: "marketplace_action" },
@@ -317,8 +313,6 @@ export interface BridgeMethodParams {
   "agents/install_managed_agent": InstallManagedAgentParams;
   "agents/repair_managed_agent": RepairManagedAgentParams;
   "agents/uninstall_managed_agent": UninstallManagedAgentParams;
-  "agents/start_managed_agent": StartManagedAgentParams;
-  "agents/stop_managed_agent": StopManagedAgentParams;
   "marketplace/marketplace_catalog": undefined;
   "marketplace/marketplace_app_auth_states": undefined;
   "marketplace/marketplace_action": MarketplaceActionParams;
@@ -409,8 +403,6 @@ export interface BridgeMethodResults {
   "agents/install_managed_agent": ManagedAgentOperationStarted;
   "agents/repair_managed_agent": ManagedAgentOperationStarted;
   "agents/uninstall_managed_agent": ManagedAgentOperationStarted;
-  "agents/start_managed_agent": ManagedAgentStatus;
-  "agents/stop_managed_agent": ManagedAgentStatus;
   "marketplace/marketplace_catalog": unknown;
   "marketplace/marketplace_app_auth_states": unknown;
   "marketplace/marketplace_action": unknown;
@@ -1358,14 +1350,6 @@ export interface RepairManagedAgentParams {
 }
 
 export interface UninstallManagedAgentParams {
-  agentId: string;
-}
-
-export interface StartManagedAgentParams {
-  agentId: string;
-}
-
-export interface StopManagedAgentParams {
   agentId: string;
 }
 

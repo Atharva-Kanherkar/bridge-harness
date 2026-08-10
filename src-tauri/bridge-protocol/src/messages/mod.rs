@@ -229,8 +229,6 @@ typed_methods![
     (InstallManagedAgent, InstallManagedAgentParams, ManagedAgentOperationStarted),
     (RepairManagedAgent, RepairManagedAgentParams, ManagedAgentOperationStarted),
     (UninstallManagedAgent, UninstallManagedAgentParams, ManagedAgentOperationStarted),
-    (StartManagedAgent, StartManagedAgentParams, ManagedAgentStatus),
-    (StopManagedAgent, StopManagedAgentParams, ManagedAgentStatus),
     (MarketplaceCatalog, _, _),
     (MarketplaceAppAuthStates, _, _),
     (MarketplaceAction, MarketplaceActionParams, _),

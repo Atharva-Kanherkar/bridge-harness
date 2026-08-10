@@ -44,8 +44,6 @@ agent_ref_params![
     InstallManagedAgentParams,
     RepairManagedAgentParams,
     UninstallManagedAgentParams,
-    StartManagedAgentParams,
-    StopManagedAgentParams,
 ];
 
 /// What backs the runtime Bridge would launch.
@@ -242,9 +240,6 @@ mod tests {
         round_trip(&InstallManagedAgentParams {
             agent_id: "claude".into(),
         });
-        round_trip(&StopManagedAgentParams {
-            agent_id: "claude".into(),
-        });
         round_trip(&status());
         round_trip(&ManagedAgentList {
             agents: vec![status()],
@@ -296,9 +291,7 @@ mod tests {
             InspectManagedAgentParams,
             InstallManagedAgentParams,
             RepairManagedAgentParams,
-            UninstallManagedAgentParams,
-            StartManagedAgentParams,
-            StopManagedAgentParams
+            UninstallManagedAgentParams
         );
     }
 

@@ -134,8 +134,6 @@ methods![
     (InstallManagedAgent, "agents", "install_managed_agent"),
     (RepairManagedAgent, "agents", "repair_managed_agent"),
     (UninstallManagedAgent, "agents", "uninstall_managed_agent"),
-    (StartManagedAgent, "agents", "start_managed_agent"),
-    (StopManagedAgent, "agents", "stop_managed_agent"),
     // marketplace
     (MarketplaceCatalog, "marketplace", "marketplace_catalog"),
     (MarketplaceAppAuthStates, "marketplace", "marketplace_app_auth_states"),

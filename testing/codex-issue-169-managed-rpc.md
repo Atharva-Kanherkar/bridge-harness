@@ -99,8 +99,8 @@
 
 ## Smoke Tests
 
-- Drive install → start → stop → uninstall against a fixture payload over the
-  daemon socket and confirm each response is typed and each notification arrives.
+- Drive install → inspect → uninstall against a fixture payload over the daemon
+  socket and confirm each response is typed and each notification arrives.
 - Confirm an agent backed only by a PATH runtime lists as external, inspects
   without a receipt, and refuses uninstall.
 - Disconnect mid-install and confirm the reconnecting client recovers

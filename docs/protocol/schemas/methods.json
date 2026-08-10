@@ -555,20 +555,6 @@
       "resultSchema": "managed-agent-operation-started.json"
     },
     {
-      "command": "start_managed_agent",
-      "domain": "agents",
-      "method": "agents/start_managed_agent",
-      "paramsSchema": "start-managed-agent-params.json",
-      "resultSchema": "managed-agent-status.json"
-    },
-    {
-      "command": "stop_managed_agent",
-      "domain": "agents",
-      "method": "agents/stop_managed_agent",
-      "paramsSchema": "stop-managed-agent-params.json",
-      "resultSchema": "managed-agent-status.json"
-    },
-    {
       "command": "marketplace_catalog",
       "domain": "marketplace",
       "method": "marketplace/marketplace_catalog",
