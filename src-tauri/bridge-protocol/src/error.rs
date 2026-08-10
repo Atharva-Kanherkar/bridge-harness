@@ -7,6 +7,9 @@
 //! - `1000..=1999` — runtime errors, mirroring `bridge_core::BridgeError`
 //!   variant for variant so the host mapping is total and obvious.
 //! - `2000..=2999` — protocol lifecycle errors.
+//! - `3000..=3099` — managed agent runtime lifecycle. One code per condition a
+//!   caller must be able to act on differently, so distinguishing them never
+//!   requires matching on message text.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
@@ -29,10 +32,18 @@ pub enum ErrorCode {
     Cancelled,
     ShuttingDown,
     Overloaded,
+    // Managed agent runtime lifecycle.
+    UnsupportedPlatform,
+    IntegrityFailure,
+    ExternalNotManaged,
+    AgentBusy,
+    CorruptReceipt,
+    VendorPrerequisiteMissing,
+    UninstallNotPermitted,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 16] = [
+    pub const ALL: [ErrorCode; 23] = [
         ErrorCode::ParseError,
         ErrorCode::InvalidRequest,
         ErrorCode::MethodNotFound,
@@ -49,6 +60,13 @@ impl ErrorCode {
         ErrorCode::Cancelled,
         ErrorCode::ShuttingDown,
         ErrorCode::Overloaded,
+        ErrorCode::UnsupportedPlatform,
+        ErrorCode::IntegrityFailure,
+        ErrorCode::ExternalNotManaged,
+        ErrorCode::AgentBusy,
+        ErrorCode::CorruptReceipt,
+        ErrorCode::VendorPrerequisiteMissing,
+        ErrorCode::UninstallNotPermitted,
     ];
 
     pub const fn code(self) -> i64 {
@@ -69,6 +87,13 @@ impl ErrorCode {
             ErrorCode::Cancelled => 2002,
             ErrorCode::ShuttingDown => 2003,
             ErrorCode::Overloaded => 2004,
+            ErrorCode::UnsupportedPlatform => 3000,
+            ErrorCode::IntegrityFailure => 3001,
+            ErrorCode::ExternalNotManaged => 3002,
+            ErrorCode::AgentBusy => 3003,
+            ErrorCode::CorruptReceipt => 3004,
+            ErrorCode::VendorPrerequisiteMissing => 3005,
+            ErrorCode::UninstallNotPermitted => 3006,
         }
     }
 
@@ -95,6 +120,13 @@ impl ErrorCode {
             ErrorCode::Cancelled => "cancelled",
             ErrorCode::ShuttingDown => "shutting_down",
             ErrorCode::Overloaded => "overloaded",
+            ErrorCode::UnsupportedPlatform => "unsupported_platform",
+            ErrorCode::IntegrityFailure => "integrity_failure",
+            ErrorCode::ExternalNotManaged => "external_not_managed",
+            ErrorCode::AgentBusy => "agent_busy",
+            ErrorCode::CorruptReceipt => "corrupt_receipt",
+            ErrorCode::VendorPrerequisiteMissing => "vendor_prerequisite_missing",
+            ErrorCode::UninstallNotPermitted => "uninstall_not_permitted",
         }
     }
 
@@ -119,6 +151,13 @@ impl ErrorCode {
             ErrorCode::Cancelled => "The request was cancelled via $/cancel",
             ErrorCode::ShuttingDown => "The server is shutting down and refused the request",
             ErrorCode::Overloaded => "The server is at capacity and refused the connection or request",
+            ErrorCode::UnsupportedPlatform => "No vendor build exists for this operating system and architecture",
+            ErrorCode::IntegrityFailure => "The fetched runtime did not match its pinned integrity digest",
+            ErrorCode::ExternalNotManaged => "This runtime is user-managed; Bridge holds no receipt for it and will not remove it",
+            ErrorCode::AgentBusy => "Another lifecycle operation or a running process is holding this agent",
+            ErrorCode::CorruptReceipt => "The managed installation's receipt could not be read or does not describe it",
+            ErrorCode::VendorPrerequisiteMissing => "The vendor reported a prerequisite of its own, such as a login or an API key",
+            ErrorCode::UninstallNotPermitted => "This installation cannot be removed in its current state",
         }
     }
 }

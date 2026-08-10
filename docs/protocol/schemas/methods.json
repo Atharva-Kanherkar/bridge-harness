@@ -520,6 +520,55 @@
       "resultDeferred": "provider-defined remote browser session descriptor"
     },
     {
+      "command": "list_managed_agents",
+      "domain": "agents",
+      "method": "agents/list_managed_agents",
+      "paramsSchema": null,
+      "resultSchema": "managed-agent-list.json"
+    },
+    {
+      "command": "inspect_managed_agent",
+      "domain": "agents",
+      "method": "agents/inspect_managed_agent",
+      "paramsSchema": "inspect-managed-agent-params.json",
+      "resultSchema": "managed-agent-inspection.json"
+    },
+    {
+      "command": "install_managed_agent",
+      "domain": "agents",
+      "method": "agents/install_managed_agent",
+      "paramsSchema": "install-managed-agent-params.json",
+      "resultSchema": "managed-agent-operation-started.json"
+    },
+    {
+      "command": "repair_managed_agent",
+      "domain": "agents",
+      "method": "agents/repair_managed_agent",
+      "paramsSchema": "repair-managed-agent-params.json",
+      "resultSchema": "managed-agent-operation-started.json"
+    },
+    {
+      "command": "uninstall_managed_agent",
+      "domain": "agents",
+      "method": "agents/uninstall_managed_agent",
+      "paramsSchema": "uninstall-managed-agent-params.json",
+      "resultSchema": "managed-agent-operation-started.json"
+    },
+    {
+      "command": "start_managed_agent",
+      "domain": "agents",
+      "method": "agents/start_managed_agent",
+      "paramsSchema": "start-managed-agent-params.json",
+      "resultSchema": "managed-agent-status.json"
+    },
+    {
+      "command": "stop_managed_agent",
+      "domain": "agents",
+      "method": "agents/stop_managed_agent",
+      "paramsSchema": "stop-managed-agent-params.json",
+      "resultSchema": "managed-agent-status.json"
+    },
+    {
       "command": "marketplace_catalog",
       "domain": "marketplace",
       "method": "marketplace/marketplace_catalog",

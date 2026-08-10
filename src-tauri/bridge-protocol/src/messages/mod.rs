@@ -19,6 +19,7 @@
 //! each naming the core type still to be mirrored; a method missing from both
 //! tables fails the coverage test below.
 
+mod agents;
 mod approvals;
 mod browser;
 mod common;
@@ -37,6 +38,7 @@ mod state;
 mod terminal;
 mod workspaces;
 
+pub use agents::*;
 pub use approvals::*;
 pub use browser::*;
 pub use common::*;
@@ -221,6 +223,14 @@ typed_methods![
     (ConfigureRemoteBrowser, ConfigureRemoteBrowserParams, UnitResult),
     (StartRemoteBrowser, StartRemoteBrowserParams, _),
     // marketplace
+    // agents — whether an agent's runtime is installed at all
+    (ListManagedAgents, _, ManagedAgentList),
+    (InspectManagedAgent, InspectManagedAgentParams, ManagedAgentInspection),
+    (InstallManagedAgent, InstallManagedAgentParams, ManagedAgentOperationStarted),
+    (RepairManagedAgent, RepairManagedAgentParams, ManagedAgentOperationStarted),
+    (UninstallManagedAgent, UninstallManagedAgentParams, ManagedAgentOperationStarted),
+    (StartManagedAgent, StartManagedAgentParams, ManagedAgentStatus),
+    (StopManagedAgent, StopManagedAgentParams, ManagedAgentStatus),
     (MarketplaceCatalog, _, _),
     (MarketplaceAppAuthStates, _, _),
     (MarketplaceAction, MarketplaceActionParams, _),

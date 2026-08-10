@@ -35,8 +35,9 @@
 - `agents/install_managed_agent` starts an install and returns an operation id.
   `agents/repair_managed_agent` and `agents/uninstall_managed_agent` behave the
   same way for their operations.
-- `agents/start_managed_agent` and `agents/stop_managed_agent` drive spawn-on-use
-  and clean stop through the #175 coordinator, and never bypass its ordering.
+- Readiness, running state, and bounded failure information are fields on the
+  status payload rather than methods of their own, so one round trip answers "can
+  this run" without a client stitching three responses together.
 - Progress arrives as a transient notification carrying operation id, stage, and a
   terminal result. State changes arrive as a separate notification. Neither is
   durable: a client that reconnects refetches authoritative state from
@@ -82,8 +83,10 @@
 ## Integration / Functional Tests
 
 - The acceptance flow is drivable without the desktop app: from a fixture payload,
-  `list → install → status → start → stop → uninstall → list → install` again,
-  asserting the state after each step and that no receipt survives the uninstall.
+  `list → install → inspect → uninstall → list → install` again, asserting the
+  state after each step and that no receipt survives the uninstall. Starting and
+  stopping an agent is session lifecycle and already has methods; this domain owns
+  the payload lifecycle.
 - `cargo test --manifest-path src-tauri/Cargo.toml --workspace` passes, including
   the method-registry and command-signature gates in the shell crate.
 - Generated JSON Schemas and TypeScript artifacts exactly match the Rust contract

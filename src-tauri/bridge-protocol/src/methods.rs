@@ -127,6 +127,15 @@ methods![
     (BrowserSkills, "browser", "browser_skills"),
     (ConfigureRemoteBrowser, "browser", "configure_remote_browser"),
     (StartRemoteBrowser, "browser", "start_remote_browser"),
+    // agents — the runtime lifecycle for the built-in integrations. Distinct
+    // from `marketplace`, which is about plugins running inside an agent.
+    (ListManagedAgents, "agents", "list_managed_agents"),
+    (InspectManagedAgent, "agents", "inspect_managed_agent"),
+    (InstallManagedAgent, "agents", "install_managed_agent"),
+    (RepairManagedAgent, "agents", "repair_managed_agent"),
+    (UninstallManagedAgent, "agents", "uninstall_managed_agent"),
+    (StartManagedAgent, "agents", "start_managed_agent"),
+    (StopManagedAgent, "agents", "stop_managed_agent"),
     // marketplace
     (MarketplaceCatalog, "marketplace", "marketplace_catalog"),
     (MarketplaceAppAuthStates, "marketplace", "marketplace_app_auth_states"),

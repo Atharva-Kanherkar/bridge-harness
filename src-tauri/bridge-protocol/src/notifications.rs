@@ -64,6 +64,11 @@ notifications![
     // Refetch hints: the payload carries no state; clients re-read snapshots.
     (StateChanged, "state-changed", Transient),
     (AdaptersChanged, "adapters-changed", Transient),
+    // Managed-runtime lifecycle. Both transient: a client that misses either
+    // refetches authoritative state through `agents/list_managed_agents` rather
+    // than treating progress it happened to see as a completion.
+    (ManagedAgentChanged, "managed-agent-changed", Transient),
+    (ManagedAgentProgress, "managed-agent-progress", Transient),
     (LearningJobChanged, "learning-job-changed", Transient),
     // Explicitly transient streams: worthless once stale, never replayed.
     (SessionOutput, "session-output", Transient),
