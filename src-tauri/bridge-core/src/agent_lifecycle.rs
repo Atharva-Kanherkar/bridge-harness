@@ -605,6 +605,8 @@ pub trait ReadinessProbe: Send + Sync {
 pub trait ProcessSupervisor: Send + Sync {
     fn launch(&self, agent_id: &str, entrypoint: &Path) -> Result<LaunchedProcess, String>;
     fn is_running(&self, pid: u32) -> bool;
+    /// Request that a process stop. The coordinator confirms the result through
+    /// [`Self::is_running`] before it clears process state or removes a payload.
     fn stop(&self, pid: u32, reason: ShutdownReason) -> bool;
 }
 
@@ -961,7 +963,14 @@ impl AgentLifecycleCoordinator {
             return self.status(agent_id, external_candidates);
         }
 
-        let installed = self.store.install(recipe);
+        // A receipt-owned payload that has drifted must use the engine's repair
+        // operation. `install` deliberately refuses to overwrite that payload,
+        // because it needs its existing receipt as ownership proof.
+        let installed = if from == AgentLifecycleState::Repairable {
+            self.store.repair(recipe).map(|_| ())
+        } else {
+            self.store.install(recipe).map(|_| ())
+        };
         let outcome = match installed {
             Ok(_) if cancelled.is_cancelled() => {
                 // Landed, then cancelled: roll back so no active receipt survives.
@@ -1078,10 +1087,19 @@ impl AgentLifecycleCoordinator {
     pub fn note_process_exit(
         &self,
         agent_id: &str,
+        pid: u32,
         failure_context: Option<&str>,
     ) -> Result<(), LifecycleError> {
         let mut records = self.records();
-        let record = records.entry(agent_id.to_owned()).or_default();
+        let Some(record) = records.get_mut(agent_id) else {
+            return Ok(());
+        };
+        // Exit reporting can be delayed. A notification for an already-reaped
+        // process must not clear a replacement process that has since launched.
+        match record.process {
+            Some(process) if process.pid == pid => {}
+            Some(_) | None => return Ok(()),
+        }
         record.process = None;
         match failure_context {
             Some(context) => {
@@ -1146,16 +1164,20 @@ impl AgentLifecycleCoordinator {
             ));
         }
         self.begin(agent_id, from, AgentLifecycleState::Stopping)?;
-        let stopped = self.supervisor.stop(pid, reason);
+        let _stop_requested = self.supervisor.stop(pid, reason);
+        // A supervisor acknowledgement is not proof that the child is gone.
+        // Keep tracking the PID until liveness says otherwise; otherwise an
+        // uninstall could delete the payload beneath a still-running process.
+        let still_running = self.supervisor.is_running(pid);
         {
             let mut records = self.records();
             if let Some(record) = records.get_mut(agent_id) {
-                if stopped {
+                if !still_running {
                     record.process = None;
                 }
             }
         }
-        if !stopped {
+        if still_running {
             self.finish(
                 agent_id,
                 AgentLifecycleState::Stopping,
@@ -1755,6 +1777,7 @@ mod tests {
         next_pid: Mutex<u32>,
         launch_error: Mutex<Option<String>>,
         refuse_stop: Mutex<bool>,
+        acknowledge_stop_without_stopping: Mutex<bool>,
         /// Checked at stop time to prove the payload had not been removed yet.
         watched_payload: Mutex<Option<PathBuf>>,
         /// When held shut, `launch` blocks inside the call. Lets a test park a
@@ -1771,6 +1794,7 @@ mod tests {
                 next_pid: Mutex::new(1000),
                 launch_error: Mutex::new(None),
                 refuse_stop: Mutex::new(false),
+                acknowledge_stop_without_stopping: Mutex::new(false),
                 watched_payload: Mutex::new(None),
                 launch_gate_open: Mutex::new(true),
                 launch_gated: Mutex::new(false),
@@ -1790,6 +1814,12 @@ mod tests {
         }
         fn refuse_stop(&self, refuse: bool) {
             *self.refuse_stop.lock().unwrap() = refuse;
+        }
+        fn acknowledge_stop_without_stopping(&self, acknowledge: bool) {
+            *self.acknowledge_stop_without_stopping.lock().unwrap() = acknowledge;
+        }
+        fn exit_without_notifying(&self, pid: u32) {
+            self.running.lock().unwrap().remove(&pid);
         }
         /// Hold every subsequent launch inside the call until `open_launch_gate`.
         fn gate_launches(&self) {
@@ -1845,6 +1875,9 @@ mod tests {
             ));
             if *self.refuse_stop.lock().unwrap() {
                 return false;
+            }
+            if *self.acknowledge_stop_without_stopping.lock().unwrap() {
+                return true;
             }
             self.running.lock().unwrap().remove(&pid);
             true
@@ -2037,6 +2070,51 @@ mod tests {
         assert!(
             installation.is_dir(),
             "a payload must never be removed while its process is still alive"
+        );
+    }
+
+    #[test]
+    fn uninstall_confirms_a_stopped_pid_is_no_longer_live() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let receipt = read_active_receipt(harness.coordinator.store(), "fixture-agent");
+        let installation = harness
+            .coordinator
+            .store()
+            .root()
+            .join(&receipt.owned_paths[0]);
+        let running = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        let pid = running.process_id.expect("launch returns a pid");
+
+        // A supervisor may acknowledge the stop request before the process has
+        // actually reaped. That acknowledgement alone cannot authorize removal.
+        harness
+            .supervisor
+            .acknowledge_stop_without_stopping(true);
+        let error = harness
+            .coordinator
+            .uninstall("fixture-agent", NO_CANDIDATES)
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::StopFailed { pid: failed, .. } if failed == pid));
+        assert!(
+            installation.is_dir(),
+            "a payload must remain while its acknowledged-but-live process exists"
+        );
+        assert_eq!(
+            harness
+                .coordinator
+                .status("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .process_id,
+            Some(pid),
+            "the coordinator must keep tracking an unconfirmed stop"
         );
     }
 
@@ -2475,6 +2553,22 @@ mod tests {
                 ..
             }
         ));
+        // Repairable payloads need the receipt-proven repair path, not a fresh
+        // install (which correctly refuses to overwrite drift).
+        let repaired = harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        assert_eq!(repaired.state, AgentLifecycleState::Ready);
+        assert_eq!(
+            harness
+                .coordinator
+                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Running,
+            "a repaired payload is launchable again"
+        );
         // A drifted payload is still Bridge's to remove.
         assert_eq!(
             harness
@@ -2607,15 +2701,16 @@ mod tests {
             .coordinator
             .install(&recipe, NO_CANDIDATES, &go())
             .unwrap();
-        harness
+        let first = harness
             .coordinator
             .ensure_running("fixture-agent", NO_CANDIDATES)
             .unwrap();
+        let first_pid = first.process_id.expect("launch returns a pid");
 
         // A clean exit: back to ready, and spawn-on-use works again.
         harness
             .coordinator
-            .note_process_exit("fixture-agent", None)
+            .note_process_exit("fixture-agent", first_pid, None)
             .unwrap();
         let status = harness
             .coordinator
@@ -2624,14 +2719,12 @@ mod tests {
         assert_eq!(status.state, AgentLifecycleState::Ready);
         assert_eq!(status.process_id, None);
         assert_eq!(status.consecutive_failures, 0);
-        assert_eq!(
-            harness
-                .coordinator
-                .ensure_running("fixture-agent", NO_CANDIDATES)
-                .unwrap()
-                .state,
-            AgentLifecycleState::Running
-        );
+        let replacement = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(replacement.state, AgentLifecycleState::Running);
+        let replacement_pid = replacement.process_id.expect("launch returns a pid");
 
         // A crash counts against the budget and keeps redacted context, but one
         // crash is not a loop: the agent is still launchable.
@@ -2639,6 +2732,7 @@ mod tests {
             .coordinator
             .note_process_exit(
                 "fixture-agent",
+                replacement_pid,
                 Some("segfault; GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
             )
             .unwrap();
@@ -2653,6 +2747,49 @@ mod tests {
         assert!(
             !context.contains("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
             "a token in an exit context must not reach lifecycle state: {context}"
+        );
+    }
+
+    #[test]
+    fn a_delayed_exit_from_an_old_process_cannot_clear_its_replacement() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let first = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        let first_pid = first.process_id.expect("launch returns a pid");
+
+        // The child has exited, but its delayed notification has not arrived.
+        harness.supervisor.exit_without_notifying(first_pid);
+        let replacement = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        let replacement_pid = replacement.process_id.expect("replacement launches");
+        assert_ne!(replacement_pid, first_pid);
+
+        harness
+            .coordinator
+            .note_process_exit(
+                "fixture-agent",
+                first_pid,
+                Some("stale crash notification"),
+            )
+            .unwrap();
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Running);
+        assert_eq!(status.process_id, Some(replacement_pid));
+        assert_eq!(
+            status.consecutive_failures, 0,
+            "a stale exit must not count against the replacement process"
         );
     }
 
