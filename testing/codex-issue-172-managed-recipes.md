@@ -5,18 +5,40 @@
 - Bridge is not a distributor. Payload bytes always come from the vendor's own
   official source; Bridge ships only the pinned version, the expected integrity
   where the publisher provides one, and the resolution logic.
-- Two integrity models, because the three payloads are not the same shape, and
-  this is a deliberate decision rather than an oversight:
-  - **Codex and OpenCode** are single official release artifacts, so the recipe
-    carries a publisher-pinned SHA-256 that must match before anything is
-    promoted. A mismatch is a hard failure.
-  - **Claude** is the `@anthropic-ai/claude-agent-sdk` dependency *closure*, and
-    an `npm` install tree is not byte-reproducible across machines or npm
-    versions. Its supply-chain guarantee therefore comes from npm's own
-    per-tarball integrity, pinned by a committed lockfile and installed with
-    `npm ci`; the #174 tree digest is computed from the installed tree and
-    recorded in the receipt, where it still does the job it was built for —
-    detecting later drift and proving ownership.
+- **Amended during implementation** (see the note at the end of this section):
+  all three runtimes install as npm dependency closures. npm is the official
+  distribution channel for `@anthropic-ai/claude-agent-sdk`, `@openai/codex`, and
+  `opencode-ai`, each publishes the same version there as on its GitHub releases
+  page, and each ships its platform binary inside a platform-specific package.
+  Every closure is pinned by a committed lockfile, so npm verifies every tarball
+  against a recorded SRI integrity hash.
+- Closures are installed with `npm ci --ignore-scripts`. The binary ships in the
+  platform package, so no vendor postinstall script needs to run, and not running
+  them keeps arbitrary vendor code out of the install path.
+- npm's `node_modules/.bin` shims are symlinks, which the #174 engine rejects
+  outright. They are pruned before the payload is digested: Bridge launches the
+  platform binary or loads the module directly and never uses npm's shims.
+- An `npm` install tree is not byte-reproducible across machines — all three
+  closures pull platform-specific binaries — so there is no honest constant to pin
+  the tree against. The supply-chain guarantee is npm's per-tarball integrity from
+  the lockfile; the #174 tree digest is computed from the installed result, where
+  it still does the job it was built for: proving ownership and catching later
+  drift.
+- The release-artifact source kind remains supported and tested — a publisher-pinned
+  SHA-256 over a single published file — because it is what a future non-npm
+  runtime will need. It is simply not what these three use.
+
+### Why this changed
+
+The contract originally had Codex and OpenCode installing from GitHub release
+archives with publisher-pinned SHA-256 digests. Checking the actual releases
+during implementation showed that would be worse on three counts: OpenCode
+publishes its CLI only as `.zip` (the `.tar.gz` asset is the desktop app), which
+would mean adding a zip extractor; OpenCode publishes no checksums file, so its
+digest would have to be one Bridge computed itself, which is not a
+publisher-pinned guarantee at all; and both are on npm at the identical version
+with SRI integrity already published. Using npm for all three is uniform, keeps
+the supply-chain guarantee genuinely vendor-supplied, and drops a dependency.
 - No archive format is accepted implicitly. Entries are validated before being
   written, never after: absolute paths, `..` components, symlinks, hardlinks,
   device nodes, and oversized entries are rejected while extracting, so a hostile
@@ -74,6 +96,12 @@
 - `npm_closure_installs_are_pinned_by_lockfile_not_by_tree_digest` — an npm-shaped
   source is installed with an exact version and a lockfile, and its recorded
   integrity is the digest of the resulting tree rather than a pinned constant.
+- `npm_bin_symlinks_are_pruned_before_digesting` — a staged closure containing
+  `node_modules/.bin` symlinks is pruned so the payload engine accepts it, and
+  nothing outside `.bin` is removed.
+- `each_recipe_targets_a_platform_binary_that_exists_in_its_closure` — the Claude,
+  Codex, and OpenCode entrypoints name the platform package's executable, and the
+  platform component is resolved for the host rather than hardcoded.
 - `resolution_prefers_explicit_then_managed_then_bundled_then_path` — all four
   tiers present resolves to the explicit one; removing tiers walks the order
   down; nothing present is an error naming the agent.
