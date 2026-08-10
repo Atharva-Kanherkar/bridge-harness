@@ -21,9 +21,24 @@
 //! rather than being recast as `broken` or promoted to `ready`. This module has
 //! no credential store, no OAuth client, and no logout path.
 
-use crate::managed_payload::{ManagedPayloadStatus, RepairReason};
+use crate::adapters::ShutdownReason;
+use crate::managed_payload::{
+    inspect_external_runtime, ManagedPayloadStatus, ManagedPayloadStore, PayloadRecipe, RepairReason,
+};
 use crate::secret_interception;
-use std::{error::Error, fmt, path::PathBuf, str::FromStr};
+use crate::BridgeError;
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentLifecycleState {
@@ -556,10 +571,671 @@ impl AgentLifecycle {
     }
 }
 
+/// Whether an in-flight install has been cancelled.
+///
+/// A trait rather than a bare `&AtomicBool` so the two poll sites — before
+/// staging and after promotion — can be told apart in tests. Real callers pass
+/// an `AtomicBool`.
+pub trait CancellationSignal: Send + Sync {
+    fn is_cancelled(&self) -> bool;
+}
+
+impl CancellationSignal for AtomicBool {
+    fn is_cancelled(&self) -> bool {
+        self.load(Ordering::SeqCst)
+    }
+}
+
+/// A process the coordinator launched and is now responsible for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchedProcess {
+    pub pid: u32,
+}
+
+/// An integration's own non-destructive readiness check.
+///
+/// Bridge does not reimplement these. Claude probes Node and its sidecar entry,
+/// Codex runs `codex --version`, OpenCode reads its provider catalog; this trait
+/// only carries their existing verdicts into the lifecycle.
+pub trait ReadinessProbe: Send + Sync {
+    fn probe(&self, agent_id: &str, entrypoint: &Path) -> ReadinessOutcome;
+}
+
+/// Spawn-on-use, liveness, and clean stop for one agent's process.
+pub trait ProcessSupervisor: Send + Sync {
+    fn launch(&self, agent_id: &str, entrypoint: &Path) -> Result<LaunchedProcess, String>;
+    fn is_running(&self, pid: u32) -> bool;
+    fn stop(&self, pid: u32, reason: ShutdownReason) -> bool;
+}
+
+/// What a caller sees. Nothing here represents vendor credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentStatus {
+    pub agent_id: String,
+    pub state: AgentLifecycleState,
+    pub readiness: ReadinessOutcome,
+    pub external: Option<ExternalRuntime>,
+    pub process_id: Option<u32>,
+    pub consecutive_failures: u32,
+    pub last_failure: Option<RedactedFailure>,
+}
+
+impl AgentStatus {
+    /// The vendor's own message, when the vendor is what is blocking.
+    ///
+    /// Separate from [`Self::last_failure`] so a caller cannot mistake "needs a
+    /// vendor login" for "Bridge failed".
+    pub fn vendor_message(&self) -> Option<&str> {
+        self.readiness
+            .is_vendor_owned()
+            .then(|| self.readiness.message())
+            .flatten()
+    }
+}
+
+#[derive(Debug)]
+pub enum LifecycleError {
+    Payload(BridgeError),
+    Transition(InvalidAgentLifecycleTransition),
+    /// A user-managed runtime is not Bridge's to remove. Deliberately distinct
+    /// from a generic invalid transition so a caller can say why.
+    ExternalRuntimeNotRemovable {
+        agent_id: String,
+        candidate: PathBuf,
+    },
+    NotReadyToLaunch {
+        agent_id: String,
+        state: AgentLifecycleState,
+    },
+    RetryBudgetExhausted {
+        agent_id: String,
+        attempts: u32,
+    },
+    LaunchFailed {
+        agent_id: String,
+        context: String,
+    },
+    StopFailed {
+        agent_id: String,
+        pid: u32,
+    },
+}
+
+impl fmt::Display for LifecycleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Payload(error) => write!(formatter, "{error}"),
+            Self::Transition(error) => write!(formatter, "{error}"),
+            Self::ExternalRuntimeNotRemovable {
+                agent_id,
+                candidate,
+            } => write!(
+                formatter,
+                "{agent_id} is a user-managed runtime at {} — Bridge holds no receipt for it and will not remove it",
+                candidate.display()
+            ),
+            Self::NotReadyToLaunch { agent_id, state } => write!(
+                formatter,
+                "{agent_id} cannot be launched from {state}; only a ready agent can be launched"
+            ),
+            Self::RetryBudgetExhausted { agent_id, attempts } => write!(
+                formatter,
+                "{agent_id} failed {attempts} times in a row; retry must be requested explicitly"
+            ),
+            Self::LaunchFailed { agent_id, context } => {
+                write!(formatter, "{agent_id} failed to launch: {context}")
+            }
+            Self::StopFailed { agent_id, pid } => {
+                write!(formatter, "{agent_id} process {pid} did not stop")
+            }
+        }
+    }
+}
+
+impl Error for LifecycleError {}
+
+impl From<InvalidAgentLifecycleTransition> for LifecycleError {
+    fn from(error: InvalidAgentLifecycleTransition) -> Self {
+        Self::Transition(error)
+    }
+}
+
+impl From<BridgeError> for LifecycleError {
+    fn from(error: BridgeError) -> Self {
+        Self::Payload(error)
+    }
+}
+
+/// Per-agent bookkeeping the coordinator owns.
+#[derive(Debug)]
+struct AgentRecord {
+    /// Set only while the coordinator is driving an operation. When `None`, the
+    /// agent's state is whatever a fresh observation says it is.
+    in_flight: Option<AgentLifecycleState>,
+    budget: FailureBudget,
+    process: Option<LaunchedProcess>,
+    last_activity: Instant,
+}
+
+impl Default for AgentRecord {
+    fn default() -> Self {
+        Self {
+            in_flight: None,
+            budget: FailureBudget::default(),
+            process: None,
+            last_activity: Instant::now(),
+        }
+    }
+}
+
+/// Drives installation, readiness, and process lifecycle for managed agents.
+///
+/// # Why observed state is derived rather than converged
+///
+/// Only `installing`, `stopping`, and `uninstalling` are stored, because only
+/// those describe Bridge actively doing something. Every other state is computed
+/// from a fresh observation.
+///
+/// The alternative — storing the last state and walking legal edges toward each
+/// new observation — forces the machine to lie. A payload that vanishes out of
+/// band would have to be reported as having passed through `uninstalling`, which
+/// says Bridge removed it. Deriving instead means an observation is never
+/// dressed up as an operation, and the transition matrix still governs every
+/// edge the coordinator itself drives.
+pub struct AgentLifecycleCoordinator {
+    store: ManagedPayloadStore,
+    probe: Arc<dyn ReadinessProbe>,
+    supervisor: Arc<dyn ProcessSupervisor>,
+    /// Opt-in. `None` means a long-untouched process is left alone.
+    idle_timeout: Option<Duration>,
+    records: Mutex<HashMap<String, AgentRecord>>,
+}
+
+impl AgentLifecycleCoordinator {
+    pub fn new(
+        store: ManagedPayloadStore,
+        probe: Arc<dyn ReadinessProbe>,
+        supervisor: Arc<dyn ProcessSupervisor>,
+        idle_timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            store,
+            probe,
+            supervisor,
+            idle_timeout,
+            records: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn store(&self) -> &ManagedPayloadStore {
+        &self.store
+    }
+
+    fn records(&self) -> std::sync::MutexGuard<'_, HashMap<String, AgentRecord>> {
+        // The map guards bookkeeping with no invariant a panic could corrupt,
+        // so poisoning is tolerated rather than bricking every later operation.
+        self.records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Gather the three facts and the state they describe.
+    pub fn observe(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<LifecycleObservation, LifecycleError> {
+        let payload = PayloadCondition::from_status(self.store.status(agent_id)?);
+        let external = external_candidates
+            .iter()
+            .map(inspect_external_runtime)
+            .find(|inspection| inspection.available)
+            .map(|inspection| ExternalRuntime {
+                candidate: inspection.candidate,
+            });
+        let readiness = match &payload {
+            PayloadCondition::Installed { entrypoint } => self.probe.probe(agent_id, entrypoint),
+            PayloadCondition::Absent | PayloadCondition::Repairable { .. } => {
+                ReadinessOutcome::NotProbed
+            }
+        };
+        let process = self.live_process(agent_id);
+        Ok(LifecycleObservation {
+            payload,
+            external,
+            readiness,
+            process,
+        })
+    }
+
+    /// A tracked process is only reported as running if it is actually alive, so
+    /// a reaped child cannot keep an agent pinned in `running`.
+    fn live_process(&self, agent_id: &str) -> ProcessCondition {
+        let mut records = self.records();
+        let Some(record) = records.get_mut(agent_id) else {
+            return ProcessCondition::None;
+        };
+        match record.process {
+            Some(process) if self.supervisor.is_running(process.pid) => {
+                ProcessCondition::Running { pid: process.pid }
+            }
+            Some(_) => {
+                record.process = None;
+                ProcessCondition::None
+            }
+            None => ProcessCondition::None,
+        }
+    }
+
+    pub fn status(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
+        let observation = self.observe(agent_id, external_candidates)?;
+        Ok(self.status_from(agent_id, observation))
+    }
+
+    fn status_from(&self, agent_id: &str, observation: LifecycleObservation) -> AgentStatus {
+        let records = self.records();
+        let record = records.get(agent_id);
+        let settled = observation.settled_state();
+        let state = match record.and_then(|record| record.in_flight) {
+            Some(in_flight) => in_flight,
+            // An agent Bridge has stopped relaunching must not claim to be
+            // `ready`: the payload is fine, but nothing will start it until an
+            // operator retries, and reporting readiness would invite a caller to
+            // keep asking. Both edges used here are in the matrix.
+            None if record.is_some_and(|record| record.budget.is_exhausted())
+                && matches!(
+                    settled,
+                    AgentLifecycleState::Ready | AgentLifecycleState::Installed
+                ) =>
+            {
+                AgentLifecycleState::Broken
+            }
+            None => settled,
+        };
+        AgentStatus {
+            agent_id: agent_id.to_owned(),
+            state,
+            readiness: observation.readiness,
+            external: observation.external,
+            process_id: match observation.process {
+                ProcessCondition::Running { pid } => Some(pid),
+                ProcessCondition::None => None,
+            },
+            consecutive_failures: record.map(|record| record.budget.consecutive()).unwrap_or(0),
+            last_failure: record.and_then(|record| record.budget.last_failure().cloned()),
+        }
+    }
+
+    /// The state right now, for guarding an operation.
+    fn current_state(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentLifecycleState, LifecycleError> {
+        Ok(self.status(agent_id, external_candidates)?.state)
+    }
+
+    fn begin(&self, agent_id: &str, from: AgentLifecycleState, to: AgentLifecycleState) -> Result<(), LifecycleError> {
+        validate_transition(from, to)?;
+        let mut records = self.records();
+        records.entry(agent_id.to_owned()).or_default().in_flight = Some(to);
+        Ok(())
+    }
+
+    /// Leave an in-flight state through a legal edge.
+    ///
+    /// The edge is validated even though the in-flight state is about to be
+    /// dropped, so an operation cannot finish somewhere the matrix forbids.
+    fn finish(
+        &self,
+        agent_id: &str,
+        from: AgentLifecycleState,
+        to: AgentLifecycleState,
+    ) -> Result<(), LifecycleError> {
+        validate_transition(from, to)?;
+        let mut records = self.records();
+        if let Some(record) = records.get_mut(agent_id) {
+            record.in_flight = None;
+        }
+        Ok(())
+    }
+
+    /// Install a managed payload.
+    ///
+    /// `cancelled` is polled before staging and again after promotion; a
+    /// cancellation observed after the payload landed is rolled back through the
+    /// engine's own uninstall, so cancelling never leaves an active receipt.
+    pub fn install(
+        &self,
+        recipe: &PayloadRecipe,
+        external_candidates: &[PathBuf],
+        cancelled: &dyn CancellationSignal,
+    ) -> Result<AgentStatus, LifecycleError> {
+        let agent_id = recipe.agent_id.as_str();
+        let from = self.current_state(agent_id, external_candidates)?;
+        self.begin(agent_id, from, AgentLifecycleState::Installing)?;
+
+        if cancelled.is_cancelled() {
+            self.finish(
+                agent_id,
+                AgentLifecycleState::Installing,
+                AgentLifecycleState::NotInstalled,
+            )?;
+            return self.status(agent_id, external_candidates);
+        }
+
+        let installed = self.store.install(recipe);
+        let outcome = match installed {
+            Ok(_) if cancelled.is_cancelled() => {
+                // Landed, then cancelled: roll back so no active receipt survives.
+                self.store.uninstall(agent_id)?;
+                self.finish(
+                    agent_id,
+                    AgentLifecycleState::Installing,
+                    AgentLifecycleState::NotInstalled,
+                )?;
+                return self.status(agent_id, external_candidates);
+            }
+            Ok(_) => {
+                let observation = self.observe(agent_id, external_candidates)?;
+                match observation.settled_state() {
+                    AgentLifecycleState::Repairable => AgentLifecycleState::Repairable,
+                    _ => AgentLifecycleState::Installed,
+                }
+            }
+            Err(error) => {
+                let mut records = self.records();
+                let record = records.entry(agent_id.to_owned()).or_default();
+                record.budget.record_failure(Some(&error.to_string()));
+                drop(records);
+                // A failed install that left nothing behind is not broken, it
+                // simply did not happen.
+                match self.store.status(agent_id)? {
+                    ManagedPayloadStatus::NotInstalled => AgentLifecycleState::NotInstalled,
+                    _ => AgentLifecycleState::Broken,
+                }
+            }
+        };
+        self.finish(agent_id, AgentLifecycleState::Installing, outcome)?;
+        self.status(agent_id, external_candidates)
+    }
+
+    /// Spawn-on-use. Only a `ready` agent launches.
+    pub fn ensure_running(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
+        let observation = self.observe(agent_id, external_candidates)?;
+        let state = self.status_from(agent_id, observation.clone()).state;
+        if state == AgentLifecycleState::Running {
+            self.touch(agent_id);
+            return Ok(self.status_from(agent_id, observation));
+        }
+        // A spent budget is reported before the state, because it is the more
+        // specific and more actionable reason: the payload is fine and an
+        // explicit retry is all that is needed. Checking the state first would
+        // report the `broken` that the spent budget itself produced.
+        {
+            let records = self.records();
+            if let Some(record) = records.get(agent_id) {
+                if !record.budget.may_retry() {
+                    return Err(LifecycleError::RetryBudgetExhausted {
+                        agent_id: agent_id.to_owned(),
+                        attempts: record.budget.consecutive(),
+                    });
+                }
+            }
+        }
+        if state != AgentLifecycleState::Ready {
+            return Err(LifecycleError::NotReadyToLaunch {
+                agent_id: agent_id.to_owned(),
+                state,
+            });
+        }
+        let PayloadCondition::Installed { entrypoint } = &observation.payload else {
+            return Err(LifecycleError::NotReadyToLaunch {
+                agent_id: agent_id.to_owned(),
+                state,
+            });
+        };
+        validate_transition(AgentLifecycleState::Ready, AgentLifecycleState::Running)?;
+        match self.supervisor.launch(agent_id, entrypoint) {
+            Ok(process) => {
+                let mut records = self.records();
+                let record = records.entry(agent_id.to_owned()).or_default();
+                record.process = Some(process);
+                record.last_activity = Instant::now();
+                record.budget.record_success();
+                drop(records);
+                self.status(agent_id, external_candidates)
+            }
+            Err(context) => {
+                let mut records = self.records();
+                let record = records.entry(agent_id.to_owned()).or_default();
+                let redacted = record.budget.record_failure(Some(&context)).context.clone();
+                drop(records);
+                Err(LifecycleError::LaunchFailed {
+                    agent_id: agent_id.to_owned(),
+                    context: redacted,
+                })
+            }
+        }
+    }
+
+    /// Record that a launched process exited.
+    ///
+    /// A clean exit returns the agent to whatever a fresh observation says —
+    /// `ready`, normally, so spawn-on-use can start it again. A failure counts
+    /// against the crash-loop budget and keeps redacted context.
+    pub fn note_process_exit(
+        &self,
+        agent_id: &str,
+        failure_context: Option<&str>,
+    ) -> Result<(), LifecycleError> {
+        let mut records = self.records();
+        let record = records.entry(agent_id.to_owned()).or_default();
+        record.process = None;
+        match failure_context {
+            Some(context) => {
+                record.budget.record_failure(Some(context));
+            }
+            None => record.budget.record_success(),
+        }
+        Ok(())
+    }
+
+    /// An explicit operator retry, the only thing that clears an exhausted budget.
+    pub fn reset_retry_budget(&self, agent_id: &str) {
+        let mut records = self.records();
+        records
+            .entry(agent_id.to_owned())
+            .or_default()
+            .budget
+            .reset();
+    }
+
+    fn touch(&self, agent_id: &str) {
+        let mut records = self.records();
+        records
+            .entry(agent_id.to_owned())
+            .or_default()
+            .last_activity = Instant::now();
+    }
+
+    /// Stop a running agent through `running → stopping → ready`.
+    pub fn stop(
+        &self,
+        agent_id: &str,
+        reason: ShutdownReason,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
+        let pid = match self.live_process(agent_id) {
+            ProcessCondition::Running { pid } => pid,
+            ProcessCondition::None => return self.status(agent_id, external_candidates),
+        };
+        // Derive the state to leave rather than assuming `running`. A live
+        // process normally resolves to `running`, but if another operation is
+        // in flight the stored state wins, and interleaving a stop into it would
+        // step outside the matrix.
+        let from = self.status(agent_id, external_candidates)?.state;
+        if from != AgentLifecycleState::Running {
+            return Err(LifecycleError::Transition(
+                InvalidAgentLifecycleTransition {
+                    from,
+                    to: AgentLifecycleState::Stopping,
+                },
+            ));
+        }
+        self.begin(agent_id, from, AgentLifecycleState::Stopping)?;
+        let stopped = self.supervisor.stop(pid, reason);
+        {
+            let mut records = self.records();
+            if let Some(record) = records.get_mut(agent_id) {
+                if stopped {
+                    record.process = None;
+                }
+            }
+        }
+        if !stopped {
+            self.finish(
+                agent_id,
+                AgentLifecycleState::Stopping,
+                AgentLifecycleState::Broken,
+            )?;
+            return Err(LifecycleError::StopFailed {
+                agent_id: agent_id.to_owned(),
+                pid,
+            });
+        }
+        self.finish(
+            agent_id,
+            AgentLifecycleState::Stopping,
+            AgentLifecycleState::Ready,
+        )?;
+        self.status(agent_id, external_candidates)
+    }
+
+    /// Remove a Bridge-managed payload.
+    ///
+    /// Refuses a user-managed runtime outright, and stops a live process before
+    /// touching the filesystem so no process is left pointing at deleted files
+    /// and no fresh launch can be handed a path being removed.
+    pub fn uninstall(
+        &self,
+        agent_id: &str,
+        external_candidates: &[PathBuf],
+    ) -> Result<AgentStatus, LifecycleError> {
+        let observation = self.observe(agent_id, external_candidates)?;
+        let state = self.status_from(agent_id, observation.clone()).state;
+
+        if state == AgentLifecycleState::External {
+            let candidate = observation
+                .external
+                .map(|external| external.candidate)
+                .unwrap_or_default();
+            return Err(LifecycleError::ExternalRuntimeNotRemovable {
+                agent_id: agent_id.to_owned(),
+                candidate,
+            });
+        }
+        if state == AgentLifecycleState::NotInstalled {
+            return self.status(agent_id, external_candidates);
+        }
+
+        // Stop first. The matrix has no running -> uninstalling edge, so this is
+        // the only way through, and it is what keeps the removal off a live
+        // process.
+        let state = if state == AgentLifecycleState::Running {
+            self.stop(agent_id, ShutdownReason::Replaced, external_candidates)?
+                .state
+        } else {
+            state
+        };
+        // Re-check liveness rather than trusting the state we just computed: the
+        // whole point of stopping first is that the payload is not removed while
+        // anything is still running against it.
+        if let ProcessCondition::Running { pid } = self.live_process(agent_id) {
+            return Err(LifecycleError::StopFailed {
+                agent_id: agent_id.to_owned(),
+                pid,
+            });
+        }
+
+        self.begin(agent_id, state, AgentLifecycleState::Uninstalling)?;
+        match self.store.uninstall(agent_id) {
+            Ok(_) => {
+                self.finish(
+                    agent_id,
+                    AgentLifecycleState::Uninstalling,
+                    AgentLifecycleState::NotInstalled,
+                )?;
+                self.records().remove(agent_id);
+                self.status(agent_id, external_candidates)
+            }
+            Err(error) => {
+                // A refused uninstall leaves the payload intact, which is the
+                // engine's fail-closed behaviour, not a broken install.
+                self.finish(
+                    agent_id,
+                    AgentLifecycleState::Uninstalling,
+                    AgentLifecycleState::Installed,
+                )?;
+                Err(LifecycleError::Payload(error))
+            }
+        }
+    }
+
+    /// Stop every running agent. Called on app shutdown.
+    ///
+    /// Best-effort by design: one agent refusing to die must not leave the rest
+    /// running, so failures are collected and reported after the sweep.
+    pub fn shutdown(&self) -> Vec<LifecycleError> {
+        let agent_ids = self.records().keys().cloned().collect::<Vec<_>>();
+        let mut errors = Vec::new();
+        for agent_id in agent_ids {
+            if let Err(error) = self.stop(&agent_id, ShutdownReason::AppShutdown, &[]) {
+                errors.push(error);
+            }
+        }
+        errors
+    }
+
+    /// Stop agents idle beyond the configured timeout.
+    ///
+    /// Opt-in: with no timeout configured this does nothing, however long an
+    /// agent has been sitting there.
+    pub fn sweep_idle(&self) -> Vec<LifecycleError> {
+        let Some(timeout) = self.idle_timeout else {
+            return Vec::new();
+        };
+        let idle = self
+            .records()
+            .iter()
+            .filter(|(_, record)| {
+                record.process.is_some() && record.last_activity.elapsed() >= timeout
+            })
+            .map(|(agent_id, _)| agent_id.clone())
+            .collect::<Vec<_>>();
+        idle.into_iter()
+            .filter_map(|agent_id| {
+                self.stop(&agent_id, ShutdownReason::UserStopped, &[])
+                    .err()
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_payload::{source_digest, PayloadShape};
     use std::collections::HashSet;
+    use std::fs;
 
     #[test]
     fn every_state_pair_matches_the_locked_transition_matrix() {
@@ -978,6 +1654,750 @@ mod tests {
         assert!(bounded.len() <= FAILURE_CONTEXT_MAX_BYTES + '…'.len_utf8());
         assert!(bounded.ends_with('…'));
         assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+    }
+
+    // ---- coordinator fakes -------------------------------------------------
+    //
+    // No test spawns a vendor process or touches the network. The payload store
+    // is real, so the lifecycle is proven against the #165 engine rather than a
+    // mock of it.
+
+    struct FakeProbe {
+        outcome: Mutex<ReadinessOutcome>,
+    }
+
+    impl FakeProbe {
+        fn ready() -> Arc<Self> {
+            Arc::new(Self {
+                outcome: Mutex::new(ReadinessOutcome::Ready {
+                    version: Some("1.0.0".into()),
+                }),
+            })
+        }
+        fn set(&self, outcome: ReadinessOutcome) {
+            *self.outcome.lock().unwrap() = outcome;
+        }
+    }
+
+    impl ReadinessProbe for FakeProbe {
+        fn probe(&self, _agent_id: &str, _entrypoint: &Path) -> ReadinessOutcome {
+            self.outcome.lock().unwrap().clone()
+        }
+    }
+
+    struct RecordingSupervisor {
+        log: Mutex<Vec<String>>,
+        running: Mutex<HashSet<u32>>,
+        next_pid: Mutex<u32>,
+        launch_error: Mutex<Option<String>>,
+        refuse_stop: Mutex<bool>,
+        /// Checked at stop time to prove the payload had not been removed yet.
+        watched_payload: Mutex<Option<PathBuf>>,
+    }
+
+    impl RecordingSupervisor {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                log: Mutex::new(Vec::new()),
+                running: Mutex::new(HashSet::new()),
+                next_pid: Mutex::new(1000),
+                launch_error: Mutex::new(None),
+                refuse_stop: Mutex::new(false),
+                watched_payload: Mutex::new(None),
+            })
+        }
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+        fn watch(&self, path: PathBuf) {
+            *self.watched_payload.lock().unwrap() = Some(path);
+        }
+        fn fail_launch_with(&self, context: &str) {
+            *self.launch_error.lock().unwrap() = Some(context.to_owned());
+        }
+        fn allow_launch(&self) {
+            *self.launch_error.lock().unwrap() = None;
+        }
+        fn refuse_stop(&self, refuse: bool) {
+            *self.refuse_stop.lock().unwrap() = refuse;
+        }
+    }
+
+    impl ProcessSupervisor for RecordingSupervisor {
+        fn launch(&self, agent_id: &str, _entrypoint: &Path) -> Result<LaunchedProcess, String> {
+            if let Some(error) = self.launch_error.lock().unwrap().clone() {
+                self.log.lock().unwrap().push(format!("launch-failed:{agent_id}"));
+                return Err(error);
+            }
+            let mut next = self.next_pid.lock().unwrap();
+            *next += 1;
+            let pid = *next;
+            self.running.lock().unwrap().insert(pid);
+            self.log.lock().unwrap().push(format!("launch:{agent_id}:{pid}"));
+            Ok(LaunchedProcess { pid })
+        }
+
+        fn is_running(&self, pid: u32) -> bool {
+            self.running.lock().unwrap().contains(&pid)
+        }
+
+        fn stop(&self, pid: u32, reason: ShutdownReason) -> bool {
+            let payload_present = self
+                .watched_payload
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|path| path.exists());
+            self.log.lock().unwrap().push(format!(
+                "stop:{pid}:{}:payload_present={payload_present:?}",
+                reason.as_str()
+            ));
+            if *self.refuse_stop.lock().unwrap() {
+                return false;
+            }
+            self.running.lock().unwrap().remove(&pid);
+            true
+        }
+    }
+
+    fn managed_recipe(fixture: &Path, agent_id: &str) -> PayloadRecipe {
+        let source = fixture.join(format!("{agent_id}-bin"));
+        fs::write(&source, format!("fixture runtime for {agent_id}")).unwrap();
+        let entrypoint = PathBuf::from("bin/agent");
+        PayloadRecipe {
+            agent_id: agent_id.into(),
+            version: "1.0.0".into(),
+            platform: "darwin-aarch64".into(),
+            source: format!("fixture://{agent_id}"),
+            expected_sha256: source_digest(&source, PayloadShape::File, &entrypoint).unwrap(),
+            source_path: source,
+            shape: PayloadShape::File,
+            entrypoint,
+        }
+    }
+
+    struct Harness {
+        _fixture: tempfile::TempDir,
+        fixture_path: PathBuf,
+        coordinator: AgentLifecycleCoordinator,
+        probe: Arc<FakeProbe>,
+        supervisor: Arc<RecordingSupervisor>,
+    }
+
+    fn new_harness(idle_timeout: Option<Duration>) -> Harness {
+        let fixture = tempfile::tempdir().unwrap();
+        let fixture_path = fixture.path().to_path_buf();
+        let probe = FakeProbe::ready();
+        let supervisor = RecordingSupervisor::new();
+        let coordinator = AgentLifecycleCoordinator::new(
+            ManagedPayloadStore::new(fixture_path.join("managed")),
+            probe.clone(),
+            supervisor.clone(),
+            idle_timeout,
+        );
+        Harness {
+            _fixture: fixture,
+            fixture_path,
+            coordinator,
+            probe,
+            supervisor,
+        }
+    }
+
+    const NO_CANDIDATES: &[PathBuf] = &[];
+
+    fn go() -> AtomicBool {
+        AtomicBool::new(false)
+    }
+
+    #[test]
+    fn spawn_on_use_launches_only_from_ready() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+
+        // not_installed: refused, and nothing was launched.
+        let error = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LifecycleError::NotReadyToLaunch {
+                state: AgentLifecycleState::NotInstalled,
+                ..
+            }
+        ));
+        assert!(harness.supervisor.log().is_empty());
+
+        // installed but readiness not proven: still refused.
+        harness.probe.set(ReadinessOutcome::VendorBlocked {
+            vendor_message: "Run `codex login` first.".into(),
+        });
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let error = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                LifecycleError::NotReadyToLaunch {
+                    state: AgentLifecycleState::Installed,
+                    ..
+                }
+            ),
+            "a vendor-blocked agent is installed, not launchable: {error}"
+        );
+        assert!(harness.supervisor.log().is_empty(), "no launch was attempted");
+
+        // ready: launches.
+        harness.probe.set(ReadinessOutcome::Ready { version: None });
+        let status = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Running);
+        assert!(status.process_id.is_some());
+        assert_eq!(harness.supervisor.log().len(), 1);
+
+        // Already running: idempotent, no second process.
+        let again = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(again.process_id, status.process_id);
+        assert_eq!(harness.supervisor.log().len(), 1);
+    }
+
+    #[test]
+    fn uninstall_stops_a_running_process_before_removing_the_payload() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        let installed = harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        assert_eq!(installed.state, AgentLifecycleState::Ready);
+
+        let receipt = read_active_receipt(harness.coordinator.store(), "fixture-agent");
+        let installation = harness
+            .coordinator
+            .store()
+            .root()
+            .join(&receipt.owned_paths[0]);
+        harness.supervisor.watch(installation.clone());
+
+        harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert!(installation.is_dir());
+
+        let status = harness
+            .coordinator
+            .uninstall("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::NotInstalled);
+        assert!(!installation.exists(), "the payload must be gone");
+
+        let log = harness.supervisor.log();
+        let stop = log
+            .iter()
+            .find(|entry| entry.starts_with("stop:"))
+            .expect("uninstall must stop the process");
+        assert!(
+            stop.contains("payload_present=Some(true)"),
+            "the process must be stopped while the payload is still on disk, got {stop}"
+        );
+        assert!(
+            log.iter().position(|e| e.starts_with("launch:")).unwrap()
+                < log.iter().position(|e| e.starts_with("stop:")).unwrap()
+        );
+    }
+
+    #[test]
+    fn uninstall_refuses_while_a_process_will_not_die() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let receipt = read_active_receipt(harness.coordinator.store(), "fixture-agent");
+        let installation = harness
+            .coordinator
+            .store()
+            .root()
+            .join(&receipt.owned_paths[0]);
+        harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+
+        harness.supervisor.refuse_stop(true);
+        let error = harness
+            .coordinator
+            .uninstall("fixture-agent", NO_CANDIDATES)
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::StopFailed { .. }), "{error}");
+        assert!(
+            installation.is_dir(),
+            "a payload must never be removed while its process is still alive"
+        );
+    }
+
+    #[test]
+    fn external_runtimes_cannot_be_uninstalled() {
+        let harness = new_harness(None);
+        let external = harness.fixture_path.join("user-installed-agent");
+        fs::write(&external, b"user's own runtime").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&external, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let candidates = vec![external.clone()];
+
+        let status = harness
+            .coordinator
+            .status("fixture-agent", &candidates)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::External);
+
+        let error = harness
+            .coordinator
+            .uninstall("fixture-agent", &candidates)
+            .unwrap_err();
+        match &error {
+            LifecycleError::ExternalRuntimeNotRemovable { candidate, .. } => {
+                assert_eq!(candidate, &external);
+            }
+            other => panic!("expected a distinct external refusal, got {other}"),
+        }
+        assert!(
+            error.to_string().contains("holds no receipt"),
+            "the refusal must say why: {error}"
+        );
+        assert!(external.exists(), "the user's runtime must be untouched");
+        assert!(
+            !harness.coordinator.store().root().join("agents").exists(),
+            "no receipt may be written for a runtime Bridge does not own"
+        );
+    }
+
+    #[test]
+    fn cancelling_an_install_returns_to_not_installed() {
+        // Cancelled before staging.
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        let cancelled = AtomicBool::new(true);
+        let status = harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &cancelled)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::NotInstalled);
+        assert!(!harness
+            .coordinator
+            .store()
+            .root()
+            .join("agents/fixture-agent/active.json")
+            .exists());
+
+        // Cancelled after the payload landed: rolled back, no active receipt.
+        let late = new_harness(None);
+        let recipe = managed_recipe(&late.fixture_path, "fixture-agent");
+        let flag = LateCancel::new();
+        let status = late
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &flag)
+            .unwrap();
+        assert_eq!(
+            flag.polls(),
+            2,
+            "cancellation must be polled before staging and again after promotion"
+        );
+        assert_eq!(status.state, AgentLifecycleState::NotInstalled);
+        assert!(!late
+            .coordinator
+            .store()
+            .root()
+            .join("agents/fixture-agent/active.json")
+            .exists());
+        assert!(!late
+            .coordinator
+            .store()
+            .root()
+            .join("agents/fixture-agent/installations")
+            .read_dir()
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false));
+    }
+
+    /// Cancelled only after the first poll, so the pre-staging check passes and
+    /// the post-promotion check fires — the case that needs a rollback.
+    struct LateCancel {
+        polls: Mutex<u32>,
+    }
+
+    impl LateCancel {
+        fn new() -> Self {
+            Self {
+                polls: Mutex::new(0),
+            }
+        }
+        fn polls(&self) -> u32 {
+            *self.polls.lock().unwrap()
+        }
+    }
+
+    impl CancellationSignal for LateCancel {
+        fn is_cancelled(&self) -> bool {
+            let mut polls = self.polls.lock().unwrap();
+            *polls += 1;
+            *polls > 1
+        }
+    }
+
+    #[test]
+    fn app_shutdown_stops_every_running_agent() {
+        let harness = new_harness(None);
+        for agent_id in ["first-agent", "second-agent"] {
+            let recipe = managed_recipe(&harness.fixture_path, agent_id);
+            harness
+                .coordinator
+                .install(&recipe, NO_CANDIDATES, &go())
+                .unwrap();
+            harness
+                .coordinator
+                .ensure_running(agent_id, NO_CANDIDATES)
+                .unwrap();
+        }
+
+        let errors = harness.coordinator.shutdown();
+        assert!(errors.is_empty(), "{errors:?}");
+        for agent_id in ["first-agent", "second-agent"] {
+            let status = harness.coordinator.status(agent_id, NO_CANDIDATES).unwrap();
+            assert!(
+                !status.state.may_have_process(),
+                "{agent_id} was left in {}",
+                status.state
+            );
+            assert_eq!(status.process_id, None);
+        }
+        let stops = harness
+            .supervisor
+            .log()
+            .into_iter()
+            .filter(|entry| entry.starts_with("stop:"))
+            .collect::<Vec<_>>();
+        assert_eq!(stops.len(), 2);
+        assert!(
+            stops.iter().all(|entry| entry.contains("app_shutdown")),
+            "every stop must be attributed to app shutdown: {stops:?}"
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_is_opt_in_and_bounded() {
+        // Not configured: a running agent is left alone however long it sits.
+        let never = new_harness(None);
+        let recipe = managed_recipe(&never.fixture_path, "fixture-agent");
+        never
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        never
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert!(never.coordinator.sweep_idle().is_empty());
+        assert_eq!(
+            never
+                .coordinator
+                .status("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Running,
+            "with no idle timeout nothing is reaped"
+        );
+
+        // Configured but not yet reached: still left alone.
+        let patient = new_harness(Some(Duration::from_secs(3600)));
+        let recipe = managed_recipe(&patient.fixture_path, "fixture-agent");
+        patient
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        patient
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert!(patient.coordinator.sweep_idle().is_empty());
+        assert_eq!(
+            patient
+                .coordinator
+                .status("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Running
+        );
+
+        // Reached: stopped, and back to ready rather than gone.
+        let eager = new_harness(Some(Duration::ZERO));
+        let recipe = managed_recipe(&eager.fixture_path, "fixture-agent");
+        eager
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        eager
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert!(eager.coordinator.sweep_idle().is_empty());
+        let status = eager
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Ready);
+        assert_eq!(status.process_id, None);
+        assert!(eager
+            .supervisor
+            .log()
+            .iter()
+            .any(|entry| entry.starts_with("stop:")));
+    }
+
+    #[test]
+    fn a_crash_loop_stops_relaunching_and_keeps_redacted_context() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        harness
+            .supervisor
+            .fail_launch_with("spawn failed: ANTHROPIC_API_KEY=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA");
+
+        for _ in 0..DEFAULT_MAX_CONSECUTIVE_FAILURES {
+            let error = harness
+                .coordinator
+                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .unwrap_err();
+            match error {
+                LifecycleError::LaunchFailed { context, .. } => assert!(
+                    !context.contains("sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA"),
+                    "launch failure context must be redacted: {context}"
+                ),
+                other => panic!("expected a launch failure, got {other}"),
+            }
+        }
+
+        // Budget spent: Bridge stops trying on its own, even though the payload
+        // is still perfectly installable.
+        harness.supervisor.allow_launch();
+        let error = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap_err();
+        assert!(
+            matches!(error, LifecycleError::RetryBudgetExhausted { attempts, .. }
+                if attempts == DEFAULT_MAX_CONSECUTIVE_FAILURES),
+            "{error}"
+        );
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.consecutive_failures, DEFAULT_MAX_CONSECUTIVE_FAILURES);
+        assert_eq!(
+            status.state,
+            AgentLifecycleState::Broken,
+            "an agent Bridge has stopped relaunching must not report itself ready"
+        );
+        // ...and it is still Bridge's to remove or reinstall from there.
+        assert!(status.state.is_bridge_owned());
+        assert!(validate_transition(status.state, AgentLifecycleState::Installing).is_ok());
+        assert!(validate_transition(status.state, AgentLifecycleState::Uninstalling).is_ok());
+        let retained = status.last_failure.expect("failure context is retained");
+        assert!(!retained.context.contains("sk-ant-api03"));
+        assert!(retained.context.contains("spawn failed"));
+
+        // An explicit retry is what clears it.
+        harness.coordinator.reset_retry_budget("fixture-agent");
+        let status = harness
+            .coordinator
+            .ensure_running("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Running);
+    }
+
+    #[test]
+    fn a_full_lifecycle_walk_ends_with_no_receipt() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        let unrelated = harness.fixture_path.join("managed/unrelated-file");
+
+        assert_eq!(
+            harness
+                .coordinator
+                .status("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::NotInstalled
+        );
+        assert_eq!(
+            harness
+                .coordinator
+                .install(&recipe, NO_CANDIDATES, &go())
+                .unwrap()
+                .state,
+            AgentLifecycleState::Ready
+        );
+        fs::write(&unrelated, b"keep").unwrap();
+
+        assert_eq!(
+            harness
+                .coordinator
+                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Running
+        );
+        assert_eq!(
+            harness
+                .coordinator
+                .stop("fixture-agent", ShutdownReason::UserStopped, NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Ready
+        );
+        // Spawn-on-use works again after a clean stop.
+        assert_eq!(
+            harness
+                .coordinator
+                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::Running
+        );
+        harness
+            .coordinator
+            .stop("fixture-agent", ShutdownReason::UserStopped, NO_CANDIDATES)
+            .unwrap();
+
+        assert_eq!(
+            harness
+                .coordinator
+                .uninstall("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::NotInstalled
+        );
+        assert!(!harness
+            .coordinator
+            .store()
+            .root()
+            .join("agents/fixture-agent/active.json")
+            .exists());
+        assert!(unrelated.exists(), "unrelated managed-root content survives");
+
+        // Uninstalling again converges rather than erroring.
+        assert_eq!(
+            harness
+                .coordinator
+                .uninstall("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::NotInstalled
+        );
+    }
+
+    #[test]
+    fn a_drifted_payload_is_repairable_and_not_launchable() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+        let receipt = read_active_receipt(harness.coordinator.store(), "fixture-agent");
+        fs::write(
+            harness.coordinator.store().root().join(&receipt.entrypoint),
+            b"tampered",
+        )
+        .unwrap();
+
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Repairable);
+        assert!(matches!(
+            harness
+                .coordinator
+                .ensure_running("fixture-agent", NO_CANDIDATES)
+                .unwrap_err(),
+            LifecycleError::NotReadyToLaunch {
+                state: AgentLifecycleState::Repairable,
+                ..
+            }
+        ));
+        // A drifted payload is still Bridge's to remove.
+        assert_eq!(
+            harness
+                .coordinator
+                .uninstall("fixture-agent", NO_CANDIDATES)
+                .unwrap()
+                .state,
+            AgentLifecycleState::NotInstalled
+        );
+    }
+
+    #[test]
+    fn vendor_auth_never_becomes_bridge_failure_state() {
+        let harness = new_harness(None);
+        let recipe = managed_recipe(&harness.fixture_path, "fixture-agent");
+        let vendor_message = "Not logged in. Run `codex login`.";
+        harness.probe.set(ReadinessOutcome::VendorBlocked {
+            vendor_message: vendor_message.into(),
+        });
+        let status = harness
+            .coordinator
+            .install(&recipe, NO_CANDIDATES, &go())
+            .unwrap();
+
+        assert_eq!(status.state, AgentLifecycleState::Installed);
+        assert_eq!(status.vendor_message(), Some(vendor_message));
+        assert_eq!(
+            status.last_failure, None,
+            "a vendor login prompt is not a Bridge failure and must not consume the retry budget"
+        );
+        assert_eq!(status.consecutive_failures, 0);
+
+        // Logging in with the vendor is all it takes; Bridge stored nothing.
+        harness.probe.set(ReadinessOutcome::Ready { version: None });
+        let status = harness
+            .coordinator
+            .status("fixture-agent", NO_CANDIDATES)
+            .unwrap();
+        assert_eq!(status.state, AgentLifecycleState::Ready);
+        assert_eq!(status.vendor_message(), None);
+    }
+
+    fn read_active_receipt(
+        store: &ManagedPayloadStore,
+        agent_id: &str,
+    ) -> crate::managed_payload::ManagedPayloadReceipt {
+        let path = store
+            .root()
+            .join("agents")
+            .join(agent_id)
+            .join("active.json");
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
     #[test]
