@@ -1507,4 +1507,55 @@ mod tests {
             .join("agents/second-agent/active.json")
             .exists());
     }
+
+    #[test]
+    fn concurrent_install_and_uninstall_converge_without_cross_owned_deletion() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = Arc::new(ManagedPayloadStore::new(fixture.path().join("managed")));
+        let recipe = Arc::new(file_recipe(fixture.path()));
+        store.install(&recipe).unwrap();
+        let sibling = store
+            .root()
+            .join("agents/fixture-agent/installations/sibling-version");
+        let external = fixture.path().join("external-agent");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("keep"), b"keep").unwrap();
+        fs::write(&external, b"keep").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let install_thread = {
+            let store = Arc::clone(&store);
+            let recipe = Arc::clone(&recipe);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.install(&recipe)
+            })
+        };
+        let uninstall_thread = {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.uninstall("fixture-agent")
+            })
+        };
+        install_thread.join().unwrap().unwrap();
+        uninstall_thread.join().unwrap().unwrap();
+
+        match store.status("fixture-agent").unwrap() {
+            ManagedPayloadStatus::Installed { receipt, .. } => {
+                assert!(store.root().join(&receipt.owned_paths[0]).is_dir());
+            }
+            ManagedPayloadStatus::NotInstalled => {
+                assert!(!store
+                    .root()
+                    .join("agents/fixture-agent/active.json")
+                    .exists());
+            }
+            status => panic!("concurrent lifecycle left partial state: {status:?}"),
+        }
+        assert!(sibling.join("keep").exists());
+        assert!(external.exists());
+    }
 }
