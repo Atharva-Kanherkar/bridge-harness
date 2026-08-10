@@ -6,6 +6,7 @@ pub use bridge_core::{
 pub mod daemon_host;
 
 use bridge_core::api;
+use bridge_core::managed_agents;
 use bridge_core::live_turn;
 use bridge_core::model::*;
 use bridge_core::{
@@ -172,6 +173,43 @@ async fn execute_skill_change(
 ) -> Result<Vec<skill_marketplace::SkillActionResult>, BridgeError> {
     let core = state.inner().clone();
     blocking("Skill installer", move || api::execute_skill_change(&core, &confirmation_id)).await
+}
+
+#[tauri::command]
+async fn list_managed_agents(
+) -> Result<bridge_protocol::messages::ManagedAgentList, managed_agents::ManagedAgentError> {
+    api::list_managed_agents()
+}
+
+#[tauri::command]
+async fn inspect_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentInspection, managed_agents::ManagedAgentError> {
+    api::inspect_managed_agent(&agent_id)
+}
+
+#[tauri::command]
+async fn install_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationStarted, managed_agents::ManagedAgentError>
+{
+    api::install_managed_agent(&agent_id)
+}
+
+#[tauri::command]
+async fn repair_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationStarted, managed_agents::ManagedAgentError>
+{
+    api::repair_managed_agent(&agent_id)
+}
+
+#[tauri::command]
+async fn uninstall_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationStarted, managed_agents::ManagedAgentError>
+{
+    api::uninstall_managed_agent(&agent_id)
 }
 
 #[tauri::command]
@@ -986,6 +1024,11 @@ pub fn run() {
             start_remote_browser,
             marketplace_catalog,
             marketplace_app_auth_states,
+            list_managed_agents,
+            inspect_managed_agent,
+            install_managed_agent,
+            repair_managed_agent,
+            uninstall_managed_agent,
             marketplace_action,
             skill_catalog,
             skill_suggestions,

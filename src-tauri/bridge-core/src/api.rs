@@ -1442,3 +1442,49 @@ mod tests {
         assert!(!source.contains(&locked_learning_call));
     }
 }
+
+// ---- agents: the managed runtime lifecycle -------------------------------
+//
+// The api seam both hosts call, so the shell and the daemon share one path into
+// the domain rather than each wiring its own.
+
+pub fn list_managed_agents(
+) -> Result<bridge_protocol::messages::ManagedAgentList, crate::managed_agents::ManagedAgentError> {
+    crate::managed_agents::list_managed_agents()
+}
+
+pub fn inspect_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentInspection,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::inspect_managed_agent(agent_id)
+}
+
+pub fn install_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentOperationStarted,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::install_managed_agent(agent_id)
+}
+
+pub fn repair_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentOperationStarted,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::repair_managed_agent(agent_id)
+}
+
+pub fn uninstall_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentOperationStarted,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::uninstall_managed_agent(agent_id)
+}

@@ -338,6 +338,25 @@ pub fn dispatch(
 
         MethodName::MarketplaceCatalog => encode(api::marketplace_catalog()),
         MethodName::MarketplaceAppAuthStates => reply(api::marketplace_app_auth_states()),
+        MethodName::ListManagedAgents => {
+            reply_managed(api::list_managed_agents())
+        }
+        MethodName::InspectManagedAgent => {
+            let p: wire::InspectManagedAgentParams = decode(method, params)?;
+            reply_managed(api::inspect_managed_agent(&p.agent_id))
+        }
+        MethodName::InstallManagedAgent => {
+            let p: wire::InstallManagedAgentParams = decode(method, params)?;
+            reply_managed(api::install_managed_agent(&p.agent_id))
+        }
+        MethodName::RepairManagedAgent => {
+            let p: wire::RepairManagedAgentParams = decode(method, params)?;
+            reply_managed(api::repair_managed_agent(&p.agent_id))
+        }
+        MethodName::UninstallManagedAgent => {
+            let p: wire::UninstallManagedAgentParams = decode(method, params)?;
+            reply_managed(api::uninstall_managed_agent(&p.agent_id))
+        }
         MethodName::MarketplaceAction => {
             let p: wire::MarketplaceActionParams = decode(method, params)?;
             reply(api::marketplace_action(
@@ -418,6 +437,20 @@ fn external_trigger(kind: wire::ExternalLearningTriggerKind) -> learning_job::Le
 
 /// Serialize a fallible api result into the response value.
 fn reply<T: Serialize>(result: Result<T, BridgeError>) -> Result<Value, RpcError> {
+    match result {
+        Ok(value) => encode(value),
+        Err(error) => Err(RpcError::new(ErrorCode::from(&error), error.to_string())),
+    }
+}
+
+/// Serialize a managed-agent result, preserving its stable domain code.
+///
+/// A parallel of [`reply`] rather than a reuse of it: the seven managed-agent
+/// conditions live in their own error type precisely so they keep their own
+/// 3000-range codes instead of being flattened into `BridgeError::Invalid`.
+fn reply_managed<T: Serialize>(
+    result: Result<T, bridge_core::managed_agents::ManagedAgentError>,
+) -> Result<Value, RpcError> {
     match result {
         Ok(value) => encode(value),
         Err(error) => Err(RpcError::new(ErrorCode::from(&error), error.to_string())),

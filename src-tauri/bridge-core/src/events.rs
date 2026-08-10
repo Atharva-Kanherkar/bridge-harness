@@ -48,6 +48,14 @@ pub enum CoreEvent {
         provider: String,
         rate_limits: Value,
     },
+    /// Refetch hint: a managed agent's installation or readiness changed. The
+    /// payload carries the agent id only — authoritative state is refetched
+    /// through `agents/list_managed_agents`, never reconstructed from this.
+    ManagedAgentChanged { agent_id: String },
+    /// Transient progress for one managed-agent operation. Never durable: a
+    /// client that misses the terminal frame refetches rather than inferring a
+    /// completion it happened to see.
+    ManagedAgentProgress(Value),
 }
 
 impl CoreEvent {
@@ -62,6 +70,8 @@ impl CoreEvent {
             CoreEvent::LearningJobChanged(_) => NotificationName::LearningJobChanged,
             CoreEvent::SessionOutput { .. } => NotificationName::SessionOutput,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
+            CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
+            CoreEvent::ManagedAgentProgress(_) => NotificationName::ManagedAgentProgress,
         }
     }
 
@@ -75,6 +85,12 @@ impl CoreEvent {
                 "sessionId": session_id,
                 "data": data,
             }),
+            // The agent id only: the client refetches authoritative state rather
+            // than rebuilding it from a notification.
+            CoreEvent::ManagedAgentChanged { agent_id } => serde_json::json!({
+                "agentId": agent_id,
+            }),
+            CoreEvent::ManagedAgentProgress(payload) => payload.clone(),
             CoreEvent::AccountUsage {
                 provider,
                 rate_limits,
@@ -190,9 +206,13 @@ impl EventBus {
                 CoreEvent::LearningJobChanged(payload) => {
                     state.learning_job_changed = Some(payload.clone())
                 }
+                // Managed-agent frames are transient by contract, so they are
+                // not reconciled on reconnect: the client refetches instead.
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
-                | CoreEvent::AccountUsage { .. } => {}
+                | CoreEvent::AccountUsage { .. }
+                | CoreEvent::ManagedAgentChanged { .. }
+                | CoreEvent::ManagedAgentProgress(_) => {}
             }
         }
         let _ = self.sender.send(event);
@@ -237,6 +257,10 @@ mod tests {
                 provider: "codex".into(),
                 rate_limits: serde_json::json!({}),
             },
+            CoreEvent::ManagedAgentChanged {
+                agent_id: "codex".into(),
+            },
+            CoreEvent::ManagedAgentProgress(serde_json::json!({"operationId": "op-1"})),
         ];
         for event in &events {
             assert_eq!(
