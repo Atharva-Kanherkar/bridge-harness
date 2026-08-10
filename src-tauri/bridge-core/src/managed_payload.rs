@@ -9,10 +9,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
 };
+use uuid::Uuid;
 
 pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
 
@@ -48,6 +51,260 @@ pub struct ManagedPayloadReceipt {
     pub owned_paths: Vec<PathBuf>,
     pub entrypoint: PathBuf,
     pub installed_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallOutcome {
+    Installed(ManagedPayloadReceipt),
+    AlreadyInstalled(ManagedPayloadReceipt),
+    Recovered(ManagedPayloadReceipt),
+}
+
+impl InstallOutcome {
+    pub fn receipt(&self) -> &ManagedPayloadReceipt {
+        match self {
+            Self::Installed(receipt)
+            | Self::AlreadyInstalled(receipt)
+            | Self::Recovered(receipt) => receipt,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ManagedPayloadStore {
+    root: PathBuf,
+    #[cfg(test)]
+    fail_after_promotion: std::sync::atomic::AtomicBool,
+}
+
+struct StagingGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+static AGENT_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+impl ManagedPayloadStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            #[cfg(test)]
+            fail_after_promotion: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn install(&self, recipe: &PayloadRecipe) -> Result<InstallOutcome, BridgeError> {
+        let recipe = recipe.validate()?;
+        let lock = agent_lock(&self.root, &recipe.agent_id)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| BridgeError::Invalid("managed payload agent lock was poisoned".into()))?;
+        self.install_locked(&recipe)
+    }
+
+    fn install_locked(&self, recipe: &ValidatedRecipe) -> Result<InstallOutcome, BridgeError> {
+        ensure_root_is_not_symlink(&self.root)?;
+        let actual_source_digest =
+            source_digest(&recipe.source_path, recipe.shape, &recipe.entrypoint)?;
+        if actual_source_digest != recipe.expected_sha256 {
+            return Err(BridgeError::Invalid(format!(
+                "managed payload source integrity mismatch: expected {}, got {actual_source_digest}",
+                recipe.expected_sha256
+            )));
+        }
+
+        let agent_root = self.root.join("agents").join(&recipe.agent_id);
+        let installations_root = agent_root.join("installations");
+        let installation_root = installations_root.join(&recipe.installation_id);
+        let active_path = agent_root.join("active.json");
+
+        if installation_root.exists() {
+            let receipt = verify_existing_installation(&self.root, recipe, &installation_root)?;
+            let was_active =
+                read_receipt_if_valid(&active_path).is_some_and(|active| active == receipt);
+            write_json_atomic(&active_path, &receipt)?;
+            return Ok(if was_active {
+                InstallOutcome::AlreadyInstalled(receipt)
+            } else {
+                InstallOutcome::Recovered(receipt)
+            });
+        }
+
+        fs::create_dir_all(&installations_root)?;
+        let staging_root = self.root.join(".staging");
+        fs::create_dir_all(&staging_root)?;
+        let staging_path =
+            staging_root.join(format!("{}-{}", recipe.agent_id, Uuid::new_v4().simple()));
+        fs::create_dir(&staging_path)?;
+        let mut staging = StagingGuard {
+            path: staging_path.clone(),
+            armed: true,
+        };
+        let staged_payload = staging_path.join("payload");
+        copy_payload(recipe, &staged_payload)?;
+        sync_tree_files(&staged_payload)?;
+        let staged_digest = installed_payload_digest(&staged_payload, recipe)?;
+        if staged_digest != recipe.expected_sha256 {
+            return Err(BridgeError::Invalid(format!(
+                "managed payload staged integrity mismatch: expected {}, got {staged_digest}",
+                recipe.expected_sha256
+            )));
+        }
+        let staged_entrypoint = staged_payload.join(&recipe.entrypoint);
+        if !staged_entrypoint.is_file() {
+            return Err(BridgeError::Invalid(format!(
+                "managed payload entrypoint is not a file: {}",
+                recipe.entrypoint.display()
+            )));
+        }
+
+        let receipt = fresh_receipt(recipe);
+        write_json_atomic(&staging_path.join("receipt.json"), &receipt)?;
+        sync_directory(&staging_path)?;
+        match fs::rename(&staging_path, &installation_root) {
+            Ok(()) => {
+                staging.armed = false;
+                sync_directory(&installations_root)?;
+            }
+            Err(_error) if installation_root.exists() => {
+                let existing =
+                    verify_existing_installation(&self.root, recipe, &installation_root)?;
+                write_json_atomic(&active_path, &existing)?;
+                return Ok(InstallOutcome::Recovered(existing));
+            }
+            Err(error) => return Err(BridgeError::Io(error)),
+        }
+
+        #[cfg(test)]
+        if self
+            .fail_after_promotion
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(BridgeError::Invalid(
+                "injected failure after managed payload promotion".into(),
+            ));
+        }
+
+        write_json_atomic(&active_path, &receipt)?;
+        Ok(InstallOutcome::Installed(receipt))
+    }
+
+    #[cfg(test)]
+    fn inject_failure_after_promotion(&self) {
+        self.fail_after_promotion
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn agent_lock(root: &Path, agent_id: &str) -> Result<Arc<Mutex<()>>, BridgeError> {
+    let key = root.join("agents").join(agent_id);
+    let mut locks = AGENT_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| BridgeError::Invalid("managed payload lock registry was poisoned".into()))?;
+    Ok(locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
+fn ensure_root_is_not_symlink(root: &Path) -> Result<(), BridgeError> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(BridgeError::Invalid(
+            "managed payload root cannot be a symlink".into(),
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(BridgeError::Invalid(
+            "managed payload root must be a directory".into(),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(BridgeError::Io(error)),
+    }
+}
+
+fn read_receipt_if_valid(path: &Path) -> Option<ManagedPayloadReceipt> {
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn verify_existing_installation(
+    root: &Path,
+    recipe: &ValidatedRecipe,
+    installation_root: &Path,
+) -> Result<ManagedPayloadReceipt, BridgeError> {
+    let metadata = fs::symlink_metadata(installation_root)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(BridgeError::Invalid(
+            "managed payload installation target is not an owned directory".into(),
+        ));
+    }
+    let receipt_path = installation_root.join("receipt.json");
+    let receipt: ManagedPayloadReceipt = serde_json::from_slice(&fs::read(&receipt_path)?)
+        .map_err(|error| {
+            BridgeError::Invalid(format!("managed payload receipt is corrupt: {error}"))
+        })?;
+    let expected = fresh_receipt(recipe);
+    if !receipt_matches_recipe(&receipt, &expected) {
+        return Err(BridgeError::Invalid(
+            "managed payload receipt does not prove ownership of the requested installation".into(),
+        ));
+    }
+    let payload = installation_root.join("payload");
+    let digest = installed_payload_digest(&payload, recipe)?;
+    if digest != recipe.expected_sha256 {
+        return Err(BridgeError::Invalid(
+            "managed payload installation exists but its integrity has drifted".into(),
+        ));
+    }
+    if !root.join(&receipt.entrypoint).is_file() {
+        return Err(BridgeError::Invalid(
+            "managed payload installation exists but its entrypoint is missing".into(),
+        ));
+    }
+    Ok(receipt)
+}
+
+fn receipt_matches_recipe(
+    receipt: &ManagedPayloadReceipt,
+    expected: &ManagedPayloadReceipt,
+) -> bool {
+    receipt.schema_version == RECEIPT_SCHEMA_VERSION
+        && receipt.agent_id == expected.agent_id
+        && receipt.version == expected.version
+        && receipt.platform == expected.platform
+        && receipt.source == expected.source
+        && receipt.integrity_sha256 == expected.integrity_sha256
+        && receipt.installation_id == expected.installation_id
+        && receipt.owned_paths == expected.owned_paths
+        && receipt.entrypoint == expected.entrypoint
+}
+
+fn installed_payload_digest(
+    payload_root: &Path,
+    recipe: &ValidatedRecipe,
+) -> Result<String, BridgeError> {
+    match recipe.shape {
+        PayloadShape::File => source_digest(
+            &payload_root.join(&recipe.entrypoint),
+            PayloadShape::File,
+            &recipe.entrypoint,
+        ),
+        PayloadShape::Directory => {
+            source_digest(payload_root, PayloadShape::Directory, &recipe.entrypoint)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,6 +550,28 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), BridgeError> 
     Ok(())
 }
 
+fn sync_tree_files(path: &Path) -> Result<(), BridgeError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(BridgeError::Invalid(
+            "managed payload staging tree cannot contain symlinks".into(),
+        ));
+    }
+    if metadata.is_file() {
+        fs::File::open(path)?.sync_all()?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(BridgeError::Invalid(
+            "managed payload staging tree contains an unsupported entry".into(),
+        ));
+    }
+    for entry in fs::read_dir(path)? {
+        sync_tree_files(&entry?.path())?;
+    }
+    sync_directory(path)
+}
+
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), BridgeError> {
     let parent = path.parent().ok_or_else(|| {
         BridgeError::Invalid(format!(
@@ -349,6 +628,7 @@ fn fresh_receipt(recipe: &ValidatedRecipe) -> ManagedPayloadReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
 
     fn file_recipe(root: &Path) -> PayloadRecipe {
         let source = root.join("agent-bin");
@@ -362,6 +642,24 @@ mod tests {
             expected_sha256: source_digest(&source, PayloadShape::File, &entrypoint).unwrap(),
             source_path: source,
             shape: PayloadShape::File,
+            entrypoint,
+        }
+    }
+
+    fn directory_recipe(root: &Path) -> PayloadRecipe {
+        let source = root.join("agent-tree");
+        fs::create_dir_all(source.join("bin")).unwrap();
+        fs::write(source.join("bin/agent"), b"directory fixture agent").unwrap();
+        fs::write(source.join("README"), b"fixture").unwrap();
+        let entrypoint = PathBuf::from("bin/agent");
+        PayloadRecipe {
+            agent_id: "directory-agent".into(),
+            version: "4.5.6".into(),
+            platform: "darwin-aarch64".into(),
+            source: "fixture://agent-tree".into(),
+            expected_sha256: source_digest(&source, PayloadShape::Directory, &entrypoint).unwrap(),
+            source_path: source,
+            shape: PayloadShape::Directory,
             entrypoint,
         }
     }
@@ -414,5 +712,94 @@ mod tests {
             first,
             source_digest(&root, PayloadShape::Directory, Path::new("a")).unwrap()
         );
+    }
+
+    #[test]
+    fn file_and_directory_payloads_install_with_versioned_receipts() {
+        let fixture = tempfile::tempdir().unwrap();
+        let managed = fixture.path().join("managed");
+        let store = ManagedPayloadStore::new(&managed);
+
+        for recipe in [
+            file_recipe(fixture.path()),
+            directory_recipe(fixture.path()),
+        ] {
+            let outcome = store.install(&recipe).unwrap();
+            let receipt = outcome.receipt();
+            assert!(matches!(&outcome, InstallOutcome::Installed(_)));
+            assert_eq!(receipt.schema_version, RECEIPT_SCHEMA_VERSION);
+            assert_eq!(receipt.agent_id, recipe.agent_id);
+            assert_eq!(receipt.version, recipe.version);
+            assert_eq!(receipt.integrity_sha256, recipe.expected_sha256);
+            assert!(managed.join(&receipt.entrypoint).is_file());
+            let embedded = managed.join(&receipt.owned_paths[0]).join("receipt.json");
+            let persisted: ManagedPayloadReceipt =
+                serde_json::from_slice(&fs::read(embedded).unwrap()).unwrap();
+            assert_eq!(&persisted, receipt);
+        }
+    }
+
+    #[test]
+    fn tampered_artifact_never_becomes_active() {
+        let fixture = tempfile::tempdir().unwrap();
+        let managed = fixture.path().join("managed");
+        let store = ManagedPayloadStore::new(&managed);
+        let recipe = file_recipe(fixture.path());
+        fs::write(&recipe.source_path, b"tampered after recipe resolution").unwrap();
+
+        assert!(store.install(&recipe).is_err());
+        assert!(!managed.join("agents/fixture-agent/active.json").exists());
+        assert!(!managed.join("agents/fixture-agent/installations").exists());
+    }
+
+    #[test]
+    fn repeated_and_concurrent_installs_converge_to_one_owned_installation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let store = Arc::new(ManagedPayloadStore::new(fixture.path().join("managed")));
+        let recipe = Arc::new(file_recipe(fixture.path()));
+        let barrier = Arc::new(Barrier::new(8));
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let store = Arc::clone(&store);
+            let recipe = Arc::clone(&recipe);
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.install(&recipe).unwrap().receipt().clone()
+            }));
+        }
+        let receipts = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(receipts.windows(2).all(|pair| pair[0] == pair[1]));
+
+        let installations = fs::read_dir(store.root().join("agents/fixture-agent/installations"))
+            .unwrap()
+            .count();
+        assert_eq!(installations, 1);
+        assert!(matches!(
+            store.install(&recipe).unwrap(),
+            InstallOutcome::AlreadyInstalled(_)
+        ));
+    }
+
+    #[test]
+    fn retry_recovers_a_promoted_installation_from_its_embedded_receipt() {
+        let fixture = tempfile::tempdir().unwrap();
+        let managed = fixture.path().join("managed");
+        let store = ManagedPayloadStore::new(&managed);
+        let recipe = file_recipe(fixture.path());
+        store.inject_failure_after_promotion();
+
+        assert!(store.install(&recipe).is_err());
+        assert!(!managed.join("agents/fixture-agent/active.json").exists());
+        let recovered = store.install(&recipe).unwrap();
+        assert!(matches!(recovered, InstallOutcome::Recovered(_)));
+        let active: ManagedPayloadReceipt = serde_json::from_slice(
+            &fs::read(managed.join("agents/fixture-agent/active.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&active, recovered.receipt());
     }
 }
