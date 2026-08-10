@@ -109,6 +109,19 @@ fn launch(
         // typed result, its last words are the failure context the parent
         // sees instead of a generic "ended without reporting".
         .stderr(Stdio::piped());
+    // Which copy of the SDK the sidecar loads applies to every launch, not just
+    // sandboxed ones: an interactive turn runs the same sidecar. The variable is
+    // also cleared when there is no managed payload, so a stale value inherited
+    // from the environment can never point the sidecar at something Bridge does
+    // not own.
+    match managed_sdk_module() {
+        Some(module) => {
+            command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
+        }
+        None => {
+            command.env_remove("BRIDGE_CLAUDE_SDK_ENTRY");
+        }
+    }
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -489,6 +502,31 @@ impl Drop for ClaudeRuntime {
 pub fn binary_version() -> Option<String> {
     sidecar_entry().ok()?;
     binary::version("node").map(|version| format!("Agent SDK (Node {version})"))
+}
+
+/// The managed Claude SDK module to import, if a managed payload is installed.
+///
+/// Derived from the payload's receipt entrypoint — the platform binary — by
+/// walking back to the payload root, so the module and the binary always come
+/// from the same installation.
+pub fn managed_sdk_module() -> Option<PathBuf> {
+    let entrypoint = crate::managed_runtime::managed_entrypoint("claude")?;
+    let payload_root = entrypoint
+        .components()
+        .collect::<Vec<_>>()
+        .iter()
+        // rposition, not position: the managed root itself may sit under a path
+        // containing `node_modules`, and taking the first boundary would re-root
+        // onto an unrelated project's SDK.
+        .rposition(|component| component.as_os_str() == "node_modules")
+        .map(|index| {
+            entrypoint
+                .components()
+                .take(index)
+                .collect::<PathBuf>()
+        })?;
+    let module = payload_root.join(crate::managed_runtime::claude_sdk_module());
+    module.is_file().then_some(module)
 }
 
 pub fn unavailable_reason() -> Option<String> {

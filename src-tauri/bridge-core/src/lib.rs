@@ -29,6 +29,7 @@ pub mod learning_job;
 pub mod learning_router;
 pub mod live_turn;
 pub mod managed_payload;
+pub mod managed_runtime;
 pub mod marketplace;
 pub mod model;
 pub mod model_profiles;

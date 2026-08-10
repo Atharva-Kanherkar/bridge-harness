@@ -684,9 +684,16 @@ impl Drop for OpenCodeRuntime {
 }
 
 pub fn resolve_executable(settings: &OpenCodeSettings) -> Result<PathBuf, BridgeError> {
+    // A Bridge-managed payload outranks a copy bundled with the app and anything
+    // on PATH, but never the executable the user configured explicitly.
+    let mut candidates = Vec::new();
+    if let Some(managed) = crate::managed_runtime::managed_entrypoint("opencode") {
+        candidates.push(managed);
+    }
+    candidates.extend(managed_executable_candidates());
     choose_executable(
         settings.executable_path.as_deref(),
-        &managed_executable_candidates(),
+        &candidates,
         binary::resolve("opencode"),
     )
 }

@@ -55,7 +55,7 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
         version: env!("CARGO_PKG_VERSION"),
         harnesses: HashMap::from([
             ("claude", binary::resolve("claude").is_some()),
-            ("codex", binary::resolve("codex").is_some()),
+            ("codex", crate::codex_adapter::resolve_runtime().is_some()),
             ("opencode", opencode_available),
             ("shell", true),
         ]),

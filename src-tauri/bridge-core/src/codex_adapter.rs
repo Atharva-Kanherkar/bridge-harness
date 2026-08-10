@@ -62,7 +62,7 @@ fn launch(
         write_mode,
         read_only_sandbox,
     } = request;
-    let binary = binary::resolve("codex")
+    let binary = resolve_runtime()
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
     let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
     let sandbox_policy = read_only_sandbox.map(|sandbox| {
@@ -251,7 +251,7 @@ pub fn supports_native_resume() -> bool {
 }
 
 fn discover_native_resume() -> bool {
-    let Some(binary) = binary::resolve("codex") else {
+    let Some(binary) = resolve_runtime() else {
         return false;
     };
     let output_dir = std::env::temp_dir().join(format!("bridge-codex-schema-{}", Uuid::new_v4()));
@@ -398,8 +398,19 @@ impl Drop for CodexRuntime {
     }
 }
 
+/// Prefer a Bridge-managed payload, falling back to whatever the user already
+/// has on PATH.
+///
+/// A user-managed `codex` keeps working exactly as before when no managed
+/// payload is installed, and is never claimed or removed by Bridge.
+pub fn resolve_runtime() -> Option<std::path::PathBuf> {
+    crate::managed_runtime::managed_entrypoint("codex").or_else(|| binary::resolve("codex"))
+}
+
 pub fn binary_version() -> Option<String> {
-    binary::version("codex")
+    // Report the version of the copy that will actually launch, so a managed
+    // payload is not described by whatever happens to be on PATH.
+    binary::version_at(&resolve_runtime()?)
 }
 
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
