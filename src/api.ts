@@ -2,6 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
+import type {
+  ManagedAgentInspection,
+  ManagedAgentList,
+  ManagedAgentOperationKind,
+  ManagedAgentOperationResult,
+  ManagedAgentStatus,
+} from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
@@ -317,6 +324,28 @@ export const bridgeApi = {
     if (action === "authenticate") entry.authenticationState = "connected";
     return { provider, pluginId, action, success: true, message: `${action} completed`, error: null };
   },
+  // ── agents: the managed runtime lifecycle ─────────────────────────────────
+  //
+  // Thin pass-throughs. Every question the UI asks — which copy would launch, is
+  // it Bridge's to remove — is answered by a field in these responses, so no
+  // ownership logic is reimplemented here.
+  listManagedAgents: (): Promise<ManagedAgentList> =>
+    isTauri() ? call("agents/list_managed_agents") : Promise.resolve(structuredClone(mockManagedAgents)),
+  inspectManagedAgent: (agentId: string): Promise<ManagedAgentInspection> => {
+    if (isTauri()) return call("agents/inspect_managed_agent", { agentId });
+    const status = mockManagedAgents.agents.find(agent => agent.agentId === agentId);
+    // Reject rather than substituting another agent: silently answering about the
+    // wrong runtime is the kind of mock that hides a real bug.
+    if (!status) return Promise.reject(new Error(`${agentId} is not a built-in agent`));
+    return Promise.resolve({ status: structuredClone(status), receipt: null, externalRuntime: null });
+  },
+  installManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
+    isTauri() ? call("agents/install_managed_agent", { agentId }) : mockManagedOperation(agentId, "install"),
+  repairManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
+    isTauri() ? call("agents/repair_managed_agent", { agentId }) : mockManagedOperation(agentId, "repair"),
+  uninstallManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
+    isTauri() ? call("agents/uninstall_managed_agent", { agentId }) : mockManagedOperation(agentId, "uninstall"),
+
   health: (): Promise<Health> => isTauri() ? call("health/health") : Promise.resolve(structuredClone(mockHealth)),
   state: (): Promise<BridgeState> => isTauri() ? call("state/get_state") : Promise.resolve(snapshot()),
   modelSetup: (): Promise<ModelSetupState> => isTauri() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
@@ -623,3 +652,44 @@ export const bridgeApi = {
     return () => undefined;
   }
 };
+
+/// Browser-mode fixtures: one managed, one user-managed, one absent, so the
+/// three interesting cards are all reachable without a daemon.
+///
+/// Treated as immutable. An operation returns a fresh status rather than mutating
+/// these, so a browser session does not accumulate state that a real daemon would
+/// never report.
+const mockManagedAgents: ManagedAgentList = {
+  agents: [
+    {
+      agentId: "claude", label: "Claude Code", state: "ready", backing: "managed", removable: true,
+      executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
+      version: "0.3.209", consecutiveFailures: 0,
+    },
+    {
+      agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,
+      executable: "/opt/homebrew/bin/codex", version: "0.147.0", consecutiveFailures: 0,
+    },
+    {
+      agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false,
+      consecutiveFailures: 0,
+    },
+  ],
+};
+
+function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind): Promise<ManagedAgentOperationResult> {
+  const agent = mockManagedAgents.agents.find(item => item.agentId === agentId);
+  if (!agent) return Promise.reject(new Error(`${agentId} is not a built-in agent`));
+  if (kind === "uninstall") {
+    if (!agent.removable) return Promise.reject(new Error(`${agent.label} is user-managed; Bridge will not remove it`));
+    const status: ManagedAgentStatus = {
+      ...structuredClone(agent), state: "not_installed", backing: "none", removable: false,
+      executable: undefined, version: undefined,
+    };
+    return Promise.resolve({ agentId, kind, outcome: "removed", status });
+  }
+  const status: ManagedAgentStatus = {
+    ...structuredClone(agent), state: "ready", backing: "managed", removable: true, version: "0.0.0-mock",
+  };
+  return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
+}

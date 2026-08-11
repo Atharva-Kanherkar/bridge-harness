@@ -4,6 +4,7 @@ import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, ReasoningEffort } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
+import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { cn } from "@/lib/utils";
 
@@ -196,6 +197,13 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
         </div>}
         {section === "harnesses" && config && <div className="mx-auto max-w-4xl">
           <div className="mb-5"><h2 className="font-display text-lg font-semibold">Harness configuration</h2><p className="mt-1 text-xs text-muted-foreground">Defaults apply to new sessions. Provider credentials stay in each harness’s own credential store.</p></div>
+          {/* Runtime installation, above configuration: whether an agent is
+              installed at all is the question that comes first, and it is a
+              different question from how it behaves once it runs. */}
+          <section className="mb-6" aria-labelledby="managed-runtimes-heading">
+            <div className="mb-3"><h3 id="managed-runtimes-heading" className="font-display text-sm font-semibold">Agent runtimes</h3><p className="mt-1 text-xs text-muted-foreground">Bridge installs these from each vendor’s official source. A runtime you installed yourself keeps working and is never removed by Bridge.</p></div>
+            <ManagedAgentsPanel />
+          </section>
           <div className="space-y-4">{config.harnesses.map(item => {
             const draft = harnessDrafts[item.id] ?? item;
             return <section key={item.id} className="rounded-3xl border border-border/80 bg-card/45 p-5">
