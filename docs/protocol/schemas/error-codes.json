@@ -80,6 +80,46 @@
       "code": 2004,
       "name": "overloaded",
       "summary": "The server is at capacity and refused the connection or request"
+    },
+    {
+      "code": 3000,
+      "name": "unsupported_platform",
+      "summary": "No vendor build exists for this operating system and architecture"
+    },
+    {
+      "code": 3001,
+      "name": "integrity_failure",
+      "summary": "The fetched runtime did not match its pinned integrity digest"
+    },
+    {
+      "code": 3002,
+      "name": "external_not_managed",
+      "summary": "This runtime is user-managed; Bridge holds no receipt for it and will not remove it"
+    },
+    {
+      "code": 3003,
+      "name": "agent_busy",
+      "summary": "Another lifecycle operation or a running process is holding this agent"
+    },
+    {
+      "code": 3004,
+      "name": "corrupt_receipt",
+      "summary": "The managed installation's receipt could not be read or does not describe it"
+    },
+    {
+      "code": 3005,
+      "name": "vendor_prerequisite_missing",
+      "summary": "The vendor reported a prerequisite of its own, such as a login or an API key"
+    },
+    {
+      "code": 3006,
+      "name": "uninstall_not_permitted",
+      "summary": "This installation cannot be removed in its current state"
+    },
+    {
+      "code": 3007,
+      "name": "unknown_agent",
+      "summary": "No built-in integration has that agent id"
     }
   ]
 }

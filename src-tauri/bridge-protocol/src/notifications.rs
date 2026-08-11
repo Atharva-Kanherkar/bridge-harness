@@ -64,6 +64,11 @@ notifications![
     // Refetch hints: the payload carries no state; clients re-read snapshots.
     (StateChanged, "state-changed", Transient),
     (AdaptersChanged, "adapters-changed", Transient),
+    // Managed-runtime lifecycle: a refetch hint, like its neighbours above. The
+    // payload carries the agent id only, and authoritative state comes from
+    // `agents/list_managed_agents`. There is no progress stream, because the
+    // operations complete before their method returns.
+    (ManagedAgentChanged, "managed-agent-changed", Transient),
     (LearningJobChanged, "learning-job-changed", Transient),
     // Explicitly transient streams: worthless once stale, never replayed.
     (SessionOutput, "session-output", Transient),

@@ -1442,3 +1442,53 @@ mod tests {
         assert!(!source.contains(&locked_learning_call));
     }
 }
+
+// ---- agents: the managed runtime lifecycle -------------------------------
+//
+// The api seam both hosts call, so the shell and the daemon share one path into
+// the domain rather than each wiring its own.
+
+pub fn list_managed_agents(
+) -> Result<bridge_protocol::messages::ManagedAgentList, crate::managed_agents::ManagedAgentError> {
+    crate::managed_agents::list_managed_agents()
+}
+
+pub fn inspect_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentInspection,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::inspect_managed_agent(agent_id)
+}
+
+pub fn install_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentOperationResult,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::install_managed_agent(agent_id)
+}
+
+pub fn repair_managed_agent(
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentOperationResult,
+    crate::managed_agents::ManagedAgentError,
+> {
+    crate::managed_agents::repair_managed_agent(agent_id)
+}
+
+/// Takes the core because removal must first prove nothing is running against
+/// the payload, which is a question only the session store can answer.
+pub fn uninstall_managed_agent(
+    core: &Arc<BridgeCore>,
+    agent_id: &str,
+) -> Result<
+    bridge_protocol::messages::ManagedAgentOperationResult,
+    crate::managed_agents::ManagedAgentError,
+> {
+    let db = core.db.lock().unwrap();
+    crate::managed_agents::uninstall_managed_agent(&db, agent_id)
+}

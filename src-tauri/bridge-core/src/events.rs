@@ -48,6 +48,10 @@ pub enum CoreEvent {
         provider: String,
         rate_limits: Value,
     },
+    /// Refetch hint: a managed agent's installation or readiness changed. The
+    /// payload carries the agent id only — authoritative state is refetched
+    /// through `agents/list_managed_agents`, never reconstructed from this.
+    ManagedAgentChanged { agent_id: String },
 }
 
 impl CoreEvent {
@@ -62,6 +66,7 @@ impl CoreEvent {
             CoreEvent::LearningJobChanged(_) => NotificationName::LearningJobChanged,
             CoreEvent::SessionOutput { .. } => NotificationName::SessionOutput,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
+            CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
         }
     }
 
@@ -74,6 +79,11 @@ impl CoreEvent {
             CoreEvent::SessionOutput { session_id, data } => serde_json::json!({
                 "sessionId": session_id,
                 "data": data,
+            }),
+            // The agent id only: the client refetches authoritative state rather
+            // than rebuilding it from a notification.
+            CoreEvent::ManagedAgentChanged { agent_id } => serde_json::json!({
+                "agentId": agent_id,
             }),
             CoreEvent::AccountUsage {
                 provider,
@@ -101,6 +111,10 @@ struct ReconciliationState {
     state_changed: bool,
     adapters_changed: bool,
     learning_job_changed: Option<Value>,
+    /// Which agents changed while a subscriber was lagging. A set rather than a
+    /// flag because the hint names its agent, and ordered so replay is
+    /// deterministic.
+    managed_agents_changed: std::collections::BTreeSet<String>,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -138,6 +152,11 @@ impl EventReceiver {
         }
         if let Some(payload) = &state.learning_job_changed {
             events.push(CoreEvent::LearningJobChanged(payload.clone()));
+        }
+        for agent_id in &state.managed_agents_changed {
+            events.push(CoreEvent::ManagedAgentChanged {
+                agent_id: agent_id.clone(),
+            });
         }
         events
     }
@@ -190,6 +209,12 @@ impl EventBus {
                 CoreEvent::LearningJobChanged(payload) => {
                     state.learning_job_changed = Some(payload.clone())
                 }
+                // A refetch hint, like StateChanged and AdaptersChanged above: a
+                // client that missed it while lagging still has to learn that it
+                // must re-read, so it is reconciled rather than dropped.
+                CoreEvent::ManagedAgentChanged { agent_id } => {
+                    state.managed_agents_changed.insert(agent_id.clone());
+                }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::AccountUsage { .. } => {}
@@ -236,6 +261,9 @@ mod tests {
             CoreEvent::AccountUsage {
                 provider: "codex".into(),
                 rate_limits: serde_json::json!({}),
+            },
+            CoreEvent::ManagedAgentChanged {
+                agent_id: "codex".into(),
             },
         ];
         for event in &events {

@@ -81,6 +81,11 @@ export type BridgeMethod =
   | "browser/browser_skills"
   | "browser/configure_remote_browser"
   | "browser/start_remote_browser"
+  | "agents/list_managed_agents"
+  | "agents/inspect_managed_agent"
+  | "agents/install_managed_agent"
+  | "agents/repair_managed_agent"
+  | "agents/uninstall_managed_agent"
   | "marketplace/marketplace_catalog"
   | "marketplace/marketplace_app_auth_states"
   | "marketplace/marketplace_action"
@@ -164,6 +169,11 @@ export const BRIDGE_METHODS = [
   { method: "browser/browser_skills", domain: "browser", command: "browser_skills" },
   { method: "browser/configure_remote_browser", domain: "browser", command: "configure_remote_browser" },
   { method: "browser/start_remote_browser", domain: "browser", command: "start_remote_browser" },
+  { method: "agents/list_managed_agents", domain: "agents", command: "list_managed_agents" },
+  { method: "agents/inspect_managed_agent", domain: "agents", command: "inspect_managed_agent" },
+  { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
+  { method: "agents/repair_managed_agent", domain: "agents", command: "repair_managed_agent" },
+  { method: "agents/uninstall_managed_agent", domain: "agents", command: "uninstall_managed_agent" },
   { method: "marketplace/marketplace_catalog", domain: "marketplace", command: "marketplace_catalog" },
   { method: "marketplace/marketplace_app_auth_states", domain: "marketplace", command: "marketplace_app_auth_states" },
   { method: "marketplace/marketplace_action", domain: "marketplace", command: "marketplace_action" },
@@ -177,6 +187,7 @@ export type BridgeNotification =
   | "agent-event"
   | "state-changed"
   | "adapters-changed"
+  | "managed-agent-changed"
   | "learning-job-changed"
   | "session-output"
   | "account-usage"
@@ -186,6 +197,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "agent-event", delivery: "mixed" },
   { notification: "state-changed", delivery: "transient" },
   { notification: "adapters-changed", delivery: "transient" },
+  { notification: "managed-agent-changed", delivery: "transient" },
   { notification: "learning-job-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
@@ -209,6 +221,14 @@ export const ERROR_CODES = {
   cancelled: 2002,
   shutting_down: 2003,
   overloaded: 2004,
+  unsupported_platform: 3000,
+  integrity_failure: 3001,
+  external_not_managed: 3002,
+  agent_busy: 3003,
+  corrupt_receipt: 3004,
+  vendor_prerequisite_missing: 3005,
+  uninstall_not_permitted: 3006,
+  unknown_agent: 3007,
 } as const;
 
 /** Params types for methods whose payloads are contracted so far. */
@@ -287,6 +307,11 @@ export interface BridgeMethodParams {
   "browser/browser_skills": undefined;
   "browser/configure_remote_browser": ConfigureRemoteBrowserParams;
   "browser/start_remote_browser": StartRemoteBrowserParams;
+  "agents/list_managed_agents": undefined;
+  "agents/inspect_managed_agent": InspectManagedAgentParams;
+  "agents/install_managed_agent": InstallManagedAgentParams;
+  "agents/repair_managed_agent": RepairManagedAgentParams;
+  "agents/uninstall_managed_agent": UninstallManagedAgentParams;
   "marketplace/marketplace_catalog": undefined;
   "marketplace/marketplace_app_auth_states": undefined;
   "marketplace/marketplace_action": MarketplaceActionParams;
@@ -372,6 +397,11 @@ export interface BridgeMethodResults {
   "browser/browser_skills": BrowserSkillsResult;
   "browser/configure_remote_browser": UnitResult;
   "browser/start_remote_browser": unknown;
+  "agents/list_managed_agents": ManagedAgentList;
+  "agents/inspect_managed_agent": ManagedAgentInspection;
+  "agents/install_managed_agent": ManagedAgentOperationResult;
+  "agents/repair_managed_agent": ManagedAgentOperationResult;
+  "agents/uninstall_managed_agent": ManagedAgentOperationResult;
   "marketplace/marketplace_catalog": unknown;
   "marketplace/marketplace_app_auth_states": unknown;
   "marketplace/marketplace_action": unknown;
@@ -529,6 +559,42 @@ export interface LearningSchedule {
 }
 
 export type LocalLearningTriggerKind = "manual" | "in_app";
+
+export type ManagedAgentBacking = "managed" | "external" | "explicit" | "bundled" | "none";
+
+export interface ManagedAgentFailure {
+  attempt: number;
+  context: string;
+}
+
+export type ManagedAgentOperationKind = "install" | "repair" | "uninstall";
+
+export type ManagedAgentOperationOutcome = "installed" | "repaired" | "removed" | "already_current" | "already_absent";
+
+export interface ManagedAgentReceiptSummary {
+  agentId: string;
+  installationId: string;
+  installedAt: string;
+  integritySha256: string;
+  platform: string;
+  schemaVersion: number;
+  source: string;
+  version: string;
+}
+
+export interface ManagedAgentStatus {
+  agentId: string;
+  backing: ManagedAgentBacking;
+  consecutiveFailures: number;
+  executable?: string | null;
+  label: string;
+  lastFailure?: ManagedAgentFailure | null;
+  processId?: number | null;
+  removable: boolean;
+  state: string;
+  vendorMessage?: string | null;
+  version?: string | null;
+}
 
 export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
 
@@ -1255,6 +1321,39 @@ export interface ConfigureRemoteBrowserParams {
 
 export interface StartRemoteBrowserParams {
   initialUrl: string;
+}
+
+export interface ManagedAgentList {
+  agents: ManagedAgentStatus[];
+}
+
+export interface InspectManagedAgentParams {
+  agentId: string;
+}
+
+export interface ManagedAgentInspection {
+  externalRuntime?: string | null;
+  receipt?: ManagedAgentReceiptSummary | null;
+  status: ManagedAgentStatus;
+}
+
+export interface InstallManagedAgentParams {
+  agentId: string;
+}
+
+export interface ManagedAgentOperationResult {
+  agentId: string;
+  kind: ManagedAgentOperationKind;
+  outcome: ManagedAgentOperationOutcome;
+  status: ManagedAgentStatus;
+}
+
+export interface RepairManagedAgentParams {
+  agentId: string;
+}
+
+export interface UninstallManagedAgentParams {
+  agentId: string;
 }
 
 export interface MarketplaceActionParams {
