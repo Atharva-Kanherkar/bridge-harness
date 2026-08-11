@@ -10,8 +10,15 @@
   the API's answer to "is this Bridge's to remove", so the UI never infers
   removability from a state string. A user-owned path therefore cannot show a
   Remove action even if a future state string is added that the UI does not know.
-- Two things the issue's UX asks for cannot be rendered honestly yet, so they are
-  not faked:
+- **No Start action in this panel.** Starting an agent means starting a session
+  with it, and that already has a surface: the composer and new-chat flow. A Start
+  button here would either create a session and leave the user sitting in Settings,
+  or need routing this panel has no business owning. Issue #170's acceptance says
+  Start happens "through the unchanged integration", which is that existing flow —
+  so this panel owns Install, Repair, and Remove, and the action matrix below does
+  not promise Start.
+- Two more things the issue's UX asks for cannot be rendered honestly yet, so they
+  are not faked:
   - **No progress bar.** `install`/`repair`/`uninstall` run to completion and
     return a result; #169 deliberately ships no progress stream and no operation
     id. An in-flight operation shows an indeterminate busy state, not an invented
@@ -31,17 +38,24 @@
 - One card per built-in integration, showing exactly one source state, its label,
   and the version and executable path when the RPC supplies them.
 - State to actions:
-  - `not_installed` → primary **Install**; no Remove.
-  - `external` (backing `external`, `explicit`, or `bundled`) → primary **Start**;
-    secondary **Install Bridge-managed copy**; **no Remove**, and the card names
-    the source so a working user runtime is never presented as Bridge-managed.
-  - `installed` and `ready` → primary **Start**; secondary **Remove**.
-  - `repairable` → primary **Repair**; **Remove** offered because Bridge owns the
-    drifted payload.
+  - `not_installed` → **Install**; no Remove.
+  - `external` (backing `external`, `explicit`, or `bundled`) → **Install
+    Bridge-managed copy**; **no Remove**, and the card names the source so a
+    working user runtime is never presented as Bridge-managed.
+  - `installed` and `ready` → **Remove**.
+  - `repairable` and `broken` → **Repair**, and **Remove** because Bridge owns the
+    drifted payload. `broken` reads as "Unavailable" rather than a raw state string.
   - `running` → active state shown; **Remove disabled** with the reason given.
 - Removing asks for confirmation first, and the confirmation names the exact
   managed payload — agent label, version, and the executable path — so a user is
-  never asked to approve "remove this" without being told what "this" is.
+  never asked to approve "remove this" without being told what "this" is. Focus
+  lands on **Keep it**, which also comes first in tab order: a dialog that
+  autofocuses its destructive action turns a stray Enter into an uninstall. Tab
+  cycles within the dialog, since it claims `aria-modal`.
+- Operations on different cards are independent. One card finishing must not clear
+  another's busy state while its call is still in flight, which would re-enable
+  actions mid-operation.
+- A failed list is not a dead end: the error is shown with a Retry.
 - A failed operation surfaces the error's message in the card, associated with
   that card, and leaves the card usable.
 - After a completed operation the card re-reads authoritative state from the RPC
@@ -75,6 +89,14 @@
 - `the_panel_never_renders_a_credential_control` — a scan of the rendered markup
   across every state finds no `input`, no `type="password"`, and no
   login/logout/API-key affordance.
+- `concurrent_operations_do_not_clear_each_others_busy_state` — two cards working
+  at once; finishing one leaves the other busy with its actions still withheld.
+- `the_confirmation_focuses_keep_not_remove` — focus lands on Keep it, Keep it is
+  first in tab order, and nothing is called.
+- `install_success_applies_the_returned_status` — the external → managed
+  transition comes from the result, and removal appears where it was absent.
+- `a_list_failure_offers_retry` — the failure shows a Retry that refetches.
+- `a_broken_agent_reads_as_unavailable_rather_than_a_raw_state_string`.
 
 ## Integration / Functional Tests
 
@@ -106,5 +128,8 @@ component tests above and the RPC layer by #169's suite.
   API keys, login sessions, and any global or custom installation untouched, and
   that reinstall is immediately available.
 - Manually confirm keyboard-only operation: every action reachable by Tab, the
-  confirmation trapping focus, and focus returning to the invoking control when
-  it closes.
+  confirmation trapping focus, focus returning to the invoking control when it
+  closes, and Enter on the freshly-opened dialog keeping the payload rather than
+  removing it.
+- Manually confirm the panel's colours against both themes now that it uses the
+  shared theme tokens rather than variables of its own.

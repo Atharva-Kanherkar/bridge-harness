@@ -331,12 +331,14 @@ export const bridgeApi = {
   // ownership logic is reimplemented here.
   listManagedAgents: (): Promise<ManagedAgentList> =>
     isTauri() ? call("agents/list_managed_agents") : Promise.resolve(structuredClone(mockManagedAgents)),
-  inspectManagedAgent: (agentId: string): Promise<ManagedAgentInspection> =>
-    isTauri() ? call("agents/inspect_managed_agent", { agentId }) : Promise.resolve({
-      status: mockManagedAgents.agents.find(agent => agent.agentId === agentId) ?? mockManagedAgents.agents[0],
-      receipt: null,
-      externalRuntime: null,
-    }),
+  inspectManagedAgent: (agentId: string): Promise<ManagedAgentInspection> => {
+    if (isTauri()) return call("agents/inspect_managed_agent", { agentId });
+    const status = mockManagedAgents.agents.find(agent => agent.agentId === agentId);
+    // Reject rather than substituting another agent: silently answering about the
+    // wrong runtime is the kind of mock that hides a real bug.
+    if (!status) return Promise.reject(new Error(`${agentId} is not a built-in agent`));
+    return Promise.resolve({ status: structuredClone(status), receipt: null, externalRuntime: null });
+  },
   installManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
     isTauri() ? call("agents/install_managed_agent", { agentId }) : mockManagedOperation(agentId, "install"),
   repairManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
@@ -653,6 +655,10 @@ export const bridgeApi = {
 
 /// Browser-mode fixtures: one managed, one user-managed, one absent, so the
 /// three interesting cards are all reachable without a daemon.
+///
+/// Treated as immutable. An operation returns a fresh status rather than mutating
+/// these, so a browser session does not accumulate state that a real daemon would
+/// never report.
 const mockManagedAgents: ManagedAgentList = {
   agents: [
     {
@@ -676,9 +682,14 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
   if (!agent) return Promise.reject(new Error(`${agentId} is not a built-in agent`));
   if (kind === "uninstall") {
     if (!agent.removable) return Promise.reject(new Error(`${agent.label} is user-managed; Bridge will not remove it`));
-    Object.assign(agent, { state: "not_installed", backing: "none", removable: false, executable: undefined, version: undefined });
-    return Promise.resolve({ agentId, kind, outcome: "removed", status: structuredClone(agent) as ManagedAgentStatus });
+    const status: ManagedAgentStatus = {
+      ...structuredClone(agent), state: "not_installed", backing: "none", removable: false,
+      executable: undefined, version: undefined,
+    };
+    return Promise.resolve({ agentId, kind, outcome: "removed", status });
   }
-  Object.assign(agent, { state: "ready", backing: "managed", removable: true, version: "0.0.0-mock" });
-  return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status: structuredClone(agent) as ManagedAgentStatus });
+  const status: ManagedAgentStatus = {
+    ...structuredClone(agent), state: "ready", backing: "managed", removable: true, version: "0.0.0-mock",
+  };
+  return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }

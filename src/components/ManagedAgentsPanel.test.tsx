@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { ManagedAgentStatus } from "../protocol/generated/protocol";
@@ -33,6 +35,7 @@ async function render(agents: ManagedAgentStatus[]) {
       [...(within ?? host).querySelectorAll("button")]
         .find(node => node.textContent?.trim() === label) ?? null,
     dialog: () => host.querySelector('[data-testid="remove-confirmation"]'),
+    focused: () => document.activeElement?.textContent?.trim() ?? null,
     buttons: () => [...host.querySelectorAll("button")].map(node => node.textContent?.trim() ?? ""),
     click: async (node: Element | null) => {
       expect(node, "control must exist to be clicked").not.toBeNull();
@@ -64,6 +67,9 @@ describe("ManagedAgentsPanel", () => {
   });
 
   it("each_state_offers_its_contracted_actions", async () => {
+    // No Start anywhere on purpose: starting an agent means starting a session,
+    // which already has a surface. A Start button here would either strand the
+    // user in Settings or need routing this panel does not own.
     const cases: Array<[Partial<ManagedAgentStatus>, string[]]> = [
       // Nothing installed: install is the only thing to do.
       [{ state: "not_installed", backing: "none", removable: false, executable: undefined, version: undefined }, ["Install"]],
@@ -74,6 +80,8 @@ describe("ManagedAgentsPanel", () => {
       [{ state: "repairable", backing: "managed", removable: true }, ["Repair", "Remove"]],
       // The user's own copy: offer a managed copy, never removal.
       [{ state: "external", backing: "external", removable: false }, ["Install Bridge-managed copy"]],
+      // Unusable and Bridge's: repair it, or remove it.
+      [{ state: "broken", backing: "managed", removable: true }, ["Repair", "Remove"]],
     ];
     for (const [overrides, expected] of cases) {
       const view = await render([agent(overrides)]);
@@ -115,7 +123,10 @@ describe("ManagedAgentsPanel", () => {
     // The reason is associated with the control, not just printed nearby.
     const reason = remove.getAttribute("aria-describedby");
     expect(reason).not.toBeNull();
-    expect(view.host.querySelector(`#${reason}`)?.textContent).toContain("Stop Codex before removing");
+    // Attribute selector, not `#id`: React's useId contains characters that are
+    // not valid in a CSS id selector.
+    expect(view.host.querySelector(`[id="${reason}"]`)?.textContent)
+      .toContain("Stop Codex before removing");
     await view.unmount();
   });
 
@@ -173,7 +184,9 @@ describe("ManagedAgentsPanel", () => {
     expect(view.button("Cancel")).toBeNull();
     expect(view.host.querySelector("progress")).toBeNull();
 
-    release?.({ agentId: "codex", kind: "install", outcome: "installed", status: agent() } as never);
+    await act(async () => {
+      release?.({ agentId: "codex", kind: "install", outcome: "installed", status: agent() } as never);
+    });
     await view.unmount();
   });
 
@@ -189,6 +202,107 @@ describe("ManagedAgentsPanel", () => {
     expect(view.host.querySelector('[data-testid="agent-busy-codex"]')).toBeNull();
     expect(view.button("Install")).not.toBeNull();
     await view.unmount();
+  });
+
+
+  it("a_broken_agent_reads_as_unavailable_rather_than_a_raw_state_string", async () => {
+    const view = await render([agent({ state: "broken" })]);
+    expect(view.host.querySelector('[data-testid="agent-state-codex"]')?.textContent).toBe("Unavailable");
+    await view.unmount();
+  });
+
+  it("concurrent_operations_do_not_clear_each_others_busy_state", async () => {
+    // One busy slot used to mean the first card to finish cleared the second
+    // card's indicator while its RPC was still in flight, re-enabling actions
+    // mid-operation.
+    const releases: Record<string, (result: never) => void> = {};
+    vi.spyOn(bridgeApi, "installManagedAgent").mockImplementation(
+      (agentId: string) => new Promise(resolve => { releases[agentId] = resolve as never; }));
+
+    const view = await render([
+      agent({ agentId: "codex", label: "Codex", state: "not_installed", backing: "none", removable: false }),
+      agent({ agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false }),
+    ]);
+    const install = (id: string) =>
+      view.button("Install", view.host.querySelector(`[data-testid="agent-card-${id}"]`));
+
+    await view.click(install("codex"));
+    await view.click(install("opencode"));
+    expect(view.host.querySelector('[data-testid="agent-busy-codex"]')).not.toBeNull();
+    expect(view.host.querySelector('[data-testid="agent-busy-opencode"]')).not.toBeNull();
+
+    // Finish only codex. opencode must still be busy and must not have its
+    // Install button back.
+    await act(async () => {
+      releases.codex({
+        agentId: "codex", kind: "install", outcome: "installed",
+        status: agent({ agentId: "codex", label: "Codex" }),
+      } as never);
+    });
+    expect(view.host.querySelector('[data-testid="agent-busy-codex"]')).toBeNull();
+    expect(view.host.querySelector('[data-testid="agent-busy-opencode"]')).not.toBeNull();
+    expect(install("opencode"), "the still-running card must stay busy").toBeNull();
+
+    await act(async () => {
+      releases.opencode({
+        agentId: "opencode", kind: "install", outcome: "installed",
+        status: agent({ agentId: "opencode", label: "OpenCode" }),
+      } as never);
+    });
+    expect(view.host.querySelector('[data-testid="agent-busy-opencode"]')).toBeNull();
+    await view.unmount();
+  });
+
+  it("the_confirmation_focuses_keep_not_remove", async () => {
+    // A dialog that autofocuses its destructive action turns a stray Enter into
+    // an uninstall.
+    const uninstall = vi.spyOn(bridgeApi, "uninstallManagedAgent");
+    const view = await render([agent()]);
+    await view.click(view.button("Remove"));
+
+    expect(view.focused()).toBe("Keep it");
+    // And Keep it comes first in tab order for the same reason.
+    const order = [...(view.dialog()?.querySelectorAll("button") ?? [])].map(node => node.textContent?.trim());
+    expect(order).toEqual(["Keep it", "Remove"]);
+    expect(uninstall).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+
+  it("install_success_applies_the_returned_status", async () => {
+    // The external → managed transition, driven by the result rather than a guess.
+    const installed = agent({ state: "ready", backing: "managed", removable: true, version: "0.147.0" });
+    vi.spyOn(bridgeApi, "installManagedAgent").mockResolvedValue({
+      agentId: "codex", kind: "install", outcome: "installed", status: installed,
+    });
+    const view = await render([agent({ state: "external", backing: "external", removable: false })]);
+    await view.click(view.button("Install Bridge-managed copy"));
+
+    expect(view.host.querySelector('[data-testid="agent-state-codex"]')?.textContent).toBe("Ready");
+    expect(view.host.querySelector('[data-testid="agent-source-codex"]')?.textContent).toBe("Bridge-managed");
+    // Now Bridge's, so removal is offered where it was not before.
+    expect(view.button("Remove")).not.toBeNull();
+    await view.unmount();
+  });
+
+  it("a_list_failure_offers_retry", async () => {
+    const list = vi.spyOn(bridgeApi, "listManagedAgents")
+      .mockRejectedValueOnce(new Error("The Bridge daemon is not reachable"))
+      .mockResolvedValueOnce({ agents: [agent()] });
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => { root.render(<ManagedAgentsPanel />); });
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("not reachable");
+    const retry = [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "Retry");
+    expect(retry, "a failed list must not be a dead end").not.toBeNull();
+
+    await act(async () => { (retry as HTMLButtonElement).click(); });
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('[data-testid="agent-card-codex"]')).not.toBeNull();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => { root.unmount(); host.remove(); });
   });
 
   it("vendor_guidance_is_shown_verbatim_and_adds_no_credential_controls", async () => {
@@ -216,6 +330,45 @@ describe("ManagedAgentsPanel", () => {
       expect(view.host.querySelector('[type="password"]'), state).toBeNull();
       expect(view.host.innerHTML.toLowerCase()).not.toContain("apikey");
       await view.unmount();
+    }
+  });
+});
+
+describe("ManagedAgentsPanel styling", () => {
+  // The review found this panel using `var(--text)`, `var(--text-muted)`, and
+  // `var(--danger)` — none of which exist in index.css, so that text rendered
+  // with an invalid colour. A visual pass would have caught it; this catches it
+  // permanently, which a one-off eyeball does not.
+  it("every_colour_class_resolves_to_a_declared_theme_token", async () => {
+    // Paths from the project root: import.meta.url is not a file URL under the
+    // vite test transform.
+    const source = readFileSync("src/components/ManagedAgentsPanel.tsx", "utf8");
+    const css = readFileSync("src/index.css", "utf8");
+
+    // Nothing may reach for a raw variable: the theme utilities are the contract.
+    expect(source).not.toMatch(/var\(--/);
+
+    const used = [...source.matchAll(/\b(?:text|bg|border)-([a-z][a-z-]*)\b/g)]
+      .map(match => match[1])
+      .filter(token => !["xs", "sm", "base", "lg", "left", "center", "right", "black", "white", "transparent", "current", "inherit"].includes(token));
+    expect(used.length, "the panel must use theme colour utilities").toBeGreaterThan(0);
+
+    for (const token of new Set(used)) {
+      expect(
+        css.includes(`--color-${token}:`) || css.includes(`--${token}:`),
+        `${token} is not a declared theme token — text would render with an invalid colour`,
+      ).toBe(true);
+    }
+  });
+
+  it("renders_without_throwing_in_every_state", async () => {
+    // Server-render each state too: a hook-order or undefined-field mistake in a
+    // branch the DOM tests happen not to hit still fails here.
+    for (const state of ["not_installed", "installed", "ready", "repairable", "broken", "running", "external"]) {
+      const markup = renderToStaticMarkup(
+        <ManagedAgentsPanel initialAgents={[agent({ state, backing: state === "external" ? "external" : "managed" })]} />,
+      );
+      expect(markup, state).toContain("Codex");
     }
   });
 });
