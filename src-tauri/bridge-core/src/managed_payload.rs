@@ -859,12 +859,8 @@ struct VerifiedPayload {
     witness: String,
     /// When the full read began, in nanoseconds since the Unix epoch.
     ///
-    /// A hit additionally requires every file to be *older* than this. Without it,
-    /// a same-length overwrite landing in the same mtime tick as the verification
-    /// would be invisible — filesystem timestamp granularity is not guaranteed to
-    /// be fine, and HFS+ is a one-second example. Requiring strictly-older mtimes
-    /// costs one extra full digest when a status immediately follows a write, and
-    /// closes the window in exchange.
+    /// See [`verification_outran_the_mtime_bucket`] for what this is compared
+    /// against and why a bare "older than" comparison is not enough.
     started_at_nanos: u128,
 }
 
@@ -873,6 +869,39 @@ fn unix_nanos_now() -> Option<u128> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|since| since.as_nanos())
+}
+
+/// An upper bound on any mtime granularity Bridge expects to run on.
+///
+/// FAT records modification times in two-second steps and HFS+ in one-second
+/// steps; APFS, ext4, NTFS and ZFS are all finer. Two seconds therefore covers the
+/// coarsest filesystem a managed payload is plausibly installed on. A filesystem
+/// coarser than this — some network mounts — falls outside the bound, and the
+/// consequence is stated in the module's contract rather than assumed away.
+const MAX_MTIME_GRANULARITY_NANOS: u128 = 2_000_000_000;
+
+/// Was the recorded verification late enough that a later write must have changed
+/// the mtime?
+///
+/// This is the load-bearing half of the freshness rule, and a strict `newest <
+/// started_at` is *not* sufficient. mtimes are truncated to the filesystem's
+/// granularity `g`, while the verification timestamp is nanosecond wall clock, so
+/// the two are not directly comparable.
+///
+/// Masking requires a post-verification write whose truncated mtime equals the one
+/// already in the witness — that is, `bucket(write) == bucket(previous write)`.
+/// Since the write happens at or after the verification, that is possible exactly
+/// when the verification itself fell inside the previous write's bucket. So the
+/// question is not "is the file older than the verification" but "did the
+/// verification happen at least one full bucket after the file was written".
+///
+/// With `g` unknown, [`MAX_MTIME_GRANULARITY_NANOS`] stands in for it. The cost is
+/// that a payload verified within two seconds of being written is re-digested on
+/// the next status read, which is noise next to a 15–32 second install.
+fn verification_outran_the_mtime_bucket(newest_modified: u128, started_at: u128) -> bool {
+    newest_modified
+        .checked_add(MAX_MTIME_GRANULARITY_NANOS)
+        .is_some_and(|earliest_safe| earliest_safe <= started_at)
 }
 
 /// The most recent mtime among file entries, which is what a cache hit is checked
@@ -905,12 +934,16 @@ fn verified_payloads() -> &'static Mutex<HashMap<PathBuf, VerifiedPayload>> {
 ///
 /// The walk always happens, with every check [`collect_tree_entries`] performs — a
 /// symlink planted inside a payload is still an error here, not a cache hit. What
-/// the cache can skip is *reading the file bytes*, when the tree's paths, lengths,
-/// mtimes, and inodes are identical to those seen when this same digest was last
-/// verified in full.
+/// the cache can skip is *reading the file bytes*, and only when all of:
+///
+/// - the tree's paths, lengths, mtimes and inodes are identical to those recorded
+///   when this same digest was last verified in full, and
+/// - that verification happened at least one mtime bucket after the newest file was
+///   written — see [`verification_outran_the_mtime_bucket`].
 fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, BridgeError> {
-    // Read before the walk, so a file modified *during* the read is never older
-    // than the recorded verification time and cannot be trusted on the next call.
+    // Read before the walk, so the recorded time is never later than the bytes this
+    // call is about to read. A file written during the walk therefore cannot look
+    // like it predates the verification by a full mtime bucket.
     let started_at_nanos = unix_nanos_now();
     #[cfg(test)]
     record_tree_walk(payload_root);
@@ -927,7 +960,10 @@ fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, 
         if let Some(verified) = cache.get(payload_root) {
             if verified.integrity == expected
                 && verified.witness == witness
-                && newest_modified < verified.started_at_nanos
+                && verification_outran_the_mtime_bucket(
+                    newest_modified,
+                    verified.started_at_nanos,
+                )
             {
                 return Ok(true);
             }
@@ -947,7 +983,13 @@ fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, 
         // every call until it is repaired rather than being cached as a verdict.
         (true, Some(witness), Some(started_at_nanos)) => {
             if cache.len() >= MAX_VERIFIED_PAYLOADS && !cache.contains_key(payload_root) {
-                let evict = cache.keys().next().cloned();
+                // Evict the least recently verified rather than whatever the map
+                // iterates first: an arbitrary key can drop a hot entry and keep a
+                // cold one, which costs a full digest for no reason.
+                let evict = cache
+                    .iter()
+                    .min_by_key(|(_, verified)| verified.started_at_nanos)
+                    .map(|(path, _)| path.clone());
                 if let Some(evict) = evict {
                     cache.remove(&evict);
                 }
@@ -2638,8 +2680,37 @@ mod tests {
         assert!(store.root().join(&receipt.owned_paths[0]).is_dir());
     }
 
+    /// Move every file's mtime in a tree an hour into the past.
+    ///
+    /// A freshly installed payload is younger than the granularity margin, so the
+    /// cache deliberately refuses it — see `verification_outran_the_mtime_bucket`.
+    /// The steady state the cache exists for is a payload installed some time ago,
+    /// and that is what these fixtures need to represent. Ageing explicitly rather
+    /// than sleeping keeps the suite fast and the intent visible.
+    fn age_tree(root: &Path) {
+        let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fn walk(path: &Path, backdated: std::time::SystemTime) {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let child = entry.path();
+                if child.is_dir() {
+                    walk(&child, backdated);
+                } else {
+                    fs::File::open(&child)
+                        .unwrap()
+                        .set_modified(backdated)
+                        .unwrap();
+                }
+            }
+        }
+        walk(root, backdated);
+    }
+
     /// Install a directory payload and return the store, the receipt, and the
     /// `payload/` root the verification cache is keyed by.
+    ///
+    /// The tree is aged so the cache can engage at all; a test that needs a
+    /// freshly-written mtime sets one explicitly.
     fn installed_tree(
         fixture: &Path,
     ) -> (ManagedPayloadStore, ManagedPayloadReceipt, PathBuf) {
@@ -2651,6 +2722,7 @@ mod tests {
             .join(receipt.owned_root().unwrap())
             .join("payload");
         assert!(payload.is_dir());
+        age_tree(&payload);
         (store, receipt, payload)
     }
 
@@ -2701,12 +2773,18 @@ mod tests {
     }
 
     #[test]
-    fn a_touched_payload_file_is_still_reported_as_drift_with_a_warm_cache() {
+    fn a_touched_payload_file_is_caught_by_a_witness_mismatch() {
         let fixture = tempfile::tempdir().unwrap();
         let (store, _, payload) = installed_tree(fixture.path());
 
-        // Warm the cache, so the drift below has to survive a cache hit rather
-        // than a cold read. This is the case a cache can break.
+        // Warm the cache first, so this exercises the path where an entry exists
+        // and must be rejected — not a cold read that never consults one.
+        //
+        // The rewrite below changes the file's length, so what rejects it is the
+        // witness, before the freshness rule is reached. Coverage of the cases
+        // where the witness matches is elsewhere: same-length edits in
+        // `a_same_length_content_change_is_still_caught`, and the bucket window in
+        // `an_overwrite_inside_the_verification_mtime_bucket_is_still_caught`.
         assert!(matches!(
             store.status("directory-agent").unwrap(),
             ManagedPayloadStatus::Installed { .. }
@@ -2718,7 +2796,7 @@ mod tests {
             ManagedPayloadStatus::Repairable {
                 reason: RepairReason::IntegrityDrift
             },
-            "a warm cache must not mask drift"
+            "an existing cache entry must not mask drift"
         );
     }
 
@@ -2763,6 +2841,10 @@ mod tests {
             fs::metadata(&readme).unwrap().ino()
         };
 
+        // A lower bound on the verification's own timestamp: it is read inside the
+        // call, so it is at or after this. Asserting the backdated mtime precedes
+        // *this* therefore proves it precedes the recorded verification too.
+        let before_verification = std::time::SystemTime::now();
         assert!(matches!(
             store.status("directory-agent").unwrap(),
             ManagedPayloadStatus::Installed { .. }
@@ -2777,14 +2859,27 @@ mod tests {
             .set_modified(backdated)
             .unwrap();
 
-        // Confirm the evasion is actually set up: same inode, same length, and an
-        // mtime older than the verification. Otherwise this test would be proving
-        // that some other mechanism fired.
+        // Confirm the evasion is really set up, so this cannot pass because some
+        // other mechanism fired: same inode, same length, and an mtime far enough
+        // back that the freshness rule is satisfied and only the witness can object.
         use std::os::unix::fs::MetadataExt;
         let metadata = fs::metadata(&readme).unwrap();
         assert_eq!(metadata.ino(), original_inode, "must be an in-place write");
         assert_eq!(metadata.len() as usize, before.len());
-        assert!(metadata.modified().unwrap() < std::time::SystemTime::now());
+        let modified = metadata.modified().unwrap();
+        assert!(
+            modified < before_verification,
+            "the backdate must precede the verification, else freshness rejects it \
+             and the witness is never consulted"
+        );
+        assert!(
+            before_verification
+                .duration_since(modified)
+                .unwrap()
+                .as_nanos()
+                > MAX_MTIME_GRANULARITY_NANOS,
+            "the backdate must clear the granularity margin for the same reason"
+        );
 
         assert_eq!(
             store.status("directory-agent").unwrap(),
@@ -2793,6 +2888,78 @@ mod tests {
             },
             "a backdated same-length overwrite must not survive the witness"
         );
+    }
+
+    #[test]
+    fn an_overwrite_inside_the_verification_mtime_bucket_is_still_caught() {
+        // The hole a bare `newest_modified < started_at` left, reproduced without
+        // depending on the filesystem's real granularity.
+        //
+        // On a filesystem with one-second mtimes, a file written at S.1 carries
+        // mtime S.0. A verification beginning at S.3 records started_at = S.3. A
+        // same-length in-place overwrite at S.7 truncates to mtime S.0 again — the
+        // witness is unchanged and S.0 < S.3 still holds, so the old rule served a
+        // cache hit and reported a tampered payload as `Installed`.
+        //
+        // Setting the mtime explicitly reproduces "the overwrite landed in the same
+        // bucket the verification fell inside" on any filesystem.
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        let readme = payload.join("README");
+        let before = fs::read(&readme).unwrap();
+
+        // Put the file's mtime just barely in the past, so the verification that
+        // follows lands inside its bucket rather than a later one.
+        let bucket = std::time::SystemTime::now() - std::time::Duration::from_millis(50);
+        fs::File::open(&readme).unwrap().set_modified(bucket).unwrap();
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        // Same length, different bytes, and the mtime restored to the value the
+        // witness already holds — exactly what bucket truncation would produce.
+        let after: Vec<u8> = before.iter().map(|byte| byte ^ 0x20).collect();
+        assert_eq!(before.len(), after.len());
+        fs::write(&readme, &after).unwrap();
+        fs::File::open(&readme).unwrap().set_modified(bucket).unwrap();
+
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            },
+            "an overwrite in the same mtime bucket as the verification must not be \
+             served from the cache"
+        );
+    }
+
+    #[test]
+    fn the_freshness_rule_requires_a_full_bucket_not_merely_an_older_mtime() {
+        // The predicate on its own, because the distinction is the entire finding:
+        // "older than the verification" and "at least one bucket older" are
+        // different questions, and only the second one is sound.
+        let started = 10 * MAX_MTIME_GRANULARITY_NANOS;
+
+        // Older than the verification, but inside the same bucket: not safe.
+        assert!(!verification_outran_the_mtime_bucket(started - 1, started));
+        assert!(!verification_outran_the_mtime_bucket(
+            started - MAX_MTIME_GRANULARITY_NANOS + 1,
+            started
+        ));
+
+        // A full bucket earlier: safe.
+        assert!(verification_outran_the_mtime_bucket(
+            started - MAX_MTIME_GRANULARITY_NANOS,
+            started
+        ));
+
+        // Not older at all, and in the future — neither is trustworthy.
+        assert!(!verification_outran_the_mtime_bucket(started, started));
+        assert!(!verification_outran_the_mtime_bucket(started + 1, started));
+
+        // A saturating add must fail closed rather than wrap into a hit.
+        assert!(!verification_outran_the_mtime_bucket(u128::MAX, started));
     }
 
     #[test]
@@ -2873,6 +3040,9 @@ mod tests {
         let recipe = directory_recipe(fixture.path());
         let reinstalled = store.install(&recipe).unwrap().receipt().clone();
         assert_eq!(reinstalled.installation_id, receipt.installation_id);
+        // Aged so freshness would permit a hit: the full read asserted below then
+        // proves the previous entry was not reused, not merely that files were new.
+        age_tree(&payload);
 
         let before = full_digests_of(&payload);
         assert!(matches!(

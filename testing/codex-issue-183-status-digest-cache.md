@@ -15,8 +15,14 @@ Closes #183.
     purpose is to fail closed on foreign content. And a persisted witness is
     forgeable by anything that can already write inside the managed root, which is
     precisely the actor a drift check exists to catch.
-  - #183's acceptance is "a *repeat* list does no full tree walk", which process
-    memory satisfies. The first status read per process still digests in full.
+  - #183's acceptance was written as "a repeat list does no full tree *walk*". That
+    is not what this delivers and not what the tests assert. The walk always runs —
+    it is what keeps the symlink and shape checks live — and what a repeat read
+    avoids is **re-hashing the bytes**. The acceptance is therefore read as "no
+    repeat full byte digest", which is what `full_digests_of` measures. Corrected on
+    the issue rather than left ambiguous between the two readings.
+  - The first status read per process still digests in full, and so does any read
+    within the granularity margin of the payload being written.
 - The cache stores a *stat witness* of a tree that was verified to match its
   receipt. It is never a source of truth for what the payload contains.
 - Ownership, symlink, and shape checks are unaffected: the fast path still walks
@@ -60,35 +66,64 @@ cache disabled. This is corrected from #183's issue body, which said three and o
   the old value.
 - If any entry's mtime cannot be read, no witness is produced and the caller takes
   the full-digest path. Absence of a witness always means "verify properly".
-- Keyed by installation root path *and* the receipt's `integritySha256`, so a
-  reinstall at a different version can never hit an earlier entry.
+- Stored in a map keyed by the installation's payload root. The receipt's
+  `integritySha256` is a *field* on the entry, re-checked on every hit, not part of
+  the key — so one path holds at most one entry and a later insert replaces it. A
+  reinstall at a different version cannot hit an earlier entry because the integrity
+  check rejects it, and because a different version is a different path anyway.
 - Recorded **only** when the full digest was computed and matched the receipt. A
   drifted tree is never cached, so drift is re-detected on every call until it is
   repaired.
 
 ### The freshness rule
 
-A witness match is not sufficient on its own. A hit additionally requires every
-file's mtime to be strictly older than the moment the recorded verification *began*.
+A witness match is not sufficient on its own, and a bare "older than the
+verification" comparison is not sufficient either. That was the first version of
+this rule and it was wrong: mtimes are truncated to the filesystem's granularity
+`g`, while the verification timestamp is nanosecond wall clock, so the two are not
+directly comparable.
 
-Without that, a same-length overwrite landing inside a single mtime tick would be
-invisible, because the witness it produced would be identical to the one recorded.
-Filesystem timestamp granularity is not guaranteed to be fine — HFS+ is a
-one-second example — so this is not a theoretical window. Reading the clock before
-the walk rather than after also means a file modified *during* a read can never be
-older than the recorded time, so a torn read is never trusted on the next call.
+Masking requires a post-verification write whose truncated mtime equals the one
+already in the witness — `bucket(write) == bucket(previous write)`. Because the
+write happens at or after the verification, that is possible exactly when the
+verification itself fell inside the previous write's bucket. On a one-second
+filesystem: a file written at `S.1` carries mtime `S.0`, a verification beginning at
+`S.3` records `S.3`, and a same-length in-place overwrite at `S.7` truncates to
+`S.0` again — witness unchanged, `S.0 < S.3` still true, hit served, drift masked.
 
-Cost: one extra full digest when a status immediately follows a write. Clock skew
-moving backwards degrades to always-digest, which is the safe direction.
+So the rule is "did the verification happen at least one full bucket after the file
+was written", not "is the file older than the verification". With `g` unknown at
+runtime, a 2-second bound stands in for it: FAT records mtimes in 2-second steps and
+HFS+ in 1-second steps, and APFS, ext4, NTFS and ZFS are all finer.
+
+Reading the clock before the walk rather than after keeps the recorded time no later
+than the bytes being read, so a file written during the walk cannot then appear to
+predate the verification by a full bucket.
+
+Cost: a payload verified within two seconds of being written is re-digested on the
+next read. Next to a 15–32 second install, noise.
+
+Stated limits, rather than claimed away:
+
+- A filesystem with mtime granularity coarser than 2 seconds — some network mounts —
+  is outside the bound, and the same-bucket window reopens there.
+- The rule anchors on wall clock, because mtimes are wall clock and a monotonic
+  clock cannot be compared to them. A system clock stepped backwards by more than
+  the margin after an entry is recorded can put a later write back inside the
+  recorded bucket. An earlier draft of this contract asserted backward skew was the
+  safe direction; that was stated without working it through, and it is the
+  dangerous one. Anything able to step the system clock can also write to the
+  managed root directly, and `install` and `repair` still read every byte, so this
+  is recorded as a bound on the cache rather than treated as a defence to build.
 
 ### What the fast path cannot catch, stated plainly
 
-A modification that leaves path, kind, length, inode, and mtime all unchanged *and*
-whose mtime predates the last verification is invisible to the witness, and `status`
-will report `Installed`. Reaching that requires write access inside Bridge's managed
-root plus deliberately backdating metadata — and the backdating is itself caught,
-because the witness commits to mtime, so the surviving case is narrower still: an
-overwrite that reproduces the original mtime exactly.
+A modification that leaves path, kind, length, inode, and mtime all unchanged, and
+whose mtime is more than the granularity margin older than the last verification, is
+invisible to the witness, and `status` will report `Installed`. Reaching that
+requires write access inside Bridge's managed root and an overwrite that reproduces
+the original mtime exactly — backdating to any *other* value is caught, because the
+witness commits to mtime.
 
 It is not reachable by the accidental drift this check exists to find. An editor, an
 `npm install`, a partial copy, a truncation — all change length or mtime. `install`
@@ -114,10 +149,17 @@ In `bridge_core::managed_payload`:
 
 - `a_repeat_status_read_does_not_digest_the_tree_again` — five repeat reads add
   nothing to the digest count.
-- `a_touched_payload_file_is_still_reported_as_drift_with_a_warm_cache` — drift
-  after warming, which is the case a cache can break.
+- `a_touched_payload_file_is_caught_by_a_witness_mismatch` — drift with an entry
+  already present, so the rejection path runs rather than a cold read. The rewrite
+  changes length, so what rejects it is the witness; the name says so rather than
+  claiming warm-hit coverage it does not have.
 - `a_same_length_content_change_is_still_caught` — identical length, different
   bytes.
+- `an_overwrite_inside_the_verification_mtime_bucket_is_still_caught` — the hole the
+  first version of the freshness rule left, reproduced by setting mtimes explicitly
+  so it does not depend on the host filesystem's real granularity.
+- `the_freshness_rule_requires_a_full_bucket_not_merely_an_older_mtime` — the
+  predicate alone, including the boundary and a saturating add that must fail closed.
 - `a_backdated_in_place_overwrite_is_still_caught` — the one case the freshness
   rule cannot see, and therefore the only test that makes mtime-in-the-witness
   load-bearing: same inode, same length, mtime moved *backwards*. The test asserts
@@ -143,12 +185,21 @@ all confirmed:
 
 | mutation | kills |
 |---|---|
+| freshness reverts to a bare `newest < started_at` | the bucket-window test and the predicate test |
+| granularity margin off by one at the boundary | the predicate test |
 | cache never consulted | the two cache-effectiveness tests |
 | cache hit ignores the witness | both same-tree drift tests |
 | witness drops mtime | the backdated-overwrite test |
-| cache hit returns before the walk | four tests, including the symlink one |
+| cache hit returns before the walk | five tests, including the symlink one |
 | `resolve_runtime` re-reads the store | the agents test, 3 walks → 6 |
 | `inspect` re-reads for its receipt | the agents test, 1 walk → 2 |
+
+A fixture note that matters for reading these: a freshly installed payload is
+younger than the granularity margin, so it is deliberately *not* cacheable. Fixtures
+age their trees an hour into the past to represent the steady state the cache exists
+for. Ageing explicitly rather than sleeping keeps the suite fast and the intent
+visible — and three tests failing when the margin was introduced is what surfaced
+this, correctly.
 
 Two findings from this pass are recorded rather than papered over:
 

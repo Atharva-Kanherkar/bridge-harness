@@ -41,7 +41,6 @@ static MANAGED_ROOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// sibling re-register while this test is still reading its own storage. Poison is
 /// tolerated because a panicking sibling has already failed the run, and turning
 /// that into a second confusing failure here would only obscure the first.
-#[must_use]
 fn exclusive_managed_root(root: std::path::PathBuf) -> std::sync::MutexGuard<'static, ()> {
     let guard = MANAGED_ROOT
         .lock()

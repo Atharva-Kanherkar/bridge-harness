@@ -596,10 +596,29 @@ mod tests {
             entrypoint,
         };
         let receipt = store.install(&recipe).unwrap().receipt().clone();
-        store
+        let payload = store
             .root()
             .join(receipt.owned_root().unwrap())
-            .join("payload")
+            .join("payload");
+        // A freshly written payload is younger than the verification cache's
+        // granularity margin, so it is deliberately not cacheable. These assertions
+        // are about the steady state, which is a payload installed some time ago.
+        let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fn age(path: &Path, backdated: std::time::SystemTime) {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let child = entry.unwrap().path();
+                if child.is_dir() {
+                    age(&child, backdated);
+                } else {
+                    std::fs::File::open(&child)
+                        .unwrap()
+                        .set_modified(backdated)
+                        .unwrap();
+                }
+            }
+        }
+        age(&payload, backdated);
+        payload
     }
 
     /// Total full digests across a set of payload roots.
@@ -615,12 +634,35 @@ mod tests {
         roots.iter().map(|root| tree_walks_of(root)).sum()
     }
 
-    #[test]
-    fn list_and_inspect_read_each_payload_once() {
-        // The registration these read is process-wide.
-        let _guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
+    /// Holds the process-wide managed-root registration and clears it on drop.
+    ///
+    /// Clearing on the success path alone was a bug: a failing assertion unwinds,
+    /// releasing the lock while leaving `MANAGED_ROOT` pointing at a temp directory
+    /// that is about to be deleted, so the next test to take the lock fails for a
+    /// reason that has nothing to do with it. Exactly the failure mode the live
+    /// tests' `exclusive_managed_root` exists to prevent.
+    struct ManagedRootGuard {
+        /// Held for the guard's lifetime; never read, which is the point.
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for ManagedRootGuard {
+        fn drop(&mut self) {
+            crate::managed_runtime::clear_managed_root();
+        }
+    }
+
+    #[must_use]
+    fn exclusive_managed_root(root: &Path) -> ManagedRootGuard {
+        let guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        crate::managed_runtime::register_managed_root(root);
+        ManagedRootGuard { _lock: guard }
+    }
+
+    #[test]
+    fn list_and_inspect_read_each_payload_once() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("managed-runtimes");
         let store = ManagedPayloadStore::new(&root);
@@ -628,7 +670,8 @@ mod tests {
             .iter()
             .map(|(agent_id, _)| install_fixture(&store, fixture.path(), agent_id))
             .collect();
-        crate::managed_runtime::register_managed_root(&root);
+        // Registered after the fixtures exist, and cleared however this test exits.
+        let _root = exclusive_managed_root(&root);
 
         // One walk and one full read per agent. Before the observation was threaded
         // through `resolve_runtime` this was two of each per agent — six for three.
@@ -688,8 +731,6 @@ mod tests {
             1,
             "inspect must walk one tree once, where it used to walk it four times"
         );
-
-        crate::managed_runtime::clear_managed_root();
     }
 
     #[test]
