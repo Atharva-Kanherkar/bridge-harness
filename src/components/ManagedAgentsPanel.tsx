@@ -106,7 +106,7 @@ export function ManagedAgentsPanel({ initialAgents }: { initialAgents?: ManagedA
   if (listError) {
     return (
       <div className="flex items-center gap-3">
-        <p role="alert" className="text-sm text-destructive">{listError}</p>
+        <p role="alert" className="text-sm text-red-400">{listError}</p>
         <button type="button" className="u-glass rounded-lg px-3 py-1.5 text-xs" onClick={() => void load()}>
           Retry
         </button>
@@ -195,12 +195,12 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
       {/* Verbatim vendor guidance. Bridge surfaces it and owns none of it: there
           is no field to type a credential into anywhere in this panel. */}
       {agent.vendorMessage && (
-        <p className="text-xs text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
+        <p className="text-xs text-amber-300" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
         </p>
       )}
 
-      {error && <p id={errorId} role="alert" className="text-xs text-destructive">{error}</p>}
+      {error && <p id={errorId} role="alert" className="text-xs text-red-400">{error}</p>}
 
       <div className="flex items-center gap-2">
         {busy ? (
@@ -239,7 +239,7 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
             {agent.removable && (
               <button
                 type="button"
-                className="rounded-lg px-3 py-1.5 text-xs text-destructive disabled:opacity-50"
+                className="rounded-lg px-3 py-1.5 text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
                 onClick={onRemove}
                 disabled={running}
                 aria-describedby={[running ? reasonId : null, error ? errorId : null]
@@ -338,7 +338,7 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
           </button>
           <button
             type="button"
-            className="rounded-lg px-3 py-1.5 text-xs text-destructive"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-red-300"
             onClick={onConfirm}
           >
             Remove

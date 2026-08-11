@@ -348,15 +348,26 @@ describe("ManagedAgentsPanel styling", () => {
     // Nothing may reach for a raw variable: the theme utilities are the contract.
     expect(source).not.toMatch(/var\(--/);
 
-    const used = [...source.matchAll(/\b(?:text|bg|border)-([a-z][a-z-]*)\b/g)]
-      .map(match => match[1])
-      .filter(token => !["xs", "sm", "base", "lg", "left", "center", "right", "black", "white", "transparent", "current", "inherit"].includes(token));
+    // A declared token is not automatically a *text* colour. `--destructive` and
+    // `--warning` are surface tokens paired with `*-foreground`, and used as text
+    // they resolve near-black on a dark card — visually invisible, which the
+    // declared-token check above cannot see. Found by actually looking at it.
+    expect(source).not.toMatch(/\btext-destructive\b/);
+    expect(source).not.toMatch(/\btext-warning\b/);
+
+    // Tailwind's own palette (text-red-400) is built in; a bare name
+    // (text-foreground) has to be a project token.
+    const PALETTE = /^(?:red|rose|amber|orange|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|slate|gray|zinc|neutral|stone)-\d{2,3}$/;
+    const NOT_A_COLOUR = ["xs", "sm", "base", "lg", "left", "center", "right", "black", "white", "transparent", "current", "inherit"];
+    const used = [...source.matchAll(/\b(?:text|bg|border)-([a-z][a-z0-9-]*)/g)]
+      .map(match => match[1].replace(/\/.*$/, ""))
+      .filter(token => !NOT_A_COLOUR.includes(token) && !PALETTE.test(token));
     expect(used.length, "the panel must use theme colour utilities").toBeGreaterThan(0);
 
     for (const token of new Set(used)) {
       expect(
         css.includes(`--color-${token}:`) || css.includes(`--${token}:`),
-        `${token} is not a declared theme token — text would render with an invalid colour`,
+        `${token} is neither a Tailwind palette colour nor a declared theme token — it would render with an invalid colour`,
       ).toBe(true);
     }
   });
