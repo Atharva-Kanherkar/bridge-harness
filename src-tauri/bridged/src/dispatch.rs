@@ -355,7 +355,7 @@ pub fn dispatch(
         }
         MethodName::UninstallManagedAgent => {
             let p: wire::UninstallManagedAgentParams = decode(method, params)?;
-            reply_managed(api::uninstall_managed_agent(&p.agent_id))
+            reply_managed(api::uninstall_managed_agent(core, &p.agent_id))
         }
         MethodName::MarketplaceAction => {
             let p: wire::MarketplaceActionParams = decode(method, params)?;

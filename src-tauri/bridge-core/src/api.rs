@@ -1465,7 +1465,7 @@ pub fn inspect_managed_agent(
 pub fn install_managed_agent(
     agent_id: &str,
 ) -> Result<
-    bridge_protocol::messages::ManagedAgentOperationStarted,
+    bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
     crate::managed_agents::install_managed_agent(agent_id)
@@ -1474,17 +1474,21 @@ pub fn install_managed_agent(
 pub fn repair_managed_agent(
     agent_id: &str,
 ) -> Result<
-    bridge_protocol::messages::ManagedAgentOperationStarted,
+    bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
     crate::managed_agents::repair_managed_agent(agent_id)
 }
 
+/// Takes the core because removal must first prove nothing is running against
+/// the payload, which is a question only the session store can answer.
 pub fn uninstall_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
-    bridge_protocol::messages::ManagedAgentOperationStarted,
+    bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::uninstall_managed_agent(agent_id)
+    let db = core.db.lock().unwrap();
+    crate::managed_agents::uninstall_managed_agent(&db, agent_id)
 }

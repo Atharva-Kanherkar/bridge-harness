@@ -119,6 +119,13 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "executable": {
+          "description": "The executable that would actually launch, when one resolves. Absent when nothing does.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "label": {
           "type": "string"
         },
@@ -142,7 +149,7 @@
           ]
         },
         "removable": {
-          "description": "True when Bridge holds a receipt for this agent's payload. Redundant with `backing` by construction and asserted so, because \"can I remove this\" must never be a guess a client makes from a string.",
+          "description": "True when Bridge holds a receipt for this agent's payload, so removing it is Bridge's to do. True for a payload that drifted as well: Bridge still owns those bytes and can still remove them, which is why this is not the same question as \"is it healthy\".",
           "type": "boolean"
         },
         "state": {

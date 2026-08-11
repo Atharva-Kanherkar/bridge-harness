@@ -214,7 +214,11 @@ impl DaemonProxy {
             link.clients[self.next.fetch_add(1, Ordering::Relaxed) % link.clients.len()].clone();
         match client.call(method, params) {
             Ok(value) => Ok(value),
-            Err(ClientError::Rpc(error)) => Err(error.message),
+            // The code is the whole point of the 3000-range contract, and this
+            // path used to drop it — leaving daemon-mode clients string-matching
+            // the very messages the codes exist to replace. Both hosts now hand
+            // the webview the same `{code,kind,message}` envelope.
+            Err(ClientError::Rpc(error)) => Err(host_error_envelope(error)),
             Err(ClientError::Disconnected) => {
                 self.invalidate(&link);
                 Err("The Bridge daemon connection was lost; reconnecting".into())
@@ -904,4 +908,16 @@ mod tests {
         assert!(spawned.is_file(), "replacement binary was never started: {error}");
         assert!(launcher.child.is_none());
     }
+}
+
+/// Render an `RpcError` as the same envelope an embedded command produces, so a
+/// client branches on `code` in either host mode instead of parsing prose.
+fn host_error_envelope(error: bridge_protocol::RpcError) -> String {
+    let code = bridge_protocol::ErrorCode::from_code(error.code);
+    serde_json::to_string(&serde_json::json!({
+        "code": error.code,
+        "kind": code.map(|code| code.name()),
+        "message": error.message,
+    }))
+    .unwrap_or(error.message)
 }

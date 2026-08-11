@@ -40,10 +40,11 @@ pub enum ErrorCode {
     CorruptReceipt,
     VendorPrerequisiteMissing,
     UninstallNotPermitted,
+    UnknownAgent,
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 23] = [
+    pub const ALL: [ErrorCode; 24] = [
         ErrorCode::ParseError,
         ErrorCode::InvalidRequest,
         ErrorCode::MethodNotFound,
@@ -67,6 +68,7 @@ impl ErrorCode {
         ErrorCode::CorruptReceipt,
         ErrorCode::VendorPrerequisiteMissing,
         ErrorCode::UninstallNotPermitted,
+        ErrorCode::UnknownAgent,
     ];
 
     pub const fn code(self) -> i64 {
@@ -94,6 +96,7 @@ impl ErrorCode {
             ErrorCode::CorruptReceipt => 3004,
             ErrorCode::VendorPrerequisiteMissing => 3005,
             ErrorCode::UninstallNotPermitted => 3006,
+            ErrorCode::UnknownAgent => 3007,
         }
     }
 
@@ -127,6 +130,7 @@ impl ErrorCode {
             ErrorCode::CorruptReceipt => "corrupt_receipt",
             ErrorCode::VendorPrerequisiteMissing => "vendor_prerequisite_missing",
             ErrorCode::UninstallNotPermitted => "uninstall_not_permitted",
+            ErrorCode::UnknownAgent => "unknown_agent",
         }
     }
 
@@ -158,6 +162,7 @@ impl ErrorCode {
             ErrorCode::CorruptReceipt => "The managed installation's receipt could not be read or does not describe it",
             ErrorCode::VendorPrerequisiteMissing => "The vendor reported a prerequisite of its own, such as a login or an API key",
             ErrorCode::UninstallNotPermitted => "This installation cannot be removed in its current state",
+            ErrorCode::UnknownAgent => "No built-in integration has that agent id",
         }
     }
 }

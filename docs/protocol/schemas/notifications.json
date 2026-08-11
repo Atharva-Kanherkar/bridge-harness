@@ -19,10 +19,6 @@
     },
     {
       "delivery": "transient",
-      "notification": "managed-agent-progress"
-    },
-    {
-      "delivery": "transient",
       "notification": "learning-job-changed"
     },
     {

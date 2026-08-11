@@ -25,28 +25,49 @@
 ## Functional Behavior
 
 - `agents/list_managed_agents` returns one entry per built-in integration —
-  Claude, Codex, OpenCode — carrying lifecycle state, whether a managed payload or
-  an external runtime backs it, the resolved version, and bounded failure
-  information. Never a bare boolean.
+  Claude, Codex, OpenCode — carrying state, which copy would actually launch
+  (`managed`, `external`, `explicit`, `bundled`, or none), the resolved executable
+  path, and the version. Never a bare boolean.
+- Ownership and launchability are separate fields, because they are separate
+  questions: Bridge owns a drifted payload — it is `removable` — but would not
+  launch it, so `backing` describes the copy that would run while `removable`
+  describes what Bridge owns.
 - `agents/inspect_managed_agent` returns a receipt summary for a managed payload
   (schema version, agent, version, platform, source, integrity, installation id,
   installed-at) and the detected external runtime path separately, so a caller can
   always tell which one it is looking at.
-- `agents/install_managed_agent` starts an install and returns an operation id.
-  `agents/repair_managed_agent` and `agents/uninstall_managed_agent` behave the
-  same way for their operations.
+- `agents/install_managed_agent`, `agents/repair_managed_agent`, and
+  `agents/uninstall_managed_agent` run to completion before returning, and their
+  result says what happened — installed, repaired, removed, already current,
+  already absent — plus the post-operation status, so a client needs no second
+  round trip. There is deliberately no operation id: handing back a correlation id
+  for a job no stream will ever reference would invite a client to wait forever.
+  Backgrounding these is a future change with a new result shape, not a
+  reinterpretation of this one.
 - Readiness, running state, and bounded failure information are fields on the
   status payload rather than methods of their own, so one round trip answers "can
   this run" without a client stitching three responses together.
-- Progress arrives as a transient notification carrying operation id, stage, and a
-  terminal result. State changes arrive as a separate notification. Neither is
-  durable: a client that reconnects refetches authoritative state from
-  `list_managed_agents` rather than replaying progress.
+- A state change arrives as one transient notification carrying the agent id only.
+  It is a refetch hint like its neighbours, so it *is* replayed to a subscriber
+  that fell behind — otherwise a lagging client never learns it must re-read — and
+  authoritative state always comes from `list_managed_agents`. There is no
+  progress notification, because the operations complete before their method
+  returns.
 - Errors are stable and specific, one code per condition the caller must be able
   to act on differently: unsupported platform, integrity failure,
-  external-not-managed, busy or running, corrupt receipt, vendor prerequisite
-  missing, and uninstall not permitted. A caller must never have to string-match
-  an error message to distinguish them.
+  external-not-managed, busy, corrupt receipt, vendor prerequisite missing,
+  uninstall not permitted, and unknown agent. A caller must never have to
+  string-match an error message to distinguish them, and both host modes deliver
+  the same `{code,kind,message}` envelope — a code dropped in one mode would push
+  clients straight back to text matching.
+- Removal refuses while a provider process is still alive for that agent, under
+  the busy code. Deleting a payload out from under a running session is the
+  failure this epic exists to prevent, so it is checked against tracked adapter
+  pids and their recorded OS identity, and a stale row must not make an agent
+  permanently un-removable.
+- A payload-engine failure keeps its own condition: a corrupt receipt reports as
+  corrupt, an integrity failure as integrity, and anything else keeps its
+  1000-range code rather than being flattened into "uninstall not permitted".
 - An external runtime is visible through the read methods and cannot be removed
   through any of them: `uninstall_managed_agent` on an external agent fails with
   the external-not-managed code and touches nothing.
@@ -56,37 +77,41 @@
 
 ## Unit Tests
 
-- `agents_domain_methods_are_registered_and_contracted` — every new method appears
-  in `MethodName::ALL`, has a `generate_handler![...]` command, and its params
-  fields match the command signature. Asserted through the existing gates rather
-  than restated.
-- `agents_params_reject_unknown_fields` — every params struct in the domain refuses
-  an unknown top-level field.
-- `agents_dtos_round_trip` — every DTO in the domain round-trips through JSON with
-  camelCase wire names.
-- `managed_agent_status_distinguishes_managed_external_and_absent` — the three
-  backings produce three distinct payloads, and an external one carries no receipt.
-- `uninstalling_an_external_runtime_is_refused_with_a_stable_code` — the error code
-  is external-not-managed, distinct from every other code in the domain, and the
-  runtime is untouched.
-- `every_domain_error_condition_has_a_distinct_stable_code` — the seven conditions
-  map to seven distinct codes with stable wire strings, and no two share one.
-- `progress_notifications_are_transient_and_state_changes_are_separate` — the
-  progress notification is declared transient, the state-change notification is
-  its own name, and neither is durable.
-- `vendor_prerequisite_errors_carry_the_vendor_message_verbatim` — a vendor login
-  requirement surfaces under the vendor-prerequisite code with the vendor's own
-  text unmodified, and no credential field exists anywhere in the domain.
-- `no_method_in_the_domain_touches_credentials` — the domain declares no method
-  whose name or params concern authentication, tokens, or credentials.
+- `agents_dtos_round_trip` — every DTO in the domain round-trips with camelCase
+  wire names.
+- `agents_params_reject_unknown_fields` — every params struct in the domain, not
+  just one, refuses an unknown top-level field.
+- `only_a_managed_backing_is_removable` — the API answers removability so a client
+  never infers it from a state string.
+- `an_operation_result_says_what_happened_not_that_something_started` — the result
+  carries no operation id and does carry the post-operation status.
+- `no_field_in_the_domain_concerns_credentials` — the domain's wire surface
+  contains no credential-shaped field.
+- `every_domain_condition_has_a_distinct_stable_code` — the conditions map to
+  distinct codes inside the managed-agent range.
+- `an_underlying_failure_keeps_its_own_code` — a wrapped `BridgeError` keeps its
+  1000-range code instead of being flattened.
+- `store_failures_keep_their_own_condition` — corrupt-receipt, integrity, and I/O
+  failures each report as themselves on the destructive path, and the real cause
+  stays reachable through `source()`.
+- `serialized_errors_carry_their_code` — the error payload carries `code` and
+  `kind`, so a client branches on code rather than message text.
+- `a_live_provider_process_blocks_removal` — a live tracked process refuses removal
+  under the busy code, a different agent is unaffected, and a stale row does not
+  make an agent permanently un-removable.
+- `a_vendor_prerequisite_carries_the_vendor_message_verbatim` — the vendor's own
+  text survives unmodified.
+- `the_built_in_agent_list_matches_the_recipes` — the agent list and the recipes
+  cannot drift into disagreeing about which agents exist.
+- `an_unknown_agent_is_refused_before_any_storage_access` — refused on identity
+  alone, under its own code, before touching the filesystem.
 
 ## Integration / Functional Tests
 
-- The acceptance flow is drivable without the desktop app: from a fixture payload,
-  `list → install → inspect → uninstall → list → install` again, asserting the
-  state after each step and that no receipt survives the uninstall. Starting and
-  stopping an agent is session lifecycle and already has methods; this domain owns
-  the payload lifecycle.
+- The acceptance flow is drivable without the desktop app. Install and repair
+  fetch from the vendor, so the network-touching half is exercised by hand rather
+  than in CI, consistent with the crate's other live tests; the read path,
+  removal, refusals, and error codes are covered by unit tests above.
 - `cargo test --manifest-path src-tauri/Cargo.toml --workspace` passes, including
   the method-registry and command-signature gates in the shell crate.
 - Generated JSON Schemas and TypeScript artifacts exactly match the Rust contract

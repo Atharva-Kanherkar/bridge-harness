@@ -115,6 +115,11 @@
       "code": 3006,
       "name": "uninstall_not_permitted",
       "summary": "This installation cannot be removed in its current state"
+    },
+    {
+      "code": 3007,
+      "name": "unknown_agent",
+      "summary": "No built-in integration has that agent id"
     }
   ]
 }

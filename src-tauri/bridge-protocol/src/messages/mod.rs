@@ -226,9 +226,9 @@ typed_methods![
     // agents — whether an agent's runtime is installed at all
     (ListManagedAgents, _, ManagedAgentList),
     (InspectManagedAgent, InspectManagedAgentParams, ManagedAgentInspection),
-    (InstallManagedAgent, InstallManagedAgentParams, ManagedAgentOperationStarted),
-    (RepairManagedAgent, RepairManagedAgentParams, ManagedAgentOperationStarted),
-    (UninstallManagedAgent, UninstallManagedAgentParams, ManagedAgentOperationStarted),
+    (InstallManagedAgent, InstallManagedAgentParams, ManagedAgentOperationResult),
+    (RepairManagedAgent, RepairManagedAgentParams, ManagedAgentOperationResult),
+    (UninstallManagedAgent, UninstallManagedAgentParams, ManagedAgentOperationResult),
     (MarketplaceCatalog, _, _),
     (MarketplaceAppAuthStates, _, _),
     (MarketplaceAction, MarketplaceActionParams, _),

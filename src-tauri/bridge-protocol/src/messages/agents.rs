@@ -114,10 +114,15 @@ pub struct ManagedAgentStatus {
     /// The lifecycle state's stable wire string.
     pub state: String,
     pub backing: ManagedAgentBacking,
-    /// True when Bridge holds a receipt for this agent's payload. Redundant with
-    /// `backing` by construction and asserted so, because "can I remove this"
-    /// must never be a guess a client makes from a string.
+    /// True when Bridge holds a receipt for this agent's payload, so removing it
+    /// is Bridge's to do. True for a payload that drifted as well: Bridge still
+    /// owns those bytes and can still remove them, which is why this is not the
+    /// same question as "is it healthy".
     pub removable: bool,
+    /// The executable that would actually launch, when one resolves. Absent when
+    /// nothing does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
     /// The version of the copy that would actually launch, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -164,51 +169,36 @@ pub enum ManagedAgentOperationKind {
     Uninstall,
 }
 
-/// An accepted operation.
-///
-/// The id correlates progress notifications. It is not a completion: a client
-/// that misses the terminal notification refetches authoritative state rather
-/// than inferring it from progress it happened to see.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ManagedAgentOperationStarted {
-    pub operation_id: String,
-    pub agent_id: String,
-    pub kind: ManagedAgentOperationKind,
-}
-
-/// A stage an operation passes through.
+/// What an operation did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ManagedAgentOperationStage {
-    Queued,
-    Fetching,
-    Verifying,
-    Installing,
-    Stopping,
-    Removing,
-    Completed,
-    Failed,
+pub enum ManagedAgentOperationOutcome {
+    Installed,
+    Repaired,
+    Removed,
+    /// The payload was already installed at the pinned version.
+    AlreadyCurrent,
+    /// There was nothing of Bridge's to remove.
+    AlreadyAbsent,
 }
 
-impl ManagedAgentOperationStage {
-    /// Is this the last stage a client will see for the operation?
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed)
-    }
-}
-
-/// Transient progress for one operation.
+/// The result of a completed operation.
+///
+/// Deliberately not an "accepted operation" with a correlation id: these run to
+/// completion before the method returns, and handing back an id that no progress
+/// stream will ever reference would invite a client to wait forever. When these
+/// operations move to a background job, that is a new result shape with a real
+/// operation id, not a reinterpretation of this one.
+///
+/// Carries the post-operation status so a client does not need a second round
+/// trip to learn what changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedAgentProgress {
-    pub operation_id: String,
+pub struct ManagedAgentOperationResult {
     pub agent_id: String,
     pub kind: ManagedAgentOperationKind,
-    pub stage: ManagedAgentOperationStage,
-    /// Present on a failed terminal stage. Redacted and bounded.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
+    pub outcome: ManagedAgentOperationOutcome,
+    pub status: ManagedAgentStatus,
 }
 
 #[cfg(test)]
@@ -224,6 +214,7 @@ mod tests {
             state: "ready".into(),
             backing: ManagedAgentBacking::Managed,
             removable: true,
+            executable: Some("/managed/agents/codex/installations/i/payload/bin/codex".into()),
             version: Some("0.147.0".into()),
             vendor_message: None,
             process_id: None,
@@ -258,17 +249,11 @@ mod tests {
             }),
             external_runtime: Some("/opt/homebrew/bin/codex".into()),
         });
-        round_trip(&ManagedAgentOperationStarted {
-            operation_id: "op-1".into(),
+        round_trip(&ManagedAgentOperationResult {
             agent_id: "codex".into(),
             kind: ManagedAgentOperationKind::Install,
-        });
-        round_trip(&ManagedAgentProgress {
-            operation_id: "op-1".into(),
-            agent_id: "codex".into(),
-            kind: ManagedAgentOperationKind::Uninstall,
-            stage: ManagedAgentOperationStage::Failed,
-            detail: Some("stopped responding".into()),
+            outcome: ManagedAgentOperationOutcome::Installed,
+            status: status(),
         });
     }
 
@@ -324,29 +309,34 @@ mod tests {
             json!("uninstall")
         );
         assert_eq!(
-            serde_json::to_value(ManagedAgentOperationStage::Verifying).unwrap(),
-            json!("verifying")
+            serde_json::to_value(ManagedAgentOperationOutcome::AlreadyAbsent).unwrap(),
+            json!("already_absent")
         );
     }
 
     #[test]
-    fn only_completed_and_failed_are_terminal_stages() {
-        for stage in [
-            ManagedAgentOperationStage::Completed,
-            ManagedAgentOperationStage::Failed,
-        ] {
-            assert!(stage.is_terminal());
-        }
-        for stage in [
-            ManagedAgentOperationStage::Queued,
-            ManagedAgentOperationStage::Fetching,
-            ManagedAgentOperationStage::Verifying,
-            ManagedAgentOperationStage::Installing,
-            ManagedAgentOperationStage::Stopping,
-            ManagedAgentOperationStage::Removing,
-        ] {
-            assert!(!stage.is_terminal(), "{stage:?} is not terminal");
-        }
+    fn an_operation_result_says_what_happened_not_that_something_started() {
+        // The shape itself is the honesty check: there is no operation id to
+        // correlate, because there is no stream to correlate it with.
+        let value = serde_json::to_value(ManagedAgentOperationResult {
+            agent_id: "codex".into(),
+            kind: ManagedAgentOperationKind::Uninstall,
+            outcome: ManagedAgentOperationOutcome::Removed,
+            status: ManagedAgentStatus {
+                backing: ManagedAgentBacking::None,
+                removable: false,
+                state: "not_installed".into(),
+                version: None,
+                executable: None,
+                ..status()
+            },
+        })
+        .unwrap();
+        assert!(value.get("operationId").is_none(), "no id without a stream");
+        assert_eq!(value["outcome"], json!("removed"));
+        // The post-operation status travels with the result.
+        assert_eq!(value["status"]["state"], json!("not_installed"));
+        assert_eq!(value["status"]["removable"], json!(false));
     }
 
     #[test]

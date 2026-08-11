@@ -62,6 +62,42 @@
       ],
       "type": "object"
     },
+    "ManagedAgentOperationKind": {
+      "description": "Which lifecycle operation a progress stream belongs to.",
+      "enum": [
+        "install",
+        "repair",
+        "uninstall"
+      ],
+      "type": "string"
+    },
+    "ManagedAgentOperationOutcome": {
+      "description": "What an operation did.",
+      "oneOf": [
+        {
+          "enum": [
+            "installed",
+            "repaired",
+            "removed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The payload was already installed at the pinned version.",
+          "enum": [
+            "already_current"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "There was nothing of Bridge's to remove.",
+          "enum": [
+            "already_absent"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ManagedAgentStatus": {
       "description": "One integration's current state.",
       "properties": {
@@ -139,18 +175,27 @@
       "type": "object"
     }
   },
-  "description": "Every built-in integration.",
+  "description": "The result of a completed operation.\n\nDeliberately not an \"accepted operation\" with a correlation id: these run to completion before the method returns, and handing back an id that no progress stream will ever reference would invite a client to wait forever. When these operations move to a background job, that is a new result shape with a real operation id, not a reinterpretation of this one.\n\nCarries the post-operation status so a client does not need a second round trip to learn what changed.",
   "properties": {
-    "agents": {
-      "items": {
-        "$ref": "#/definitions/ManagedAgentStatus"
-      },
-      "type": "array"
+    "agentId": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/definitions/ManagedAgentOperationKind"
+    },
+    "outcome": {
+      "$ref": "#/definitions/ManagedAgentOperationOutcome"
+    },
+    "status": {
+      "$ref": "#/definitions/ManagedAgentStatus"
     }
   },
   "required": [
-    "agents"
+    "agentId",
+    "kind",
+    "outcome",
+    "status"
   ],
-  "title": "ManagedAgentList",
+  "title": "ManagedAgentOperationResult",
   "type": "object"
 }

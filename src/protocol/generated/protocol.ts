@@ -188,7 +188,6 @@ export type BridgeNotification =
   | "state-changed"
   | "adapters-changed"
   | "managed-agent-changed"
-  | "managed-agent-progress"
   | "learning-job-changed"
   | "session-output"
   | "account-usage"
@@ -199,7 +198,6 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "state-changed", delivery: "transient" },
   { notification: "adapters-changed", delivery: "transient" },
   { notification: "managed-agent-changed", delivery: "transient" },
-  { notification: "managed-agent-progress", delivery: "transient" },
   { notification: "learning-job-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
@@ -230,6 +228,7 @@ export const ERROR_CODES = {
   corrupt_receipt: 3004,
   vendor_prerequisite_missing: 3005,
   uninstall_not_permitted: 3006,
+  unknown_agent: 3007,
 } as const;
 
 /** Params types for methods whose payloads are contracted so far. */
@@ -400,9 +399,9 @@ export interface BridgeMethodResults {
   "browser/start_remote_browser": unknown;
   "agents/list_managed_agents": ManagedAgentList;
   "agents/inspect_managed_agent": ManagedAgentInspection;
-  "agents/install_managed_agent": ManagedAgentOperationStarted;
-  "agents/repair_managed_agent": ManagedAgentOperationStarted;
-  "agents/uninstall_managed_agent": ManagedAgentOperationStarted;
+  "agents/install_managed_agent": ManagedAgentOperationResult;
+  "agents/repair_managed_agent": ManagedAgentOperationResult;
+  "agents/uninstall_managed_agent": ManagedAgentOperationResult;
   "marketplace/marketplace_catalog": unknown;
   "marketplace/marketplace_app_auth_states": unknown;
   "marketplace/marketplace_action": unknown;
@@ -570,6 +569,8 @@ export interface ManagedAgentFailure {
 
 export type ManagedAgentOperationKind = "install" | "repair" | "uninstall";
 
+export type ManagedAgentOperationOutcome = "installed" | "repaired" | "removed" | "already_current" | "already_absent";
+
 export interface ManagedAgentReceiptSummary {
   agentId: string;
   installationId: string;
@@ -585,6 +586,7 @@ export interface ManagedAgentStatus {
   agentId: string;
   backing: ManagedAgentBacking;
   consecutiveFailures: number;
+  executable?: string | null;
   label: string;
   lastFailure?: ManagedAgentFailure | null;
   processId?: number | null;
@@ -1339,10 +1341,11 @@ export interface InstallManagedAgentParams {
   agentId: string;
 }
 
-export interface ManagedAgentOperationStarted {
+export interface ManagedAgentOperationResult {
   agentId: string;
   kind: ManagedAgentOperationKind;
-  operationId: string;
+  outcome: ManagedAgentOperationOutcome;
+  status: ManagedAgentStatus;
 }
 
 export interface RepairManagedAgentParams {

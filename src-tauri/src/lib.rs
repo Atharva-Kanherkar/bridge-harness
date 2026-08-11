@@ -191,7 +191,7 @@ async fn inspect_managed_agent(
 #[tauri::command]
 async fn install_managed_agent(
     agent_id: String,
-) -> Result<bridge_protocol::messages::ManagedAgentOperationStarted, managed_agents::ManagedAgentError>
+) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
     api::install_managed_agent(&agent_id)
 }
@@ -199,7 +199,7 @@ async fn install_managed_agent(
 #[tauri::command]
 async fn repair_managed_agent(
     agent_id: String,
-) -> Result<bridge_protocol::messages::ManagedAgentOperationStarted, managed_agents::ManagedAgentError>
+) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
     api::repair_managed_agent(&agent_id)
 }
@@ -207,9 +207,10 @@ async fn repair_managed_agent(
 #[tauri::command]
 async fn uninstall_managed_agent(
     agent_id: String,
-) -> Result<bridge_protocol::messages::ManagedAgentOperationStarted, managed_agents::ManagedAgentError>
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::uninstall_managed_agent(&agent_id)
+    api::uninstall_managed_agent(state.inner(), &agent_id)
 }
 
 #[tauri::command]

@@ -18,15 +18,18 @@
 //! `Runtime` wraps a `BridgeError` so an I/O or database failure keeps its own
 //! existing code rather than being flattened into a managed-agent condition.
 
-use crate::managed_payload::{ManagedPayloadStatus, ManagedPayloadStore, RepairReason};
-use crate::managed_runtime::{self, RuntimeResolution};
+use crate::managed_payload::{
+    ManagedPayloadStatus, ManagedPayloadStore, PayloadRecipe, RepairReason,
+};
+use crate::managed_runtime::{self, HttpsArtifactFetcher, RuntimeResolution};
 use crate::BridgeError;
 use bridge_protocol::messages::{
     ManagedAgentBacking, ManagedAgentInspection, ManagedAgentList, ManagedAgentOperationKind,
-    ManagedAgentOperationStarted, ManagedAgentReceiptSummary, ManagedAgentStatus,
+    ManagedAgentOperationOutcome, ManagedAgentOperationResult, ManagedAgentReceiptSummary,
+    ManagedAgentStatus,
 };
+use rusqlite::Connection;
 use std::{error::Error, fmt};
-use uuid::Uuid;
 
 /// The built-in integrations, with the label a client shows.
 ///
@@ -111,7 +114,16 @@ impl fmt::Display for ManagedAgentError {
     }
 }
 
-impl Error for ManagedAgentError {}
+impl Error for ManagedAgentError {
+    /// Exposes the wrapped failure, so a caller walking the chain sees the real
+    /// cause rather than only this layer's summary.
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<BridgeError> for ManagedAgentError {
     fn from(error: BridgeError) -> Self {
@@ -154,7 +166,7 @@ impl From<&ManagedAgentError> for bridge_protocol::ErrorCode {
             // Keeps the underlying code rather than flattening an I/O failure
             // into a managed-agent condition.
             ManagedAgentError::Runtime(error) => ErrorCode::from(error),
-            ManagedAgentError::UnknownAgent { .. } => ErrorCode::Invalid,
+            ManagedAgentError::UnknownAgent { .. } => ErrorCode::UnknownAgent,
         }
     }
 }
@@ -181,25 +193,68 @@ fn store() -> Result<ManagedPayloadStore> {
         })
 }
 
-/// Resolve one agent's status from the three independent facts.
+fn receipt_of(
+    status: &ManagedPayloadStatus,
+) -> Option<&crate::managed_payload::ManagedPayloadReceipt> {
+    match status {
+        ManagedPayloadStatus::Installed { receipt, .. } => Some(receipt),
+        ManagedPayloadStatus::NotInstalled | ManagedPayloadStatus::Repairable { .. } => None,
+    }
+}
+
+/// How a payload condition maps to a repair reason, for error reporting.
+fn repair_reason(status: &ManagedPayloadStatus) -> Option<RepairReason> {
+    match status {
+        ManagedPayloadStatus::Repairable { reason } => Some(*reason),
+        ManagedPayloadStatus::NotInstalled | ManagedPayloadStatus::Installed { .. } => None,
+    }
+}
+
+/// What Bridge would actually launch for this agent, and where it came from.
+///
+/// This is the read path the contract promises: a runtime on PATH shows as
+/// `external` and is reported, not hidden, because a user needs to see the copy
+/// they already have before deciding to install a managed one.
+fn resolution_of(agent_id: &str, store: &ManagedPayloadStore) -> Option<RuntimeResolution> {
+    managed_runtime::resolve_runtime(
+        agent_id,
+        None,
+        store,
+        &[],
+        crate::binary::resolve(agent_id),
+    )
+    .ok()
+}
+
+fn backing_of(resolution: Option<&RuntimeResolution>) -> ManagedAgentBacking {
+    match resolution {
+        Some(RuntimeResolution::Managed(_)) => ManagedAgentBacking::Managed,
+        Some(RuntimeResolution::Explicit(_)) => ManagedAgentBacking::Explicit,
+        Some(RuntimeResolution::Bundled(_)) => ManagedAgentBacking::Bundled,
+        Some(RuntimeResolution::External(_)) => ManagedAgentBacking::External,
+        None => ManagedAgentBacking::None,
+    }
+}
+
+/// Resolve one agent's status from the three independent facts: what Bridge owns,
+/// what would launch, and where that came from.
 fn status_of(agent_id: &str) -> Result<ManagedAgentStatus> {
     let label = label_for(agent_id)?;
     let store = store()?;
     let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
+    let resolution = resolution_of(agent_id, &store);
+    let backing = backing_of(resolution.as_ref());
 
-    let (state, backing) = match &payload {
-        ManagedPayloadStatus::Installed { .. } => ("installed", ManagedAgentBacking::Managed),
-        ManagedPayloadStatus::Repairable { .. } => ("repairable", ManagedAgentBacking::Managed),
-        ManagedPayloadStatus::NotInstalled => ("not_installed", ManagedAgentBacking::None),
-    };
-
-    // What would actually launch. A managed payload that needs repair is not
-    // handed out, so this can legitimately disagree with `backing` above — which
-    // is why they are reported separately.
-    let resolution = managed_runtime::managed_entrypoint(agent_id);
-    let (state, backing) = match (&payload, resolution.as_ref()) {
-        (ManagedPayloadStatus::Installed { .. }, Some(_)) => ("ready", ManagedAgentBacking::Managed),
-        _ => (state, backing),
+    // Ownership and launchability are separate questions. Bridge owns a drifted
+    // payload — it is removable — but would not launch it, so `backing` describes
+    // the copy that would run while `removable` describes what Bridge owns.
+    let owns_payload = !matches!(payload, ManagedPayloadStatus::NotInstalled);
+    let state = match (&payload, &resolution) {
+        (ManagedPayloadStatus::Repairable { .. }, _) => "repairable",
+        (ManagedPayloadStatus::Installed { .. }, Some(RuntimeResolution::Managed(_))) => "ready",
+        (ManagedPayloadStatus::Installed { .. }, _) => "installed",
+        (ManagedPayloadStatus::NotInstalled, Some(_)) => "external",
+        (ManagedPayloadStatus::NotInstalled, None) => "not_installed",
     };
 
     Ok(ManagedAgentStatus {
@@ -207,20 +262,16 @@ fn status_of(agent_id: &str) -> Result<ManagedAgentStatus> {
         label: label.to_owned(),
         state: state.to_owned(),
         backing,
-        removable: backing.is_removable(),
+        removable: owns_payload,
+        executable: resolution
+            .as_ref()
+            .map(|resolution| resolution.path().display().to_string()),
         version: receipt_of(&payload).map(|receipt| receipt.version.clone()),
         vendor_message: None,
         process_id: None,
         consecutive_failures: 0,
         last_failure: None,
     })
-}
-
-fn receipt_of(status: &ManagedPayloadStatus) -> Option<&crate::managed_payload::ManagedPayloadReceipt> {
-    match status {
-        ManagedPayloadStatus::Installed { receipt, .. } => Some(receipt),
-        ManagedPayloadStatus::NotInstalled | ManagedPayloadStatus::Repairable { .. } => None,
-    }
 }
 
 /// Every built-in integration and its current state.
@@ -250,72 +301,225 @@ pub fn inspect_managed_agent(agent_id: &str) -> Result<ManagedAgentInspection> {
     Ok(ManagedAgentInspection {
         status,
         receipt,
-        external_runtime: None,
+        // Reported so a user can see the copy they already have. Visible is not
+        // removable: uninstall refuses this path with its own code.
+        external_runtime: external_candidate(agent_id),
     })
 }
 
-fn operation(agent_id: &str, kind: ManagedAgentOperationKind) -> ManagedAgentOperationStarted {
-    ManagedAgentOperationStarted {
-        operation_id: Uuid::new_v4().to_string(),
+/// Is a live provider process running for this agent?
+///
+/// Reads the tracked adapter pids the session supervisor records, and confirms
+/// each is really alive by its recorded OS identity — a stale row must not make
+/// an agent permanently un-removable. This is what stops a payload being deleted
+/// out from under a running session.
+fn live_process_for(db: &Connection, agent_id: &str) -> std::result::Result<bool, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT adapter_pid, adapter_process_identity FROM sessions \
+         WHERE harness=?1 AND adapter_pid IS NOT NULL",
+    )?;
+    let rows = statement
+        .query_map([agent_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows.into_iter().any(|(pid, identity)| {
+        let pid = u32::try_from(pid).unwrap_or(0);
+        match (pid, identity) {
+            (0, _) => false,
+            (pid, Some(identity)) => {
+                crate::adapters::process_identity(pid).as_deref() == Some(identity.as_str())
+            }
+            (pid, None) => crate::adapters::process_identity(pid).is_some(),
+        }
+    }))
+}
+
+fn result_of(
+    agent_id: &str,
+    kind: ManagedAgentOperationKind,
+    outcome: ManagedAgentOperationOutcome,
+) -> Result<ManagedAgentOperationResult> {
+    Ok(ManagedAgentOperationResult {
         agent_id: agent_id.to_owned(),
         kind,
+        outcome,
+        status: status_of(agent_id)?,
+    })
+}
+
+/// Translate a payload-engine failure into the condition a caller can act on.
+///
+/// A blanket "not permitted" would have made `CorruptReceipt` and the 1000-range
+/// I/O codes unreachable on the destructive path, which is exactly where a caller
+/// most needs to know which of the three it is hitting.
+fn classify(agent_id: &str, error: BridgeError, receipt: Option<RepairReason>) -> ManagedAgentError {
+    let message = error.to_string();
+    if let Some(reason) = receipt {
+        return ManagedAgentError::CorruptReceipt {
+            agent_id: agent_id.to_owned(),
+            reason,
+        };
+    }
+    if message.contains("receipt") {
+        return ManagedAgentError::CorruptReceipt {
+            agent_id: agent_id.to_owned(),
+            reason: RepairReason::ReceiptChainMismatch,
+        };
+    }
+    if message.contains("integrity") {
+        return ManagedAgentError::IntegrityFailure {
+            agent_id: agent_id.to_owned(),
+            detail: message,
+        };
+    }
+    // Anything else keeps its own code rather than being recast.
+    ManagedAgentError::Runtime(error)
+}
+
+/// Fetch, verify, and install an agent's pinned payload.
+///
+/// Runs to completion before returning. Slow for a large closure, and honest: the
+/// result says what happened rather than handing back an id for a job that does
+/// not exist.
+fn perform_install(agent_id: &str, repair: bool) -> Result<ManagedAgentOperationOutcome> {
+    let store = store()?;
+    let source = recipe_for(agent_id)?;
+    let existing = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
+    if !repair && matches!(existing, ManagedPayloadStatus::Installed { .. }) {
+        if let Some(receipt) = receipt_of(&existing) {
+            if receipt.version == pinned_version(&source) {
+                return Ok(ManagedAgentOperationOutcome::AlreadyCurrent);
+            }
+        }
+    }
+
+    let staging = store
+        .root()
+        .join(".staging-fetch")
+        .join(format!("{agent_id}-{}", pinned_version(&source)));
+    let staged = managed_runtime::prepare(&source, &staging, &HttpsArtifactFetcher).map_err(
+        |(stage, error)| match stage {
+            managed_runtime::PrepareStage::Integrity => ManagedAgentError::IntegrityFailure {
+                agent_id: agent_id.to_owned(),
+                detail: error.to_string(),
+            },
+            _ => ManagedAgentError::Runtime(error),
+        },
+    )?;
+
+    let recipe = PayloadRecipe {
+        agent_id: agent_id.to_owned(),
+        version: pinned_version(&source),
+        platform: managed_runtime::npm_platform_suffix(platform_naming(agent_id))
+            .ok_or_else(|| ManagedAgentError::UnsupportedPlatform {
+                agent_id: agent_id.to_owned(),
+            })?
+            .to_owned(),
+        source: source_label(&source),
+        expected_sha256: staged.sha256.clone(),
+        source_path: staged.source_path.clone(),
+        shape: staged.shape,
+        entrypoint: staged.entrypoint.clone(),
+    };
+
+    let outcome = if repair {
+        store
+            .repair(&recipe)
+            .map(|_| ManagedAgentOperationOutcome::Repaired)
+    } else {
+        store
+            .install(&recipe)
+            .map(|_| ManagedAgentOperationOutcome::Installed)
+    };
+    let _ = std::fs::remove_dir_all(&staging);
+    outcome.map_err(|error| classify(agent_id, error, repair_reason(&existing)))
+}
+
+fn pinned_version(source: &managed_runtime::RuntimeSource) -> String {
+    match source {
+        managed_runtime::RuntimeSource::NpmClosure { version, .. } => version.clone(),
+        managed_runtime::RuntimeSource::ReleaseArtifact { sha256, .. } => sha256[..12].to_owned(),
+    }
+}
+
+fn source_label(source: &managed_runtime::RuntimeSource) -> String {
+    match source {
+        managed_runtime::RuntimeSource::NpmClosure {
+            package, version, ..
+        } => format!("npm:{package}@{version}"),
+        managed_runtime::RuntimeSource::ReleaseArtifact { url, .. } => url.clone(),
+    }
+}
+
+fn platform_naming(agent_id: &str) -> managed_runtime::PlatformNaming {
+    if agent_id == "opencode" {
+        managed_runtime::PlatformNaming::WindowsSpelled
+    } else {
+        managed_runtime::PlatformNaming::NodePlatform
     }
 }
 
 /// Install an agent's managed payload from its pinned recipe.
-pub fn install_managed_agent(agent_id: &str) -> Result<ManagedAgentOperationStarted> {
+pub fn install_managed_agent(agent_id: &str) -> Result<ManagedAgentOperationResult> {
     label_for(agent_id)?;
-    recipe_for(agent_id)?;
-    Ok(operation(agent_id, ManagedAgentOperationKind::Install))
+    let outcome = perform_install(agent_id, false)?;
+    result_of(agent_id, ManagedAgentOperationKind::Install, outcome)
 }
 
-/// Repair a drifted managed payload.
-pub fn repair_managed_agent(agent_id: &str) -> Result<ManagedAgentOperationStarted> {
+/// Repair a drifted managed payload through the engine's receipt-proven path.
+pub fn repair_managed_agent(agent_id: &str) -> Result<ManagedAgentOperationResult> {
     label_for(agent_id)?;
-    recipe_for(agent_id)?;
-    Ok(operation(agent_id, ManagedAgentOperationKind::Repair))
+    let outcome = perform_install(agent_id, true)?;
+    result_of(agent_id, ManagedAgentOperationKind::Repair, outcome)
 }
 
 /// Remove a managed payload.
 ///
-/// Refuses a runtime Bridge does not own before touching anything, with the
-/// external-not-managed code rather than a generic failure.
-pub fn uninstall_managed_agent(agent_id: &str) -> Result<ManagedAgentOperationStarted> {
+/// Refuses a runtime Bridge does not own, and refuses while a provider process is
+/// still alive for this agent: deleting the tree under a running session is the
+/// failure this whole epic exists to prevent.
+pub fn uninstall_managed_agent(db: &Connection, agent_id: &str) -> Result<ManagedAgentOperationResult> {
     label_for(agent_id)?;
     let store = store()?;
-    match store.status(agent_id).map_err(ManagedAgentError::Runtime)? {
-        ManagedPayloadStatus::NotInstalled => {
-            // Nothing of Bridge's here. If a runtime is nonetheless resolvable it
-            // is the user's, and saying so is more useful than "already absent".
-            if let Some(candidate) = external_candidate(agent_id) {
-                return Err(ManagedAgentError::ExternalNotManaged {
-                    agent_id: agent_id.to_owned(),
-                    candidate,
-                });
-            }
+    let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
+
+    if matches!(payload, ManagedPayloadStatus::NotInstalled) {
+        // Nothing of Bridge's here. If a runtime is nonetheless resolvable it is
+        // the user's, and saying so is more useful than "already absent".
+        if let Some(candidate) = external_candidate(agent_id) {
+            return Err(ManagedAgentError::ExternalNotManaged {
+                agent_id: agent_id.to_owned(),
+                candidate,
+            });
         }
-        ManagedPayloadStatus::Installed { .. } | ManagedPayloadStatus::Repairable { .. } => {}
+        return result_of(
+            agent_id,
+            ManagedAgentOperationKind::Uninstall,
+            ManagedAgentOperationOutcome::AlreadyAbsent,
+        );
     }
+
+    if live_process_for(db, agent_id).map_err(ManagedAgentError::Runtime)? {
+        return Err(ManagedAgentError::Busy {
+            agent_id: agent_id.to_owned(),
+        });
+    }
+
     store
         .uninstall(agent_id)
-        .map_err(|error| ManagedAgentError::UninstallNotPermitted {
-            agent_id: agent_id.to_owned(),
-            detail: error.to_string(),
-        })?;
-    Ok(operation(agent_id, ManagedAgentOperationKind::Uninstall))
+        .map_err(|error| classify(agent_id, error, repair_reason(&payload)))?;
+    result_of(
+        agent_id,
+        ManagedAgentOperationKind::Uninstall,
+        ManagedAgentOperationOutcome::Removed,
+    )
 }
 
 /// A user-managed runtime, if one is resolvable without a managed payload.
 fn external_candidate(agent_id: &str) -> Option<String> {
-    let resolution = managed_runtime::resolve_runtime(
-        agent_id,
-        None,
-        &managed_runtime::managed_root().map(ManagedPayloadStore::new)?,
-        &[],
-        crate::binary::resolve(agent_id),
-    )
-    .ok()?;
-    match resolution {
+    let store = managed_runtime::managed_root().map(ManagedPayloadStore::new)?;
+    match resolution_of(agent_id, &store)? {
         RuntimeResolution::External(path) | RuntimeResolution::Explicit(path) => {
             Some(path.display().to_string())
         }
@@ -441,16 +645,102 @@ mod tests {
 
     #[test]
     fn an_unknown_agent_is_refused_before_any_storage_access() {
-        // Refused on identity alone, so a bad id cannot reach the filesystem.
+        // Refused on identity alone, so a bad id never reaches the filesystem —
+        // and under its own code, so a client can tell it from a real failure.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         for error in [
             install_managed_agent("not-an-agent").unwrap_err(),
             repair_managed_agent("not-an-agent").unwrap_err(),
-            uninstall_managed_agent("not-an-agent").unwrap_err(),
+            uninstall_managed_agent(&db, "not-an-agent").unwrap_err(),
         ] {
             assert!(
                 matches!(error, ManagedAgentError::UnknownAgent { .. }),
                 "unexpected error: {error}"
             );
+            assert_eq!(ErrorCode::from(&error), ErrorCode::UnknownAgent);
+            assert_eq!(ErrorCode::from(&error).code(), 3007);
         }
+    }
+
+    #[test]
+    fn a_live_provider_process_blocks_removal() {
+        // The destructive path must refuse while something is still running
+        // against the payload, and refuse under `AgentBusy` so a client can say
+        // why rather than guessing from text.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, harness TEXT, adapter_pid INTEGER, \
+             adapter_process_identity TEXT);",
+        )
+        .unwrap();
+
+        // No rows: nothing is running.
+        assert!(!live_process_for(&db, "codex").unwrap());
+
+        // This process is genuinely alive, and its recorded identity matches.
+        let pid = std::process::id();
+        let identity = crate::adapters::process_identity(pid);
+        db.execute(
+            "INSERT INTO sessions(id,harness,adapter_pid,adapter_process_identity) \
+             VALUES('s1','codex',?1,?2)",
+            rusqlite::params![i64::from(pid), identity],
+        )
+        .unwrap();
+        assert!(
+            live_process_for(&db, "codex").unwrap(),
+            "a live tracked process must block removal"
+        );
+        // A different agent is unaffected.
+        assert!(!live_process_for(&db, "claude").unwrap());
+
+        // A stale row must not make an agent permanently un-removable: the
+        // recorded identity no longer matches the pid.
+        db.execute(
+            "UPDATE sessions SET adapter_process_identity='a different process entirely'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            !live_process_for(&db, "codex").unwrap(),
+            "a stale row must not block removal forever"
+        );
+    }
+
+    #[test]
+    fn store_failures_keep_their_own_condition() {
+        // A blanket "not permitted" would have made these unreachable on the one
+        // path where a caller most needs to tell them apart.
+        let corrupt = classify(
+            "codex",
+            BridgeError::Invalid("managed payload uninstall refused corrupt active receipt".into()),
+            None,
+        );
+        assert_eq!(ErrorCode::from(&corrupt), ErrorCode::CorruptReceipt);
+
+        let drifted = classify(
+            "codex",
+            BridgeError::Invalid("staged integrity mismatch".into()),
+            None,
+        );
+        assert_eq!(ErrorCode::from(&drifted), ErrorCode::IntegrityFailure);
+
+        // Anything else keeps its own 1000-range code rather than being recast.
+        let io = classify(
+            "codex",
+            BridgeError::Io(std::io::Error::other("disk went away")),
+            None,
+        );
+        assert_eq!(ErrorCode::from(&io), ErrorCode::Io);
+        assert!(io.source().is_some(), "the real cause stays reachable");
+
+        // A known repair reason is reported as itself.
+        let reason = classify("codex", BridgeError::Invalid("x".into()), Some(RepairReason::IntegrityDrift));
+        assert!(matches!(
+            reason,
+            ManagedAgentError::CorruptReceipt {
+                reason: RepairReason::IntegrityDrift,
+                ..
+            }
+        ));
     }
 }

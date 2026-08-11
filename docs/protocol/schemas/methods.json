@@ -538,21 +538,21 @@
       "domain": "agents",
       "method": "agents/install_managed_agent",
       "paramsSchema": "install-managed-agent-params.json",
-      "resultSchema": "managed-agent-operation-started.json"
+      "resultSchema": "managed-agent-operation-result.json"
     },
     {
       "command": "repair_managed_agent",
       "domain": "agents",
       "method": "agents/repair_managed_agent",
       "paramsSchema": "repair-managed-agent-params.json",
-      "resultSchema": "managed-agent-operation-started.json"
+      "resultSchema": "managed-agent-operation-result.json"
     },
     {
       "command": "uninstall_managed_agent",
       "domain": "agents",
       "method": "agents/uninstall_managed_agent",
       "paramsSchema": "uninstall-managed-agent-params.json",
-      "resultSchema": "managed-agent-operation-started.json"
+      "resultSchema": "managed-agent-operation-result.json"
     },
     {
       "command": "marketplace_catalog",
