@@ -675,14 +675,22 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, BridgeError> {
 /// adapter constructor: the adapters are built by [`crate::adapters::AdapterRegistry`]
 /// with no access to the data directory, and widening all of those signatures to
 /// reach one optional lookup would touch far more than this issue should. The
-/// resolution logic itself lives in [`resolve_runtime`], which takes a store
-/// explicitly and is what the tests drive.
+/// resolution logic itself lives in [`resolve_runtime`], which takes a payload
+/// status explicitly and is what the tests drive.
 ///
 /// A lock rather than a `OnceLock` because [`crate::BridgeCore::boot`] can run
 /// more than once in a process — every test that boots a core does — and a
 /// write-once cell would silently pin the first data directory, leaving a second
 /// core resolving payloads out of the first one's storage.
 static MANAGED_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Serializes any test that mutates the process-wide registration.
+///
+/// Lives here rather than inside this module's own test block so `managed_agents`
+/// takes the *same* lock. Two modules each with a private mutex would not
+/// serialize against each other, which is the race this exists to prevent.
+#[cfg(test)]
+pub(crate) static MANAGED_ROOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Register where managed payloads live. Called by `BridgeCore::boot`.
 pub fn register_managed_root(root: impl Into<PathBuf>) {
@@ -934,10 +942,15 @@ impl RuntimeResolution {
 /// Bridge deciding it knows better. A managed payload outranks a bundled or PATH
 /// copy, because installing one is how a user asks for it. A PATH copy is
 /// reported as external and is never claimed.
+///
+/// Takes the payload status the caller has already computed rather than a store to
+/// look it up in. Verifying a managed payload means digesting its tree, and every
+/// caller that wants a resolution wants the status too — so owning the lookup here
+/// meant the same tree was digested twice to answer one question.
 pub fn resolve_runtime(
     agent_id: &str,
     explicit: Option<&Path>,
-    store: &ManagedPayloadStore,
+    payload: &ManagedPayloadStatus,
     bundled: &[PathBuf],
     system: Option<PathBuf>,
 ) -> Result<RuntimeResolution, BridgeError> {
@@ -950,8 +963,8 @@ pub fn resolve_runtime(
             explicit.display()
         )));
     }
-    if let ManagedPayloadStatus::Installed { entrypoint, .. } = store.status(agent_id)? {
-        return Ok(RuntimeResolution::Managed(entrypoint));
+    if let ManagedPayloadStatus::Installed { entrypoint, .. } = payload {
+        return Ok(RuntimeResolution::Managed(entrypoint.clone()));
     }
     if let Some(found) = bundled
         .iter()
@@ -1395,6 +1408,14 @@ mod tests {
         store.root().join(&receipt.entrypoint)
     }
 
+    /// The observation `resolve_runtime` now takes, read from a store.
+    ///
+    /// Naming it at each call site keeps these tests honest about the fact that
+    /// resolution reads a snapshot rather than the filesystem.
+    fn observed(store: &ManagedPayloadStore, agent_id: &str) -> ManagedPayloadStatus {
+        store.status(agent_id).unwrap()
+    }
+
     #[test]
     fn resolution_prefers_explicit_then_managed_then_bundled_then_path() {
         let fixture = tempfile::tempdir().unwrap();
@@ -1406,33 +1427,33 @@ mod tests {
 
         // All four tiers present.
         assert_eq!(
-            resolve_runtime("codex", Some(&explicit), &store, std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            resolve_runtime("codex", Some(&explicit), &observed(&store, "codex"), std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
             RuntimeResolution::Explicit(explicit.clone())
         );
         // No explicit config: the managed payload wins.
         assert_eq!(
-            resolve_runtime("codex", None, &store, std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            resolve_runtime("codex", None, &observed(&store, "codex"), std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
             RuntimeResolution::Managed(managed.clone())
         );
         // No managed payload: the bundled copy.
         let empty = ManagedPayloadStore::new(fixture.path().join("empty"));
         assert_eq!(
-            resolve_runtime("codex", None, &empty, std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            resolve_runtime("codex", None, &observed(&empty, "codex"), std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
             RuntimeResolution::Bundled(bundled)
         );
         // Nothing but PATH: external, and explicitly not owned.
         let resolution =
-            resolve_runtime("codex", None, &empty, &[], Some(system.clone())).unwrap();
+            resolve_runtime("codex", None, &observed(&empty, "codex"), &[], Some(system.clone())).unwrap();
         assert_eq!(resolution, RuntimeResolution::External(system));
         assert!(!resolution.is_bridge_owned());
         // Nothing at all: an error naming the agent.
-        let error = resolve_runtime("codex", None, &empty, &[], None).unwrap_err();
+        let error = resolve_runtime("codex", None, &observed(&empty, "codex"), &[], None).unwrap_err();
         assert!(error.to_string().contains("codex"), "{error}");
 
         // A configured path that is not executable is an error, not a silent
         // fallback: the user asked for that binary specifically.
         let broken = fixture.path().join("custom/missing");
-        assert!(resolve_runtime("codex", Some(&broken), &store, &[], None).is_err());
+        assert!(resolve_runtime("codex", Some(&broken), &observed(&store, "codex"), &[], None).is_err());
     }
 
     #[test]
@@ -1441,7 +1462,7 @@ mod tests {
         let store = ManagedPayloadStore::new(fixture.path().join("managed"));
         let system = executable_at(&fixture.path().join("usr/bin/agent"), b"user's own copy");
 
-        let resolution = resolve_runtime("codex", None, &store, &[], Some(system.clone())).unwrap();
+        let resolution = resolve_runtime("codex", None, &observed(&store, "codex"), &[], Some(system.clone())).unwrap();
         assert!(matches!(resolution, RuntimeResolution::External(_)));
         assert!(!resolution.is_bridge_owned());
         // No receipt was written anywhere for it.
@@ -1461,14 +1482,14 @@ mod tests {
         install_managed(&store, fixture.path(), "opencode");
 
         assert_eq!(
-            resolve_runtime("opencode", Some(&explicit), &store, &[], None).unwrap(),
+            resolve_runtime("opencode", Some(&explicit), &observed(&store, "opencode"), &[], None).unwrap(),
             RuntimeResolution::Explicit(explicit.clone())
         );
         // Removing the managed payload leaves the configured one untouched.
         store.uninstall("opencode").unwrap();
         assert_eq!(fs::read(&explicit).unwrap(), b"user's build");
         assert_eq!(
-            resolve_runtime("opencode", Some(&explicit), &store, &[], None).unwrap(),
+            resolve_runtime("opencode", Some(&explicit), &observed(&store, "opencode"), &[], None).unwrap(),
             RuntimeResolution::Explicit(explicit)
         );
     }
@@ -1481,14 +1502,14 @@ mod tests {
         let managed = install_managed(&store, fixture.path(), "claude");
 
         assert_eq!(
-            resolve_runtime("claude", None, &store, &[], Some(system.clone())).unwrap(),
+            resolve_runtime("claude", None, &observed(&store, "claude"), &[], Some(system.clone())).unwrap(),
             RuntimeResolution::Managed(managed.clone())
         );
 
         store.uninstall("claude").unwrap();
         assert!(!managed.exists(), "the managed payload is gone");
         assert_eq!(
-            resolve_runtime("claude", None, &store, &[], Some(system.clone())).unwrap(),
+            resolve_runtime("claude", None, &observed(&store, "claude"), &[], Some(system.clone())).unwrap(),
             RuntimeResolution::External(system.clone()),
             "resolution must fall back to what the user already had"
         );
@@ -1506,7 +1527,7 @@ mod tests {
         // The payload is repairable, not usable, so resolution must not hand it
         // out — but it must not break the agent either.
         assert_eq!(
-            resolve_runtime("codex", None, &store, &[], Some(system.clone())).unwrap(),
+            resolve_runtime("codex", None, &observed(&store, "codex"), &[], Some(system.clone())).unwrap(),
             RuntimeResolution::External(system)
         );
     }
@@ -1774,9 +1795,6 @@ mod tests {
         clear_managed_root();
     }
 
-    /// The registration is process-wide, so any test that mutates it takes this
-    /// first rather than racing another under the default parallel runner.
-    static MANAGED_ROOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn npm_bin_symlinks_are_pruned_before_digesting() {

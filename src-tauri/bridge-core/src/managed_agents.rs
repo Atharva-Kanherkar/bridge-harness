@@ -215,11 +215,15 @@ fn repair_reason(status: &ManagedPayloadStatus) -> Option<RepairReason> {
 /// This is the read path the contract promises: a runtime on PATH shows as
 /// `external` and is reported, not hidden, because a user needs to see the copy
 /// they already have before deciding to install a managed one.
-fn resolution_of(agent_id: &str, store: &ManagedPayloadStore) -> Option<RuntimeResolution> {
+///
+/// Takes the caller's payload observation rather than looking it up again, so a
+/// status and the resolution beside it always describe the same snapshot of the
+/// tree — and so the tree is digested once per question instead of twice.
+fn resolution_of(agent_id: &str, payload: &ManagedPayloadStatus) -> Option<RuntimeResolution> {
     managed_runtime::resolve_runtime(
         agent_id,
         None,
-        store,
+        payload,
         &[],
         crate::binary::resolve(agent_id),
     )
@@ -238,18 +242,30 @@ fn backing_of(resolution: Option<&RuntimeResolution>) -> ManagedAgentBacking {
 
 /// Resolve one agent's status from the three independent facts: what Bridge owns,
 /// what would launch, and where that came from.
+///
+/// Reads the payload once. Every caller here either already holds an observation
+/// or wants exactly one, so the lookup is the caller's to make — see
+/// [`status_from_payload`].
 fn status_of(agent_id: &str) -> Result<ManagedAgentStatus> {
-    let label = label_for(agent_id)?;
     let store = store()?;
     let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
-    let resolution = resolution_of(agent_id, &store);
+    status_from_payload(agent_id, &payload)
+}
+
+/// One agent's status, derived from a payload observation the caller already has.
+fn status_from_payload(
+    agent_id: &str,
+    payload: &ManagedPayloadStatus,
+) -> Result<ManagedAgentStatus> {
+    let label = label_for(agent_id)?;
+    let resolution = resolution_of(agent_id, payload);
     let backing = backing_of(resolution.as_ref());
 
     // Ownership and launchability are separate questions. Bridge owns a drifted
     // payload — it is removable — but would not launch it, so `backing` describes
     // the copy that would run while `removable` describes what Bridge owns.
     let owns_payload = !matches!(payload, ManagedPayloadStatus::NotInstalled);
-    let state = match (&payload, &resolution) {
+    let state = match (payload, &resolution) {
         (ManagedPayloadStatus::Repairable { .. }, _) => "repairable",
         (ManagedPayloadStatus::Installed { .. }, Some(RuntimeResolution::Managed(_))) => "ready",
         (ManagedPayloadStatus::Installed { .. }, _) => "installed",
@@ -266,7 +282,7 @@ fn status_of(agent_id: &str) -> Result<ManagedAgentStatus> {
         executable: resolution
             .as_ref()
             .map(|resolution| resolution.path().display().to_string()),
-        version: receipt_of(&payload).map(|receipt| receipt.version.clone()),
+        version: receipt_of(payload).map(|receipt| receipt.version.clone()),
         vendor_message: None,
         process_id: None,
         consecutive_failures: 0,
@@ -285,9 +301,11 @@ pub fn list_managed_agents() -> Result<ManagedAgentList> {
 
 /// One agent's receipt summary and detected external runtime, reported separately.
 pub fn inspect_managed_agent(agent_id: &str) -> Result<ManagedAgentInspection> {
-    let status = status_of(agent_id)?;
     let store = store()?;
+    // One observation answers all three questions below. Reading the payload per
+    // question digested the same tree four times for one call.
     let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
+    let status = status_from_payload(agent_id, &payload)?;
     let receipt = receipt_of(&payload).map(|receipt| ManagedAgentReceiptSummary {
         schema_version: receipt.schema_version,
         agent_id: receipt.agent_id.clone(),
@@ -303,7 +321,7 @@ pub fn inspect_managed_agent(agent_id: &str) -> Result<ManagedAgentInspection> {
         receipt,
         // Reported so a user can see the copy they already have. Visible is not
         // removable: uninstall refuses this path with its own code.
-        external_runtime: external_candidate(agent_id),
+        external_runtime: external_candidate(agent_id, &payload),
     })
 }
 
@@ -487,7 +505,7 @@ pub fn uninstall_managed_agent(db: &Connection, agent_id: &str) -> Result<Manage
     if matches!(payload, ManagedPayloadStatus::NotInstalled) {
         // Nothing of Bridge's here. If a runtime is nonetheless resolvable it is
         // the user's, and saying so is more useful than "already absent".
-        if let Some(candidate) = external_candidate(agent_id) {
+        if let Some(candidate) = external_candidate(agent_id, &payload) {
             return Err(ManagedAgentError::ExternalNotManaged {
                 agent_id: agent_id.to_owned(),
                 candidate,
@@ -517,9 +535,8 @@ pub fn uninstall_managed_agent(db: &Connection, agent_id: &str) -> Result<Manage
 }
 
 /// A user-managed runtime, if one is resolvable without a managed payload.
-fn external_candidate(agent_id: &str) -> Option<String> {
-    let store = managed_runtime::managed_root().map(ManagedPayloadStore::new)?;
-    match resolution_of(agent_id, &store)? {
+fn external_candidate(agent_id: &str, payload: &ManagedPayloadStatus) -> Option<String> {
+    match resolution_of(agent_id, payload)? {
         RuntimeResolution::External(path) | RuntimeResolution::Explicit(path) => {
             Some(path.display().to_string())
         }
@@ -540,8 +557,181 @@ fn recipe_for(agent_id: &str) -> Result<managed_runtime::RuntimeSource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_payload::{full_digests_of, tree_walks_of, PayloadRecipe, PayloadShape};
     use bridge_protocol::ErrorCode;
     use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    /// Install a directory payload for `agent_id` and return its `payload/` root.
+    ///
+    /// Uses a real built-in agent id, because `status_of` refuses anything else
+    /// before it reaches storage — a fixture id would test nothing.
+    fn install_fixture(store: &ManagedPayloadStore, fixture: &Path, agent_id: &str) -> PathBuf {
+        let source = fixture.join(format!("{agent_id}-tree"));
+        std::fs::create_dir_all(source.join("bin")).unwrap();
+        std::fs::write(source.join("bin/agent"), format!("{agent_id} fixture").as_bytes()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = source.join("bin/agent");
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
+        std::fs::write(source.join("README"), b"fixture").unwrap();
+        let entrypoint = PathBuf::from("bin/agent");
+        let recipe = PayloadRecipe {
+            agent_id: agent_id.into(),
+            version: "9.9.9".into(),
+            platform: "darwin-aarch64".into(),
+            source: format!("fixture://{agent_id}"),
+            expected_sha256: crate::managed_payload::source_digest(
+                &source,
+                PayloadShape::Directory,
+                &entrypoint,
+            )
+            .unwrap(),
+            source_path: source,
+            shape: PayloadShape::Directory,
+            entrypoint,
+        };
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        let payload = store
+            .root()
+            .join(receipt.owned_root().unwrap())
+            .join("payload");
+        // A freshly written payload is younger than the verification cache's
+        // granularity margin, so it is deliberately not cacheable. These assertions
+        // are about the steady state, which is a payload installed some time ago.
+        let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fn age(path: &Path, backdated: std::time::SystemTime) {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let child = entry.unwrap().path();
+                if child.is_dir() {
+                    age(&child, backdated);
+                } else {
+                    std::fs::File::open(&child)
+                        .unwrap()
+                        .set_modified(backdated)
+                        .unwrap();
+                }
+            }
+        }
+        age(&payload, backdated);
+        payload
+    }
+
+    /// Total full digests across a set of payload roots.
+    fn digests(roots: &[PathBuf]) -> u32 {
+        roots.iter().map(|root| full_digests_of(root)).sum()
+    }
+
+    /// Total tree walks across a set of payload roots.
+    ///
+    /// The metric the deduplication moves. Digests alone would be satisfied by the
+    /// verification cache and would not notice a redundant read returning.
+    fn walks(roots: &[PathBuf]) -> u32 {
+        roots.iter().map(|root| tree_walks_of(root)).sum()
+    }
+
+    /// Holds the process-wide managed-root registration and clears it on drop.
+    ///
+    /// Clearing on the success path alone was a bug: a failing assertion unwinds,
+    /// releasing the lock while leaving `MANAGED_ROOT` pointing at a temp directory
+    /// that is about to be deleted, so the next test to take the lock fails for a
+    /// reason that has nothing to do with it. Exactly the failure mode the live
+    /// tests' `exclusive_managed_root` exists to prevent.
+    struct ManagedRootGuard {
+        /// Held for the guard's lifetime; never read, which is the point.
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for ManagedRootGuard {
+        fn drop(&mut self) {
+            crate::managed_runtime::clear_managed_root();
+        }
+    }
+
+    #[must_use]
+    fn exclusive_managed_root(root: &Path) -> ManagedRootGuard {
+        let guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        crate::managed_runtime::register_managed_root(root);
+        ManagedRootGuard { _lock: guard }
+    }
+
+    #[test]
+    fn list_and_inspect_read_each_payload_once() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("managed-runtimes");
+        let store = ManagedPayloadStore::new(&root);
+        let roots: Vec<PathBuf> = BUILT_IN_AGENTS
+            .iter()
+            .map(|(agent_id, _)| install_fixture(&store, fixture.path(), agent_id))
+            .collect();
+        // Registered after the fixtures exist, and cleared however this test exits.
+        let _root = exclusive_managed_root(&root);
+
+        // One walk and one full read per agent. Before the observation was threaded
+        // through `resolve_runtime` this was two of each per agent — six for three.
+        let digests_before = digests(&roots);
+        let walks_before = walks(&roots);
+        let listed = list_managed_agents().unwrap();
+        assert_eq!(listed.agents.len(), BUILT_IN_AGENTS.len());
+        let after_first = digests(&roots);
+        assert_eq!(
+            after_first - digests_before,
+            BUILT_IN_AGENTS.len() as u32,
+            "one full read per agent, not one per question asked about it"
+        );
+        let walks_after_first = walks(&roots);
+        assert_eq!(
+            walks_after_first - walks_before,
+            BUILT_IN_AGENTS.len() as u32,
+            "one walk per agent: a cache hit still costs a walk, so a duplicated \
+             read is only visible in this count"
+        );
+
+        // Every agent resolves to its managed payload, so the reads above were real
+        // verifications and not an early return on a missing installation.
+        for agent in &listed.agents {
+            assert_eq!(agent.backing, ManagedAgentBacking::Managed, "{agent:?}");
+            assert_eq!(agent.state, "ready", "{agent:?}");
+        }
+
+        // Repeat list: served from the verification cache.
+        let listed_again = list_managed_agents().unwrap();
+        assert_eq!(listed_again, listed, "the wire payload must not change");
+        assert_eq!(
+            digests(&roots),
+            after_first,
+            "a repeat list must not re-read any tree"
+        );
+        assert_eq!(
+            walks(&roots) - walks_after_first,
+            BUILT_IN_AGENTS.len() as u32,
+            "a repeat list still walks once per agent — that is the whole cost"
+        );
+
+        // Inspect used to read one agent's tree four times: status_of read it,
+        // resolve_runtime read it again, the receipt lookup a third time, and
+        // external_candidate a fourth.
+        let walks_before_inspect = walks(&roots);
+        let inspected = inspect_managed_agent("claude").unwrap();
+        assert!(inspected.receipt.is_some(), "the receipt must be reported");
+        assert_eq!(inspected.status.backing, ManagedAgentBacking::Managed);
+        assert_eq!(
+            digests(&roots),
+            after_first,
+            "inspect must not re-read a tree that is already verified"
+        );
+        assert_eq!(
+            walks(&roots) - walks_before_inspect,
+            1,
+            "inspect must walk one tree once, where it used to walk it four times"
+        );
+    }
 
     #[test]
     fn every_domain_condition_has_a_distinct_stable_code() {

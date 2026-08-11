@@ -214,6 +214,11 @@ impl ManagedPayloadStore {
         let recipe = recipe.validate()?;
         let lock = agent_lock(&self.root, &recipe.agent_id);
         let _guard = lock_agent(&lock);
+        // Defence in depth, under the agent lock that `status` also takes. Not
+        // currently load-bearing — an installation path is content-addressed, so a
+        // stale entry cannot describe different bytes — but cheap, and the thing
+        // that keeps this correct if identity stops being derived from content.
+        forget_verified_payloads(&self.root, &recipe.agent_id);
         self.install_locked(&recipe)
     }
 
@@ -229,6 +234,11 @@ impl ManagedPayloadStore {
         let recipe = recipe.validate()?;
         let lock = agent_lock(&self.root, &recipe.agent_id);
         let _guard = lock_agent(&lock);
+        // A repair rewrites the same installation id in place, so the path alone
+        // does not change. Reaching that rewrite requires a non-`Installed` status,
+        // which already evicts, so this is belt-and-braces rather than the thing
+        // that makes repair correct.
+        forget_verified_payloads(&self.root, &recipe.agent_id);
 
         if let ManagedPayloadStatus::Installed { receipt, .. } =
             self.status_locked(&recipe.agent_id)?
@@ -293,6 +303,7 @@ impl ManagedPayloadStore {
         let lock = agent_lock(&self.root, agent_id);
         let _guard = lock_agent(&lock);
         ensure_root_is_not_symlink(&self.root)?;
+        forget_verified_payloads(&self.root, agent_id);
 
         let active_relative = PathBuf::from("agents").join(agent_id).join("active.json");
         ensure_safe_managed_descendant(&self.root, &active_relative)?;
@@ -458,18 +469,16 @@ impl ManagedPayloadStore {
                 reason: RepairReason::EntrypointNotExecutable,
             });
         }
-        let digest = match payload_tree_digest(&payload) {
-            Ok(digest) => digest,
-            Err(_) => {
+        // May be served from this process's verification cache when the tree is
+        // stat-identical to one already read in full. The walk, and every check it
+        // performs, still happens on every call.
+        match payload_matches_receipt(&payload, &receipt.integrity_sha256) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
                 return Ok(ManagedPayloadStatus::Repairable {
                     reason: RepairReason::IntegrityDrift,
                 });
             }
-        };
-        if digest != receipt.integrity_sha256 {
-            return Ok(ManagedPayloadStatus::Repairable {
-                reason: RepairReason::IntegrityDrift,
-            });
         }
         Ok(ManagedPayloadStatus::Installed {
             receipt,
@@ -831,11 +840,249 @@ fn validate_receipt_ownership(
 /// integrity, so a planted sibling — a dylib next to a binary, say — was
 /// invisible to drift detection. The tree walk is digest-compatible with the
 /// file-shaped source digest, which synthesizes the same entry set.
+///
+/// Reads every byte, every time. The write paths — install and repair — use this
+/// directly and are never served from the verification cache.
 fn payload_tree_digest(payload_root: &Path) -> Result<String, BridgeError> {
     validate_source_root(payload_root, PayloadShape::Directory)?;
     let mut entries = Vec::new();
     collect_tree_entries(payload_root, payload_root, &mut entries)?;
     hash_entries(entries)
+}
+
+/// One tree this process has already verified in full, and the cheap metadata it
+/// had at that moment.
+struct VerifiedPayload {
+    /// The receipt digest the full read was checked against.
+    integrity: String,
+    /// The stat witness observed when that check passed.
+    witness: String,
+    /// When the full read began, in nanoseconds since the Unix epoch.
+    ///
+    /// See [`verification_outran_the_mtime_bucket`] for what this is compared
+    /// against and why a bare "older than" comparison is not enough.
+    started_at_nanos: u128,
+}
+
+fn unix_nanos_now() -> Option<u128> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_nanos())
+}
+
+/// An upper bound on any mtime granularity Bridge expects to run on.
+///
+/// FAT records modification times in two-second steps and HFS+ in one-second
+/// steps; APFS, ext4, NTFS and ZFS are all finer. Two seconds therefore covers the
+/// coarsest filesystem a managed payload is plausibly installed on. A filesystem
+/// coarser than this — some network mounts — falls outside the bound, and the
+/// consequence is stated in the module's contract rather than assumed away.
+const MAX_MTIME_GRANULARITY_NANOS: u128 = 2_000_000_000;
+
+/// Was the recorded verification late enough that a later write must have changed
+/// the mtime?
+///
+/// This is the load-bearing half of the freshness rule, and a strict `newest <
+/// started_at` is *not* sufficient. mtimes are truncated to the filesystem's
+/// granularity `g`, while the verification timestamp is nanosecond wall clock, so
+/// the two are not directly comparable.
+///
+/// Masking requires a post-verification write whose truncated mtime equals the one
+/// already in the witness — that is, `bucket(write) == bucket(previous write)`.
+/// Since the write happens at or after the verification, that is possible exactly
+/// when the verification itself fell inside the previous write's bucket. So the
+/// question is not "is the file older than the verification" but "did the
+/// verification happen at least one full bucket after the file was written".
+///
+/// With `g` unknown, [`MAX_MTIME_GRANULARITY_NANOS`] stands in for it. The cost is
+/// that a payload verified within two seconds of being written is re-digested on
+/// the next status read, which is noise next to a 15–32 second install.
+fn verification_outran_the_mtime_bucket(newest_modified: u128, started_at: u128) -> bool {
+    newest_modified
+        .checked_add(MAX_MTIME_GRANULARITY_NANOS)
+        .is_some_and(|earliest_safe| earliest_safe <= started_at)
+}
+
+/// The most recent mtime among file entries, which is what a cache hit is checked
+/// against. `None` only when an entry set has no files at all.
+fn newest_modified_nanos(entries: &[PayloadEntry]) -> Option<u128> {
+    entries
+        .iter()
+        .filter(|entry| entry.source.is_some())
+        .filter_map(|entry| entry.stat.and_then(|stat| stat.modified_nanos))
+        .max()
+}
+
+/// Trees verified in this process, keyed by absolute payload root.
+///
+/// Memory only, and deliberately so. A persisted witness would have to live inside
+/// the installation root — where [`ensure_directory_is_bridge_shaped`] refuses
+/// foreign files, for good reason — and would be forgeable by exactly the actor a
+/// drift check exists to catch. Process memory is not.
+static VERIFIED_PAYLOADS: OnceLock<Mutex<HashMap<PathBuf, VerifiedPayload>>> = OnceLock::new();
+
+/// Enough for every agent across several versions in one process, and a bound so a
+/// long-lived host cannot accumulate entries for installations that no longer exist.
+const MAX_VERIFIED_PAYLOADS: usize = 64;
+
+fn verified_payloads() -> &'static Mutex<HashMap<PathBuf, VerifiedPayload>> {
+    VERIFIED_PAYLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Does a payload tree still match the digest its receipt claims?
+///
+/// The walk always happens, with every check [`collect_tree_entries`] performs — a
+/// symlink planted inside a payload is still an error here, not a cache hit. What
+/// the cache can skip is *reading the file bytes*, and only when all of:
+///
+/// - the tree's paths, lengths, mtimes and inodes are identical to those recorded
+///   when this same digest was last verified in full, and
+/// - that verification happened at least one mtime bucket after the newest file was
+///   written — see [`verification_outran_the_mtime_bucket`].
+fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, BridgeError> {
+    // Read before the walk, so the recorded time is never later than the bytes this
+    // call is about to read. A file written during the walk therefore cannot look
+    // like it predates the verification by a full mtime bucket.
+    let started_at_nanos = unix_nanos_now();
+    #[cfg(test)]
+    record_tree_walk(payload_root);
+    validate_source_root(payload_root, PayloadShape::Directory)?;
+    let mut entries = Vec::new();
+    collect_tree_entries(payload_root, payload_root, &mut entries)?;
+    let witness = hash_stat_witness(&entries);
+    let newest_modified = newest_modified_nanos(&entries).unwrap_or(0);
+
+    if let Some(witness) = witness.as_deref() {
+        let cache = verified_payloads()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(verified) = cache.get(payload_root) {
+            if verified.integrity == expected
+                && verified.witness == witness
+                && verification_outran_the_mtime_bucket(
+                    newest_modified,
+                    verified.started_at_nanos,
+                )
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    record_full_digest(payload_root);
+    let digest = hash_entries(entries)?;
+    let matches = digest == expected;
+
+    let mut cache = verified_payloads()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match (matches, witness, started_at_nanos) {
+        // Only a tree that actually matched is remembered, so drift is re-read on
+        // every call until it is repaired rather than being cached as a verdict.
+        (true, Some(witness), Some(started_at_nanos)) => {
+            if cache.len() >= MAX_VERIFIED_PAYLOADS && !cache.contains_key(payload_root) {
+                // Evict the least recently verified rather than whatever the map
+                // iterates first: an arbitrary key can drop a hot entry and keep a
+                // cold one, which costs a full digest for no reason.
+                let evict = cache
+                    .iter()
+                    .min_by_key(|(_, verified)| verified.started_at_nanos)
+                    .map(|(path, _)| path.clone());
+                if let Some(evict) = evict {
+                    cache.remove(&evict);
+                }
+            }
+            cache.insert(
+                payload_root.to_path_buf(),
+                VerifiedPayload {
+                    integrity: expected.to_owned(),
+                    witness,
+                    started_at_nanos,
+                },
+            );
+        }
+        _ => {
+            cache.remove(payload_root);
+        }
+    }
+    Ok(matches)
+}
+
+/// How many times each payload root has been walked, cache hit or not.
+///
+/// Distinct from [`FULL_DIGESTS`] because the two costs are independent: the
+/// verification cache removes byte reads, while threading one observation through
+/// `resolve_runtime` removes whole redundant walks. A test that only counted
+/// digests would be satisfied by the cache alone and would not notice duplicate
+/// reads coming back.
+#[cfg(test)]
+static TREE_WALKS: OnceLock<Mutex<HashMap<PathBuf, u32>>> = OnceLock::new();
+
+#[cfg(test)]
+fn record_tree_walk(payload_root: &Path) {
+    *TREE_WALKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(payload_root.to_path_buf())
+        .or_insert(0) += 1;
+}
+
+/// Walks performed for `payload_root` since this process started.
+#[cfg(test)]
+pub(crate) fn tree_walks_of(payload_root: &Path) -> u32 {
+    TREE_WALKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(payload_root)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// How many times each payload root has been digested in full.
+///
+/// Keyed by path so each test observes only its own tempdir and the default
+/// parallel runner needs no serialization. A global counter would have made these
+/// assertions race every other test that touches a payload.
+#[cfg(test)]
+static FULL_DIGESTS: OnceLock<Mutex<HashMap<PathBuf, u32>>> = OnceLock::new();
+
+#[cfg(test)]
+fn record_full_digest(payload_root: &Path) {
+    *FULL_DIGESTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(payload_root.to_path_buf())
+        .or_insert(0) += 1;
+}
+
+/// Full digests performed for `payload_root` since this process started.
+#[cfg(test)]
+pub(crate) fn full_digests_of(payload_root: &Path) -> u32 {
+    FULL_DIGESTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(payload_root)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Drop every cached verification under one agent, by path prefix.
+///
+/// Called wherever Bridge itself writes or removes an installation. Prefix rather
+/// than an exact key so a caller never has to reconstruct an installation id to
+/// invalidate it.
+fn forget_verified_payloads(root: &Path, agent_id: &str) {
+    let prefix = root.join("agents").join(agent_id);
+    let mut cache = verified_payloads()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    cache.retain(|path, _| !path.starts_with(&prefix));
 }
 
 fn remove_path_if_present(path: &Path, directory: bool) -> Result<(), BridgeError> {
@@ -1179,6 +1426,50 @@ struct PayloadEntry {
     path: String,
     /// `None` for a directory.
     source: Option<(PathBuf, u64)>,
+    /// Cheap metadata for the stat witness, when this entry came from a real walk.
+    ///
+    /// `None` for entries synthesized by [`file_shape_entries`], which describe a
+    /// tree that does not exist on disk yet. Never folded into the content digest
+    /// — [`hash_entries`] ignores this field, so the on-disk integrity hash is
+    /// unaffected by anything here.
+    stat: Option<EntryStat>,
+}
+
+/// The metadata a stat witness commits to for one entry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct EntryStat {
+    len: u64,
+    /// Nanoseconds since the Unix epoch, or `None` if the platform would not say.
+    modified_nanos: Option<u128>,
+    /// Unix inode, so a file replaced by `rename` is caught even if its mtime is
+    /// restored to the old value. Always `None` off Unix.
+    inode: Option<u64>,
+}
+
+impl EntryStat {
+    fn read(metadata: &fs::Metadata) -> Self {
+        let modified_nanos = metadata.modified().ok().and_then(|time| {
+            time.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|since| since.as_nanos())
+        });
+        Self {
+            len: metadata.len(),
+            modified_nanos,
+            inode: entry_inode(metadata),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn entry_inode(metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.ino())
+}
+
+#[cfg(not(unix))]
+fn entry_inode(_metadata: &fs::Metadata) -> Option<u64> {
+    None
 }
 
 /// Render a relative path as the digest's canonical form.
@@ -1230,12 +1521,18 @@ fn collect_tree_entries(
             entries.push(PayloadEntry {
                 path: canonical,
                 source: None,
+                // A directory's own mtime changes when its children are added or
+                // removed, which the child entries already record. Committing to
+                // it as well would invalidate the witness on churn the digest
+                // cannot see.
+                stat: None,
             });
             collect_tree_entries(root, &path, entries)?;
         } else if metadata.is_file() {
             entries.push(PayloadEntry {
                 path: canonical,
                 source: Some((path, metadata.len())),
+                stat: Some(EntryStat::read(&metadata)),
             });
         } else {
             return Err(BridgeError::Invalid(format!(
@@ -1266,6 +1563,7 @@ fn file_shape_entries(
         entries.push(PayloadEntry {
             path: ancestor.clone(),
             source: None,
+            stat: None,
         });
     }
     let path = if ancestor.is_empty() {
@@ -1276,8 +1574,60 @@ fn file_shape_entries(
     entries.push(PayloadEntry {
         path,
         source: Some((source.to_path_buf(), length)),
+        // Synthesized: this describes where the file will land, not a tree that
+        // exists, so there is nothing to stat. A witness is never built from
+        // these — see `hash_stat_witness`.
+        stat: None,
     });
     Ok(entries)
+}
+
+/// A digest of the tree's cheap metadata, for the status cache.
+///
+/// Committed to per file entry: canonical path, length, mtime in nanoseconds, and
+/// inode on Unix. Directory entries contribute their path only, so their own mtime
+/// churn does not invalidate a witness (their children's entries already describe
+/// any real change).
+///
+/// Returns `None` if any file entry lacks stat data — an unreadable mtime, or a
+/// synthesized entry set. Absence always means "verify properly": a caller that
+/// gets `None` must compute the real digest.
+///
+/// This is never a substitute for [`hash_entries`]. It answers only "is this the
+/// same tree I already read in full", and is compared against a witness recorded
+/// at a moment the content digest was verified.
+fn hash_stat_witness(entries: &[PayloadEntry]) -> Option<String> {
+    let mut sorted: Vec<&PayloadEntry> = entries.iter().collect();
+    sorted.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut digest = Sha256::new();
+    for entry in sorted {
+        match (&entry.source, &entry.stat) {
+            (None, _) => {
+                digest.update(b"dir\0");
+                digest.update(entry.path.as_bytes());
+                digest.update(b"\0");
+            }
+            (Some(_), Some(stat)) => {
+                digest.update(b"file\0");
+                digest.update(entry.path.as_bytes());
+                digest.update(b"\0");
+                digest.update(stat.len.to_le_bytes());
+                digest.update(stat.modified_nanos?.to_le_bytes());
+                // Length-prefixed so a present inode cannot collide with an
+                // absent one that happens to be followed by matching bytes.
+                match stat.inode {
+                    Some(inode) => {
+                        digest.update(b"ino\0");
+                        digest.update(inode.to_le_bytes());
+                    }
+                    None => digest.update(b"no-ino\0"),
+                }
+            }
+            // A file with no stat data: refuse to describe this tree at all.
+            (Some(_), None) => return None,
+        }
+    }
+    Some(format!("{:x}", digest.finalize()))
 }
 
 fn hash_entries(mut entries: Vec<PayloadEntry>) -> Result<String, BridgeError> {
@@ -2328,5 +2678,417 @@ mod tests {
             assert!(store.uninstall("fixture-agent").is_err());
         }
         assert!(store.root().join(&receipt.owned_paths[0]).is_dir());
+    }
+
+    /// Move every file's mtime in a tree an hour into the past.
+    ///
+    /// A freshly installed payload is younger than the granularity margin, so the
+    /// cache deliberately refuses it — see `verification_outran_the_mtime_bucket`.
+    /// The steady state the cache exists for is a payload installed some time ago,
+    /// and that is what these fixtures need to represent. Ageing explicitly rather
+    /// than sleeping keeps the suite fast and the intent visible.
+    fn age_tree(root: &Path) {
+        let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fn walk(path: &Path, backdated: std::time::SystemTime) {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let child = entry.path();
+                if child.is_dir() {
+                    walk(&child, backdated);
+                } else {
+                    fs::File::open(&child)
+                        .unwrap()
+                        .set_modified(backdated)
+                        .unwrap();
+                }
+            }
+        }
+        walk(root, backdated);
+    }
+
+    /// Install a directory payload and return the store, the receipt, and the
+    /// `payload/` root the verification cache is keyed by.
+    ///
+    /// The tree is aged so the cache can engage at all; a test that needs a
+    /// freshly-written mtime sets one explicitly.
+    fn installed_tree(
+        fixture: &Path,
+    ) -> (ManagedPayloadStore, ManagedPayloadReceipt, PathBuf) {
+        let store = ManagedPayloadStore::new(fixture.join("managed"));
+        let recipe = directory_recipe(fixture);
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        let payload = store
+            .root()
+            .join(receipt.owned_root().unwrap())
+            .join("payload");
+        assert!(payload.is_dir());
+        age_tree(&payload);
+        (store, receipt, payload)
+    }
+
+    /// Rewrite a payload file so its mtime is strictly newer than any prior
+    /// verification, which is what the cache's freshness rule keys on.
+    ///
+    /// Filesystem timestamp granularity is not guaranteed to be fine — so rather
+    /// than sleeping and hoping, set the mtime forward explicitly. A test that
+    /// depended on the clock ticking would pass or fail by luck.
+    fn rewrite_payload_file(path: &Path, contents: &[u8]) {
+        fs::write(path, contents).unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        fs::File::open(path)
+            .unwrap()
+            .set_modified(future)
+            .expect("the fixture filesystem must support setting mtime");
+    }
+
+    #[test]
+    fn a_repeat_status_read_does_not_digest_the_tree_again() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+
+        // `install` itself verifies, so the count starts above zero; what matters
+        // is that repeated *reads* add nothing to it.
+        let after_install = full_digests_of(&payload);
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+        let after_first_status = full_digests_of(&payload);
+        assert!(
+            after_first_status > after_install,
+            "the first status after an install must read the tree in full"
+        );
+
+        for _ in 0..5 {
+            assert!(matches!(
+                store.status("directory-agent").unwrap(),
+                ManagedPayloadStatus::Installed { .. }
+            ));
+        }
+        assert_eq!(
+            full_digests_of(&payload),
+            after_first_status,
+            "repeat status reads must be served from the verification cache"
+        );
+    }
+
+    #[test]
+    fn a_touched_payload_file_is_caught_by_a_witness_mismatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+
+        // Warm the cache first, so this exercises the path where an entry exists
+        // and must be rejected — not a cold read that never consults one.
+        //
+        // The rewrite below changes the file's length, so what rejects it is the
+        // witness, before the freshness rule is reached. Coverage of the cases
+        // where the witness matches is elsewhere: same-length edits in
+        // `a_same_length_content_change_is_still_caught`, and the bucket window in
+        // `an_overwrite_inside_the_verification_mtime_bucket_is_still_caught`.
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        rewrite_payload_file(&payload.join("README"), b"tampered, and longer");
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            },
+            "an existing cache entry must not mask drift"
+        );
+    }
+
+    #[test]
+    fn a_same_length_content_change_is_still_caught() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        let readme = payload.join("README");
+        let before = fs::read(&readme).unwrap();
+
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        // Identical length, different bytes: length alone cannot see this, so the
+        // witness has to be committing to mtime as well.
+        let after: Vec<u8> = before.iter().map(|byte| byte ^ 0x20).collect();
+        assert_eq!(before.len(), after.len());
+        rewrite_payload_file(&readme, &after);
+
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            }
+        );
+    }
+
+    #[test]
+    fn a_backdated_in_place_overwrite_is_still_caught() {
+        // The one case the freshness rule alone cannot see. Overwriting in place
+        // keeps the inode; identical length keeps the size; an mtime moved
+        // *backwards* satisfies "older than the last verification". Only the
+        // witness committing to mtime catches this, which is why it does.
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        let readme = payload.join("README");
+        let before = fs::read(&readme).unwrap();
+        let original_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&readme).unwrap().ino()
+        };
+
+        // A lower bound on the verification's own timestamp: it is read inside the
+        // call, so it is at or after this. Asserting the backdated mtime precedes
+        // *this* therefore proves it precedes the recorded verification too.
+        let before_verification = std::time::SystemTime::now();
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        let after: Vec<u8> = before.iter().map(|byte| byte ^ 0x20).collect();
+        assert_eq!(before.len(), after.len());
+        fs::write(&readme, &after).unwrap();
+        let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::open(&readme)
+            .unwrap()
+            .set_modified(backdated)
+            .unwrap();
+
+        // Confirm the evasion is really set up, so this cannot pass because some
+        // other mechanism fired: same inode, same length, and an mtime far enough
+        // back that the freshness rule is satisfied and only the witness can object.
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&readme).unwrap();
+        assert_eq!(metadata.ino(), original_inode, "must be an in-place write");
+        assert_eq!(metadata.len() as usize, before.len());
+        let modified = metadata.modified().unwrap();
+        assert!(
+            modified < before_verification,
+            "the backdate must precede the verification, else freshness rejects it \
+             and the witness is never consulted"
+        );
+        assert!(
+            before_verification
+                .duration_since(modified)
+                .unwrap()
+                .as_nanos()
+                > MAX_MTIME_GRANULARITY_NANOS,
+            "the backdate must clear the granularity margin for the same reason"
+        );
+
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            },
+            "a backdated same-length overwrite must not survive the witness"
+        );
+    }
+
+    #[test]
+    fn an_overwrite_inside_the_verification_mtime_bucket_is_still_caught() {
+        // The hole a bare `newest_modified < started_at` left, reproduced without
+        // depending on the filesystem's real granularity.
+        //
+        // On a filesystem with one-second mtimes, a file written at S.1 carries
+        // mtime S.0. A verification beginning at S.3 records started_at = S.3. A
+        // same-length in-place overwrite at S.7 truncates to mtime S.0 again — the
+        // witness is unchanged and S.0 < S.3 still holds, so the old rule served a
+        // cache hit and reported a tampered payload as `Installed`.
+        //
+        // Setting the mtime explicitly reproduces "the overwrite landed in the same
+        // bucket the verification fell inside" on any filesystem.
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        let readme = payload.join("README");
+        let before = fs::read(&readme).unwrap();
+
+        // Put the file's mtime just barely in the past, so the verification that
+        // follows lands inside its bucket rather than a later one.
+        let bucket = std::time::SystemTime::now() - std::time::Duration::from_millis(50);
+        fs::File::open(&readme).unwrap().set_modified(bucket).unwrap();
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        // Same length, different bytes, and the mtime restored to the value the
+        // witness already holds — exactly what bucket truncation would produce.
+        let after: Vec<u8> = before.iter().map(|byte| byte ^ 0x20).collect();
+        assert_eq!(before.len(), after.len());
+        fs::write(&readme, &after).unwrap();
+        fs::File::open(&readme).unwrap().set_modified(bucket).unwrap();
+
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            },
+            "an overwrite in the same mtime bucket as the verification must not be \
+             served from the cache"
+        );
+    }
+
+    #[test]
+    fn the_freshness_rule_requires_a_full_bucket_not_merely_an_older_mtime() {
+        // The predicate on its own, because the distinction is the entire finding:
+        // "older than the verification" and "at least one bucket older" are
+        // different questions, and only the second one is sound.
+        let started = 10 * MAX_MTIME_GRANULARITY_NANOS;
+
+        // Older than the verification, but inside the same bucket: not safe.
+        assert!(!verification_outran_the_mtime_bucket(started - 1, started));
+        assert!(!verification_outran_the_mtime_bucket(
+            started - MAX_MTIME_GRANULARITY_NANOS + 1,
+            started
+        ));
+
+        // A full bucket earlier: safe.
+        assert!(verification_outran_the_mtime_bucket(
+            started - MAX_MTIME_GRANULARITY_NANOS,
+            started
+        ));
+
+        // Not older at all, and in the future — neither is trustworthy.
+        assert!(!verification_outran_the_mtime_bucket(started, started));
+        assert!(!verification_outran_the_mtime_bucket(started + 1, started));
+
+        // A saturating add must fail closed rather than wrap into a hit.
+        assert!(!verification_outran_the_mtime_bucket(u128::MAX, started));
+    }
+
+    #[test]
+    fn a_drifted_tree_is_never_cached() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        rewrite_payload_file(&payload.join("README"), b"drifted");
+
+        let before = full_digests_of(&payload);
+        for _ in 0..3 {
+            assert_eq!(
+                store.status("directory-agent").unwrap(),
+                ManagedPayloadStatus::Repairable {
+                    reason: RepairReason::IntegrityDrift
+                }
+            );
+        }
+        assert_eq!(
+            full_digests_of(&payload) - before,
+            3,
+            "a failing verdict must be recomputed every time, not cached"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_planted_in_a_payload_is_caught_even_with_a_warm_cache() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        // The fast path skips reading bytes, never the walk — so the walk's own
+        // symlink refusal must still fire.
+        let readme = payload.join("README");
+        fs::remove_file(&readme).unwrap();
+        std::os::unix::fs::symlink(fixture.path().join("elsewhere"), &readme).unwrap();
+
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Repairable {
+                reason: RepairReason::IntegrityDrift
+            },
+            "a planted symlink must not be served from the cache"
+        );
+    }
+
+    #[test]
+    fn a_tree_reinstalled_at_the_same_path_is_read_in_full_again() {
+        // A reinstall of the same recipe lands on the same installation id, so the
+        // cache key is unchanged and the freshly-copied files are what must force
+        // the re-read.
+        //
+        // Note on the `forget_verified_payloads` calls in install, repair, and
+        // uninstall: deleting them does not break this test, or any other, and
+        // that is honest rather than a gap. A harmful stale entry is unreachable
+        // by two independent properties — an installation path is content-addressed
+        // through `installation_id`, so different bytes cannot share a path, and a
+        // cache hit re-checks the receipt's integrity anyway. The invalidation is
+        // kept as defence for a future where agent identity stops being derived
+        // from content (#163 moves in that direction), not because it is currently
+        // load-bearing.
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, receipt, payload) = installed_tree(fixture.path());
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+
+        store.uninstall("directory-agent").unwrap();
+        assert_eq!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::NotInstalled
+        );
+
+        let recipe = directory_recipe(fixture.path());
+        let reinstalled = store.install(&recipe).unwrap().receipt().clone();
+        assert_eq!(reinstalled.installation_id, receipt.installation_id);
+        // Aged so freshness would permit a hit: the full read asserted below then
+        // proves the previous entry was not reused, not merely that files were new.
+        age_tree(&payload);
+
+        let before = full_digests_of(&payload);
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+        assert!(
+            full_digests_of(&payload) > before,
+            "a reinstalled tree must be read in full, not trusted from before"
+        );
+    }
+
+    /// Reads between two status calls must not cost a re-digest.
+    ///
+    /// Deliberately *not* named for atime: this machine's filesystem does not
+    /// update atime on read, so the test cannot prove the witness ignores it. What
+    /// it does prove is that an intervening read leaves the cache usable, which
+    /// fails immediately if the cache is removed.
+    #[test]
+    fn reads_between_status_calls_do_not_force_a_redigest() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (store, _, payload) = installed_tree(fixture.path());
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+        let warm = full_digests_of(&payload);
+
+        // Reading files and listing directories can move atimes and directory
+        // atimes around. The witness must not commit to anything that churns.
+        for entry in fs::read_dir(&payload).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                let _ = fs::read(&path).unwrap();
+            }
+        }
+        let _ = fs::read(payload.join("bin/agent")).unwrap();
+
+        assert!(matches!(
+            store.status("directory-agent").unwrap(),
+            ManagedPayloadStatus::Installed { .. }
+        ));
+        assert_eq!(
+            full_digests_of(&payload),
+            warm,
+            "reading a payload must not force a re-digest"
+        );
     }
 }

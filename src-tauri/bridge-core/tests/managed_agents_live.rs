@@ -11,8 +11,15 @@
 //!
 //! ```text
 //! cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core \
-//!   --test managed_agents_live -- --ignored --nocapture --test-threads=1
+//!   --test managed_agents_live -- --ignored --nocapture
 //! ```
+//!
+//! `--test-threads=1` is no longer required. The managed-root registration is
+//! process-wide, so two of these running concurrently pointed one test's storage
+//! at the other's temp directory — which failed as a bare `No such file or
+//! directory` from inside an install, an error that says nothing about its cause.
+//! [`exclusive_managed_root`] serializes them instead of relying on the caller
+//! remembering a flag.
 //!
 //! What this covers of the epic's proof: step 1 (start from no managed payload),
 //! step 2's mechanics (install — through the API the desktop UI calls, not
@@ -24,6 +31,23 @@
 use bridge_core::managed_agents::{self, ManagedAgentError};
 use bridge_core::managed_payload::{ManagedPayloadStatus, ManagedPayloadStore};
 use bridge_core::managed_runtime;
+
+/// Serializes the tests in this file, which share one process-wide managed root.
+static MANAGED_ROOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Register `root` and hold exclusive use of the registration.
+///
+/// The returned guard must live for the whole test: dropping it early would let a
+/// sibling re-register while this test is still reading its own storage. Poison is
+/// tolerated because a panicking sibling has already failed the run, and turning
+/// that into a second confusing failure here would only obscure the first.
+fn exclusive_managed_root(root: std::path::PathBuf) -> std::sync::MutexGuard<'static, ()> {
+    let guard = MANAGED_ROOT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    managed_runtime::register_managed_root(root);
+    guard
+}
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -179,7 +203,7 @@ fn symlinks_under(path: &Path) -> Vec<PathBuf> {
 #[ignore = "fetches real vendor closures from npm; needs network, npm, and several minutes"]
 fn the_full_lifecycle_holds_against_real_vendor_payloads() {
     let fixture = tempfile::tempdir().expect("temp managed root");
-    managed_runtime::register_managed_root(fixture.path().join("managed-runtimes"));
+    let _root = exclusive_managed_root(fixture.path().join("managed-runtimes"));
 
     // A stand-in for a runtime the user installed themselves, so the untouched
     // assertion is checked against a real file rather than assumed.
@@ -202,7 +226,7 @@ fn a_live_process_blocks_removal_of_a_real_payload() {
     // than a fixture: a payload must not be deletable while something is running
     // against it.
     let fixture = tempfile::tempdir().expect("temp managed root");
-    managed_runtime::register_managed_root(fixture.path().join("managed-runtimes"));
+    let _root = exclusive_managed_root(fixture.path().join("managed-runtimes"));
 
     // OpenCode is the smallest of the three closures.
     let agent_id = "opencode";
