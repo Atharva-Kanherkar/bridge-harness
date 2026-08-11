@@ -32,8 +32,8 @@ import type {
 /** How a backing is described, so a user runtime is never presented as Bridge's. */
 const SOURCE_LABEL: Record<ManagedAgentStatus["backing"], string> = {
   managed: "Bridge-managed",
-  external: "User-managed (on PATH)",
-  explicit: "User-managed (custom path)",
+  external: "Your own install (found on PATH)",
+  explicit: "Your own install (configured path)",
   bundled: "Shipped with Bridge",
   none: "Not installed",
 };
@@ -45,7 +45,7 @@ function stateLabel(status: ManagedAgentStatus): string {
     case "repairable": return "Needs repair";
     case "broken": return "Unavailable";
     case "running": return "Running";
-    case "external": return "Available";
+    case "external": return "Working";
     case "not_installed": return "Not installed";
     default: return status.state;
   }
@@ -228,10 +228,24 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
               </button>
             )}
             {!absent && !needsRepair && agent.backing !== "managed" && (
-              <button type="button" className="u-glass rounded-lg px-3 py-1.5 text-xs"
-                onClick={onInstall} aria-describedby={describedBy}>
-                Install Bridge-managed copy
-              </button>
+              <>
+                <span className="text-xs text-muted-foreground">
+                  Bridge uses this copy. Nothing to install.
+                </span>
+                {/* Deliberately quiet: the agent already works, so this is an
+                    opt-in, not a call to action. #170 calls it optional, and
+                    making it the only button on the card read as "this needs
+                    installing" for an agent the user can already chat with. */}
+                <button
+                  type="button"
+                  className="ml-auto text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  onClick={onInstall}
+                  aria-describedby={describedBy}
+                  title="Downloads a separate copy that Bridge can update and remove on its own. Your install stays where it is."
+                >
+                  Let Bridge manage its own copy
+                </button>
+              </>
             )}
 
             {/* The one gate on removal: the API said whether this is Bridge's.

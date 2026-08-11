@@ -78,8 +78,9 @@ describe("ManagedAgentsPanel", () => {
       [{ state: "installed", backing: "managed", removable: true }, ["Remove"]],
       // Bridge owns drifted bytes: repair, and removal is still Bridge's to offer.
       [{ state: "repairable", backing: "managed", removable: true }, ["Repair", "Remove"]],
-      // The user's own copy: offer a managed copy, never removal.
-      [{ state: "external", backing: "external", removable: false }, ["Install Bridge-managed copy"]],
+      // The user's own copy: it already works, so the only affordance is a quiet
+      // opt-in to a managed copy, and never a Remove.
+      [{ state: "external", backing: "external", removable: false }, ["Let Bridge manage its own copy"]],
       // Unusable and Bridge's: repair it, or remove it.
       [{ state: "broken", backing: "managed", removable: true }, ["Repair", "Remove"]],
     ];
@@ -97,9 +98,23 @@ describe("ManagedAgentsPanel", () => {
       // And the card says whose it is, so a working runtime is never presented
       // as Bridge-managed.
       expect(view.host.querySelector('[data-testid="agent-source-codex"]')?.textContent)
-        .toMatch(backing === "bundled" ? /Bridge/ : /User-managed/);
+        .toMatch(backing === "bundled" ? /Bridge/ : /Your own install/);
       await view.unmount();
     }
+  });
+
+  it("a_working_user_install_reads_as_settled_not_pending", async () => {
+    // The card used to show "Install Bridge-managed copy" as its only button,
+    // which reads as "this needs installing" for an agent the user can already
+    // chat with. A working install states that it works and needs nothing.
+    const view = await render([agent({ state: "external", backing: "external", removable: false })]);
+    expect(view.text()).toContain("Working");
+    expect(view.text()).toContain("Nothing to install");
+    expect(view.text()).toContain("Your own install");
+    // The managed-copy opt-in is present but not phrased as an instruction.
+    expect(view.buttons()).toEqual(["Let Bridge manage its own copy"]);
+    expect(view.text()).not.toMatch(/^Install\b/m);
+    await view.unmount();
   });
 
   it("removal_is_driven_by_the_removable_field_not_the_state_string", async () => {
@@ -275,7 +290,7 @@ describe("ManagedAgentsPanel", () => {
       agentId: "codex", kind: "install", outcome: "installed", status: installed,
     });
     const view = await render([agent({ state: "external", backing: "external", removable: false })]);
-    await view.click(view.button("Install Bridge-managed copy"));
+    await view.click(view.button("Let Bridge manage its own copy"));
 
     expect(view.host.querySelector('[data-testid="agent-state-codex"]')?.textContent).toBe("Ready");
     expect(view.host.querySelector('[data-testid="agent-source-codex"]')?.textContent).toBe("Bridge-managed");

@@ -39,9 +39,13 @@
   and the version and executable path when the RPC supplies them.
 - State to actions:
   - `not_installed` → **Install**; no Remove.
-  - `external` (backing `external`, `explicit`, or `bundled`) → **Install
-    Bridge-managed copy**; **no Remove**, and the card names the source so a
-    working user runtime is never presented as Bridge-managed.
+  - `external` (backing `external`, `explicit`, or `bundled`) → reads as
+    **Working**, states "Bridge uses this copy. Nothing to install.", names the
+    source as the user's own, and offers **no Remove**. Letting Bridge manage its
+    own copy is a quiet opt-in link, not a button: the agent already works, and
+    #170 calls that action optional. Presenting it as the card's only button made
+    a working agent the user can already chat with look like it needed
+    installing, and it downloads a second copy of something they already have.
   - `installed` and `ready` → **Remove**.
   - `repairable` and `broken` → **Repair**, and **Remove** because Bridge owns the
     drifted payload. `broken` reads as "Unavailable" rather than a raw state string.
@@ -69,6 +73,9 @@
 - `a_user_managed_runtime_never_offers_removal` — for `external`, `explicit`, and
   `bundled` backings there is no Remove control at all, and the card names the
   source.
+- `a_working_user_install_reads_as_settled_not_pending` — a working external agent
+  says it works and needs nothing, and its only affordance is the opt-in phrased
+  as an option rather than an instruction.
 - `removal_is_driven_by_the_removable_field_not_the_state_string` — a status with
   an unrecognized state string and `removable: false` still offers no Remove; with
   `removable: true` it does.
