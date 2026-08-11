@@ -23,9 +23,14 @@ Closes #183.
   the tree with every existing check in `collect_tree_entries`, and only skips
   reading file *bytes*.
 - Out of scope: #181's backgrounding, #182's coordinator wiring, any protocol or
-  UI change, any change to the digest format or the receipt schema. The wire
-  payload of `list_managed_agents` and `inspect_managed_agent` is byte-identical
-  before and after.
+  UI change, any change to the digest format or the receipt schema.
+- The wire payload of `list_managed_agents` and `inspect_managed_agent` is
+  unchanged in the steady state, and there is one deliberate difference outside it.
+  Resolution previously re-read the payload, so a tree changing between the two
+  reads could produce a status and a `backing` describing different observations.
+  They now come from one snapshot. That is strictly more consistent, and identical
+  whenever the tree is not being mutated mid-call — which is the only case the old
+  code could differ in.
 
 ## Functional Behavior
 
