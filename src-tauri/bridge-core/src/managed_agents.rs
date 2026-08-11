@@ -215,11 +215,15 @@ fn repair_reason(status: &ManagedPayloadStatus) -> Option<RepairReason> {
 /// This is the read path the contract promises: a runtime on PATH shows as
 /// `external` and is reported, not hidden, because a user needs to see the copy
 /// they already have before deciding to install a managed one.
-fn resolution_of(agent_id: &str, store: &ManagedPayloadStore) -> Option<RuntimeResolution> {
+///
+/// Takes the caller's payload observation rather than looking it up again, so a
+/// status and the resolution beside it always describe the same snapshot of the
+/// tree — and so the tree is digested once per question instead of twice.
+fn resolution_of(agent_id: &str, payload: &ManagedPayloadStatus) -> Option<RuntimeResolution> {
     managed_runtime::resolve_runtime(
         agent_id,
         None,
-        store,
+        payload,
         &[],
         crate::binary::resolve(agent_id),
     )
@@ -238,18 +242,30 @@ fn backing_of(resolution: Option<&RuntimeResolution>) -> ManagedAgentBacking {
 
 /// Resolve one agent's status from the three independent facts: what Bridge owns,
 /// what would launch, and where that came from.
+///
+/// Reads the payload once. Every caller here either already holds an observation
+/// or wants exactly one, so the lookup is the caller's to make — see
+/// [`status_from_payload`].
 fn status_of(agent_id: &str) -> Result<ManagedAgentStatus> {
-    let label = label_for(agent_id)?;
     let store = store()?;
     let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
-    let resolution = resolution_of(agent_id, &store);
+    status_from_payload(agent_id, &payload)
+}
+
+/// One agent's status, derived from a payload observation the caller already has.
+fn status_from_payload(
+    agent_id: &str,
+    payload: &ManagedPayloadStatus,
+) -> Result<ManagedAgentStatus> {
+    let label = label_for(agent_id)?;
+    let resolution = resolution_of(agent_id, payload);
     let backing = backing_of(resolution.as_ref());
 
     // Ownership and launchability are separate questions. Bridge owns a drifted
     // payload — it is removable — but would not launch it, so `backing` describes
     // the copy that would run while `removable` describes what Bridge owns.
     let owns_payload = !matches!(payload, ManagedPayloadStatus::NotInstalled);
-    let state = match (&payload, &resolution) {
+    let state = match (payload, &resolution) {
         (ManagedPayloadStatus::Repairable { .. }, _) => "repairable",
         (ManagedPayloadStatus::Installed { .. }, Some(RuntimeResolution::Managed(_))) => "ready",
         (ManagedPayloadStatus::Installed { .. }, _) => "installed",
@@ -266,7 +282,7 @@ fn status_of(agent_id: &str) -> Result<ManagedAgentStatus> {
         executable: resolution
             .as_ref()
             .map(|resolution| resolution.path().display().to_string()),
-        version: receipt_of(&payload).map(|receipt| receipt.version.clone()),
+        version: receipt_of(payload).map(|receipt| receipt.version.clone()),
         vendor_message: None,
         process_id: None,
         consecutive_failures: 0,
@@ -285,9 +301,11 @@ pub fn list_managed_agents() -> Result<ManagedAgentList> {
 
 /// One agent's receipt summary and detected external runtime, reported separately.
 pub fn inspect_managed_agent(agent_id: &str) -> Result<ManagedAgentInspection> {
-    let status = status_of(agent_id)?;
     let store = store()?;
+    // One observation answers all three questions below. Reading the payload per
+    // question digested the same tree four times for one call.
     let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
+    let status = status_from_payload(agent_id, &payload)?;
     let receipt = receipt_of(&payload).map(|receipt| ManagedAgentReceiptSummary {
         schema_version: receipt.schema_version,
         agent_id: receipt.agent_id.clone(),
@@ -303,7 +321,7 @@ pub fn inspect_managed_agent(agent_id: &str) -> Result<ManagedAgentInspection> {
         receipt,
         // Reported so a user can see the copy they already have. Visible is not
         // removable: uninstall refuses this path with its own code.
-        external_runtime: external_candidate(agent_id),
+        external_runtime: external_candidate(agent_id, &payload),
     })
 }
 
@@ -487,7 +505,7 @@ pub fn uninstall_managed_agent(db: &Connection, agent_id: &str) -> Result<Manage
     if matches!(payload, ManagedPayloadStatus::NotInstalled) {
         // Nothing of Bridge's here. If a runtime is nonetheless resolvable it is
         // the user's, and saying so is more useful than "already absent".
-        if let Some(candidate) = external_candidate(agent_id) {
+        if let Some(candidate) = external_candidate(agent_id, &payload) {
             return Err(ManagedAgentError::ExternalNotManaged {
                 agent_id: agent_id.to_owned(),
                 candidate,
@@ -517,9 +535,8 @@ pub fn uninstall_managed_agent(db: &Connection, agent_id: &str) -> Result<Manage
 }
 
 /// A user-managed runtime, if one is resolvable without a managed payload.
-fn external_candidate(agent_id: &str) -> Option<String> {
-    let store = managed_runtime::managed_root().map(ManagedPayloadStore::new)?;
-    match resolution_of(agent_id, &store)? {
+fn external_candidate(agent_id: &str, payload: &ManagedPayloadStatus) -> Option<String> {
+    match resolution_of(agent_id, payload)? {
         RuntimeResolution::External(path) | RuntimeResolution::Explicit(path) => {
             Some(path.display().to_string())
         }
