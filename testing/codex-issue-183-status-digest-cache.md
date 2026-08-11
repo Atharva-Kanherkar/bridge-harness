@@ -61,48 +61,100 @@ cache disabled. This is corrected from #183's issue body, which said three and o
   drifted tree is never cached, so drift is re-detected on every call until it is
   repaired.
 
+### The freshness rule
+
+A witness match is not sufficient on its own. A hit additionally requires every
+file's mtime to be strictly older than the moment the recorded verification *began*.
+
+Without that, a same-length overwrite landing inside a single mtime tick would be
+invisible, because the witness it produced would be identical to the one recorded.
+Filesystem timestamp granularity is not guaranteed to be fine — HFS+ is a
+one-second example — so this is not a theoretical window. Reading the clock before
+the walk rather than after also means a file modified *during* a read can never be
+older than the recorded time, so a torn read is never trusted on the next call.
+
+Cost: one extra full digest when a status immediately follows a write. Clock skew
+moving backwards degrades to always-digest, which is the safe direction.
+
 ### What the fast path cannot catch, stated plainly
 
-A modification that leaves path, kind, length, mtime, and inode all unchanged is
-invisible to the witness, and `status` will report `Installed`. Achieving that
-requires write access inside Bridge's managed root plus deliberately restoring
-metadata. It is not reachable by the accidental drift this check exists to find —
-an editor, a `npm install`, a partial copy, a truncation — all of which change
-length or mtime. `install` and `repair` still read every byte, so a payload is
-fully verified whenever Bridge writes it.
+A modification that leaves path, kind, length, inode, and mtime all unchanged *and*
+whose mtime predates the last verification is invisible to the witness, and `status`
+will report `Installed`. Reaching that requires write access inside Bridge's managed
+root plus deliberately backdating metadata — and the backdating is itself caught,
+because the witness commits to mtime, so the surviving case is narrower still: an
+overwrite that reproduces the original mtime exactly.
+
+It is not reachable by the accidental drift this check exists to find. An editor, an
+`npm install`, a partial copy, a truncation — all change length or mtime. `install`
+and `repair` still read every byte, so a payload is fully verified whenever Bridge
+writes it.
 
 ## Unit Tests
 
+Two test-only counters, both keyed by payload root so each test observes only its
+own tempdir and the default parallel runner needs no serialization. A single global
+counter would have raced every other test that touches a payload.
+
+- `FULL_DIGESTS` / `full_digests_of` — times a tree's bytes were read in full.
+- `TREE_WALKS` / `tree_walks_of` — times a tree was walked, cache hit or not.
+
+The two are separate because the two costs are independent, and conflating them
+hides a regression: with the cache in place, a *redundant re-read* is a cache hit
+and adds no digest, so a digest-only assertion passes even with the duplicate reads
+restored. Walks are the metric deduplication moves; digests are the metric the
+cache moves.
+
 In `bridge_core::managed_payload`:
 
-- `a_repeat_status_read_does_not_reread_file_bytes` — install a payload, call
-  `status` twice, assert the second call reads zero payload bytes. Byte reads are
-  counted by a test-only counter incremented in `stream_file_into`, so the
-  assertion observes the actual I/O rather than a timing proxy.
-- `a_touched_payload_file_is_still_reported_as_drift` — install, then rewrite a
-  file inside `payload/` with different content, assert `Repairable {
-  IntegrityDrift }`. Run it both with a cold cache and with a warm one, because
-  the warm case is the one a cache can break.
-- `a_same_length_content_change_is_caught_by_mtime` — overwrite a file with
-  different bytes of identical length, assert drift is still reported.
-- `a_drifted_tree_is_never_cached` — drift a payload, call `status` twice, assert
-  both calls report `Repairable` and both read bytes.
-- `a_symlink_planted_in_a_payload_is_caught_on_the_fast_path` — warm the cache,
-  replace a payload file with a symlink, assert `Repairable` rather than
-  `Installed`. This is the check that proves the fast path still walks the tree.
-- `a_reinstall_at_a_new_version_does_not_hit_the_previous_witness` — install,
-  status, uninstall, install a different version, assert the new status is
-  computed from the new tree and reports the new receipt.
-- `the_stat_witness_ignores_directory_mtime_churn` — reading a directory can
-  update its atime but must not invalidate the witness; assert a repeat status is
-  still a fast path after a plain read of the tree.
+- `a_repeat_status_read_does_not_digest_the_tree_again` — five repeat reads add
+  nothing to the digest count.
+- `a_touched_payload_file_is_still_reported_as_drift_with_a_warm_cache` — drift
+  after warming, which is the case a cache can break.
+- `a_same_length_content_change_is_still_caught` — identical length, different
+  bytes.
+- `a_backdated_in_place_overwrite_is_still_caught` — the one case the freshness
+  rule cannot see, and therefore the only test that makes mtime-in-the-witness
+  load-bearing: same inode, same length, mtime moved *backwards*. The test asserts
+  the evasion is really set up before asserting it fails, so it cannot pass because
+  some other mechanism fired.
+- `a_drifted_tree_is_never_cached` — three drifted reads cost three digests.
+- `a_symlink_planted_in_a_payload_is_caught_even_with_a_warm_cache` — proves the
+  fast path still walks.
+- `a_tree_reinstalled_at_the_same_path_is_read_in_full_again`.
+- `reads_between_status_calls_do_not_force_a_redigest`.
 
 In `bridge_core::managed_agents`:
 
-- `inspect_digests_a_tree_once` — assert `inspect_managed_agent` performs exactly
-  one payload status computation, via the same byte-read counter.
-- `list_digests_each_agent_once` — assert three installed agents produce three
-  status computations, not six.
+- `list_and_inspect_read_each_payload_once` — three installed built-ins produce
+  three walks and three digests for the first list, three walks and zero digests
+  for a repeat, and one walk for an inspect. Asserts the wire payload is identical
+  between the two lists, which is what makes this a pure performance change.
+
+### Mutation verification
+
+Every test above must be killed by at least one deliberate break. Recorded results,
+all confirmed:
+
+| mutation | kills |
+|---|---|
+| cache never consulted | the two cache-effectiveness tests |
+| cache hit ignores the witness | both same-tree drift tests |
+| witness drops mtime | the backdated-overwrite test |
+| cache hit returns before the walk | four tests, including the symlink one |
+| `resolve_runtime` re-reads the store | the agents test, 3 walks → 6 |
+| `inspect` re-reads for its receipt | the agents test, 1 walk → 2 |
+
+Two findings from this pass are recorded rather than papered over:
+
+- Removing any of the three `forget_verified_payloads` calls kills nothing. A
+  harmful stale entry is unreachable — installation paths are content-addressed
+  through `installation_id`, and a hit re-checks the receipt integrity. They are
+  kept as defence for a future where identity stops deriving from content, and the
+  code says so rather than implying they are load-bearing.
+- A witness committing to atime also kills nothing here, because this filesystem
+  does not update atime on read. The test that would have covered it was renamed to
+  claim only what it proves.
 
 ## Integration / Functional Tests
 
@@ -133,11 +185,17 @@ wire payload assertion.
 Timing proof, run in the worktree:
 
 ```
-cargo test -p bridge-core --lib managed_payload -- --nocapture
+cargo test -p bridge-core --lib managed_payload
 ```
 
-And the measured claim for the PR body: a bench-style test that installs a
-synthetic 4000-file payload, times the first `status` and the second, and asserts
-the second is at least an order of magnitude cheaper in bytes read. Bytes read,
-not wall clock — wall clock on a loaded machine is not a stable assertion, and I
-have previously reported a timing number that the fixture itself caused.
+No wall-clock assertion anywhere. Every claim in this contract is expressed as a
+count of walks or digests, because a timing number on a loaded machine is not a
+stable assertion — and a previous measurement in this epic was reported as a win
+when the fixture itself had caused it.
+
+The real-tree evidence is the opt-in live test, which exercises claude's 5552-file
+payload rather than a synthetic one:
+
+```
+cargo test -p bridge-core --test managed_agents_live -- --ignored --nocapture
+```
