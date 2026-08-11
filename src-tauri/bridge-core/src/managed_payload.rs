@@ -912,6 +912,8 @@ fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, 
     // Read before the walk, so a file modified *during* the read is never older
     // than the recorded verification time and cannot be trusted on the next call.
     let started_at_nanos = unix_nanos_now();
+    #[cfg(test)]
+    record_tree_walk(payload_root);
     validate_source_root(payload_root, PayloadShape::Directory)?;
     let mut entries = Vec::new();
     collect_tree_entries(payload_root, payload_root, &mut entries)?;
@@ -966,6 +968,38 @@ fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, 
     Ok(matches)
 }
 
+/// How many times each payload root has been walked, cache hit or not.
+///
+/// Distinct from [`FULL_DIGESTS`] because the two costs are independent: the
+/// verification cache removes byte reads, while threading one observation through
+/// `resolve_runtime` removes whole redundant walks. A test that only counted
+/// digests would be satisfied by the cache alone and would not notice duplicate
+/// reads coming back.
+#[cfg(test)]
+static TREE_WALKS: OnceLock<Mutex<HashMap<PathBuf, u32>>> = OnceLock::new();
+
+#[cfg(test)]
+fn record_tree_walk(payload_root: &Path) {
+    *TREE_WALKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(payload_root.to_path_buf())
+        .or_insert(0) += 1;
+}
+
+/// Walks performed for `payload_root` since this process started.
+#[cfg(test)]
+pub(crate) fn tree_walks_of(payload_root: &Path) -> u32 {
+    TREE_WALKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(payload_root)
+        .copied()
+        .unwrap_or(0)
+}
+
 /// How many times each payload root has been digested in full.
 ///
 /// Keyed by path so each test observes only its own tempdir and the default
@@ -986,7 +1020,7 @@ fn record_full_digest(payload_root: &Path) {
 
 /// Full digests performed for `payload_root` since this process started.
 #[cfg(test)]
-fn full_digests_of(payload_root: &Path) -> u32 {
+pub(crate) fn full_digests_of(payload_root: &Path) -> u32 {
     FULL_DIGESTS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()

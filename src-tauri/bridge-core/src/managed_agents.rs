@@ -557,8 +557,140 @@ fn recipe_for(agent_id: &str) -> Result<managed_runtime::RuntimeSource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_payload::{full_digests_of, tree_walks_of, PayloadRecipe, PayloadShape};
     use bridge_protocol::ErrorCode;
     use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    /// Install a directory payload for `agent_id` and return its `payload/` root.
+    ///
+    /// Uses a real built-in agent id, because `status_of` refuses anything else
+    /// before it reaches storage — a fixture id would test nothing.
+    fn install_fixture(store: &ManagedPayloadStore, fixture: &Path, agent_id: &str) -> PathBuf {
+        let source = fixture.join(format!("{agent_id}-tree"));
+        std::fs::create_dir_all(source.join("bin")).unwrap();
+        std::fs::write(source.join("bin/agent"), format!("{agent_id} fixture").as_bytes()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = source.join("bin/agent");
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
+        std::fs::write(source.join("README"), b"fixture").unwrap();
+        let entrypoint = PathBuf::from("bin/agent");
+        let recipe = PayloadRecipe {
+            agent_id: agent_id.into(),
+            version: "9.9.9".into(),
+            platform: "darwin-aarch64".into(),
+            source: format!("fixture://{agent_id}"),
+            expected_sha256: crate::managed_payload::source_digest(
+                &source,
+                PayloadShape::Directory,
+                &entrypoint,
+            )
+            .unwrap(),
+            source_path: source,
+            shape: PayloadShape::Directory,
+            entrypoint,
+        };
+        let receipt = store.install(&recipe).unwrap().receipt().clone();
+        store
+            .root()
+            .join(receipt.owned_root().unwrap())
+            .join("payload")
+    }
+
+    /// Total full digests across a set of payload roots.
+    fn digests(roots: &[PathBuf]) -> u32 {
+        roots.iter().map(|root| full_digests_of(root)).sum()
+    }
+
+    /// Total tree walks across a set of payload roots.
+    ///
+    /// The metric the deduplication moves. Digests alone would be satisfied by the
+    /// verification cache and would not notice a redundant read returning.
+    fn walks(roots: &[PathBuf]) -> u32 {
+        roots.iter().map(|root| tree_walks_of(root)).sum()
+    }
+
+    #[test]
+    fn list_and_inspect_read_each_payload_once() {
+        // The registration these read is process-wide.
+        let _guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("managed-runtimes");
+        let store = ManagedPayloadStore::new(&root);
+        let roots: Vec<PathBuf> = BUILT_IN_AGENTS
+            .iter()
+            .map(|(agent_id, _)| install_fixture(&store, fixture.path(), agent_id))
+            .collect();
+        crate::managed_runtime::register_managed_root(&root);
+
+        // One walk and one full read per agent. Before the observation was threaded
+        // through `resolve_runtime` this was two of each per agent — six for three.
+        let digests_before = digests(&roots);
+        let walks_before = walks(&roots);
+        let listed = list_managed_agents().unwrap();
+        assert_eq!(listed.agents.len(), BUILT_IN_AGENTS.len());
+        let after_first = digests(&roots);
+        assert_eq!(
+            after_first - digests_before,
+            BUILT_IN_AGENTS.len() as u32,
+            "one full read per agent, not one per question asked about it"
+        );
+        let walks_after_first = walks(&roots);
+        assert_eq!(
+            walks_after_first - walks_before,
+            BUILT_IN_AGENTS.len() as u32,
+            "one walk per agent: a cache hit still costs a walk, so a duplicated \
+             read is only visible in this count"
+        );
+
+        // Every agent resolves to its managed payload, so the reads above were real
+        // verifications and not an early return on a missing installation.
+        for agent in &listed.agents {
+            assert_eq!(agent.backing, ManagedAgentBacking::Managed, "{agent:?}");
+            assert_eq!(agent.state, "ready", "{agent:?}");
+        }
+
+        // Repeat list: served from the verification cache.
+        let listed_again = list_managed_agents().unwrap();
+        assert_eq!(listed_again, listed, "the wire payload must not change");
+        assert_eq!(
+            digests(&roots),
+            after_first,
+            "a repeat list must not re-read any tree"
+        );
+        assert_eq!(
+            walks(&roots) - walks_after_first,
+            BUILT_IN_AGENTS.len() as u32,
+            "a repeat list still walks once per agent — that is the whole cost"
+        );
+
+        // Inspect used to read one agent's tree four times: status_of read it,
+        // resolve_runtime read it again, the receipt lookup a third time, and
+        // external_candidate a fourth.
+        let walks_before_inspect = walks(&roots);
+        let inspected = inspect_managed_agent("claude").unwrap();
+        assert!(inspected.receipt.is_some(), "the receipt must be reported");
+        assert_eq!(inspected.status.backing, ManagedAgentBacking::Managed);
+        assert_eq!(
+            digests(&roots),
+            after_first,
+            "inspect must not re-read a tree that is already verified"
+        );
+        assert_eq!(
+            walks(&roots) - walks_before_inspect,
+            1,
+            "inspect must walk one tree once, where it used to walk it four times"
+        );
+
+        crate::managed_runtime::clear_managed_root();
+    }
 
     #[test]
     fn every_domain_condition_has_a_distinct_stable_code() {

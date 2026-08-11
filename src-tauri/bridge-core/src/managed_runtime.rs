@@ -684,6 +684,14 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, BridgeError> {
 /// core resolving payloads out of the first one's storage.
 static MANAGED_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
 
+/// Serializes any test that mutates the process-wide registration.
+///
+/// Lives here rather than inside this module's own test block so `managed_agents`
+/// takes the *same* lock. Two modules each with a private mutex would not
+/// serialize against each other, which is the race this exists to prevent.
+#[cfg(test)]
+pub(crate) static MANAGED_ROOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Register where managed payloads live. Called by `BridgeCore::boot`.
 pub fn register_managed_root(root: impl Into<PathBuf>) {
     *MANAGED_ROOT
@@ -1787,9 +1795,6 @@ mod tests {
         clear_managed_root();
     }
 
-    /// The registration is process-wide, so any test that mutates it takes this
-    /// first rather than racing another under the default parallel runner.
-    static MANAGED_ROOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn npm_bin_symlinks_are_pruned_before_digesting() {
