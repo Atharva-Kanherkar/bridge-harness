@@ -2677,7 +2677,7 @@ mod tests {
             .unwrap();
         let span = telemetry_span("trace", "s", "codex", &event, &committed.created_at);
         assert_eq!(
-            append_telemetry_batch(&telemetry, &[span.clone()]).unwrap(),
+            append_telemetry_batch(&telemetry, std::slice::from_ref(&span)).unwrap(),
             1
         );
         write_lock.rollback().unwrap();

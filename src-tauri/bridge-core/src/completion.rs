@@ -590,16 +590,12 @@ pub fn benchmark(cases: &[CompletionBenchmarkCase]) -> CompletionBenchmarkReport
                 case.proof_verdict == CompletionVerdict::Verified && !case.actual_accepted
             })
             .count(),
-        baseline_verified_quality_bps: if baseline_claims == 0 {
-            0
-        } else {
-            (baseline_correct * 10_000 / baseline_claims) as u16
-        },
-        proof_verified_quality_bps: if proof_claims == 0 {
-            0
-        } else {
-            (proof_correct * 10_000 / proof_claims) as u16
-        },
+        baseline_verified_quality_bps: (baseline_correct * 10_000)
+            .checked_div(baseline_claims)
+            .unwrap_or(0) as u16,
+        proof_verified_quality_bps: (proof_correct * 10_000)
+            .checked_div(proof_claims)
+            .unwrap_or(0) as u16,
         baseline_cost_per_accepted: cases
             .iter()
             .map(|case| case.baseline_normalized_cost)
