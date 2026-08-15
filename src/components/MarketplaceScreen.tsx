@@ -6,6 +6,7 @@ import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, Ma
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AgentMarketplace } from "./AgentMarketplace";
 import { SkillMarketplace } from "./SkillMarketplace";
 
 type InstallTarget = MarketplaceProvider | "both";
@@ -301,14 +302,24 @@ function PluginMarketplace() {
   </div>;
 }
 
+const RESOURCES = ["agents", "plugins", "skills"] as const;
+type Resource = (typeof RESOURCES)[number];
+
 export function MarketplaceScreen() {
-  const [resource, setResource] = useState<"plugins" | "skills">("plugins");
+  // Agents first, and the default: a runtime is the thing a plugin or a skill
+  // runs *inside*. Landing on Plugins asks the user to furnish a room before
+  // they have one.
+  const [resource, setResource] = useState<Resource>("agents");
   return <div className="flex h-full min-h-0 flex-col">
     <nav className="flex h-14 shrink-0 items-center justify-center border-b border-white/[0.05]" aria-label="Marketplace sections" data-tauri-drag-region>
       <div className="u-segmented">
-        {(["plugins", "skills"] as const).map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}
+        {RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}
       </div>
     </nav>
-    <div className="min-h-0 flex-1">{resource === "plugins" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>
+    <div className="min-h-0 flex-1">
+      {resource === "agents" && <AgentMarketplace/>}
+      {resource === "plugins" && <PluginMarketplace/>}
+      {resource === "skills" && <SkillMarketplace/>}
+    </div>
   </div>;
 }
