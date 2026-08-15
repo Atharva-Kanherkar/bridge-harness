@@ -87,6 +87,23 @@ does not have to work out which were decisions.
   produced evidence with no drift record at all — the one case the check exists
   for was the one case it could not report. Drift is a property of the
   advertisement against the profile, so it is asked of both directly.
+- **There is no `evidence_ref` mismatch gate, because there cannot be one.**
+  The contract listed "the evidence digest does not match the verdict's
+  `evidence_ref`" among the promotion blocks. `Verification::verified` derives
+  the reference *from* the evidence, so any such comparison in `promote` checks
+  a value against the computation that produced it and can never fire. The
+  binding belongs to the constructor, and
+  `a_verdict_is_bound_to_the_evidence_that_produced_it` is what holds it. The
+  variant was deleted rather than left as a stable code with no producer,
+  following #186's own precedent with `BackendError::BackendChanged`.
+- **`promote` takes the running Bridge version, and gates on it.** The contract
+  named "the evidence's bridge version … does not match the candidate" as a
+  block, and a candidate has no bridge version to match. The real question is
+  whether the Bridge promoting is the Bridge that ran the suite, so `promote`
+  takes it as an argument. This closed a second problem the contract had not
+  noticed: `Catalog::would_accept` previously took its running version *from
+  the evidence*, which let a document name an older Bridge and thereby choose
+  the version its own validation ran against.
 - **`api::verification_suite` describes the suite; it does not run it.** The
   contract said the pipeline is reachable through `bridge_core::api`, which
   read as "expose `run_suite`". The desktop never runs the suite — it has no
@@ -163,7 +180,15 @@ and reimplementing them would create a second definition of what they mean.
   function returning `VerificationStatus::Verified`.
 - `evidence_digest_is_stable_across_runs` — the same inputs produce the same
   digest; changing any single field changes it.
-- `a_verdict_whose_evidence_ref_does_not_match_is_refused`.
+- `a_verdict_is_bound_to_the_evidence_that_produced_it` — the binding is the
+  constructor's; see *As Built* for why this is not a promotion gate.
+- `an_unorderable_version_is_not_an_advance` and
+  `a_prerelease_cannot_replace_the_release_through_promotion` — `BackendVersion`
+  is explicitly not semver, so the ordering gate must refuse what it cannot
+  order rather than invent an order for it.
+- `a_failed_interrupt_is_not_a_cancellation_pass` — a refusal passes; failed
+  delivery does not, even though both mention the interrupt.
+- `evidence_from_another_bridge_cannot_promote`.
 - `evidence_carries_no_credential` and `evidence_carries_no_transcript` — every
   field of every evidence type enumerated; failure reasons are bounded and
   redacted.

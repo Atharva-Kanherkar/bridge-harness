@@ -21,7 +21,7 @@ use crate::{
     acp_registry::PlatformTarget,
     adapters::ShutdownReason,
     agent_integration::{
-        check_capabilities, Advertisement, IntegrationRegistry, LaunchRequest,
+        check_capabilities, Advertisement, IntegrationError, IntegrationRegistry, LaunchRequest,
         PermissionModel, ResumeSupport, Transport,
     },
     model::CapabilityTier,
@@ -66,9 +66,14 @@ pub enum ApprovedSource {
 /// A version someone proposes Bridge should support: everything a served entry
 /// needs except the verdict.
 ///
-/// Deliberately *not* convertible to a [`VerifiedEntry`]. The only way to get
-/// one is [`promote`], which requires evidence, and
-/// `candidates_cannot_become_verified_entries` asserts no other path exists.
+/// Deliberately *not* convertible to a served entry. The only way to get one
+/// carrying a `Verified` verdict is [`promote`], which requires evidence, and
+/// `candidates_cannot_become_verified_entries` asserts no public path exists.
+///
+/// A candidate does become a `VerifiedEntry` internally — [`Candidate::provisional`]
+/// builds one so the capability profile has something to be checked against —
+/// but that one carries a `Pending` verdict, which `VerifiedEntry::validate`
+/// refuses. Being unservable is the invariant; being unconstructable is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub agent: AgentId,
@@ -95,9 +100,11 @@ pub struct Candidate {
 impl Candidate {
     /// The entry this candidate *would* become, carrying a verdict.
     ///
-    /// Private on purpose: it is reachable only from [`promote`], after the
-    /// gates. A public version of this is precisely the hole #168 exists to
-    /// close.
+    /// Private on purpose. Two callers: [`promote`], which passes a verdict
+    /// earned from evidence, and [`Candidate::provisional`], which passes a
+    /// `Pending` one that cannot be served. A *public* version of this is
+    /// precisely the hole #168 exists to close, because a caller could then
+    /// choose the verdict.
     fn into_entry(self, verification: Verification) -> VerifiedEntry {
         VerifiedEntry {
             agent: self.agent,
@@ -566,10 +573,15 @@ fn run_once(
     );
 
     // 8: an interrupt is delivered or refused — never silently dropped.
+    //
+    // Matched on the variant rather than on its Display. A substring test for
+    // "interrupt" also passes "the runtime did not acknowledge the interrupt",
+    // which is failed *delivery* — the exact thing this check exists to catch —
+    // and the #166 test transport's own failure reason is worded that way.
     record!(CheckId::Cancellation,
         match session.interrupt() {
             Ok(()) => CheckOutcome::Passed,
-            Err(error) if error.to_string().contains("interrupt") => CheckOutcome::Passed,
+            Err(IntegrationError::InterruptUnsupported { .. }) => CheckOutcome::Passed,
             Err(error) => CheckOutcome::failed(error.to_string()),
         },
     );
@@ -701,8 +713,6 @@ pub enum PromotionBlocked {
     ChecksFailed { checks: Vec<String> },
     /// The required set did not agree with itself across runs.
     NotDeterministic,
-    /// The verdict's `evidence_ref` is not the digest of the evidence offered.
-    EvidenceMismatch { expected: String, found: String },
     /// What was installed is not what the recipe declared.
     ArtifactMismatch { declared: String, installed: String },
     /// The evidence describes a different agent, version, backend, platform, or
@@ -727,10 +737,6 @@ impl std::fmt::Display for PromotionBlocked {
             Self::NotDeterministic => {
                 write!(formatter, "the required set did not agree with itself across runs")
             }
-            Self::EvidenceMismatch { expected, found } => write!(
-                formatter,
-                "evidence reference {found} is not the digest of this evidence ({expected})"
-            ),
             Self::ArtifactMismatch { declared, installed } => write!(
                 formatter,
                 "installed artifact {installed} is not the declared {declared}"
@@ -770,6 +776,7 @@ pub fn promote(
     catalog: &Catalog,
     candidate: &Candidate,
     evidence: &Evidence,
+    running_bridge_version: &str,
     published_at: &str,
 ) -> Result<CatalogSnapshot, PromotionBlocked> {
     if evidence.suite_version != SUITE_VERSION {
@@ -794,6 +801,17 @@ pub fn promote(
     }
     if !candidate.platforms.contains(&evidence.platform) {
         return Err(PromotionBlocked::EvidenceIsForSomethingElse { field: "platform" });
+    }
+    // The Bridge that promotes must be the Bridge that ran the suite.
+    //
+    // This was missing, and its absence was not merely a gap in identity
+    // checking: `would_accept` below used to take its running version *from the
+    // evidence*, so a document could name an older Bridge and thereby choose
+    // the version its own validation ran against.
+    if evidence.bridge_version != running_bridge_version {
+        return Err(PromotionBlocked::EvidenceIsForSomethingElse {
+            field: "bridgeVersion",
+        });
     }
     if candidate.blocked_versions.contains(&candidate.version) {
         return Err(PromotionBlocked::VersionBlocked {
@@ -837,20 +855,18 @@ pub fn promote(
         }
     }
 
-    let verification = Verification::verified(evidence);
-    if verification.evidence_ref != evidence.digest() {
-        return Err(PromotionBlocked::EvidenceMismatch {
-            expected: evidence.digest(),
-            found: verification.evidence_ref,
-        });
-    }
-
-    let entry = candidate.clone().into_entry(verification);
+    // `verified` derives the reference from this very evidence, so there is no
+    // mismatch to check for here — the binding is the constructor's, and
+    // `a_verdict_is_bound_to_the_evidence_that_produced_it` is what holds it.
+    // A gate that cannot fire is worse than no gate: it reads as a check.
+    let entry = candidate
+        .clone()
+        .into_entry(Verification::verified(evidence));
     let snapshot = replace_entry(catalog, entry, published_at);
 
     // The output faces exactly the validation a remote snapshot faces. The
     // pipeline must not be able to mint a document the catalog would refuse.
-    Catalog::would_accept(&snapshot, &evidence.bridge_version).map_err(|error: CatalogError| {
+    Catalog::would_accept(&snapshot, running_bridge_version).map_err(|error: CatalogError| {
         PromotionBlocked::WouldNotValidate {
             reason: error.to_string(),
         }
@@ -920,14 +936,31 @@ fn declared_digest(recipe: &CatalogRecipe) -> Option<&str> {
 
 /// Whether `candidate` is strictly newer than `installed`, comparing dotted
 /// numeric components left to right.
+///
+/// **Fails closed on anything that is not purely dotted numeric.**
+/// `BackendVersion` is explicitly not semver — any printable ASCII up to 64
+/// characters is a legal version — so this function is regularly handed strings
+/// it cannot order. Splitting on `-` and `+` and mapping non-numeric parts to
+/// zero, which is what it used to do, invents an ordering rather than admitting
+/// there is none: `1.2.0-999` parsed as `[1, 2, 0, 999]` and so "advanced" past
+/// `1.2.0`, and `1.2.0-beta.1` parsed as `[1, 2, 0, 0, 1]` and so blocked the
+/// real `1.2.0` that followed it.
+///
+/// An unorderable version is not an advance. That is the safe direction for a
+/// promotion gate: it refuses a promotion a human can still make deliberately,
+/// where the opposite would let a prerelease silently replace the release.
 fn version_advances(installed: &str, candidate: &str) -> bool {
-    let parse = |version: &str| -> Vec<u64> {
+    // Every component must parse in full. `parse::<u64>` rejects a trailing
+    // suffix, so `0-beta` fails here rather than becoming `0`.
+    let parse = |version: &str| -> Option<Vec<u64>> {
         version
-            .split(['.', '-', '+'])
-            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .split('.')
+            .map(|part| part.parse::<u64>().ok())
             .collect()
     };
-    let (left, right) = (parse(installed), parse(candidate));
+    let (Some(left), Some(right)) = (parse(installed), parse(candidate)) else {
+        return false;
+    };
     for index in 0..left.len().max(right.len()) {
         let installed_part = left.get(index).copied().unwrap_or(0);
         let candidate_part = right.get(index).copied().unwrap_or(0);
@@ -975,6 +1008,9 @@ mod tests {
     struct ScriptedTransport {
         advertisement: Advertisement,
         frames: Mutex<Vec<Value>>,
+        /// Delivery fails, worded the way the #166 test transport words it —
+        /// which is the wording that used to slip past the cancellation check.
+        interrupt_fails: bool,
     }
 
     impl Transport for ScriptedTransport {
@@ -998,6 +1034,11 @@ mod tests {
             Some(Ok(frames.remove(0)))
         }
         fn interrupt(&mut self) -> Result<(), IntegrationError> {
+            if self.interrupt_fails {
+                return Err(IntegrationError::Transport {
+                    reason: "the runtime did not acknowledge the interrupt".into(),
+                });
+            }
             Ok(())
         }
         fn failure_context(&mut self) -> Option<String> {
@@ -1050,6 +1091,7 @@ mod tests {
         vendor_credentials: bool,
         lifecycle_fails: Option<String>,
         advertised: Vec<String>,
+        interrupt_fails: bool,
         /// Flips the install digest every other call, which is how a flaky run
         /// is simulated without a clock or a random number.
         flaky: bool,
@@ -1064,6 +1106,7 @@ mod tests {
                 vendor_credentials: false,
                 lifecycle_fails: None,
                 advertised: vec!["turn".into(), "interrupt".into()],
+                interrupt_fails: false,
                 flaky: false,
                 calls: AtomicUsize::new(0),
             }
@@ -1089,6 +1132,7 @@ mod tests {
                     provider_session_id: Some("provider-1".into()),
                 },
                 frames: Mutex::new(Vec::new()),
+                interrupt_fails: self.interrupt_fails,
             }))
         }
         fn advertisement(&self) -> Advertisement {
@@ -1201,15 +1245,121 @@ mod tests {
     }
 
     #[test]
-    fn a_verdict_whose_evidence_ref_does_not_match_is_refused() {
+    fn a_verdict_is_bound_to_the_evidence_that_produced_it() {
+        // The binding lives in the constructor, not in a promotion gate: a
+        // gate comparing `verified(e).evidence_ref` to `e.digest()` compares a
+        // value to the computation that produced it and can never fire.
         let evidence = evidence_for(&FakeHarness::default());
         let verification = Verification::verified(&evidence);
         assert_eq!(verification.evidence_ref, evidence.digest());
 
-        // A verdict minted against one evidence document does not match another.
+        // And it is a binding to *this* document: any other evidence, however
+        // slightly different, has a different reference.
         let mut other = evidence.clone();
         other.produced_at = "2026-01-01T00:00:00Z".into();
         assert_ne!(verification.evidence_ref, other.digest());
+        assert_ne!(
+            Verification::verified(&other).evidence_ref,
+            verification.evidence_ref
+        );
+    }
+
+    #[test]
+    fn an_unorderable_version_is_not_an_advance() {
+        // BackendVersion is explicitly not semver, so these are all legal
+        // versions the gate is regularly handed.
+        assert!(version_advances("1.2.0", "1.3.0"));
+        assert!(version_advances("1.2.0", "2.0.0"));
+        assert!(version_advances("1.2.0", "1.2.1"));
+        assert!(!version_advances("1.2.0", "1.2.0"));
+        assert!(!version_advances("1.3.0", "1.2.0"));
+
+        // The bug: a prerelease suffix parsed as an extra numeric component and
+        // so "advanced" past the release it precedes.
+        assert!(
+            !version_advances("1.2.0", "1.2.0-999"),
+            "a prerelease must not replace the release it precedes"
+        );
+        // And its inverse: a prerelease must not block the real version.
+        assert!(
+            !version_advances("1.2.0-beta.1", "1.2.0"),
+            "an unorderable installed version must not be compared numerically"
+        );
+        // Anything not purely dotted-numeric fails closed.
+        assert!(!version_advances("1.2.0", "v1.3.0"));
+        assert!(!version_advances("1.2.0", "2026.01.15-nightly"));
+        assert!(!version_advances("latest", "1.2.0"));
+    }
+
+    #[test]
+    fn a_prerelease_cannot_replace_the_release_through_promotion() {
+        // The gate above, reached through the public path it guards.
+        let base = catalog();
+        let released = candidate();
+        let evidence = run_suite(&released, &registry(), &FakeHarness::default(), BRIDGE, NOW);
+        let installed = install_for_test(
+            promote(&base, &released, &evidence, BRIDGE, NOW).unwrap(),
+            &base,
+        );
+
+        let mut prerelease = candidate();
+        prerelease.version = BackendVersion::parse("1.2.0-999").unwrap();
+        let prerelease_evidence =
+            run_suite(&prerelease, &registry(), &FakeHarness::default(), BRIDGE, NOW);
+        let blocked = promote(&installed, &prerelease, &prerelease_evidence, BRIDGE, NOW)
+            .unwrap_err();
+        assert!(
+            matches!(blocked, PromotionBlocked::NotAnAdvance { .. }),
+            "{blocked:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_interrupt_is_not_a_cancellation_pass() {
+        // Delivery failed. The refusal `InterruptUnsupported` is a pass; a
+        // transport that did not acknowledge the interrupt is not, and its
+        // wording contains "interrupt" — which is how it used to slip through.
+        let harness = FakeHarness {
+            interrupt_fails: true,
+            ..FakeHarness::default()
+        };
+        let evidence = evidence_for(&harness);
+        let cancellation = evidence
+            .checks
+            .iter()
+            .find(|record| record.check == CheckId::Cancellation)
+            .unwrap();
+        assert!(
+            !cancellation.outcome.passed(),
+            "failed delivery must not pass: {cancellation:?}"
+        );
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
+        assert!(
+            matches!(blocked, PromotionBlocked::ChecksFailed { ref checks }
+                if checks.iter().any(|c| c == "cancellation")),
+            "{blocked:?}"
+        );
+    }
+
+    #[test]
+    fn evidence_from_another_bridge_cannot_promote() {
+        // The Bridge that promotes must be the Bridge that ran the suite —
+        // and this is also what stops evidence choosing the version its own
+        // validation runs against.
+        let evidence = run_suite(
+            &candidate(),
+            &registry(),
+            &FakeHarness::default(),
+            "0.0.9",
+            NOW,
+        );
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
+        assert_eq!(
+            blocked,
+            PromotionBlocked::EvidenceIsForSomethingElse {
+                field: "bridgeVersion"
+            }
+        );
     }
 
     #[test]
@@ -1306,7 +1456,7 @@ mod tests {
         assert!(!evidence.all_required_passed());
 
         // And it blocks promotion rather than being waved through.
-        let blocked = promote(&catalog(), &needs_auth, &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &needs_auth, &evidence, BRIDGE, NOW).unwrap_err();
         assert!(
             matches!(blocked, PromotionBlocked::ChecksFailed { ref checks }
                 if checks.iter().any(|c| c == "vendor_auth_required_failure")),
@@ -1325,7 +1475,7 @@ mod tests {
             !evidence.deterministic,
             "an alternating run must not be called deterministic"
         );
-        let blocked = promote(&catalog(), &candidate(), &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
         assert_eq!(blocked, PromotionBlocked::NotDeterministic);
     }
 
@@ -1391,7 +1541,7 @@ mod tests {
             install_fails: true,
             ..FakeHarness::default()
         });
-        assert!(promote(&catalog, &detected, &failing, NOW).is_err());
+        assert!(promote(&catalog, &detected, &failing, BRIDGE, NOW).is_err());
     }
 
     #[test]
@@ -1402,7 +1552,7 @@ mod tests {
             ..FakeHarness::default()
         };
         let evidence = evidence_for(&harness);
-        let blocked = promote(&catalog(), &candidate(), &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
         assert!(
             matches!(blocked, PromotionBlocked::ArtifactMismatch { .. }),
             "{blocked:?}"
@@ -1424,7 +1574,7 @@ mod tests {
             .unwrap();
         assert!(!drift.outcome.passed());
 
-        let blocked = promote(&catalog(), &candidate(), &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
         assert!(
             matches!(blocked, PromotionBlocked::ChecksFailed { ref checks }
                 if checks.iter().any(|c| c == "capability_drift")),
@@ -1439,7 +1589,7 @@ mod tests {
             ..FakeHarness::default()
         };
         let evidence = evidence_for(&harness);
-        let blocked = promote(&catalog(), &candidate(), &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
         assert!(
             matches!(blocked, PromotionBlocked::ChecksFailed { ref checks }
                 if checks.iter().any(|c| c == "uninstall_retains_history")),
@@ -1452,7 +1602,7 @@ mod tests {
         let evidence = evidence_for(&FakeHarness::default());
         let mut other = candidate();
         other.version = BackendVersion::parse("9.9.9").unwrap();
-        let blocked = promote(&catalog(), &other, &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &other, &evidence, BRIDGE, NOW).unwrap_err();
         assert_eq!(
             blocked,
             PromotionBlocked::EvidenceIsForSomethingElse { field: "version" }
@@ -1463,7 +1613,7 @@ mod tests {
     fn a_verdict_from_another_suite_version_is_refused() {
         let mut evidence = evidence_for(&FakeHarness::default());
         evidence.suite_version = SUITE_VERSION + 1;
-        let blocked = promote(&catalog(), &candidate(), &evidence, NOW).unwrap_err();
+        let blocked = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
         assert_eq!(
             blocked,
             PromotionBlocked::SuiteVersionMismatch {
@@ -1477,7 +1627,7 @@ mod tests {
     fn promotion_advances_the_generation_by_one_and_touches_nothing_else() {
         let catalog = catalog();
         let evidence = evidence_for(&FakeHarness::default());
-        let snapshot = promote(&catalog, &candidate(), &evidence, NOW).unwrap();
+        let snapshot = promote(&catalog, &candidate(), &evidence, BRIDGE, NOW).unwrap();
 
         assert_eq!(snapshot.generation, catalog.generation() + 1);
         assert_eq!(snapshot.schema_version, catalog.snapshot().schema_version);
@@ -1497,7 +1647,7 @@ mod tests {
     #[test]
     fn a_promoted_snapshot_still_passes_catalog_validation() {
         let evidence = evidence_for(&FakeHarness::default());
-        let snapshot = promote(&catalog(), &candidate(), &evidence, NOW).unwrap();
+        let snapshot = promote(&catalog(), &candidate(), &evidence, BRIDGE, NOW).unwrap();
         // Exactly the validation a remote snapshot faces. The pipeline must not
         // be able to mint a document the catalog would refuse.
         Catalog::would_accept(&snapshot, BRIDGE).expect("a promoted snapshot must validate");
@@ -1507,11 +1657,11 @@ mod tests {
     fn a_promotion_cannot_move_an_agent_backwards() {
         let base = catalog();
         let evidence = evidence_for(&FakeHarness::default());
-        let promoted = promote(&base, &candidate(), &evidence, NOW).unwrap();
+        let promoted = promote(&base, &candidate(), &evidence, BRIDGE, NOW).unwrap();
         let installed = install_for_test(promoted, &base);
 
         // The same version again is not an advance.
-        let blocked = promote(&installed, &candidate(), &evidence, NOW).unwrap_err();
+        let blocked = promote(&installed, &candidate(), &evidence, BRIDGE, NOW).unwrap_err();
         assert!(
             matches!(blocked, PromotionBlocked::NotAnAdvance { .. }),
             "{blocked:?}"
@@ -1522,7 +1672,7 @@ mod tests {
     fn a_rollback_withdraws_one_entry_and_leaves_the_rest_served() {
         let base = catalog();
         let evidence = evidence_for(&FakeHarness::default());
-        let promoted = promote(&base, &candidate(), &evidence, NOW).unwrap();
+        let promoted = promote(&base, &candidate(), &evidence, BRIDGE, NOW).unwrap();
         let installed = install_for_test(promoted, &base);
         assert!(installed.entry(&AgentId::parse("fake").unwrap()).is_some());
 
@@ -1575,7 +1725,7 @@ mod tests {
         assert!(evidence.deterministic);
         assert!(evidence.all_required_passed(), "{:?}", evidence.blocking());
 
-        let snapshot = promote(&base, &detected, &evidence, NOW).unwrap();
+        let snapshot = promote(&base, &detected, &evidence, BRIDGE, NOW).unwrap();
         let installed = install_for_test(snapshot, &base);
 
         let served = installed
