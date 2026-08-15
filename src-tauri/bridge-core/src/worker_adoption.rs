@@ -113,7 +113,8 @@ fn map_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkerRepositoryBind
     })
 }
 
-const SELECT: &str = "SELECT session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,
+const SELECT: &str =
+    "SELECT session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,
      task_worktree_path,state,head,base_commit,base_branch,baseline_dirty_paths,changed_paths,
      diffstat,dirty,detail,created_at,updated_at
      FROM worker_worktree_adoptions";
@@ -385,9 +386,9 @@ pub fn reconcile_with_derived_evidence(
     }
     // Empty or out-of-scope evidence behind a `completed` claim is not a warning
     // to pass along; it is a failed claim.
-    let fatal = mismatches.iter().any(|mismatch| {
-        mismatch.starts_with("reported") || mismatch.starts_with("wrote outside")
-    });
+    let fatal = mismatches
+        .iter()
+        .any(|mismatch| mismatch.starts_with("reported") || mismatch.starts_with("wrote outside"));
     if fatal && reconciled.status == WorkerResultStatus::Completed {
         reconciled.status = WorkerResultStatus::Blocked;
         reconciled.summary = format!(
@@ -782,12 +783,7 @@ pub fn discard(
     settle_plan(db, &plan, STATE_DISCARDED, reason)
 }
 
-fn settle(
-    db: &Connection,
-    session_id: &str,
-    state: &str,
-    detail: &str,
-) -> Result<(), BridgeError> {
+fn settle(db: &Connection, session_id: &str, state: &str, detail: &str) -> Result<(), BridgeError> {
     db.execute(
         "UPDATE worker_worktree_adoptions SET state=?2,detail=?3,updated_at=?4 WHERE session_id=?1",
         params![session_id, state, detail, Utc::now().to_rfc3339()],
@@ -895,8 +891,16 @@ mod tests {
     use std::process::Command;
 
     fn git_cmd(cwd: &Path, args: &[&str]) -> String {
-        let output = Command::new("git").args(args).current_dir(cwd).output().unwrap();
-        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
@@ -912,18 +916,30 @@ mod tests {
         let task = dir.path().join("task");
         std::fs::create_dir(&task).unwrap();
         git_cmd(&task, &["init", "-q", "-b", "main"]);
-        git_cmd(&task, &["config", "user.email", "bridge-test@example.invalid"]);
+        git_cmd(
+            &task,
+            &["config", "user.email", "bridge-test@example.invalid"],
+        );
         git_cmd(&task, &["config", "user.name", "Bridge Test"]);
         std::fs::write(task.join("base.txt"), "base\n").unwrap();
         git_cmd(&task, &["add", "."]);
         git_cmd(&task, &["commit", "-q", "-m", "base"]);
         let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![task.to_string_lossy()]).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+            params![task.to_string_lossy()],
+        )
+        .unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','main',?1,'ready','now')", params![task.to_string_lossy()]).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','ready','reported',0)", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Worker','completed','reported','parent',1)", []).unwrap();
         let workers = dir.path().join("workers");
-        Fixture { _dir: dir, db, task, workers }
+        Fixture {
+            _dir: dir,
+            db,
+            task,
+            workers,
+        }
     }
 
     /// Always derive against the base the binding recorded at launch: without
@@ -972,7 +988,9 @@ mod tests {
         assert_eq!(evidence.committed_paths, vec!["src/feature.txt"]);
         assert!(!evidence.is_empty());
 
-        let recorded = record_evidence(&fixture.db, "child", &evidence).unwrap().unwrap();
+        let recorded = record_evidence(&fixture.db, "child", &evidence)
+            .unwrap()
+            .unwrap();
         assert_eq!(recorded.state, STATE_PENDING);
         assert_eq!(recorded.changed_paths, vec!["src/feature.txt"]);
         assert!(recorded.diffstat.unwrap().contains("1 file(s) changed"));
@@ -984,7 +1002,9 @@ mod tests {
             std::fs::read_to_string(fixture.task.join("src/feature.txt")).unwrap(),
             "worker\n"
         );
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
         // Cleanup happens only after the state is terminal.
         assert!(!worker.exists());
     }
@@ -1002,18 +1022,25 @@ mod tests {
         let evidence = recorded_evidence(&fixture, &worker);
         assert!(evidence.commits.is_empty(), "the worker committed nothing");
         assert_eq!(evidence.dirty_paths, vec!["src/feature.txt"]);
-        let recorded = record_evidence(&fixture.db, "child", &evidence).unwrap().unwrap();
+        let recorded = record_evidence(&fixture.db, "child", &evidence)
+            .unwrap()
+            .unwrap();
         assert_eq!(recorded.state, STATE_PENDING);
         assert!(recorded.dirty);
 
         let adopted = adopt(&fixture.db, "child").unwrap();
         assert_eq!(adopted.state, STATE_ADOPTED);
-        assert!(adopted.detail.unwrap().contains("captured uncommitted work as"));
+        assert!(adopted
+            .detail
+            .unwrap()
+            .contains("captured uncommitted work as"));
         assert_eq!(
             std::fs::read_to_string(fixture.task.join("src/feature.txt")).unwrap(),
             "uncommitted\n"
         );
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
     }
 
     /// An in-place writer shares the checkout with the user and with siblings.
@@ -1054,7 +1081,10 @@ mod tests {
         assert_eq!(reconciled.result.status, WorkerResultStatus::Completed);
         assert_eq!(reconciled.result.files_changed, vec!["src/feature.rs"]);
         assert_eq!(
-            binding(&fixture.db, "child").unwrap().unwrap().changed_paths,
+            binding(&fixture.db, "child")
+                .unwrap()
+                .unwrap()
+                .changed_paths,
             vec!["src/feature.rs"]
         );
     }
@@ -1089,7 +1119,9 @@ mod tests {
             binding(&fixture.db, "child").unwrap().unwrap().state,
             STATE_DISCARDED
         );
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
     }
 
     /// Record a live completion attempt bound to this worker at its current stamp,
@@ -1116,7 +1148,11 @@ mod tests {
     fn attempt_status(fixture: &Fixture, attempt: &str) -> String {
         fixture
             .db
-            .query_row("SELECT status FROM eval_attempts WHERE id=?1", params![attempt], |row| row.get(0))
+            .query_row(
+                "SELECT status FROM eval_attempts WHERE id=?1",
+                params![attempt],
+                |row| row.get(0),
+            )
             .unwrap()
     }
 
@@ -1152,12 +1188,20 @@ mod tests {
         record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
         let attempt = verify_at_current_state(&fixture, &worker);
         // Something edits the checkout after the gate passed.
-        std::fs::write(worker.join("src/feature.txt"), "changed after verification\n").unwrap();
+        std::fs::write(
+            worker.join("src/feature.txt"),
+            "changed after verification\n",
+        )
+        .unwrap();
 
         adopt(&fixture.db, "child").unwrap();
 
         assert_eq!(attempt_status(&fixture, &attempt), "superseded");
-        let detail = binding(&fixture.db, "child").unwrap().unwrap().detail.unwrap();
+        let detail = binding(&fixture.db, "child")
+            .unwrap()
+            .unwrap()
+            .detail
+            .unwrap();
         assert!(detail.contains("changed after verification"), "{detail}");
     }
 
@@ -1182,7 +1226,11 @@ mod tests {
         adopt(&fixture.db, "child").unwrap();
 
         assert_eq!(attempt_status(&fixture, &attempt), "superseded");
-        let detail = binding(&fixture.db, "child").unwrap().unwrap().detail.unwrap();
+        let detail = binding(&fixture.db, "child")
+            .unwrap()
+            .unwrap()
+            .detail
+            .unwrap();
         assert!(detail.contains("task branch advanced"), "{detail}");
         // The merge still happened — the work is not lost, only re-verified.
         assert!(fixture.task.join("src/feature.txt").exists());
@@ -1201,17 +1249,26 @@ mod tests {
         record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
 
         let plan = plan_adoption(&fixture.db, "child").unwrap();
-        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_SETTLING);
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_SETTLING
+        );
         // While that adoption is mid-Git, a concurrent discard must be refused.
         let refused = plan_discard(&fixture.db, "child").unwrap_err().to_string();
         assert!(refused.contains("already settling"), "{refused}");
-        assert!(plan_adoption(&fixture.db, "child").unwrap_err().to_string().contains("already settling"));
+        assert!(plan_adoption(&fixture.db, "child")
+            .unwrap_err()
+            .to_string()
+            .contains("already settling"));
         // A claimed binding still blocks the parent.
         assert_eq!(pending_for_parent(&fixture.db, "parent").unwrap().len(), 1);
 
         let outcome = integrate(&plan).unwrap();
         settle_plan(&fixture.db, &plan, STATE_ADOPTED, &outcome.detail).unwrap();
-        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_ADOPTED);
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_ADOPTED
+        );
         // And adopted output can never be relabelled as discarded.
         assert!(discard(&fixture.db, "child", "changed my mind")
             .unwrap_err()
@@ -1231,7 +1288,10 @@ mod tests {
 
         assert!(adopt(&fixture.db, "child").is_err());
         // Still the user's decision to make, and still retryable.
-        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_PENDING);
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_PENDING
+        );
         assert!(discard(&fixture.db, "child", "conflicts with the task branch").is_ok());
     }
 
@@ -1248,7 +1308,10 @@ mod tests {
         let _claimed = plan_adoption(&fixture.db, "child").unwrap();
 
         assert!(recover(&fixture.db).unwrap() >= 1);
-        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_PENDING);
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_PENDING
+        );
         assert!(adopt(&fixture.db, "child").is_ok());
     }
 
@@ -1263,7 +1326,10 @@ mod tests {
         git_cmd(&worker, &["add", "."]);
         git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
         record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
-        fixture.db.execute("UPDATE sessions SET status='warm' WHERE id='child'", []).unwrap();
+        fixture
+            .db
+            .execute("UPDATE sessions SET status='warm' WHERE id='child'", [])
+            .unwrap();
 
         adopt(&fixture.db, "child").unwrap();
         assert!(
@@ -1273,7 +1339,10 @@ mod tests {
         assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 0);
 
         // Once it can no longer be resumed, the worktree is collected.
-        fixture.db.execute("UPDATE sessions SET status='stopped' WHERE id='child'", []).unwrap();
+        fixture
+            .db
+            .execute("UPDATE sessions SET status='stopped' WHERE id='child'", [])
+            .unwrap();
         assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 1);
         assert!(!worker.exists());
     }
@@ -1284,9 +1353,13 @@ mod tests {
         let worker = isolated_worker(&fixture);
         let evidence = recorded_evidence(&fixture, &worker);
         assert!(evidence.is_empty());
-        let recorded = record_evidence(&fixture.db, "child", &evidence).unwrap().unwrap();
+        let recorded = record_evidence(&fixture.db, "child", &evidence)
+            .unwrap()
+            .unwrap();
         assert_eq!(recorded.state, STATE_EMPTY);
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1299,7 +1372,10 @@ mod tests {
         git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
         let evidence = recorded_evidence(&fixture, &worker);
         assert_eq!(
-            record_evidence(&fixture.db, "child", &evidence).unwrap().unwrap().state,
+            record_evidence(&fixture.db, "child", &evidence)
+                .unwrap()
+                .unwrap()
+                .state,
             STATE_PENDING
         );
 
@@ -1307,9 +1383,14 @@ mod tests {
         assert_eq!(discarded.state, STATE_DISCARDED);
         assert!(!fixture.task.join("src/feature.txt").exists());
         assert!(!worker.exists());
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
         // Idempotent: a repeated discard is not an error.
-        assert_eq!(discard(&fixture.db, "child", "again").unwrap().state, STATE_DISCARDED);
+        assert_eq!(
+            discard(&fixture.db, "child", "again").unwrap().state,
+            STATE_DISCARDED
+        );
     }
 
     #[test]
@@ -1331,11 +1412,16 @@ mod tests {
         assert!(!row.is_isolated());
         assert!(row.base_commit.is_some());
         std::fs::write(fixture.task.join("base.txt"), "changed\n").unwrap();
-        let evidence = git::derive_repository_evidence(&fixture.task, row.base_commit.as_deref()).unwrap();
+        let evidence =
+            git::derive_repository_evidence(&fixture.task, row.base_commit.as_deref()).unwrap();
         assert_eq!(evidence.dirty_paths, vec!["base.txt"]);
-        let recorded = record_evidence(&fixture.db, "child", &evidence).unwrap().unwrap();
+        let recorded = record_evidence(&fixture.db, "child", &evidence)
+            .unwrap()
+            .unwrap();
         assert_eq!(recorded.state, STATE_IN_PLACE);
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
         assert!(discard(&fixture.db, "child", "n/a").is_err());
     }
 
@@ -1353,8 +1439,13 @@ mod tests {
 
         std::fs::remove_dir_all(&worker).unwrap();
         assert_eq!(recover(&fixture.db).unwrap(), 1);
-        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_DISCARDED);
-        assert!(pending_for_parent(&fixture.db, "parent").unwrap().is_empty());
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_DISCARDED
+        );
+        assert!(pending_for_parent(&fixture.db, "parent")
+            .unwrap()
+            .is_empty());
     }
 
     fn completed(files_changed: &[&str]) -> WorkerResult {
@@ -1362,7 +1453,10 @@ mod tests {
             schema_version: crate::delegation::SCHEMA_VERSION,
             status: WorkerResultStatus::Completed,
             summary: "Rendered Mermaid, math, and sandboxed HTML inline".into(),
-            files_changed: files_changed.iter().map(|path| (*path).to_owned()).collect(),
+            files_changed: files_changed
+                .iter()
+                .map(|path| (*path).to_owned())
+                .collect(),
             tests: vec![],
             decisions: vec![],
             risks: vec![],
@@ -1405,7 +1499,10 @@ mod tests {
 
         assert_eq!(reconciled.result.status, WorkerResultStatus::Blocked);
         assert!(
-            reconciled.result.summary.contains("does not support this result"),
+            reconciled
+                .result
+                .summary
+                .contains("does not support this result"),
             "{}",
             reconciled.result.summary
         );
@@ -1473,11 +1570,9 @@ mod tests {
         );
 
         assert_eq!(reconciled.result.status, WorkerResultStatus::Blocked);
-        assert!(reconciled
-            .mismatches
-            .iter()
-            .any(|mismatch| mismatch.contains("wrote outside its owned-path lease")
-                && mismatch.contains("secrets.env")));
+        assert!(reconciled.mismatches.iter().any(|mismatch| mismatch
+            .contains("wrote outside its owned-path lease")
+            && mismatch.contains("secrets.env")));
     }
 
     #[test]
@@ -1526,7 +1621,10 @@ mod tests {
         record_evidence(&fixture.db, "child", &evidence).unwrap();
 
         assert!(adopt(&fixture.db, "child").is_err());
-        assert_eq!(binding(&fixture.db, "child").unwrap().unwrap().state, STATE_PENDING);
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_PENDING
+        );
         assert!(worker.exists());
         assert_eq!(
             std::fs::read_to_string(fixture.task.join("base.txt")).unwrap(),

@@ -34,12 +34,13 @@ use crate::managed_payload::{
 use crate::BridgeError;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     fs,
     io::Read,
-    time::Duration,
     path::{Component, Path, PathBuf},
     process::Command,
     sync::RwLock,
+    time::Duration,
 };
 
 /// Read granularity while streaming bytes through a hasher.
@@ -81,10 +82,14 @@ pub enum RuntimeSource {
         package: String,
         version: String,
         /// Contents of the `package.json` Bridge writes into staging.
-        manifest: &'static str,
+        ///
+        /// `Cow` rather than `&'static str` so a recipe carried as catalog data
+        /// (#164) can produce one of these without leaking. Every built-in
+        /// recipe still passes a compiled-in `&'static str`, which borrows.
+        manifest: Cow<'static, str>,
         /// Contents of the `package-lock.json` that pins every tarball's
         /// integrity. This is the supply-chain guarantee for this source kind.
-        lockfile: &'static str,
+        lockfile: Cow<'static, str>,
         /// Module entry inside the installed tree, relative to the payload root.
         entrypoint: PathBuf,
     },
@@ -278,10 +283,11 @@ impl ArtifactFetcher for HttpsArtifactFetcher {
         // let a hostile or misconfigured endpoint fill the disk before integrity
         // could reject anything.
         let mut file = fs::File::create(destination)?;
-        let copied = std::io::copy(&mut response.by_ref().take(MAX_DOWNLOAD_BYTES + 1), &mut file)
-            .map_err(|error| {
-                BridgeError::Invalid(format!("managed runtime fetch failed: {error}"))
-            })?;
+        let copied = std::io::copy(
+            &mut response.by_ref().take(MAX_DOWNLOAD_BYTES + 1),
+            &mut file,
+        )
+        .map_err(|error| BridgeError::Invalid(format!("managed runtime fetch failed: {error}")))?;
         if copied > MAX_DOWNLOAD_BYTES {
             let _ = fs::remove_file(destination);
             return Err(BridgeError::Invalid(format!(
@@ -345,7 +351,8 @@ fn prepare_into(
                 .fetch_to(url, &download)
                 .map_err(|error| (PrepareStage::Fetch, error))?;
 
-            let actual = file_digest(&download).map_err(|error| (PrepareStage::Integrity, error))?;
+            let actual =
+                file_digest(&download).map_err(|error| (PrepareStage::Integrity, error))?;
             if !actual.eq_ignore_ascii_case(sha256.trim()) {
                 let _ = fs::remove_file(&download);
                 return Err((
@@ -415,9 +422,9 @@ fn prepare_into(
         } => {
             let tree = staging.join("closure");
             fs::create_dir_all(&tree).map_err(|error| (PrepareStage::Extract, error.into()))?;
-            fs::write(tree.join("package.json"), manifest)
+            fs::write(tree.join("package.json"), manifest.as_bytes())
                 .map_err(|error| (PrepareStage::Extract, error.into()))?;
-            fs::write(tree.join("package-lock.json"), lockfile)
+            fs::write(tree.join("package-lock.json"), lockfile.as_bytes())
                 .map_err(|error| (PrepareStage::Extract, error.into()))?;
 
             // `npm ci` installs exactly the lockfile, verifying each tarball
@@ -445,16 +452,14 @@ fn prepare_into(
             ] {
                 command.env_remove(variable);
             }
-            let output = command
-                .output()
-                .map_err(|error| {
-                    (
-                        PrepareStage::Install,
-                        BridgeError::Invalid(format!(
-                            "managed runtime needs npm to install {package}@{version}: {error}"
-                        )),
-                    )
-                })?;
+            let output = command.output().map_err(|error| {
+                (
+                    PrepareStage::Install,
+                    BridgeError::Invalid(format!(
+                        "managed runtime needs npm to install {package}@{version}: {error}"
+                    )),
+                )
+            })?;
             if !output.status.success() {
                 return Err((
                     PrepareStage::Install,
@@ -470,8 +475,8 @@ fn prepare_into(
             prune_npm_bin_shims(&tree).map_err(|error| (PrepareStage::Install, error))?;
             ensure_entrypoint_present(&tree, entrypoint)
                 .map_err(|error| (PrepareStage::Install, error))?;
-            let digest = tree_digest(&tree, entrypoint)
-                .map_err(|error| (PrepareStage::Integrity, error))?;
+            let digest =
+                tree_digest(&tree, entrypoint).map_err(|error| (PrepareStage::Integrity, error))?;
             Ok(StagedRuntime {
                 source_path: tree,
                 shape: PayloadShape::Directory,
@@ -845,8 +850,8 @@ pub fn claude_recipe() -> Option<RuntimeSource> {
     Some(RuntimeSource::NpmClosure {
         package: "@anthropic-ai/claude-agent-sdk".into(),
         version: CLAUDE_SDK_VERSION.into(),
-        manifest: CLAUDE_MANIFEST,
-        lockfile: CLAUDE_LOCKFILE,
+        manifest: Cow::Borrowed(CLAUDE_MANIFEST),
+        lockfile: Cow::Borrowed(CLAUDE_LOCKFILE),
         entrypoint: PathBuf::from("node_modules/@anthropic-ai")
             .join(format!("claude-agent-sdk-{suffix}"))
             .join(executable_name("claude")),
@@ -865,8 +870,8 @@ pub fn codex_recipe() -> Option<RuntimeSource> {
     Some(RuntimeSource::NpmClosure {
         package: "@openai/codex".into(),
         version: CODEX_VERSION.into(),
-        manifest: CODEX_MANIFEST,
-        lockfile: CODEX_LOCKFILE,
+        manifest: Cow::Borrowed(CODEX_MANIFEST),
+        lockfile: Cow::Borrowed(CODEX_LOCKFILE),
         entrypoint: PathBuf::from("node_modules/@openai")
             .join(format!("codex-{suffix}"))
             .join("vendor")
@@ -886,8 +891,8 @@ pub fn opencode_recipe() -> Option<RuntimeSource> {
     Some(RuntimeSource::NpmClosure {
         package: "opencode-ai".into(),
         version: OPENCODE_VERSION.into(),
-        manifest: OPENCODE_MANIFEST,
-        lockfile: OPENCODE_LOCKFILE,
+        manifest: Cow::Borrowed(OPENCODE_MANIFEST),
+        lockfile: Cow::Borrowed(OPENCODE_LOCKFILE),
         entrypoint: PathBuf::from(format!("node_modules/opencode-{suffix}"))
             .join("bin")
             .join(executable_name("opencode")),
@@ -985,7 +990,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    const LOCKFILE: &str = r#"{"lockfileVersion":3,"packages":{"node_modules/x":{"integrity":"sha512-aaa"}}}"#;
+    const LOCKFILE: &str =
+        r#"{"lockfileVersion":3,"packages":{"node_modules/x":{"integrity":"sha512-aaa"}}}"#;
     const MANIFEST: &str = r#"{"dependencies":{"x":"1.0.0"}}"#;
 
     fn release(url: &str, sha256: &str, kind: ArtifactKind) -> RuntimeSource {
@@ -1010,7 +1016,9 @@ mod tests {
     impl ArtifactFetcher for FixtureFetcher {
         fn fetch_to(&self, url: &str, destination: &Path) -> Result<(), BridgeError> {
             if self.fail {
-                return Err(BridgeError::Invalid(format!("offline fixture refused {url}")));
+                return Err(BridgeError::Invalid(format!(
+                    "offline fixture refused {url}"
+                )));
             }
             fs::write(destination, &self.bytes)?;
             Ok(())
@@ -1040,8 +1048,7 @@ mod tests {
     }
 
     fn gzip(bytes: &[u8]) -> Vec<u8> {
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap()
     }
@@ -1104,9 +1111,11 @@ mod tests {
         .validate()
         .is_err());
         // Digest not a SHA-256.
-        assert!(release("https://example.com/a.tar.gz", "abc", ArtifactKind::TarGz)
-            .validate()
-            .is_err());
+        assert!(
+            release("https://example.com/a.tar.gz", "abc", ArtifactKind::TarGz)
+                .validate()
+                .is_err()
+        );
         // Archive kind that does not match the URL.
         assert!(release(
             "https://example.com/a.zip",
@@ -1130,8 +1139,8 @@ mod tests {
         let closure = |version: &str, lockfile: &'static str| RuntimeSource::NpmClosure {
             package: "@scope/pkg".into(),
             version: version.into(),
-            manifest: MANIFEST,
-            lockfile,
+            manifest: Cow::Borrowed(MANIFEST),
+            lockfile: Cow::Borrowed(lockfile),
             entrypoint: PathBuf::from("node_modules/x/index.mjs"),
         };
         assert!(closure("1.2.3", LOCKFILE).validate().is_ok());
@@ -1211,7 +1220,11 @@ mod tests {
     fn a_failed_fetch_leaves_no_payload_and_names_the_stage() {
         let fixture = tempfile::tempdir().unwrap();
         let (stage, error) = prepare(
-            &release("https://example.com/a.tar.gz", &"a".repeat(64), ArtifactKind::TarGz),
+            &release(
+                "https://example.com/a.tar.gz",
+                &"a".repeat(64),
+                ArtifactKind::TarGz,
+            ),
             &fixture.path().join("staging"),
             &FixtureFetcher {
                 bytes: Vec::new(),
@@ -1263,9 +1276,13 @@ mod tests {
         ];
 
         for (label, bytes) in hostile {
-            let archive = fixture.path().join(format!("{}.tgz", label.replace(' ', "-")));
+            let archive = fixture
+                .path()
+                .join(format!("{}.tgz", label.replace(' ', "-")));
             fs::write(&archive, &bytes).unwrap();
-            let destination = fixture.path().join(format!("out-{}", label.replace(' ', "-")));
+            let destination = fixture
+                .path()
+                .join(format!("out-{}", label.replace(' ', "-")));
             let error = extract_tar_gz(&archive, &destination)
                 .expect_err(&format!("{label} must be refused"));
             let message = error.to_string();
@@ -1304,12 +1321,18 @@ mod tests {
         extract_tar_gz(&archive, &out).unwrap();
 
         assert_eq!(fs::read(out.join("README")).unwrap(), b"docs");
-        assert!(out.join("lib/support.js").is_file(), "./ prefixes normalize");
+        assert!(
+            out.join("lib/support.js").is_file(),
+            "./ prefixes normalize"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
-            assert!(mode(&out.join("bin/agent")) & 0o111 != 0, "entrypoint stays executable");
+            assert!(
+                mode(&out.join("bin/agent")) & 0o111 != 0,
+                "entrypoint stays executable"
+            );
             assert!(
                 mode(&out.join("README")) & 0o111 == 0,
                 "a non-executable entry must not gain the bit"
@@ -1338,7 +1361,10 @@ mod tests {
     fn a_tar_gz_release_stages_a_directory_payload_with_a_tree_digest() {
         let fixture = tempfile::tempdir().unwrap();
         let bytes = tarball(
-            &[("bin/agent", b"#!/bin/sh\n", 0o755), ("VERSION", b"1.0.0", 0o644)],
+            &[
+                ("bin/agent", b"#!/bin/sh\n", 0o755),
+                ("VERSION", b"1.0.0", 0o644),
+            ],
             &[],
         );
         let staged = prepare(
@@ -1427,33 +1453,68 @@ mod tests {
 
         // All four tiers present.
         assert_eq!(
-            resolve_runtime("codex", Some(&explicit), &observed(&store, "codex"), std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            resolve_runtime(
+                "codex",
+                Some(&explicit),
+                &observed(&store, "codex"),
+                std::slice::from_ref(&bundled),
+                Some(system.clone())
+            )
+            .unwrap(),
             RuntimeResolution::Explicit(explicit.clone())
         );
         // No explicit config: the managed payload wins.
         assert_eq!(
-            resolve_runtime("codex", None, &observed(&store, "codex"), std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            resolve_runtime(
+                "codex",
+                None,
+                &observed(&store, "codex"),
+                std::slice::from_ref(&bundled),
+                Some(system.clone())
+            )
+            .unwrap(),
             RuntimeResolution::Managed(managed.clone())
         );
         // No managed payload: the bundled copy.
         let empty = ManagedPayloadStore::new(fixture.path().join("empty"));
         assert_eq!(
-            resolve_runtime("codex", None, &observed(&empty, "codex"), std::slice::from_ref(&bundled), Some(system.clone())).unwrap(),
+            resolve_runtime(
+                "codex",
+                None,
+                &observed(&empty, "codex"),
+                std::slice::from_ref(&bundled),
+                Some(system.clone())
+            )
+            .unwrap(),
             RuntimeResolution::Bundled(bundled)
         );
         // Nothing but PATH: external, and explicitly not owned.
-        let resolution =
-            resolve_runtime("codex", None, &observed(&empty, "codex"), &[], Some(system.clone())).unwrap();
+        let resolution = resolve_runtime(
+            "codex",
+            None,
+            &observed(&empty, "codex"),
+            &[],
+            Some(system.clone()),
+        )
+        .unwrap();
         assert_eq!(resolution, RuntimeResolution::External(system));
         assert!(!resolution.is_bridge_owned());
         // Nothing at all: an error naming the agent.
-        let error = resolve_runtime("codex", None, &observed(&empty, "codex"), &[], None).unwrap_err();
+        let error =
+            resolve_runtime("codex", None, &observed(&empty, "codex"), &[], None).unwrap_err();
         assert!(error.to_string().contains("codex"), "{error}");
 
         // A configured path that is not executable is an error, not a silent
         // fallback: the user asked for that binary specifically.
         let broken = fixture.path().join("custom/missing");
-        assert!(resolve_runtime("codex", Some(&broken), &observed(&store, "codex"), &[], None).is_err());
+        assert!(resolve_runtime(
+            "codex",
+            Some(&broken),
+            &observed(&store, "codex"),
+            &[],
+            None
+        )
+        .is_err());
     }
 
     #[test]
@@ -1462,7 +1523,14 @@ mod tests {
         let store = ManagedPayloadStore::new(fixture.path().join("managed"));
         let system = executable_at(&fixture.path().join("usr/bin/agent"), b"user's own copy");
 
-        let resolution = resolve_runtime("codex", None, &observed(&store, "codex"), &[], Some(system.clone())).unwrap();
+        let resolution = resolve_runtime(
+            "codex",
+            None,
+            &observed(&store, "codex"),
+            &[],
+            Some(system.clone()),
+        )
+        .unwrap();
         assert!(matches!(resolution, RuntimeResolution::External(_)));
         assert!(!resolution.is_bridge_owned());
         // No receipt was written anywhere for it.
@@ -1482,14 +1550,28 @@ mod tests {
         install_managed(&store, fixture.path(), "opencode");
 
         assert_eq!(
-            resolve_runtime("opencode", Some(&explicit), &observed(&store, "opencode"), &[], None).unwrap(),
+            resolve_runtime(
+                "opencode",
+                Some(&explicit),
+                &observed(&store, "opencode"),
+                &[],
+                None
+            )
+            .unwrap(),
             RuntimeResolution::Explicit(explicit.clone())
         );
         // Removing the managed payload leaves the configured one untouched.
         store.uninstall("opencode").unwrap();
         assert_eq!(fs::read(&explicit).unwrap(), b"user's build");
         assert_eq!(
-            resolve_runtime("opencode", Some(&explicit), &observed(&store, "opencode"), &[], None).unwrap(),
+            resolve_runtime(
+                "opencode",
+                Some(&explicit),
+                &observed(&store, "opencode"),
+                &[],
+                None
+            )
+            .unwrap(),
             RuntimeResolution::Explicit(explicit)
         );
     }
@@ -1502,14 +1584,28 @@ mod tests {
         let managed = install_managed(&store, fixture.path(), "claude");
 
         assert_eq!(
-            resolve_runtime("claude", None, &observed(&store, "claude"), &[], Some(system.clone())).unwrap(),
+            resolve_runtime(
+                "claude",
+                None,
+                &observed(&store, "claude"),
+                &[],
+                Some(system.clone())
+            )
+            .unwrap(),
             RuntimeResolution::Managed(managed.clone())
         );
 
         store.uninstall("claude").unwrap();
         assert!(!managed.exists(), "the managed payload is gone");
         assert_eq!(
-            resolve_runtime("claude", None, &observed(&store, "claude"), &[], Some(system.clone())).unwrap(),
+            resolve_runtime(
+                "claude",
+                None,
+                &observed(&store, "claude"),
+                &[],
+                Some(system.clone())
+            )
+            .unwrap(),
             RuntimeResolution::External(system.clone()),
             "resolution must fall back to what the user already had"
         );
@@ -1527,7 +1623,14 @@ mod tests {
         // The payload is repairable, not usable, so resolution must not hand it
         // out — but it must not break the agent either.
         assert_eq!(
-            resolve_runtime("codex", None, &observed(&store, "codex"), &[], Some(system.clone())).unwrap(),
+            resolve_runtime(
+                "codex",
+                None,
+                &observed(&store, "codex"),
+                &[],
+                Some(system.clone())
+            )
+            .unwrap(),
             RuntimeResolution::External(system)
         );
     }
@@ -1725,7 +1828,10 @@ mod tests {
         // shared suffix silently produced package names that do not exist.
         let node = npm_platform_suffix(PlatformNaming::NodePlatform);
         let windows = npm_platform_suffix(PlatformNaming::WindowsSpelled);
-        assert!(node.is_some() && windows.is_some(), "this host must be supported");
+        assert!(
+            node.is_some() && windows.is_some(),
+            "this host must be supported"
+        );
         if cfg!(windows) {
             assert!(node.unwrap().starts_with("win32-"));
             assert!(windows.unwrap().starts_with("windows-"));
@@ -1795,7 +1901,6 @@ mod tests {
         clear_managed_root();
     }
 
-
     #[test]
     fn npm_bin_symlinks_are_pruned_before_digesting() {
         let fixture = tempfile::tempdir().unwrap();
@@ -1845,6 +1950,61 @@ mod tests {
         .is_ok());
     }
 
+    /// `manifest` and `lockfile` widened from `&'static str` to `Cow` so a
+    /// recipe carried as catalog data (#164) can produce a `RuntimeSource`
+    /// without leaking. The built-ins must be untouched by that: same bytes,
+    /// and still borrowed rather than copied onto the heap at every call.
+    #[test]
+    fn built_in_recipes_still_borrow_their_compiled_in_closures() {
+        for (agent_id, source) in builtin_recipes() {
+            let RuntimeSource::NpmClosure {
+                manifest, lockfile, ..
+            } = &source
+            else {
+                panic!("{agent_id} must install from npm");
+            };
+            assert!(
+                matches!(manifest, Cow::Borrowed(_)),
+                "{agent_id} manifest is allocated; a compiled-in closure must borrow"
+            );
+            assert!(
+                matches!(lockfile, Cow::Borrowed(_)),
+                "{agent_id} lockfile is allocated; a compiled-in closure must borrow"
+            );
+        }
+    }
+
+    /// The other half: an *owned* closure — what catalog data produces — is
+    /// accepted by exactly the validation the built-ins face, with no separate
+    /// path and no weaker rules.
+    #[test]
+    fn an_owned_closure_faces_the_same_validation_as_a_compiled_in_one() {
+        let owned = |version: &str| RuntimeSource::NpmClosure {
+            package: "example-agent".into(),
+            version: version.to_owned(),
+            manifest: Cow::Owned(MANIFEST.to_owned()),
+            lockfile: Cow::Owned(LOCKFILE.to_owned()),
+            entrypoint: PathBuf::from("node_modules/example-agent/bin/agent"),
+        };
+        owned("1.2.3")
+            .validate()
+            .expect("a pinned owned closure installs");
+        // And the range that is refused for a built-in is refused here too.
+        assert!(owned("^1.2.3").validate().is_err());
+
+        let unpinned = RuntimeSource::NpmClosure {
+            package: "example-agent".into(),
+            version: "1.2.3".into(),
+            manifest: Cow::Owned(MANIFEST.to_owned()),
+            lockfile: Cow::Owned("{\"lockfileVersion\":3}".to_owned()),
+            entrypoint: PathBuf::from("node_modules/example-agent/bin/agent"),
+        };
+        assert!(
+            unpinned.validate().is_err(),
+            "a lockfile with no integrity hashes pins nothing, owned or not"
+        );
+    }
+
     #[test]
     fn each_agent_recipe_pins_an_exact_version_and_entrypoint() {
         let recipes = builtin_recipes();
@@ -1869,7 +2029,10 @@ mod tests {
             else {
                 panic!("{agent_id} must install from npm");
             };
-            assert!(version_is_exact(version), "{agent_id} version {version} is not exact");
+            assert!(
+                version_is_exact(version),
+                "{agent_id} version {version} is not exact"
+            );
             assert!(
                 lockfile.contains("\"integrity\""),
                 "{agent_id} lockfile pins no integrity"
@@ -1879,10 +2042,16 @@ mod tests {
                 lockfile.contains(&format!("\"version\": \"{version}\"")),
                 "{agent_id} lockfile does not contain version {version}"
             );
-            assert!(lockfile.contains(package), "{agent_id} lockfile does not name {package}");
+            assert!(
+                lockfile.contains(package),
+                "{agent_id} lockfile does not name {package}"
+            );
             // The entrypoint lives inside the closure and names a platform package.
             let entrypoint = entrypoint.to_string_lossy();
-            assert!(entrypoint.starts_with("node_modules/"), "{agent_id}: {entrypoint}");
+            assert!(
+                entrypoint.starts_with("node_modules/"),
+                "{agent_id}: {entrypoint}"
+            );
             // Each vendor's own spelling, and the package must be one the
             // lockfile actually pins — a suffix that does not exist upstream
             // would install nothing.

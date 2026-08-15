@@ -265,8 +265,9 @@ fn sidecar_entry() -> Result<PathBuf, BridgeError> {
             candidates.push(dir.join("../Resources/sidecar/claude-agent/index.mjs"));
         }
     }
-    candidates
-        .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar/claude-agent/index.mjs"));
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecar/claude-agent/index.mjs"),
+    );
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
@@ -519,12 +520,7 @@ pub fn managed_sdk_module() -> Option<PathBuf> {
         // containing `node_modules`, and taking the first boundary would re-root
         // onto an unrelated project's SDK.
         .rposition(|component| component.as_os_str() == "node_modules")
-        .map(|index| {
-            entrypoint
-                .components()
-                .take(index)
-                .collect::<PathBuf>()
-        })?;
+        .map(|index| entrypoint.components().take(index).collect::<PathBuf>())?;
     let module = payload_root.join(crate::managed_runtime::claude_sdk_module());
     module.is_file().then_some(module)
 }

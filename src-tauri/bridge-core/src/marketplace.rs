@@ -409,7 +409,11 @@ fn plugin_logo_data_url(
             .map(PathBuf::from),
         MarketplaceProvider::Claude => string_field(object, &["installPath", "install_path"])
             .map(PathBuf::from)
-            .or_else(|| source.filter(|value| !value.contains("://")).map(PathBuf::from)),
+            .or_else(|| {
+                source
+                    .filter(|value| !value.contains("://"))
+                    .map(PathBuf::from)
+            }),
     }?;
     let manifest_path = [".codex-plugin/plugin.json", ".claude-plugin/plugin.json"]
         .into_iter()
@@ -423,7 +427,12 @@ fn plugin_logo_data_url(
     if !logo_path.starts_with(&canonical_root) {
         return None;
     }
-    let mime = match logo_path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+    let mime = match logo_path
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -1236,12 +1245,8 @@ mod tests {
         )
         .unwrap();
         let object = json!({}).as_object().unwrap().clone();
-        let logo = plugin_logo_data_url(
-            MarketplaceProvider::Codex,
-            &object,
-            plugin.to_str(),
-        )
-        .unwrap();
+        let logo =
+            plugin_logo_data_url(MarketplaceProvider::Codex, &object, plugin.to_str()).unwrap();
         assert!(logo.starts_with("data:image/png;base64,"));
 
         fs::write(temp.path().join("outside.png"), b"outside").unwrap();
@@ -1250,12 +1255,9 @@ mod tests {
             br#"{"interface":{"logo":"../outside.png"}}"#,
         )
         .unwrap();
-        assert!(plugin_logo_data_url(
-            MarketplaceProvider::Codex,
-            &object,
-            plugin.to_str(),
-        )
-        .is_none());
+        assert!(
+            plugin_logo_data_url(MarketplaceProvider::Codex, &object, plugin.to_str(),).is_none()
+        );
     }
 
     #[test]

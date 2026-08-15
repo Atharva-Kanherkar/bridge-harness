@@ -120,7 +120,9 @@ pub fn process_failure_context(
     };
     let tail = stderr_tail.snapshot();
     match (status, tail) {
-        (Some(status), Some(tail)) => Some(format!("Provider process {status}. Stderr tail:\n{tail}")),
+        (Some(status), Some(tail)) => {
+            Some(format!("Provider process {status}. Stderr tail:\n{tail}"))
+        }
         (Some(status), None) => Some(format!("Provider process {status} with no stderr output")),
         (None, Some(tail)) => Some(format!("Provider stderr tail:\n{tail}")),
         (None, None) => None,
@@ -287,7 +289,9 @@ impl AdapterRegistry {
     /// A registry with no adapters and no background discovery. For hosts and
     /// tests that need a `BridgeCore` without spawning provider processes.
     pub fn empty() -> Self {
-        Self { adapters: HashMap::new() }
+        Self {
+            adapters: HashMap::new(),
+        }
     }
 
     pub fn built_in() -> Result<Self, BridgeError> {
@@ -967,7 +971,10 @@ mod tests {
     #[test]
     fn stderr_tail_captures_a_dying_process_last_words() {
         let mut child = Command::new("/bin/sh")
-            .args(["-c", "echo boot >&2; echo 'API error: connection refused' >&2; exit 7"])
+            .args([
+                "-c",
+                "echo boot >&2; echo 'API error: connection refused' >&2; exit 7",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -981,14 +988,20 @@ mod tests {
         }
         let context = process_failure_context(&mut child, &tail).expect("context after exit");
         assert!(context.contains("exit status: 7"), "{context}");
-        assert!(context.contains("API error: connection refused"), "{context}");
+        assert!(
+            context.contains("API error: connection refused"),
+            "{context}"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn stderr_tail_is_bounded_to_the_last_lines() {
         let mut child = Command::new("/bin/sh")
-            .args(["-c", "i=0; while [ $i -lt 100 ]; do echo line-$i >&2; i=$((i+1)); done"])
+            .args([
+                "-c",
+                "i=0; while [ $i -lt 100 ]; do echo line-$i >&2; i=$((i+1)); done",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -1005,7 +1018,10 @@ mod tests {
         }
         let snapshot = tail.snapshot().unwrap();
         assert!(snapshot.contains("line-99"));
-        assert!(!snapshot.contains("line-69\n"), "older lines must be evicted");
+        assert!(
+            !snapshot.contains("line-69\n"),
+            "older lines must be evicted"
+        );
         assert_eq!(snapshot.lines().count(), STDERR_TAIL_LINES);
     }
 

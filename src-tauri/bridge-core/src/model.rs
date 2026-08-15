@@ -10,7 +10,9 @@ pub(crate) fn serialize_js_safe_i64<S: Serializer>(
     if (-bridge_protocol::MAX_SAFE_INTEGER..=bridge_protocol::MAX_SAFE_INTEGER).contains(value) {
         serializer.serialize_i64(*value)
     } else {
-        Err(S::Error::custom("integer exceeds JavaScript's safe integer range"))
+        Err(S::Error::custom(
+            "integer exceeds JavaScript's safe integer range",
+        ))
     }
 }
 
@@ -23,7 +25,9 @@ pub(crate) fn serialize_optional_js_safe_i64<S: Serializer>(
             if !(-bridge_protocol::MAX_SAFE_INTEGER..=bridge_protocol::MAX_SAFE_INTEGER)
                 .contains(value) =>
         {
-            Err(S::Error::custom("integer exceeds JavaScript's safe integer range"))
+            Err(S::Error::custom(
+                "integer exceeds JavaScript's safe integer range",
+            ))
         }
         Some(value) => serializer.serialize_some(value),
         None => serializer.serialize_none(),
@@ -37,7 +41,9 @@ pub(crate) fn serialize_js_safe_usize<S: Serializer>(
     if (*value as u64) <= bridge_protocol::MAX_SAFE_INTEGER as u64 {
         serializer.serialize_u64(*value as u64)
     } else {
-        Err(S::Error::custom("integer exceeds JavaScript's safe integer range"))
+        Err(S::Error::custom(
+            "integer exceeds JavaScript's safe integer range",
+        ))
     }
 }
 
@@ -536,9 +542,17 @@ pub struct QueuedWorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OutboxMessage {
-    pub id: String, pub destination: String, pub event_type: String, pub payload: serde_json::Value,
-    pub idempotency_key: String, pub status: String, pub attempt_count: i64, pub next_attempt_at: String,
-    pub last_error: Option<String>, pub created_at: String, pub delivered_at: Option<String>,
+    pub id: String,
+    pub destination: String,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub idempotency_key: String,
+    pub status: String,
+    pub attempt_count: i64,
+    pub next_attempt_at: String,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub delivered_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -667,7 +681,11 @@ mod tests {
             bridge_protocol::MAX_SAFE_INTEGER + 1,
             -(bridge_protocol::MAX_SAFE_INTEGER + 1),
         ] {
-            let value = SnapshotNumbers { signed: unsafe_number, optional: None, count: 0 };
+            let value = SnapshotNumbers {
+                signed: unsafe_number,
+                optional: None,
+                count: 0,
+            };
             let error = serde_json::to_value(value).unwrap_err();
             assert!(error.to_string().contains("safe integer"), "{error}");
         }

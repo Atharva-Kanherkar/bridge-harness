@@ -5,8 +5,7 @@
 //! and makes compaction policy independently testable.
 
 use crate::model::{
-    SessionEntry, MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION,
-    SEMANTIC_EVENT_SCHEMA_VERSION,
+    SessionEntry, MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION, SEMANTIC_EVENT_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

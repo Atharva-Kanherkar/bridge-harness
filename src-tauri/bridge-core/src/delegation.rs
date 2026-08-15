@@ -4,8 +4,8 @@
 //! immediately produces [`DelegationRequest`]. No free-form task/context object
 //! crosses that boundary. Workers return a versioned [`WorkerResult`].
 
-pub use crate::model::CapabilityTier;
 use crate::model;
+pub use crate::model::CapabilityTier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -936,9 +936,18 @@ mod tests {
         value.writable_output_paths = vec!["reports/result.json".into()];
         assert!(value.validate().is_ok());
 
-        for invalid in ["", "/tmp/result", "../result", "reports/../result", "reports//result"] {
+        for invalid in [
+            "",
+            "/tmp/result",
+            "../result",
+            "reports/../result",
+            "reports//result",
+        ] {
             value.writable_output_paths = vec![invalid.into()];
-            assert!(value.validate().is_err(), "accepted invalid output path: {invalid}");
+            assert!(
+                value.validate().is_err(),
+                "accepted invalid output path: {invalid}"
+            );
         }
     }
 
@@ -1020,7 +1029,11 @@ mod tests {
             ("  Gemini  ", "gemini"),
             ("github-copilot-cli", "github-copilot-cli"),
         ] {
-            assert_eq!(normalize_harness(hint).as_deref(), Some(expected), "hint {hint:?}");
+            assert_eq!(
+                normalize_harness(hint).as_deref(),
+                Some(expected),
+                "hint {hint:?}"
+            );
         }
     }
 
@@ -1206,7 +1219,10 @@ mod tests {
         let ParseOutcome::Invalid { reason, .. } = parse_delegation_requests(request) else {
             panic!("writeMode:none was not rejected");
         };
-        assert!(reason.contains("readOnly"), "reason should list valid variants: {reason}");
+        assert!(
+            reason.contains("readOnly"),
+            "reason should list valid variants: {reason}"
+        );
         let feedback = invalid_request_feedback(&reason);
         assert!(feedback.contains(&reason));
         assert!(feedback.contains("readOnly"));

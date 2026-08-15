@@ -11,14 +11,13 @@
 //! DB commit, per the event contract) — never through a host event system.
 
 use crate::events::CoreEvent;
-use crate::model::{
-    AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot,
-};
+use crate::model::{AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot};
 use crate::{
-    adapters, agent, agent_config, binary, browser_bridge, completion, git, learning_job,
-    learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
+    adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
+    learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    worker_adoption, worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
+    verified_catalog, worker_adoption, worker_lifecycle, workspace_files, BridgeCore, BridgeError,
+    RuntimeSession,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -68,6 +67,41 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
+}
+
+// --- verified catalog --------------------------------------------------------
+
+/// The Bridge Verified catalog in force, and how it came to be trusted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedCatalog<'core> {
+    pub generation: u64,
+    pub provenance: &'core verified_catalog::Provenance,
+    pub entries: &'core [verified_catalog::VerifiedEntry],
+    /// What the catalog contributed to backend resolution, and which entries
+    /// this build could not serve.
+    pub registration: &'core agent_integration::CatalogRegistration,
+    /// The refusal code if a cached snapshot lost to the bundled bootstrap at
+    /// boot. `None` when the cache was used or there was none.
+    pub cache_rejected: Option<&'core str>,
+}
+
+/// Read the catalog this build is serving.
+///
+/// Deliberately **not** a protocol method. #164 lands the catalog itself, and
+/// putting it on the wire belongs with the marketplace screen that consumes it —
+/// a DTO shaped now, with no reader, would be a contract written against a
+/// caller nobody has seen. Its absence from the registry is a decision, and this
+/// function is where that decision stops costing anything: the day the screen
+/// exists, its method body is one line.
+pub fn verified_catalog(core: &Arc<BridgeCore>) -> VerifiedCatalog<'_> {
+    VerifiedCatalog {
+        generation: core.catalog.generation(),
+        provenance: core.catalog.provenance(),
+        entries: core.catalog.entries(),
+        registration: &core.catalog_registration,
+        cache_rejected: core.catalog_cache_rejected.as_deref(),
+    }
 }
 
 // --- projects / workspaces ---------------------------------------------------
@@ -269,7 +303,10 @@ pub fn resolve_approval(
     event_id: i64,
     decision: &str,
 ) -> Result<(), BridgeError> {
-    if !matches!(decision, "accept" | "acceptForSession" | "decline" | "cancel") {
+    if !matches!(
+        decision,
+        "accept" | "acceptForSession" | "decline" | "cancel"
+    ) {
         return Err(BridgeError::Invalid("Unsupported approval decision".into()));
     }
     let db = core.db.lock().unwrap();
@@ -637,12 +674,9 @@ fn completion_repository_stamp(
     session_id: &str,
 ) -> Result<completion::RepositoryStamp, BridgeError> {
     let state = store::repository_state_for_session(db, session_id)?;
-    let head = state
-        .get("head")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
-        })?;
+    let head = state.get("head").and_then(Value::as_str).ok_or_else(|| {
+        BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
+    })?;
     let dirty = state
         .get("dirtyHash")
         .and_then(Value::as_str)
@@ -694,8 +728,7 @@ fn live_available_capabilities(core: &BridgeCore) -> HashSet<String> {
         .filter(|descriptor| descriptor.available)
         .flat_map(|descriptor| descriptor.capabilities)
         .collect::<HashSet<_>>();
-    if let Ok(skills) = skill_marketplace::available_capabilities(&user_home(), &core.skill_store)
-    {
+    if let Ok(skills) = skill_marketplace::available_capabilities(&user_home(), &core.skill_store) {
         capabilities.extend(skills);
     }
     capabilities
@@ -790,7 +823,14 @@ pub fn waive_completion(
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = core.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, attempt_id)?;
-    completion::waive(&db, attempt_id, check_ids, reason, "local_user", &repository)?;
+    completion::waive(
+        &db,
+        attempt_id,
+        check_ids,
+        reason,
+        "local_user",
+        &repository,
+    )?;
     completion::finalize(&db, attempt_id, &repository)?;
     completion::reconcile_parent_readiness(&db, &session_id)?;
     let summary = completion::latest_summary(&db, &session_id)?
@@ -1303,10 +1343,7 @@ pub fn browser_action(
     core.browser_bridge.issue(request)
 }
 
-pub fn set_browser_permission(
-    core: &Arc<BridgeCore>,
-    permission: &str,
-) -> Result<(), BridgeError> {
+pub fn set_browser_permission(core: &Arc<BridgeCore>, permission: &str) -> Result<(), BridgeError> {
     core.browser_bridge.set_permission(permission)
 }
 
@@ -1356,8 +1393,8 @@ pub fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
     marketplace::catalog()
 }
 
-pub fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError>
-{
+pub fn marketplace_app_auth_states(
+) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
     marketplace::app_auth_states()
 }
 
@@ -1432,7 +1469,9 @@ mod tests {
         // locked-connection call would serialize the whole app behind model
         // evaluation.
         let source = include_str!("api.rs");
-        assert!(source.contains("learning_job::run_local_database(&core.database_path, trigger_kind)"));
+        assert!(
+            source.contains("learning_job::run_local_database(&core.database_path, trigger_kind)")
+        );
         let locked_learning_call = [
             "learning_job::run_learning(",
             "&core.db.lock().unwrap()",
@@ -1531,10 +1570,7 @@ pub fn authorize_backend_change(
         &to_backend,
     )
     .ok_or_else(|| {
-        BridgeError::Invalid(format!(
-            "{} has no backend named {to_backend}",
-            from.agent
-        ))
+        BridgeError::Invalid(format!("{} has no backend named {to_backend}", from.agent))
     })?;
     let to = crate::backend_binding::BackendBinding {
         agent: from.agent.clone(),

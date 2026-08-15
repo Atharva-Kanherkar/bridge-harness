@@ -188,11 +188,9 @@ pub fn opencode_settings(config: Option<&HarnessConfig>) -> Result<OpenCodeSetti
     let Some(config) = config else {
         return Ok(OpenCodeSettings::default());
     };
-    let mut settings: OpenCodeSettings = serde_json::from_value(config.advanced.clone())
-        .map_err(|error| {
-            BridgeError::Invalid(format!(
-                "invalid OpenCode advanced configuration: {error}"
-            ))
+    let mut settings: OpenCodeSettings =
+        serde_json::from_value(config.advanced.clone()).map_err(|error| {
+            BridgeError::Invalid(format!("invalid OpenCode advanced configuration: {error}"))
         })?;
     settings.executable_path = settings
         .executable_path
@@ -586,7 +584,10 @@ mod tests {
             "visibleModels": ["opencode-go/kimi-k2.5"]
         });
         let settings = opencode_settings(Some(&opencode)).unwrap();
-        assert_eq!(settings.executable_path.as_deref(), Some("/managed/opencode"));
+        assert_eq!(
+            settings.executable_path.as_deref(),
+            Some("/managed/opencode")
+        );
         assert_eq!(settings.visible_models, ["opencode-go/kimi-k2.5"]);
 
         for invalid in [

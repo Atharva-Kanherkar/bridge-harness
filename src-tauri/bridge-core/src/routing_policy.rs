@@ -130,16 +130,14 @@ impl ProjectedAggregate {
     fn metrics(&self) -> ReplayMetrics {
         ReplayMetrics {
             samples: self.samples,
-            quality_bps: (self.samples > 0)
-                .then(|| self.quality_total_bps / self.samples),
+            quality_bps: (self.samples > 0).then(|| self.quality_total_bps / self.samples),
             cost_per_success_microusd: (self.samples > 0
                 && self.cost_reported == self.samples
                 && self.expected_success_total_bps > 0)
                 .then(|| self.cost_total_microusd / self.expected_success_total_bps),
             average_latency_ms: (self.latency_reported > 0)
                 .then(|| self.latency_total_ms / self.latency_reported),
-            retry_rate_bps: (self.samples > 0)
-                .then(|| self.retry_total_bps / self.samples),
+            retry_rate_bps: (self.samples > 0).then(|| self.retry_total_bps / self.samples),
             intervention_rate_bps: (self.samples > 0)
                 .then(|| self.intervention_total_bps / self.samples),
             average_confidence_bps: (self.confidence_reported > 0)
@@ -186,14 +184,15 @@ impl Aggregate {
     }
 
     fn confidence_bps(&self) -> Option<i64> {
-        (self.confidence_reported > 0)
-            .then(|| self.confidence_total / self.confidence_reported)
+        (self.confidence_reported > 0).then(|| self.confidence_total / self.confidence_reported)
     }
 
     fn eligible_for_learning(&self) -> bool {
         self.samples >= MIN_GROUP_SAMPLES
             && self.known_outcomes == self.samples
-            && self.confidence_bps().is_some_and(|value| value >= MIN_CONFIDENCE_BPS)
+            && self
+                .confidence_bps()
+                .is_some_and(|value| value >= MIN_CONFIDENCE_BPS)
     }
 
     fn metrics(&self) -> ReplayMetrics {
@@ -254,7 +253,8 @@ fn load_evidence(db: &Connection, boundary: i64) -> Result<Vec<EvidenceRow>, Bri
             decision,
         })
     })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(BridgeError::from)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(BridgeError::from)
 }
 
 fn aggregate_key(row: &EvidenceRow) -> String {
@@ -286,11 +286,7 @@ fn candidate_is_eligible(row: &EvidenceRow, candidate: &str) -> bool {
         .is_some_and(|evaluation| evaluation.exclusions.is_empty())
 }
 
-fn metric_guard(
-    candidate: Option<i64>,
-    baseline: Option<i64>,
-    multiplier_bps: i64,
-) -> bool {
+fn metric_guard(candidate: Option<i64>, baseline: Option<i64>, multiplier_bps: i64) -> bool {
     match (candidate, baseline) {
         (Some(candidate), Some(baseline)) => candidate * 10_000 <= baseline * multiplier_bps,
         (None, None) => true,
@@ -307,9 +303,8 @@ pub fn build_candidate(
     if evidence.len() < MIN_EVIDENCE_SAMPLES as usize {
         return Ok(None);
     }
-    let (mut training, mut held_out): (Vec<_>, Vec<_>) = evidence
-        .iter()
-        .partition(|row| row.rowid % 5 != 0);
+    let (mut training, mut held_out): (Vec<_>, Vec<_>) =
+        evidence.iter().partition(|row| row.rowid % 5 != 0);
     if held_out.is_empty() {
         held_out.push(training.pop().expect("evidence is non-empty"));
     }
@@ -375,7 +370,10 @@ pub fn build_candidate(
     let mut family_contexts = BTreeMap::<String, Vec<&EvidenceRow>>::new();
     for row in &training {
         family_contexts
-            .entry(format!("{}|{}|{}", row.task_family, row.profile_key, row.effort))
+            .entry(format!(
+                "{}|{}|{}",
+                row.task_family, row.profile_key, row.effort
+            ))
             .or_default()
             .push(row);
     }
@@ -501,10 +499,19 @@ pub fn build_candidate(
         .is_some_and(|(candidate, baseline)| candidate <= baseline + 500);
     let mut reasons = Vec::new();
     for (passed, reason) in [
-        (coverage_bps >= MIN_REPLAY_COVERAGE_BPS, "held-out replay coverage is below 80%"),
-        (unavailable == 0, "candidate selected an unavailable or excluded model"),
+        (
+            coverage_bps >= MIN_REPLAY_COVERAGE_BPS,
+            "held-out replay coverage is below 80%",
+        ),
+        (
+            unavailable == 0,
+            "candidate selected an unavailable or excluded model",
+        ),
         (quality_guard, "candidate quality regressed"),
-        (cost_guard, "candidate cost per successful task regressed or is unknown"),
+        (
+            cost_guard,
+            "candidate cost per successful task regressed or is unknown",
+        ),
         (latency_guard, "candidate latency regressed or is unknown"),
         (retry_guard, "candidate retry rate regressed"),
         (intervention_guard, "candidate intervention rate regressed"),

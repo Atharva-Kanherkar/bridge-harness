@@ -109,7 +109,10 @@ impl HandoffPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{session_forest::{EntryKind, SessionForest}, store};
+    use crate::{
+        session_forest::{EntryKind, SessionForest},
+        store,
+    };
     use std::path::Path;
 
     #[test]
@@ -138,7 +141,11 @@ mod tests {
     #[test]
     fn assessment_prefers_completed_turns_checkpoints_and_worker_results() {
         let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/handoff','now')", []).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/handoff','now')",
+            [],
+        )
+        .unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/handoff-w','idle','now')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,active_turn_id) VALUES('parent','w','codex','Parent','working','reported','turn')", []).unwrap();
         db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('parent','fresh','now')", []).unwrap();
@@ -146,14 +153,30 @@ mod tests {
         let mid_turn = assess(&db, "parent", "claude").unwrap();
         assert!(mid_turn.cross_harness);
         assert!(!mid_turn.at_phase_boundary);
-        assert_eq!(fidelity_for_projection(&mid_turn), ContinuationFidelity::ProjectedMidTurn);
+        assert_eq!(
+            fidelity_for_projection(&mid_turn),
+            ContinuationFidelity::ProjectedMidTurn
+        );
 
-        SessionForest::new(&db).append("parent", EntryKind::WorkerResult, serde_json::json!({"status":"completed","summary":"verified"})).unwrap();
+        SessionForest::new(&db)
+            .append(
+                "parent",
+                EntryKind::WorkerResult,
+                serde_json::json!({"status":"completed","summary":"verified"}),
+            )
+            .unwrap();
         let verified = assess(&db, "parent", "claude").unwrap();
         assert!(verified.at_phase_boundary);
-        assert_eq!(fidelity_for_projection(&verified), ContinuationFidelity::ProjectedAtBoundary);
+        assert_eq!(
+            fidelity_for_projection(&verified),
+            ContinuationFidelity::ProjectedAtBoundary
+        );
 
-        db.execute("UPDATE sessions SET active_turn_id=NULL WHERE id='parent'", []).unwrap();
+        db.execute(
+            "UPDATE sessions SET active_turn_id=NULL WHERE id='parent'",
+            [],
+        )
+        .unwrap();
         assert!(assess(&db, "parent", "claude").unwrap().at_phase_boundary);
         assert!(!assess(&db, "parent", "codex").unwrap().cross_harness);
     }

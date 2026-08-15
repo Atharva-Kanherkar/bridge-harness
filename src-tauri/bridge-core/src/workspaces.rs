@@ -246,7 +246,11 @@ mod tests {
     use std::process::Command;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git").args(args).current_dir(cwd).output().unwrap();
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "git {args:?} failed: {}",
@@ -258,7 +262,10 @@ mod tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q"]);
-        git(&repo, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(
+            &repo,
+            &["config", "user.email", "bridge-test@example.invalid"],
+        );
         git(&repo, &["config", "user.name", "Bridge Test"]);
         std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
         git(&repo, &["add", "."]);
@@ -276,7 +283,9 @@ mod tests {
         core.db
             .lock()
             .unwrap()
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
             .unwrap()
     }
 
@@ -342,7 +351,8 @@ mod tests {
         // A plain folder connects as-is: no project link, no branch.
         let plain = scratch.path().join("plain");
         std::fs::create_dir(&plain).unwrap();
-        core.connect_workspace_folder(&workspace_id, plain.to_str().unwrap()).unwrap();
+        core.connect_workspace_folder(&workspace_id, plain.to_str().unwrap())
+            .unwrap();
         let (path, project_id, branch): (String, Option<String>, Option<String>) = core
             .db
             .lock()
@@ -357,7 +367,8 @@ mod tests {
         assert_eq!((project_id, branch), (None, None));
 
         // A repository resolves to its root, registers a project, records the branch.
-        core.connect_workspace_folder(&workspace_id, repo.to_str().unwrap()).unwrap();
+        core.connect_workspace_folder(&workspace_id, repo.to_str().unwrap())
+            .unwrap();
         let (project_id, branch): (Option<String>, Option<String>) = core
             .db
             .lock()
@@ -399,7 +410,10 @@ mod tests {
     #[test]
     fn workspace_path_errors_for_unknown_workspaces() {
         let (_scratch, core) = fixture();
-        assert!(matches!(core.workspace_path("missing"), Err(BridgeError::Db(_))));
+        assert!(matches!(
+            core.workspace_path("missing"),
+            Err(BridgeError::Db(_))
+        ));
     }
 
     #[test]
@@ -412,7 +426,8 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM workspaces", [], |row| row.get(0))
             .unwrap();
-        core.record_workspace_git_stats(&workspace_id, (3, 10, 2)).unwrap();
+        core.record_workspace_git_stats(&workspace_id, (3, 10, 2))
+            .unwrap();
         let (dirty, adds, dels): (i64, i64, i64) = core
             .db
             .lock()
@@ -426,7 +441,9 @@ mod tests {
         assert_eq!((dirty, adds, dels), (3, 10, 2));
         // The refresh race: a workspace archived between the path resolve and
         // the stats write updates zero rows and still returns a snapshot.
-        assert!(core.record_workspace_git_stats("already-archived", (1, 1, 1)).is_ok());
+        assert!(core
+            .record_workspace_git_stats("already-archived", (1, 1, 1))
+            .is_ok());
     }
 
     /// Workspace 'w' backed by a real worktree of a real repository.
@@ -460,7 +477,10 @@ mod tests {
         let mut events = core.events.subscribe();
         core.archive_workspace("w").unwrap();
         // Exactly one state-changed refetch hint, published after the commit.
-        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::StateChanged));
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::StateChanged
+        ));
         assert!(events.try_recv().is_err(), "exactly one event per archive");
         assert_eq!(count(&core, "workspaces"), 0);
         assert_eq!(count(&core, "sessions"), 0);
@@ -476,20 +496,33 @@ mod tests {
         core.db
             .lock()
             .unwrap()
-            .execute("UPDATE sessions SET status='working',ended_at=NULL WHERE id='s'", [])
+            .execute(
+                "UPDATE sessions SET status='working',ended_at=NULL WHERE id='s'",
+                [],
+            )
             .unwrap();
         let error = core.archive_workspace("w").unwrap_err();
-        assert!(error.to_string().contains("Stop every running session"), "{error}");
+        assert!(
+            error.to_string().contains("Stop every running session"),
+            "{error}"
+        );
 
         core.db
             .lock()
             .unwrap()
-            .execute("UPDATE sessions SET status='stopped',ended_at='now' WHERE id='s'", [])
+            .execute(
+                "UPDATE sessions SET status='stopped',ended_at='now' WHERE id='s'",
+                [],
+            )
             .unwrap();
         std::fs::write(worktree.join("shared.txt"), "dirty\n").unwrap();
         let error = core.archive_workspace("w").unwrap_err();
         assert!(error.to_string().contains("uncommitted"), "{error}");
-        assert_eq!(count(&core, "workspaces"), 1, "refusals must not delete anything");
+        assert_eq!(
+            count(&core, "workspaces"),
+            1,
+            "refusals must not delete anything"
+        );
         assert_eq!(count(&core, "sessions"), 1);
         assert!(worktree.exists());
     }
@@ -509,8 +542,15 @@ mod tests {
         let mut events = core.events.subscribe();
         let error = core.archive_workspace("w").unwrap_err();
         assert!(matches!(error, BridgeError::Git(_)), "{error}");
-        assert!(events.try_recv().is_err(), "a rolled-back archive must emit nothing");
-        assert_eq!(count(&core, "workspaces"), 1, "failed archive must roll back");
+        assert!(
+            events.try_recv().is_err(),
+            "a rolled-back archive must emit nothing"
+        );
+        assert_eq!(
+            count(&core, "workspaces"),
+            1,
+            "failed archive must roll back"
+        );
         assert_eq!(count(&core, "sessions"), 1);
         assert!(!event_exists(&core, "workspace.archived", "w"));
     }
@@ -531,9 +571,15 @@ mod tests {
 
         let mut events = core.events.subscribe();
         assert!(core.archive_workspace("w").is_err());
-        assert!(events.try_recv().is_err(), "a rolled-back archive must publish nothing");
+        assert!(
+            events.try_recv().is_err(),
+            "a rolled-back archive must publish nothing"
+        );
         assert_eq!(count(&core, "workspaces"), 1);
         assert_eq!(count(&core, "sessions"), 1);
-        assert!(worktree.exists(), "audit failure must happen before worktree removal");
+        assert!(
+            worktree.exists(),
+            "audit failure must happen before worktree removal"
+        );
     }
 }

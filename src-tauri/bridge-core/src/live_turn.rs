@@ -12,13 +12,12 @@ use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::sessions;
 use crate::{
-    adapters, agent, agent_config, backend_binding, compaction_controller, completion, delegation,
-    handoff, learning_job, learning_router, managed_agents, orchestrator, policy,
-    policy_coordinator, prompt_compiler, restoration,
-    secret_interception, session_forest, session_supervisor, skill_marketplace, slash, store,
+    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
+    completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
+    orchestrator, policy, policy_coordinator, prompt_compiler, restoration, secret_interception,
+    session_forest, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
-    check_runner, git, worker_adoption, worktree_coordinator, BridgeError,
-    WORKER_APPROVAL_TIMEOUT_SECONDS,
+    worktree_coordinator, BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
 use chrono::Utc;
@@ -51,8 +50,7 @@ pub fn live_available_capabilities(state: &BridgeCore) -> std::collections::Hash
         .filter(|descriptor| descriptor.available)
         .flat_map(|descriptor| descriptor.capabilities)
         .collect::<std::collections::HashSet<_>>();
-    if let Ok(skills) =
-        skill_marketplace::available_capabilities(&user_home(), &state.skill_store)
+    if let Ok(skills) = skill_marketplace::available_capabilities(&user_home(), &state.skill_store)
     {
         capabilities.extend(skills);
     }
@@ -94,11 +92,18 @@ fn compile_worker_prompt(
     credential_context: &str,
     checkpoint_context: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
-    let mut compiler = prompt_compiler::PromptCompiler::new(format!("worker:{}", directive.role.as_str()))
-        .stable_section("worker_contract", delegation::worker_contract(directive.role, depth))
-        .project_rule("configured_project_rules", configured_prompt)
-        .variable_section("task_context", delegation::worker_task_context(directive, branch, evidence))
-        .variable_section("session_capabilities", credential_context);
+    let mut compiler =
+        prompt_compiler::PromptCompiler::new(format!("worker:{}", directive.role.as_str()))
+            .stable_section(
+                "worker_contract",
+                delegation::worker_contract(directive.role, depth),
+            )
+            .project_rule("configured_project_rules", configured_prompt)
+            .variable_section(
+                "task_context",
+                delegation::worker_task_context(directive, branch, evidence),
+            )
+            .variable_section("session_capabilities", credential_context);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
     }
@@ -143,11 +148,15 @@ pub fn cross_harness_reuse_marker(
     parent_session_id: &str,
     child_harness: &str,
 ) -> &'static str {
-    match db.query_row(
-        "SELECT harness FROM sessions WHERE id=?1",
-        params![parent_session_id],
-        |row| row.get::<_, String>(0),
-    ).ok().as_deref() {
+    match db
+        .query_row(
+            "SELECT harness FROM sessions WHERE id=?1",
+            params![parent_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .as_deref()
+    {
         Some(parent) if parent == child_harness => "same_harness",
         Some(_) => "incompatible",
         None => "not_applicable",
@@ -177,7 +186,9 @@ pub fn start_session(
             .descriptors()
             .into_iter()
             .find(|descriptor| descriptor.id == adapter_id)
-            .ok_or_else(|| BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}")))?;
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!("No model adapter is registered for {adapter_id}"))
+            })?;
         if !descriptor.available {
             return Err(BridgeError::Invalid(
                 descriptor
@@ -185,28 +196,41 @@ pub fn start_session(
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        let selected = if let Some(requested) = model.as_deref().filter(|value| !value.trim().is_empty()) {
+        let selected = if let Some(requested) =
+            model.as_deref().filter(|value| !value.trim().is_empty())
+        {
             descriptor
                 .models
                 .iter()
                 .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
                 .cloned()
-                .ok_or_else(|| BridgeError::Invalid(format!("{} does not offer model {requested}", descriptor.label)))?
+                .ok_or_else(|| {
+                    BridgeError::Invalid(format!(
+                        "{} does not offer model {requested}",
+                        descriptor.label
+                    ))
+                })?
         } else {
             descriptor
                 .models
                 .iter()
                 .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
-                .or_else(|| descriptor.models.iter().find(|option| option.tier == CapabilityTier::Standard))
+                .or_else(|| {
+                    descriptor
+                        .models
+                        .iter()
+                        .find(|option| option.tier == CapabilityTier::Standard)
+                })
                 .cloned()
-                .ok_or_else(|| BridgeError::Invalid(format!("{} has no standard model", descriptor.label)))?
+                .ok_or_else(|| {
+                    BridgeError::Invalid(format!("{} has no standard model", descriptor.label))
+                })?
         };
         sessions::OrchestratorSelection {
             adapter_id: adapter_id.clone(),
             model: selected.id,
             tier: selected.tier,
-            effort: agent_config::harness_config(&db, &adapter_id)
-                .and_then(|config| config.effort),
+            effort: agent_config::harness_config(&db, &adapter_id).and_then(|config| config.effort),
             label: agent_config::default_orchestrator(&db)
                 .map(|agent| agent.name)
                 .unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
@@ -269,9 +293,11 @@ pub fn start_session(
             .to_string()
     });
     std::fs::create_dir_all(&path)?;
-    let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
+    let configured_prompt =
+        agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
     let credential_context = state.credential_broker.instructions(&session_id);
-    let orchestrator_prompt = compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
+    let orchestrator_prompt =
+        compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
@@ -289,7 +315,8 @@ pub fn start_session(
         let hot_prompt_compatible = store::latest_prompt_compilation(
             &state.db.lock().unwrap(),
             &session_id,
-        )?.is_some_and(|previous| {
+        )?
+        .is_some_and(|previous| {
             previous.harness == adapter_id
                 && previous.prefix_hash == orchestrator_prompt.metadata.prefix_hash
                 && previous.schema_version == i64::from(orchestrator_prompt.metadata.schema_version)
@@ -352,10 +379,13 @@ pub fn start_session(
             },
         )
     };
-    let checkpoint_instructions = checkpoint_context.as_deref().map(|context| {
-        compile_orchestrator_prompt(&configured_prompt, &credential_context, Some(context))
-            .map(|prompt| prompt.instructions().to_owned())
-    }).transpose()?;
+    let checkpoint_instructions = checkpoint_context
+        .as_deref()
+        .map(|context| {
+            compile_orchestrator_prompt(&configured_prompt, &credential_context, Some(context))
+                .map(|prompt| prompt.instructions().to_owned())
+        })
+        .transpose()?;
     let (mut started, restoration_mode, resume_eligibility) = match plan {
         restoration::RestorationPlan::Native => {
             let provider_id = stored_provider_id
@@ -510,16 +540,17 @@ pub fn start_session(
         "not_applicable",
         &orchestrator_prompt,
     ) {
-        let _ = db.execute("UPDATE sessions SET status='failed' WHERE id=?1", params![session_id]);
+        let _ = db.execute(
+            "UPDATE sessions SET status='failed' WHERE id=?1",
+            params![session_id],
+        );
         drop(db);
         started.runtime.stop(adapters::ShutdownReason::Failed);
         return Err(error);
     }
-    if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
-        &db,
-        &session_id,
-        process_id,
-    ) {
+    if let Err(error) =
+        session_supervisor::SessionSupervisor::track_adapter_process(&db, &session_id, process_id)
+    {
         drop(db);
         started.runtime.stop(adapters::ShutdownReason::Failed);
         return Err(error);
@@ -604,10 +635,7 @@ pub fn start_session(
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
 /// harness/model with no briefing; an `orchestrator` session runs codex with the
 /// routing briefing + delegation protocol (workers enabled via the reader gate).
-pub fn start_chat(
-    core: &Arc<BridgeCore>,
-    session_id: String,
-) -> Result<BridgeState, BridgeError> {
+pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
     let state = core;
     // Exclusive with model switches (and other starts) on this session: the
     // switch flow tears the adapter down across an await, and a start
@@ -725,41 +753,20 @@ pub fn start_chat(
     let launch_cwd = cwd.clone();
     let launch_model = chosen_model.clone();
     let (mut started, mode, eligibility) = (match resumable {
-            Some(provider) => match registry.resume(
-                &launch_adapter_id,
-                adapters::ResumeRequest {
-                    provider_session_id: &provider,
-                    cwd: &launch_cwd,
-                    model: launch_model.as_deref(),
-                    effort: chosen_effort.as_deref(),
-                    instructions: Some(&runtime_instructions),
-                    write_mode: None,
-                    read_only_sandbox: None,
-                },
-            ) {
-                Ok(started) => Ok((
-                    started,
-                    RestorationMode::Native,
-                    ResumeEligibility::Native,
-                )),
-                Err(_) => registry.start(
-                    &launch_adapter_id,
-                    adapters::StartRequest {
-                        cwd: &launch_cwd,
-                        model: launch_model.as_deref(),
-                        effort: chosen_effort.as_deref(),
-                        instructions: Some(&runtime_instructions),
-                        write_mode: None,
-                        read_only_sandbox: None,
-                    },
-                )
-                .map(|started| (
-                    started,
-                    RestorationMode::Fresh,
-                    ResumeEligibility::Fresh,
-                )),
+        Some(provider) => match registry.resume(
+            &launch_adapter_id,
+            adapters::ResumeRequest {
+                provider_session_id: &provider,
+                cwd: &launch_cwd,
+                model: launch_model.as_deref(),
+                effort: chosen_effort.as_deref(),
+                instructions: Some(&runtime_instructions),
+                write_mode: None,
+                read_only_sandbox: None,
             },
-            None => registry
+        ) {
+            Ok(started) => Ok((started, RestorationMode::Native, ResumeEligibility::Native)),
+            Err(_) => registry
                 .start(
                     &launch_adapter_id,
                     adapters::StartRequest {
@@ -772,7 +779,21 @@ pub fn start_chat(
                     },
                 )
                 .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
-        })?;
+        },
+        None => registry
+            .start(
+                &launch_adapter_id,
+                adapters::StartRequest {
+                    cwd: &launch_cwd,
+                    model: launch_model.as_deref(),
+                    effort: chosen_effort.as_deref(),
+                    instructions: Some(&runtime_instructions),
+                    write_mode: None,
+                    read_only_sandbox: None,
+                },
+            )
+            .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
+    })?;
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();
@@ -797,13 +818,24 @@ pub fn start_chat(
             &session_id,
             adapter_id,
             chosen_model.as_deref(),
-            if is_orchestrator { "orchestrator" } else { "session" },
-            if is_orchestrator { "orchestration" } else { "direct" },
+            if is_orchestrator {
+                "orchestrator"
+            } else {
+                "session"
+            },
+            if is_orchestrator {
+                "orchestration"
+            } else {
+                "direct"
+            },
             mode,
             "not_applicable",
             &compiled_prompt,
         ) {
-            let _ = db.execute("UPDATE sessions SET status='failed' WHERE id=?1", params![session_id]);
+            let _ = db.execute(
+                "UPDATE sessions SET status='failed' WHERE id=?1",
+                params![session_id],
+            );
             drop(db);
             started.runtime.stop(adapters::ShutdownReason::Failed);
             return Err(error);
@@ -903,13 +935,10 @@ fn spawn_reader_thread(
     mut reader: Box<dyn BufRead + Send>,
 ) {
     thread::spawn(move || {
-        let tracks_worker = store::worker_runtime(
-            &core.clone().db.lock().unwrap(),
-            &session_id,
-        )
-        .ok()
-        .flatten()
-        .is_some();
+        let tracks_worker = store::worker_runtime(&core.clone().db.lock().unwrap(), &session_id)
+            .ok()
+            .flatten()
+            .is_some();
         // Seed a heartbeat so a worker that never emits a single line still has
         // a baseline the stall watchdog can measure from.
         if tracks_worker {
@@ -965,8 +994,7 @@ fn spawn_reader_thread(
             &state.db.lock().unwrap(),
             &session_id,
         );
-        let failure_context =
-            exited_runtime.and_then(|mut runtime| runtime.failure_context());
+        let failure_context = exited_runtime.and_then(|mut runtime| runtime.failure_context());
         notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
         let db = state.db.lock().unwrap();
         let is_worker = store::worker_runtime(&db, &session_id)
@@ -1104,11 +1132,8 @@ fn handle_agent_value(
                     *current_turn.lock().unwrap() = turn_id.clone();
                     if let Some(turn_id) = &turn_id {
                         observed_turn_id = Some(turn_id.clone());
-                        let _ = store::bind_latest_prompt_compilation_to_turn(
-                            &db,
-                            session_id,
-                            turn_id,
-                        );
+                        let _ =
+                            store::bind_latest_prompt_compilation_to_turn(&db, session_id, turn_id);
                         state
                             .delegations
                             .lock()
@@ -1590,7 +1615,11 @@ pub fn send_internal_checkpoint_turn(
     Ok(())
 }
 
-fn finish_worker_checkpoint(core: &Arc<BridgeCore>, session_id: &str, reason: adapters::ShutdownReason) {
+fn finish_worker_checkpoint(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    reason: adapters::ShutdownReason,
+) {
     let state = core.clone();
     let should_stop = {
         let db = state.db.lock().unwrap();
@@ -1834,10 +1863,12 @@ pub fn reserve_worker_launch_outcome(
                     "policy required approval but recorded no approval card".into(),
                 )
             })?;
-            return Ok(WorkerReservationOutcome::AwaitingApproval(PendingApproval {
-                approval_id,
-                reason: outcome.reason,
-            }));
+            return Ok(WorkerReservationOutcome::AwaitingApproval(
+                PendingApproval {
+                    approval_id,
+                    reason: outcome.reason,
+                },
+            ));
         }
         _ => return Ok(WorkerReservationOutcome::Blocked(outcome.reason)),
     }
@@ -2321,8 +2352,7 @@ pub fn launch_worker_outcome(
             // A resumed isolated worker keeps its existing child worktree, so
             // isolation is a property of the write mode, not of whether this
             // launch created the worktree.
-            requires_child_worktree
-                || directive.write_mode == delegation::WriteMode::Isolated,
+            requires_child_worktree || directive.write_mode == delegation::WriteMode::Isolated,
         );
         if let Err(error) = binding {
             fail_reserved_worker(
@@ -2364,7 +2394,9 @@ pub fn launch_worker_outcome(
     };
     let role = directive.role.as_str();
     let configured_prompt = agent_config::prompt_suffix(&state.db.lock().unwrap(), &harness, role);
-    let credential_context = state.credential_broker.instructions(&reservation.session_id);
+    let credential_context = state
+        .credential_broker
+        .instructions(&reservation.session_id);
     let compiled_prompt = match compile_worker_prompt(
         directive,
         reservation.depth,
@@ -2376,23 +2408,33 @@ pub fn launch_worker_outcome(
     ) {
         Ok(prompt) => prompt,
         Err(error) => {
-            fail_reserved_worker(core, &reservation.session_id, &label, &format!("Could not compile worker prompt: {error}"));
+            fail_reserved_worker(
+                core,
+                &reservation.session_id,
+                &label,
+                &format!("Could not compile worker prompt: {error}"),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
     let mut instructions = compiled_prompt.instructions().to_owned();
-    let hot_prompt_compatible = store::latest_prompt_compilation(
-        &state.db.lock().unwrap(),
-        &reservation.session_id,
-    ).ok().flatten().is_some_and(|previous| {
-        previous.harness == harness
-            && previous.model.as_deref() == Some(model.as_str())
-            && previous.prefix_hash == compiled_prompt.metadata.prefix_hash
-            && previous.schema_version == i64::from(compiled_prompt.metadata.schema_version)
-    });
+    let hot_prompt_compatible =
+        store::latest_prompt_compilation(&state.db.lock().unwrap(), &reservation.session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|previous| {
+                previous.harness == harness
+                    && previous.model.as_deref() == Some(model.as_str())
+                    && previous.prefix_hash == compiled_prompt.metadata.prefix_hash
+                    && previous.schema_version == i64::from(compiled_prompt.metadata.schema_version)
+            });
 
     if reservation.reuse_existing
-        && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .contains_key(&reservation.session_id)
         && hot_prompt_compatible
     {
         let current = store::worker_runtime(&state.db.lock().unwrap(), &reservation.session_id)
@@ -2472,14 +2514,24 @@ pub fn launch_worker_outcome(
             let prompt_record_id = match prompt_record_id {
                 Ok(id) => id,
                 Err(error) => {
-                    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+                    if let Some(mut runtime) = state
+                        .adapters
+                        .lock()
+                        .unwrap()
+                        .remove(&reservation.session_id)
+                    {
                         runtime.stop(adapters::ShutdownReason::Failed);
                     }
                     let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
                         &state.db.lock().unwrap(),
                         &reservation.session_id,
                     );
-                    fail_reserved_worker(core, &reservation.session_id, &label, &format!("Could not persist hot prompt compilation: {error}"));
+                    fail_reserved_worker(
+                        core,
+                        &reservation.session_id,
+                        &label,
+                        &format!("Could not persist hot prompt compilation: {error}"),
+                    );
                     return WorkerLaunchOutcome::Failed;
                 }
             };
@@ -2488,18 +2540,41 @@ pub fn launch_worker_outcome(
                 .lock()
                 .unwrap()
                 .get(&reservation.session_id)
-                .ok_or_else(|| BridgeError::Invalid("Hot worker runtime disappeared before prompt delivery".into()))
+                .ok_or_else(|| {
+                    BridgeError::Invalid(
+                        "Hot worker runtime disappeared before prompt delivery".into(),
+                    )
+                })
                 .and_then(|runtime| runtime.send_turn(&instructions));
             if let Err(error) = delivery {
-                if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+                if let Some(mut runtime) = state
+                    .adapters
+                    .lock()
+                    .unwrap()
+                    .remove(&reservation.session_id)
+                {
                     runtime.stop(adapters::ShutdownReason::Failed);
                 }
                 let db = state.db.lock().unwrap();
-                let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &reservation.session_id);
+                let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+                    &db,
+                    &reservation.session_id,
+                );
                 let _ = store::delete_prompt_compilation(&db, prompt_record_id);
                 drop(db);
-                fail_reserved_worker(core, &reservation.session_id, &label, &format!("Could not deliver hot worker prompt: {error}"));
-                let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, &error.to_string());
+                fail_reserved_worker(
+                    core,
+                    &reservation.session_id,
+                    &label,
+                    &format!("Could not deliver hot worker prompt: {error}"),
+                );
+                let _ = store::event(
+                    &state.db.lock().unwrap(),
+                    "worker-pool",
+                    "worker.hot_resume_failed",
+                    &reservation.session_id,
+                    &error.to_string(),
+                );
                 return WorkerLaunchOutcome::Failed;
             }
             let _ = learning_router::record_route_status(
@@ -2511,23 +2586,48 @@ pub fn launch_worker_outcome(
             return WorkerLaunchOutcome::Launched(reservation.session_id);
         }
         let error = activation_result.unwrap_err();
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+        if let Some(mut runtime) = state
+            .adapters
+            .lock()
+            .unwrap()
+            .remove(&reservation.session_id)
+        {
             runtime.stop(adapters::ShutdownReason::Failed);
         }
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
             &state.db.lock().unwrap(),
             &reservation.session_id,
         );
-        fail_reserved_worker(core, &reservation.session_id, &label, &format!("Could not reactivate compatible hot worker: {error}"));
-        let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, &error.to_string());
+        fail_reserved_worker(
+            core,
+            &reservation.session_id,
+            &label,
+            &format!("Could not reactivate compatible hot worker: {error}"),
+        );
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "worker-pool",
+            "worker.hot_resume_failed",
+            &reservation.session_id,
+            &error.to_string(),
+        );
         return WorkerLaunchOutcome::Failed;
     }
 
     if reservation.reuse_existing
-        && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .contains_key(&reservation.session_id)
         && !hot_prompt_compatible
     {
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&reservation.session_id) {
+        if let Some(mut runtime) = state
+            .adapters
+            .lock()
+            .unwrap()
+            .remove(&reservation.session_id)
+        {
             runtime.stop(adapters::ShutdownReason::Replaced);
         }
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
@@ -2589,7 +2689,11 @@ pub fn launch_worker_outcome(
                     &format!(
                         "mode=seatbelt task_network={} runtime_egress={} output_dir={output}",
                         network_allowed,
-                        if sandbox_runtime_egress { "allowed" } else { "denied" }
+                        if sandbox_runtime_egress {
+                            "allowed"
+                        } else {
+                            "denied"
+                        }
                     ),
                 );
             }
@@ -2649,7 +2753,8 @@ pub fn launch_worker_outcome(
             &configured_prompt,
             &credential_context,
             Some(&restoration_context),
-        ).map(|prompt| prompt.instructions().to_owned())
+        )
+        .map(|prompt| prompt.instructions().to_owned())
     };
     let activation = if reservation.reuse_existing {
         if let Err(error) = session_supervisor::SessionSupervisor::transition(
@@ -2703,26 +2808,42 @@ pub fn launch_worker_outcome(
         match resumed {
             Ok(Some(started)) => Ok((started, WorkerActivation::Native)),
             Err(error) => {
-                let _ = restoration::record_resume_failed(&state.db.lock().unwrap(), &reservation.session_id, &error.to_string());
-                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&dispatch_id, adapters::StartRequest {
-                    cwd: &reservation.path,
-                    model: Some(model.as_str()),
-                    effort: Some(&effort),
-                    instructions: Some(restored_instructions.as_str()),
-                    write_mode: Some(directive.write_mode),
-                    read_only_sandbox: read_only_sandbox.as_ref(),
-                })).map(|started| (started, WorkerActivation::CheckpointRestored))
+                let _ = restoration::record_resume_failed(
+                    &state.db.lock().unwrap(),
+                    &reservation.session_id,
+                    &error.to_string(),
+                );
+                compile_restored_prompt(checkpoint)
+                    .and_then(|restored_instructions| {
+                        state.adapter_registry.start(
+                            &dispatch_id,
+                            adapters::StartRequest {
+                                cwd: &reservation.path,
+                                model: Some(model.as_str()),
+                                effort: Some(&effort),
+                                instructions: Some(restored_instructions.as_str()),
+                                write_mode: Some(directive.write_mode),
+                                read_only_sandbox: read_only_sandbox.as_ref(),
+                            },
+                        )
+                    })
+                    .map(|started| (started, WorkerActivation::CheckpointRestored))
             }
-            Ok(None) => {
-                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&dispatch_id, adapters::StartRequest {
-                    cwd: &reservation.path,
-                    model: Some(model.as_str()),
-                    effort: Some(&effort),
-                    instructions: Some(restored_instructions.as_str()),
-                    write_mode: Some(directive.write_mode),
-                    read_only_sandbox: read_only_sandbox.as_ref(),
-                })).map(|started| (started, WorkerActivation::CheckpointRestored))
-            }
+            Ok(None) => compile_restored_prompt(checkpoint)
+                .and_then(|restored_instructions| {
+                    state.adapter_registry.start(
+                        &dispatch_id,
+                        adapters::StartRequest {
+                            cwd: &reservation.path,
+                            model: Some(model.as_str()),
+                            effort: Some(&effort),
+                            instructions: Some(restored_instructions.as_str()),
+                            write_mode: Some(directive.write_mode),
+                            read_only_sandbox: read_only_sandbox.as_ref(),
+                        },
+                    )
+                })
+                .map(|started| (started, WorkerActivation::CheckpointRestored)),
         }
     } else {
         state
@@ -2877,8 +2998,7 @@ pub fn launch_worker_outcome(
         restoration_mode,
         resume_eligibility,
         Some(&thread_id),
-    )
-    {
+    ) {
         runtime.stop(adapters::ShutdownReason::Failed);
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
             &state.db.lock().unwrap(),
@@ -2897,8 +3017,7 @@ pub fn launch_worker_outcome(
         &state.db.lock().unwrap(),
         &session_id,
         continuation_fidelity,
-    )
-    {
+    ) {
         runtime.stop(adapters::ShutdownReason::Failed);
         let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
             &state.db.lock().unwrap(),
@@ -2941,8 +3060,16 @@ pub fn launch_worker_outcome(
         ) {
             drop(db);
             runtime.stop(adapters::ShutdownReason::Failed);
-            let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
-            fail_reserved_worker(core, &session_id, &label, &format!("Could not persist prompt compilation: {error}"));
+            let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
+                &state.db.lock().unwrap(),
+                &session_id,
+            );
+            fail_reserved_worker(
+                core,
+                &session_id,
+                &label,
+                &format!("Could not persist prompt compilation: {error}"),
+            );
             return WorkerLaunchOutcome::Failed;
         }
         let _ = db.execute(
@@ -3387,7 +3514,10 @@ fn expire_worker_approvals(core: &Arc<BridgeCore>) {
             .filter_map(|(session_id, label, since)| {
                 let waited = chrono::DateTime::parse_from_rfc3339(&since)
                     .ok()
-                    .map(|since| now.signed_duration_since(since.with_timezone(&Utc)).num_seconds())?;
+                    .map(|since| {
+                        now.signed_duration_since(since.with_timezone(&Utc))
+                            .num_seconds()
+                    })?;
                 (waited >= WORKER_APPROVAL_TIMEOUT_SECONDS).then_some((session_id, label, waited))
             })
             .collect()
@@ -3798,7 +3928,10 @@ fn delete_reserved_worker(db: &Connection, session_id: &str) -> Result<(), Bridg
     Ok(())
 }
 
-pub fn prepare_worker_failure_settlement(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
+pub fn prepare_worker_failure_settlement(
+    db: &Connection,
+    session_id: &str,
+) -> Result<(), BridgeError> {
     let current: String = db.query_row(
         "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
         params![session_id],
@@ -4248,10 +4381,7 @@ fn notify_parent_on_worker_exit(
 /// summary carries the provider's final error line and the risks carry the
 /// full tail, so the parent (which reads the typed result as evidence) and
 /// the UI both see the actual cause, never just "ended without reporting".
-fn synthetic_exit_result(
-    label: &str,
-    failure_context: Option<&str>,
-) -> delegation::WorkerResult {
+fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegation::WorkerResult {
     let mut risks = vec!["Worker process exited before a typed result was produced".to_owned()];
     let summary = match failure_context {
         Some(context) => {
@@ -4387,7 +4517,11 @@ fn verify_read_only_worker(core: &Arc<BridgeCore>, child_session_id: &str) {
 
 /// Deliver a framed message from a child to its parent session: send it into the
 /// parent's live turn stream and drop a marker card into the parent's transcript.
-fn report_to_parent(core: &Arc<BridgeCore>, child_session_id: &str, result: &delegation::WorkerResult) {
+fn report_to_parent(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) {
     let state = core.clone();
     // Check the claim against the repository *before* it becomes canonical. A
     // `completed` write-mode result with no matching commit or dirty path is
@@ -4396,7 +4530,9 @@ fn report_to_parent(core: &Arc<BridgeCore>, child_session_id: &str, result: &del
     // the two locks, never inside one.
     let binding = {
         let db = state.db.lock().unwrap();
-        worker_adoption::binding(&db, child_session_id).ok().flatten()
+        worker_adoption::binding(&db, child_session_id)
+            .ok()
+            .flatten()
     };
     let reconciled = match binding {
         Some(binding) => {
@@ -4916,7 +5052,9 @@ pub fn start_learning_maintenance(core: Arc<BridgeCore>) {
             result
         };
         if let Some(run) = ran {
-            core.events.publish(CoreEvent::LearningJobChanged(serde_json::to_value(run).unwrap_or_default()));
+            core.events.publish(CoreEvent::LearningJobChanged(
+                serde_json::to_value(run).unwrap_or_default(),
+            ));
         }
         thread::sleep(Duration::from_secs(60));
     });
@@ -5034,7 +5172,8 @@ pub fn send_turn(
     let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
         slash::SlashDispatch::Usage => {
             state.refresh_account_usage()?;
-            emit_local_assistant(core,
+            emit_local_assistant(
+                core,
                 &session_id,
                 &session_harness,
                 "Refreshed account usage. Check the meter in the title bar.",
@@ -5057,7 +5196,8 @@ pub fn send_turn(
                 "UPDATE sessions SET provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1",
                 params![session_id],
             )?;
-            emit_local_assistant(core,
+            emit_local_assistant(
+                core,
                 &session_id,
                 &session_harness,
                 "Cleared this chat’s provider session. Send a message to start fresh.",
@@ -5536,7 +5676,10 @@ mod exit_result_tests {
     fn no_context_keeps_the_plain_summary() {
         let result = synthetic_exit_result("Research · standard", None);
         result.validate().expect("synthetic result validates");
-        assert_eq!(result.summary, "Research · standard ended without reporting a result");
+        assert_eq!(
+            result.summary,
+            "Research · standard ended without reporting a result"
+        );
         assert_eq!(result.risks.len(), 1);
     }
 }
@@ -5555,7 +5698,9 @@ mod approval_deadline_tests {
         .unwrap()
     }
 
-    fn core_with_waiting_worker(waiting_since: Option<&str>) -> (tempfile::TempDir, Arc<BridgeCore>) {
+    fn core_with_waiting_worker(
+        waiting_since: Option<&str>,
+    ) -> (tempfile::TempDir, Arc<BridgeCore>) {
         let fixture = tempfile::tempdir().unwrap();
         let core = BridgeCore::boot(crate::BootConfig {
             data_dir: fixture.path().to_path_buf(),
@@ -5565,18 +5710,34 @@ mod approval_deadline_tests {
         .unwrap();
         {
             let db = core.db.lock().unwrap();
-            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
             db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','waiting','reported',0)", []).unwrap();
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Implementation · strong','waiting','reported','parent',1)", []).unwrap();
             db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
-            store::upsert_worker_runtime(&db, &WorkerRuntimeRecord {
-                session_id: "child".into(), parent_session_id: "parent".into(),
-                lifecycle_state: "waiting".into(), task_family: "implementation".into(),
-                compatibility_key: "key".into(), result_status: "pending".into(), retry_count: 0,
-                warm_until: None, worktree_path: None, worktree_branch: None, last_result: None,
-                last_activity_at: None, updated_at: Utc::now().to_rfc3339(),
-            }).unwrap();
+            store::upsert_worker_runtime(
+                &db,
+                &WorkerRuntimeRecord {
+                    session_id: "child".into(),
+                    parent_session_id: "parent".into(),
+                    lifecycle_state: "waiting".into(),
+                    task_family: "implementation".into(),
+                    compatibility_key: "key".into(),
+                    result_status: "pending".into(),
+                    retry_count: 0,
+                    warm_until: None,
+                    worktree_path: None,
+                    worktree_branch: None,
+                    last_result: None,
+                    last_activity_at: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .unwrap();
             if let Some(since) = waiting_since {
                 db.execute("UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested' WHERE session_id=?1", params!["child", since]).unwrap();
             }
@@ -5649,7 +5810,10 @@ mod approval_deadline_tests {
         let db = core.db.lock().unwrap();
         let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
         assert_eq!(
-            (runtime.lifecycle_state.as_str(), runtime.result_status.as_str()),
+            (
+                runtime.lifecycle_state.as_str(),
+                runtime.result_status.as_str()
+            ),
             ("working", "pending"),
             "an approved worker must keep running"
         );
@@ -5673,7 +5837,10 @@ mod approval_deadline_tests {
         let db = core.db.lock().unwrap();
         let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
         assert_eq!(
-            (runtime.lifecycle_state.as_str(), runtime.result_status.as_str()),
+            (
+                runtime.lifecycle_state.as_str(),
+                runtime.result_status.as_str()
+            ),
             ("waiting", "pending")
         );
     }
@@ -5703,7 +5870,10 @@ mod approval_deadline_tests {
         let db = core.db.lock().unwrap();
         let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
         assert_eq!(
-            (runtime.lifecycle_state.as_str(), runtime.result_status.as_str()),
+            (
+                runtime.lifecycle_state.as_str(),
+                runtime.result_status.as_str()
+            ),
             ("working", "pending")
         );
     }
