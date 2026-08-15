@@ -47,6 +47,41 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("terminal-host");
     expect(html).not.toContain("xterm");
   });
+  const staleBase = (divergence: Record<string, unknown>) => [
+    event(1, "workspace.stale_base", {
+      title: "Workspace is behind",
+      text: "this workspace is behind origin/main",
+      data: { staleBase: true, divergence },
+    }),
+  ];
+
+  it("does not offer a refresh a fast-forward cannot perform", () => {
+    // The reported case: a fresh worktree with one commit on it. `refresh` is a
+    // strict fast-forward, so the button could only ever produce an error.
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined}
+      events={staleBase({ behind: 104, ahead: 1, baseRef: "origin/main", dirty: false })}
+      onRefreshBase={async () => undefined}/>);
+    expect(html).not.toContain("Refresh workspace");
+    expect(html).toContain("cannot be fast-forwarded");
+    expect(html).toContain("1 commit that origin/main does not");
+  });
+
+  it("does not offer a refresh over uncommitted changes", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined}
+      events={staleBase({ behind: 104, ahead: 0, baseRef: "origin/main", dirty: true })}
+      onRefreshBase={async () => undefined}/>);
+    expect(html).not.toContain("Refresh workspace");
+    expect(html).toContain("uncommitted changes");
+  });
+
+  it("still offers the refresh when a fast-forward is possible", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined}
+      events={staleBase({ behind: 104, ahead: 0, baseRef: "origin/main", dirty: false })}
+      onRefreshBase={async () => undefined}/>);
+    expect(html).toContain("Refresh workspace");
+    expect(html).not.toContain("cannot be fast-forwarded");
+  });
+
   it("renders active forest cards and hides raw provider frames", () => {
     const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>,sequence:number,contextVisibility="eligible"):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,semanticSchemaVersion:2,kind,payload,providerEventId:null,contextVisibility,tokenEstimate:null,createdAt:"now" });
     const entries = [entry("one",null,"checkpoint",{summary:"Durable checkpoint"},1),entry("two","one","compaction",{summary:"Reduced context",reason:"manual"},2),entry("three","two","provider.unknown",{title:"Provider frame",raw:"secret"},3,"raw")];

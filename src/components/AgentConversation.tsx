@@ -525,6 +525,15 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   const behind = Number(divergence.behind ?? 0);
   const ahead = Number(divergence.ahead ?? 0);
   const baseRef = String(divergence.baseRef ?? "its base branch");
+  // Why a fast-forward is impossible, or null when it is possible. These are
+  // `fast_forward_to_base`'s own refusals, asked before the call rather than
+  // reported after it: a local commit or a dirty tree can only be resolved by
+  // the user, so the button would fail every time it was pressed.
+  const blocker = ahead > 0
+    ? `This workspace has ${ahead} commit${ahead === 1 ? "" : "s"} that ${baseRef} does not, so it cannot be fast-forwarded. Rebase or merge onto ${baseRef} yourself, or keep working on the current revision.`
+    : divergence.dirty === true
+      ? `This workspace has uncommitted changes, so it cannot be fast-forwarded. Commit or stash them first, or keep working on the current revision.`
+      : null;
   const refresh = async () => {
     if (!onRefresh) return;
     setBusy(true); setError(null);
@@ -541,10 +550,16 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
     {error && <p className="mt-1.5 px-[15px] text-[12px] leading-relaxed text-destructive-foreground">{error}</p>}
     {refreshed
       ? <div className="flex items-center gap-1.5 p-[10px_15px_12px] text-[11.5px] text-muted-foreground"><Check size={12} aria-hidden="true" /> Workspace refreshed onto {baseRef}</div>
-      : <div className="flex items-center justify-end gap-[7px] p-[12px_13px]">
-          <span className="mr-auto px-2 text-[11.5px] text-muted-foreground/70">Or continue on the current revision.</span>
-          <button disabled={busy || !onRefresh} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50" onClick={refresh}>{busy ? "Refreshing…" : "Refresh workspace"}</button>
-        </div>}
+      : blocker
+        // Refresh is a strict fast-forward, and this card already has the
+        // fields that decide whether one is possible. Offering the button
+        // anyway meant the common case — a worktree with one commit on it —
+        // presented an action whose only outcome was an error dialog.
+        ? <div className="p-[10px_15px_12px] text-[11.5px] leading-relaxed text-muted-foreground">{blocker}</div>
+        : <div className="flex items-center justify-end gap-[7px] p-[12px_13px]">
+            <span className="mr-auto px-2 text-[11.5px] text-muted-foreground/70">Or continue on the current revision.</span>
+            <button disabled={busy || !onRefresh} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-50" onClick={refresh}>{busy ? "Refreshing…" : "Refresh workspace"}</button>
+          </div>}
   </div>;
 }
 
