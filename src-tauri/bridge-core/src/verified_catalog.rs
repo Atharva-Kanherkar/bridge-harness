@@ -23,11 +23,17 @@ use crate::{
     backend_binding::BackendKind,
     managed_runtime::{ArtifactKind, RuntimeSource},
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bridge_protocol::messages::{AgentId, BackendId, BackendVersion};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, collections::BTreeSet, path::PathBuf};
+use std::{
+    borrow::Cow,
+    collections::BTreeSet,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 /// The snapshot schema this build understands. A document declaring anything
 /// else is refused rather than parsed leniently: a catalog is the one place
@@ -148,6 +154,12 @@ pub enum CatalogError {
         agent: String,
         reason: String,
     },
+    /// The snapshot verified, but could not be cached. Refused rather than
+    /// served, so nothing runs on a catalog that will silently disappear on the
+    /// next restart.
+    CacheUnwritable {
+        reason: String,
+    },
 }
 
 impl CatalogError {
@@ -162,6 +174,7 @@ impl CatalogError {
             Self::NotNewer { .. } => "snapshot_not_newer",
             Self::BridgeVersionUnsupported { .. } => "bridge_version_unsupported",
             Self::EntryInvalid { .. } => "entry_invalid",
+            Self::CacheUnwritable { .. } => "cache_unwritable",
         }
     }
 }
@@ -203,6 +216,9 @@ impl std::fmt::Display for CatalogError {
             ),
             Self::EntryInvalid { agent, reason } => {
                 write!(formatter, "catalog entry {agent} is invalid: {reason}")
+            }
+            Self::CacheUnwritable { reason } => {
+                write!(formatter, "catalog snapshot could not be cached: {reason}")
             }
         }
     }
@@ -569,6 +585,190 @@ impl Catalog {
             snapshot,
         })
     }
+}
+
+/// Where a verified snapshot survives a restart.
+///
+/// The cache holds the **exact bytes** that were verified and the detached
+/// signature over them, in two files, so a reload re-runs the whole
+/// authentication path rather than trusting the parse that admitted the
+/// document the first time. A cache is a convenience; it is never a second,
+/// weaker way for a snapshot to become trusted.
+#[derive(Debug, Clone)]
+pub struct CatalogStore {
+    root: PathBuf,
+}
+
+/// The exact bytes that verified.
+const SNAPSHOT_FILE: &str = "snapshot.json";
+/// The detached signature over them, plus which key produced it.
+const SIGNATURE_FILE: &str = "snapshot.signature.json";
+
+/// The sidecar beside a cached snapshot.
+///
+/// Not itself signed, and it does not need to be: every field that decides
+/// anything is checked against the document. Editing `keyId` or `signature`
+/// makes verification fail, which drops the cache; `installedAt` is a
+/// timestamp Bridge displays and nothing branches on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedSignature {
+    key_id: String,
+    /// Base64, detached, over `snapshot.json`'s bytes as they sit on disk.
+    signature: String,
+    installed_at: String,
+}
+
+/// What [`CatalogStore::load`] found, including a cache it refused.
+///
+/// A refused cache is reported rather than swallowed: falling back to the
+/// bootstrap is the right behaviour, and being unable to say why it happened
+/// is not.
+#[derive(Debug, Clone)]
+pub struct LoadOutcome {
+    pub catalog: Catalog,
+    /// Why the cached snapshot was not used, if there was one and it failed.
+    pub cache_rejected: Option<CatalogError>,
+}
+
+impl CatalogStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The catalog in force: the bundled bootstrap, replaced by the cached
+    /// snapshot only if that snapshot still verifies and still validates.
+    ///
+    /// Re-verification is not a re-read of a stored verdict — the cached bytes
+    /// go through [`Catalog::install_snapshot`], the same call a freshly fetched
+    /// document faces. A cache that is missing, truncated, tampered with, or
+    /// valid-but-now-refused (a key withdrawn, a Bridge downgrade, an entry this
+    /// build no longer accepts) loses to the bootstrap, so this never fails for
+    /// a bad cache: a Bridge with a corrupt cache still has a catalog.
+    pub fn load(
+        &self,
+        trust: &TrustRoot,
+        running_bridge_version: &str,
+    ) -> Result<LoadOutcome, CatalogError> {
+        let bootstrap = Catalog::bundled(running_bridge_version)?;
+        let Some(cached) = self.read_cache() else {
+            return Ok(LoadOutcome {
+                catalog: bootstrap,
+                cache_rejected: None,
+            });
+        };
+        let (document, sidecar, signature) = match cached {
+            Ok(parts) => parts,
+            Err(error) => {
+                return Ok(LoadOutcome {
+                    catalog: bootstrap,
+                    cache_rejected: Some(error),
+                })
+            }
+        };
+        // A cached snapshot always outranks the bootstrap's generation 1, so
+        // the no-rollback rule does the right thing here for free rather than
+        // needing a separate "but this one is ours" path.
+        match bootstrap.install_snapshot(
+            SignedSnapshot {
+                document: &document,
+                key_id: &sidecar.key_id,
+                signature: &signature,
+            },
+            trust,
+            running_bridge_version,
+        ) {
+            Ok(mut catalog) => {
+                // When it was installed, not when it was re-read.
+                catalog.provenance.installed_at = sidecar.installed_at;
+                Ok(LoadOutcome {
+                    catalog,
+                    cache_rejected: None,
+                })
+            }
+            Err(error) => Ok(LoadOutcome {
+                catalog: bootstrap,
+                cache_rejected: Some(error),
+            }),
+        }
+    }
+
+    /// Verify, validate, install over `current`, and cache what was verified.
+    ///
+    /// The catalog is only returned once the cache is written, so a caller
+    /// cannot end up serving a snapshot that will vanish on restart without
+    /// having been told. A refusal of any kind leaves both `current` and the
+    /// existing cache untouched.
+    pub fn install(
+        &self,
+        current: &Catalog,
+        offered: SignedSnapshot<'_>,
+        trust: &TrustRoot,
+        running_bridge_version: &str,
+    ) -> Result<Catalog, CatalogError> {
+        let installed = current.install_snapshot(offered, trust, running_bridge_version)?;
+        self.write_cache(
+            offered.document,
+            &CachedSignature {
+                key_id: offered.key_id.to_owned(),
+                signature: BASE64.encode(offered.signature),
+                installed_at: installed.provenance.installed_at.clone(),
+            },
+        )?;
+        Ok(installed)
+    }
+
+    /// The cached document, its sidecar, and the decoded signature.
+    ///
+    /// `None` when there is no cache at all, which is the ordinary state of a
+    /// fresh install and not a refusal worth reporting.
+    #[allow(clippy::type_complexity)]
+    fn read_cache(&self) -> Option<Result<(Vec<u8>, CachedSignature, Vec<u8>), CatalogError>> {
+        let document = std::fs::read(self.root.join(SNAPSHOT_FILE)).ok()?;
+        let sidecar_bytes = std::fs::read(self.root.join(SIGNATURE_FILE)).ok()?;
+        Some((|| {
+            let sidecar: CachedSignature =
+                serde_json::from_slice(&sidecar_bytes).map_err(|error| {
+                    CatalogError::Unreadable {
+                        reason: format!("cached signature is unreadable: {error}"),
+                    }
+                })?;
+            let signature = BASE64
+                .decode(sidecar.signature.as_bytes())
+                .map_err(|_| CatalogError::MalformedSignature)?;
+            Ok((document, sidecar, signature))
+        })())
+    }
+
+    /// Write both halves of the cache, each atomically.
+    ///
+    /// A crash between the two leaves a document and a signature that do not
+    /// match, in either order — and that combination fails verification on the
+    /// next load, so a torn cache is refused rather than half-trusted.
+    fn write_cache(&self, document: &[u8], sidecar: &CachedSignature) -> Result<(), CatalogError> {
+        let unwritable = |error: std::io::Error| CatalogError::CacheUnwritable {
+            reason: error.to_string(),
+        };
+        std::fs::create_dir_all(&self.root).map_err(unwritable)?;
+        let encoded =
+            serde_json::to_vec_pretty(sidecar).map_err(|error| CatalogError::CacheUnwritable {
+                reason: error.to_string(),
+            })?;
+        write_atomic(&self.root, &self.root.join(SNAPSHOT_FILE), document).map_err(unwritable)?;
+        write_atomic(&self.root, &self.root.join(SIGNATURE_FILE), &encoded).map_err(unwritable)
+    }
+}
+
+fn write_atomic(parent: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Verify a detached Ed25519 signature over exactly these bytes.
@@ -1100,6 +1300,7 @@ mod tests {
                 agent: "a".into(),
                 reason: "r".into(),
             },
+            CatalogError::CacheUnwritable { reason: "r".into() },
         ]
         .map(|error| error.code());
         let mut unique = codes.to_vec();
@@ -1161,6 +1362,199 @@ mod tests {
         // PlatformTarget is the one thing borrowed from that module, and it is
         // a platform vocabulary rather than an upstream entry.
         assert!(source.contains("acp_registry::PlatformTarget"));
+    }
+
+    /// A store over a fresh temporary directory, and the guard that keeps it
+    /// alive for the test.
+    fn catalog_store() -> (CatalogStore, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        (
+            CatalogStore::new(directory.path().join("catalog")),
+            directory,
+        )
+    }
+
+    #[test]
+    fn a_cached_snapshot_survives_a_restart_and_is_verified_again_on_the_way_back() {
+        let (store, _guard) = catalog_store();
+
+        // Nothing cached: the bootstrap serves, and that is not a refusal.
+        let first = store.load(&trust(), BRIDGE).unwrap();
+        assert!(first.catalog.provenance().bundled);
+        assert!(
+            first.cache_rejected.is_none(),
+            "an absent cache is not a refusal"
+        );
+
+        let document = snapshot_with(2, "");
+        let signature = sign(&document);
+        let installed = store
+            .install(
+                &first.catalog,
+                offered(&document, &signature),
+                &trust(),
+                BRIDGE,
+            )
+            .unwrap();
+        assert_eq!(installed.generation(), 2);
+
+        // Reloading returns the cached snapshot, not the bootstrap — and the
+        // provenance is the install's, not a fresh one minted by the read.
+        let reloaded = store.load(&trust(), BRIDGE).unwrap();
+        assert!(reloaded.cache_rejected.is_none());
+        assert_eq!(reloaded.catalog.generation(), 2);
+        assert!(!reloaded.catalog.provenance().bundled);
+        assert_eq!(
+            reloaded.catalog.provenance().installed_at,
+            installed.provenance().installed_at,
+            "installed_at records the install, not the re-read"
+        );
+        assert_eq!(
+            reloaded.catalog.provenance().document_sha256,
+            sha256_hex(&document)
+        );
+
+        // The cache holds the exact bytes that verified, byte for byte.
+        assert_eq!(
+            std::fs::read(store.root().join(SNAPSHOT_FILE)).unwrap(),
+            document.as_bytes(),
+            "the cache must store what was verified, not a re-serialization of the parse"
+        );
+    }
+
+    #[test]
+    fn a_tampered_cache_loses_to_the_bootstrap_and_says_why() {
+        let (store, _guard) = catalog_store();
+        let document = snapshot_with(2, "");
+        let signature = sign(&document);
+        let bootstrap = store.load(&trust(), BRIDGE).unwrap().catalog;
+        store
+            .install(&bootstrap, offered(&document, &signature), &trust(), BRIDGE)
+            .unwrap();
+
+        // One byte of the cached document changed after it was admitted. This
+        // is the whole reason a reload re-verifies instead of trusting the
+        // parse that let it in the first time.
+        let tampered = document.replace("evidence-0001", "evidence-0002");
+        assert_ne!(tampered, document);
+        std::fs::write(store.root().join(SNAPSHOT_FILE), &tampered).unwrap();
+
+        let outcome = store.load(&trust(), BRIDGE).unwrap();
+        assert!(
+            outcome.catalog.provenance().bundled,
+            "a tampered cache must lose to the bootstrap"
+        );
+        assert_eq!(
+            outcome.cache_rejected.unwrap().code(),
+            "signature_rejected",
+            "and the refusal is reported rather than swallowed"
+        );
+    }
+
+    #[test]
+    fn a_torn_or_unreadable_cache_still_leaves_bridge_with_a_catalog() {
+        // A signature file that is not JSON — what a crash mid-write leaves.
+        let (store, _guard) = catalog_store();
+        let document = snapshot_with(2, "");
+        let signature = sign(&document);
+        let bootstrap = store.load(&trust(), BRIDGE).unwrap().catalog;
+        store
+            .install(&bootstrap, offered(&document, &signature), &trust(), BRIDGE)
+            .unwrap();
+        std::fs::write(store.root().join(SIGNATURE_FILE), b"}{ truncated").unwrap();
+
+        let outcome = store.load(&trust(), BRIDGE).unwrap();
+        assert!(outcome.catalog.provenance().bundled);
+        assert_eq!(
+            outcome.cache_rejected.unwrap().code(),
+            "snapshot_unreadable"
+        );
+
+        // A document with no signature beside it at all is the same story.
+        let (store, _guard) = catalog_store();
+        std::fs::create_dir_all(store.root()).unwrap();
+        std::fs::write(store.root().join(SNAPSHOT_FILE), &document).unwrap();
+        let outcome = store.load(&trust(), BRIDGE).unwrap();
+        assert!(
+            outcome.catalog.provenance().bundled,
+            "half a cache is not a cache"
+        );
+    }
+
+    #[test]
+    fn a_cache_this_build_no_longer_accepts_is_dropped_rather_than_served() {
+        // Installed under a trust root that carried the key; loaded under one
+        // that does not — a withdrawn key, from the catalog's point of view.
+        let (store, _guard) = catalog_store();
+        let document = snapshot_with(2, "");
+        let signature = sign(&document);
+        let bootstrap = store.load(&trust(), BRIDGE).unwrap().catalog;
+        store
+            .install(&bootstrap, offered(&document, &signature), &trust(), BRIDGE)
+            .unwrap();
+
+        let outcome = store.load(&TrustRoot::production(), BRIDGE).unwrap();
+        assert!(outcome.catalog.provenance().bundled);
+        assert_eq!(outcome.cache_rejected.unwrap().code(), "unknown_key");
+
+        // And a downgrade: an entry cached by a newer Bridge, re-read by an
+        // older one. The entry's own floor is checked on every load, not only
+        // at the install that admitted it.
+        let (store, _guard) = catalog_store();
+        let document = snapshot_with(2, "").replace(
+            r#""minimumBridgeVersion": "0.1.0",
+    "verification""#,
+            r#""minimumBridgeVersion": "0.5.0",
+    "verification""#,
+        );
+        let signature = sign(&document);
+        let bootstrap = store.load(&trust(), "0.9.0").unwrap().catalog;
+        store
+            .install(
+                &bootstrap,
+                offered(&document, &signature),
+                &trust(),
+                "0.9.0",
+            )
+            .unwrap();
+        assert_eq!(
+            store.load(&trust(), "0.9.0").unwrap().catalog.generation(),
+            2
+        );
+
+        let outcome = store.load(&trust(), "0.2.0").unwrap();
+        assert!(outcome.catalog.provenance().bundled);
+        assert_eq!(outcome.cache_rejected.unwrap().code(), "entry_invalid");
+    }
+
+    #[test]
+    fn a_refused_snapshot_never_touches_the_cache() {
+        let (store, _guard) = catalog_store();
+        let good = snapshot_with(2, "");
+        let signature = sign(&good);
+        let bootstrap = store.load(&trust(), BRIDGE).unwrap().catalog;
+        let installed = store
+            .install(&bootstrap, offered(&good, &signature), &trust(), BRIDGE)
+            .unwrap();
+
+        // A newer generation, correctly signed, but carrying an invalid entry.
+        let bad = document(
+            3,
+            &[entry("later", "").replace(r#""status": "verified""#, r#""status": "failed""#)],
+        );
+        let bad_signature = sign(&bad);
+        let error = store
+            .install(&installed, offered(&bad, &bad_signature), &trust(), BRIDGE)
+            .unwrap_err();
+        assert_eq!(error.code(), "entry_invalid");
+
+        // The cache still holds generation 2, so a restart keeps serving it.
+        let reloaded = store.load(&trust(), BRIDGE).unwrap();
+        assert_eq!(reloaded.catalog.generation(), 2);
+        assert_eq!(
+            std::fs::read(store.root().join(SNAPSHOT_FILE)).unwrap(),
+            good.as_bytes()
+        );
     }
 
     #[test]
