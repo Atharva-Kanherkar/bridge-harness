@@ -13,10 +13,11 @@
 use crate::events::CoreEvent;
 use crate::model::{AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot};
 use crate::{
-    adapters, agent, agent_config, binary, browser_bridge, completion, git, learning_job,
-    learning_router, live_turn, marketplace, model_profiles, opencode_adapter, secret_interception,
-    session_supervisor, sessions, skill_marketplace, slash, store, worker_adoption,
-    worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
+    adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
+    learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
+    secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
+    verified_catalog, worker_adoption, worker_lifecycle, workspace_files, BridgeCore, BridgeError,
+    RuntimeSession,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -66,6 +67,41 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
+}
+
+// --- verified catalog --------------------------------------------------------
+
+/// The Bridge Verified catalog in force, and how it came to be trusted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedCatalog<'core> {
+    pub generation: u64,
+    pub provenance: &'core verified_catalog::Provenance,
+    pub entries: &'core [verified_catalog::VerifiedEntry],
+    /// What the catalog contributed to backend resolution, and which entries
+    /// this build could not serve.
+    pub registration: &'core agent_integration::CatalogRegistration,
+    /// The refusal code if a cached snapshot lost to the bundled bootstrap at
+    /// boot. `None` when the cache was used or there was none.
+    pub cache_rejected: Option<&'core str>,
+}
+
+/// Read the catalog this build is serving.
+///
+/// Deliberately **not** a protocol method. #164 lands the catalog itself, and
+/// putting it on the wire belongs with the marketplace screen that consumes it —
+/// a DTO shaped now, with no reader, would be a contract written against a
+/// caller nobody has seen. Its absence from the registry is a decision, and this
+/// function is where that decision stops costing anything: the day the screen
+/// exists, its method body is one line.
+pub fn verified_catalog(core: &Arc<BridgeCore>) -> VerifiedCatalog<'_> {
+    VerifiedCatalog {
+        generation: core.catalog.generation(),
+        provenance: core.catalog.provenance(),
+        entries: core.catalog.entries(),
+        registration: &core.catalog_registration,
+        cache_rejected: core.catalog_cache_rejected.as_deref(),
+    }
 }
 
 // --- projects / workspaces ---------------------------------------------------

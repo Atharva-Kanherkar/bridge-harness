@@ -6,9 +6,9 @@
 
 use crate::events::{CoreEvent, EventBus};
 use crate::{
-    adapters, agent_config, backend_binding, binary, browser_bridge, credential_broker, delegation,
-    model::AdapterDescriptor, session_supervisor, skill_marketplace, store, worker_guard,
-    worker_sandbox, BridgeError,
+    adapters, agent_config, agent_integration, backend_binding, binary, browser_bridge,
+    credential_broker, delegation, model::AdapterDescriptor, session_supervisor, skill_marketplace,
+    store, verified_catalog, worker_guard, worker_sandbox, BridgeError,
 };
 use portable_pty::{Child, MasterPty};
 use std::{
@@ -18,6 +18,11 @@ use std::{
     sync::{Arc, Mutex},
     thread,
 };
+
+/// The Bridge version the catalog is read against. The workspace pins one
+/// version for every crate precisely so this cannot drift from the application
+/// version a snapshot names.
+const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct RuntimeSession {
     pub writer: Box<dyn Write + Send>,
@@ -34,6 +39,23 @@ pub struct BridgeCore {
     /// Which backend serves each agent. The registry executes; this decides
     /// what may execute, and what a session recorded last time.
     pub backend_resolver: Arc<backend_binding::BackendResolver>,
+    /// The Bridge Verified catalog in force. Loaded once, at boot: it is
+    /// authenticated by a signature over exact bytes, and re-verifying that on
+    /// every question would be work with no answer to show for it.
+    pub catalog: Arc<verified_catalog::Catalog>,
+    /// What the catalog contributed to the resolver, and what it could not.
+    /// Carried so a skipped entry reaches a caller rather than being a thing
+    /// that quietly did not happen at boot.
+    pub catalog_registration: agent_integration::CatalogRegistration,
+    /// Why a cached snapshot lost to the bundled bootstrap, when one did.
+    pub catalog_cache_rejected: Option<String>,
+    /// Every integration compiled into this build.
+    ///
+    /// Empty today, and that is the point of #171: this epic ships the
+    /// framework, not an agent. An empty registry means every catalog entry is
+    /// skipped for `no_integration`, which is the correct behaviour for a build
+    /// that carries no marketplace agent yet.
+    pub integrations: Arc<agent_integration::IntegrationRegistry>,
     pub delegations: Mutex<DelegationState>,
     pub worktrees: PathBuf,
     pub database_path: PathBuf,
@@ -185,6 +207,13 @@ impl BridgeCore {
             adapters: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
             backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
+            catalog: Arc::new(
+                verified_catalog::Catalog::bundled(BRIDGE_VERSION)
+                    .expect("the bundled bootstrap catalog must load"),
+            ),
+            catalog_registration: agent_integration::CatalogRegistration::default(),
+            catalog_cache_rejected: None,
+            integrations: Arc::new(agent_integration::IntegrationRegistry::empty()),
             delegations: Mutex::new(DelegationState::default()),
             worktrees: scratch.join("worktrees"),
             database_path: scratch.join("bridge.db"),
@@ -241,6 +270,22 @@ impl BridgeCore {
             })),
         )?);
         let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()?);
+
+        // The catalog, and what it contributes to resolution. `load` never
+        // fails for a bad cache — a corrupt or withdrawn snapshot loses to the
+        // bundled bootstrap — so the only error here is the compiled-in
+        // bootstrap failing its own validation, which is a build defect rather
+        // than anything a user or a publisher can cause.
+        let catalog_store =
+            verified_catalog::CatalogStore::new(config.data_dir.join("verified-catalog"));
+        let loaded = catalog_store
+            .load(&verified_catalog::TrustRoot::production(), BRIDGE_VERSION)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let integrations = Arc::new(agent_integration::IntegrationRegistry::empty());
+        let mut backend_resolver = backend_binding::BackendResolver::built_in();
+        let catalog_registration =
+            integrations.offer_catalog(&loaded.catalog, &mut backend_resolver);
+
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
@@ -251,7 +296,11 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             adapter_registry,
-            backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
+            backend_resolver: Arc::new(backend_resolver),
+            catalog: Arc::new(loaded.catalog),
+            catalog_registration,
+            catalog_cache_rejected: loaded.cache_rejected.map(|error| error.code().to_owned()),
+            integrations,
             delegations: Mutex::new(DelegationState::default()),
             worktrees: config.data_dir.join("worktrees"),
             database_path: db_path,
@@ -334,6 +383,68 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(sessions, 0);
+    }
+
+    #[test]
+    fn boot_serves_the_bundled_catalog_and_leaves_the_built_ins_resolving() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::boot(seeded_config(fixture.path())).unwrap());
+        let catalog = crate::api::verified_catalog(&core);
+
+        assert!(catalog.provenance.bundled);
+        assert_eq!(catalog.generation, 1);
+        assert!(
+            catalog.entries.is_empty(),
+            "#171 says this epic ships the framework, not an agent"
+        );
+        assert!(
+            catalog.cache_rejected.is_none(),
+            "there is no cache to refuse"
+        );
+        assert!(catalog.registration.registered.is_empty());
+
+        // And the three agents Bridge already had still resolve. A catalog that
+        // contributes nothing must also take nothing away.
+        for agent in ["claude", "codex", "opencode"] {
+            let agent = bridge_protocol::messages::AgentId::parse(agent).unwrap();
+            assert!(
+                core.backend_resolver.preferred(&agent).is_ok(),
+                "{agent:?} must still resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn boot_refuses_a_cache_this_build_cannot_authenticate_and_serves_the_bootstrap() {
+        // What a shipped build does today: the trust root is empty, so no
+        // cached snapshot can be authenticated and the bootstrap is what
+        // serves. Fail-closed, exercised through the real boot path rather
+        // than asserted about it.
+        let fixture = tempfile::tempdir().unwrap();
+        let cache = fixture.path().join("verified-catalog");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            cache.join(verified_catalog::SNAPSHOT_FILE),
+            br#"{"schemaVersion":1,"generation":9,"publishedAt":"2026-08-15T00:00:00Z","minimumBridgeVersion":"0.1.0","entries":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            cache.join(verified_catalog::SIGNATURE_FILE),
+            br#"{"keyId":"whoever","signature":"AAAA","installedAt":"2026-08-15T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let core = Arc::new(BridgeCore::boot(seeded_config(fixture.path())).unwrap());
+        let catalog = crate::api::verified_catalog(&core);
+        assert!(
+            catalog.provenance.bundled,
+            "an unauthenticated cache must lose to the compiled-in bootstrap"
+        );
+        assert_eq!(
+            catalog.cache_rejected,
+            Some("unknown_key"),
+            "and the reason must reach a caller rather than vanish at boot"
+        );
     }
 
     #[test]

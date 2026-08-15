@@ -599,10 +599,12 @@ pub struct CatalogStore {
     root: PathBuf,
 }
 
-/// The exact bytes that verified.
-const SNAPSHOT_FILE: &str = "snapshot.json";
+/// The exact bytes that verified. Public because the cache layout is part of
+/// what the store promises: a snapshot on disk is the document itself, not a
+/// re-encoding of the parse it produced.
+pub const SNAPSHOT_FILE: &str = "snapshot.json";
 /// The detached signature over them, plus which key produced it.
-const SIGNATURE_FILE: &str = "snapshot.signature.json";
+pub const SIGNATURE_FILE: &str = "snapshot.signature.json";
 
 /// The sidecar beside a cached snapshot.
 ///

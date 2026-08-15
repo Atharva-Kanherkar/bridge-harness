@@ -28,6 +28,7 @@ use crate::{
     verified_catalog::{Catalog, IntegrationConfig, VerifiedEntry},
 };
 use bridge_protocol::messages::{AgentId, BackendId};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -665,13 +666,24 @@ impl std::fmt::Debug for IntegrationRegistry {
 }
 
 /// What a catalog contributed to a resolver, and what it could not.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogRegistration {
     pub registered: Vec<AgentId>,
-    /// Entries this build cannot serve, each with the code saying why.
-    /// Reported rather than dropped so a UI can say "needs a newer Bridge"
-    /// instead of showing nothing and leaving the user to guess.
-    pub skipped: Vec<(AgentId, &'static str)>,
+    /// Entries this build cannot serve. Reported rather than dropped so a UI
+    /// can say "needs a newer Bridge" instead of showing nothing and leaving
+    /// the user to guess.
+    pub skipped: Vec<SkippedEntry>,
+}
+
+/// One catalog entry this build did not register, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedEntry {
+    pub agent: AgentId,
+    /// A stable code: `no_integration`, `unsupported_platform`, or
+    /// `backend_conflict`.
+    pub reason: &'static str,
 }
 
 impl IntegrationRegistry {
@@ -740,11 +752,17 @@ impl IntegrationRegistry {
     /// question asked here rather than during snapshot validation: the same
     /// document is valid on the build that ships the integration and on the one
     /// that does not.
+    ///
+    /// Infallible on purpose. A snapshot arrives from the network, and every
+    /// failure mode here — an unknown backend, a wrong platform, a name that
+    /// collides with a built-in — is a reason to skip one entry, never a reason
+    /// to fail the call that boots the app. A remote document must not be able
+    /// to leave Bridge unable to resolve the agents it already had.
     pub fn offer_catalog(
         &self,
         catalog: &Catalog,
         resolver: &mut BackendResolver,
-    ) -> Result<CatalogRegistration, BackendError> {
+    ) -> CatalogRegistration {
         let mut registration = CatalogRegistration::default();
         for entry in catalog.entries() {
             let reason = if !self.integrations.contains_key(&entry.backend) {
@@ -754,24 +772,32 @@ impl IntegrationRegistry {
             } else {
                 None
             };
-            if let Some(reason) = reason {
-                registration.skipped.push((entry.agent.clone(), reason));
-                continue;
+            let outcome = match reason {
+                Some(reason) => Err(reason),
+                None => resolver
+                    .register(
+                        &entry.agent,
+                        BackendCandidate {
+                            backend: entry.backend.clone(),
+                            // For a catalog agent the executor is this registry,
+                            // which is keyed by backend — so the backend id *is*
+                            // the executor key, rather than a second name to
+                            // keep in step with it.
+                            adapter_id: entry.backend.as_str().to_owned(),
+                            kind: BackendKind::from(entry.backend_kind),
+                        },
+                    )
+                    .map_err(|_: BackendError| "backend_conflict"),
+            };
+            match outcome {
+                Ok(()) => registration.registered.push(entry.agent.clone()),
+                Err(reason) => registration.skipped.push(SkippedEntry {
+                    agent: entry.agent.clone(),
+                    reason,
+                }),
             }
-            resolver.register(
-                &entry.agent,
-                BackendCandidate {
-                    backend: entry.backend.clone(),
-                    // For a catalog agent the executor is this registry, which
-                    // is keyed by backend — so the backend id *is* the executor
-                    // key, rather than a second name to keep in step with it.
-                    adapter_id: entry.backend.as_str().to_owned(),
-                    kind: BackendKind::from(entry.backend_kind),
-                },
-            )?;
-            registration.registered.push(entry.agent.clone());
         }
-        Ok(registration)
+        registration
     }
 }
 
@@ -1216,7 +1242,7 @@ mod tests {
         // than dropped, because a dropped frame and a frame that never arrived
         // look identical downstream.
         let entry = verified_entry("fake", CatalogBackendKind::Acp, &["messages"]);
-        let stream = vec![
+        let stream = [
             json!({"type": "text", "text": "one"}),
             json!({"type": "somethingNew", "payload": 1}),
             json!({"type": "permission", "id": 3}),
@@ -1476,8 +1502,8 @@ mod tests {
 
         // It reaches #163's resolver as an ordinary candidate.
         let mut resolver = BackendResolver::empty();
-        let registration = registry.offer_catalog(&catalog, &mut resolver).unwrap();
-        assert_eq!(registration.registered, [entry.agent.clone()]);
+        let registration = registry.offer_catalog(&catalog, &mut resolver);
+        assert_eq!(registration.registered, std::slice::from_ref(&entry.agent));
         assert!(registration.skipped.is_empty());
 
         // And resolves, binds, and resumes through that binding.
@@ -1557,11 +1583,14 @@ mod tests {
             .unwrap();
 
         let mut resolver = BackendResolver::empty();
-        let registration = registry.offer_catalog(&catalog, &mut resolver).unwrap();
-        assert_eq!(registration.registered, [known.agent.clone()]);
+        let registration = registry.offer_catalog(&catalog, &mut resolver);
+        assert_eq!(registration.registered, std::slice::from_ref(&known.agent));
         assert_eq!(
             registration.skipped,
-            [(future.agent.clone(), "no_integration")],
+            [SkippedEntry {
+                agent: future.agent.clone(),
+                reason: "no_integration",
+            }],
             "the skip is reported, not silent"
         );
         assert!(registry.can_serve(&known));
@@ -1587,12 +1616,57 @@ mod tests {
         ];
         elsewhere.backend = BackendId::parse("known.backend").unwrap();
         let catalog = catalog_of(vec![elsewhere.clone()]);
-        let registration = registry
-            .offer_catalog(&catalog, &mut BackendResolver::empty())
-            .unwrap();
+        let registration = registry.offer_catalog(&catalog, &mut BackendResolver::empty());
         assert_eq!(
             registration.skipped,
-            [(elsewhere.agent, "unsupported_platform")]
+            [SkippedEntry {
+                agent: elsewhere.agent,
+                reason: "unsupported_platform",
+            }]
+        );
+    }
+
+    #[test]
+    fn a_catalog_cannot_break_resolution_of_the_agents_bridge_already_had() {
+        // A snapshot arrives from the network. An entry colliding with a
+        // backend already registered is skipped — because the alternative is a
+        // remote document that can leave Bridge unable to resolve its
+        // built-ins, which is a much worse failure than one missing agent.
+        let entry = local_entry("known", CatalogBackendKind::Acp);
+        let catalog = catalog_of(vec![entry.clone()]);
+        let mut registry = IntegrationRegistry::empty();
+        registry
+            .register(integration("known", BackendKind::Acp))
+            .unwrap();
+
+        let mut resolver = BackendResolver::empty();
+        resolver
+            .register(
+                &entry.agent,
+                BackendCandidate {
+                    backend: entry.backend.clone(),
+                    adapter_id: "already-here".into(),
+                    kind: BackendKind::Acp,
+                },
+            )
+            .unwrap();
+
+        let registration = registry.offer_catalog(&catalog, &mut resolver);
+        assert_eq!(
+            registration.skipped,
+            [SkippedEntry {
+                agent: entry.agent.clone(),
+                reason: "backend_conflict",
+            }]
+        );
+        assert!(registration.registered.is_empty());
+        assert_eq!(
+            resolver
+                .candidate(&entry.agent, &entry.backend)
+                .unwrap()
+                .adapter_id,
+            "already-here",
+            "the candidate that was already there still serves"
         );
     }
 
