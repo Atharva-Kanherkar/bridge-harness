@@ -23,13 +23,13 @@
 use crate::{
     adapters::ShutdownReason,
     agent::NormalizedEvent,
-    backend_binding::BackendKind,
+    backend_binding::{BackendCandidate, BackendError, BackendKind, BackendResolver},
     model::CapabilityTier,
-    verified_catalog::{IntegrationConfig, VerifiedEntry},
+    verified_catalog::{Catalog, IntegrationConfig, VerifiedEntry},
 };
 use bridge_protocol::messages::{AgentId, BackendId};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Why an integration could not do what was asked. One code per condition, so
 /// a caller can act on them differently without matching on prose.
@@ -55,6 +55,12 @@ pub enum IntegrationError {
     BackendShapeMismatch { expected: String, found: String },
     /// The runtime process ended. Carries the bounded failure context.
     RuntimeDied { reason: String },
+    /// The catalog names a backend this build has no integration for. Not a
+    /// broken catalog — an older Bridge reading a newer snapshot.
+    NoIntegration { agent: String, backend: String },
+    /// Two integrations claim one backend. A build mistake, refused at
+    /// registration rather than resolved by whichever registered first.
+    DuplicateIntegration { backend: String },
 }
 
 impl IntegrationError {
@@ -67,6 +73,8 @@ impl IntegrationError {
             Self::UnknownExtensionMethod { .. } => "unknown_extension_method",
             Self::BackendShapeMismatch { .. } => "backend_shape_mismatch",
             Self::RuntimeDied { .. } => "runtime_died",
+            Self::NoIntegration { .. } => "no_integration",
+            Self::DuplicateIntegration { .. } => "duplicate_integration",
         }
     }
 }
@@ -98,6 +106,13 @@ impl std::fmt::Display for IntegrationError {
                 "this entry names a {expected} backend but the driver is {found}"
             ),
             Self::RuntimeDied { reason } => write!(formatter, "the runtime ended: {reason}"),
+            Self::NoIntegration { agent, backend } => write!(
+                formatter,
+                "{agent} is served by {backend}, which this build has no integration for"
+            ),
+            Self::DuplicateIntegration { backend } => {
+                write!(formatter, "{backend} already has an integration")
+            }
         }
     }
 }
@@ -609,6 +624,157 @@ impl IntegrationSession {
     }
 }
 
+/// The driver for one backend shape.
+///
+/// Total over [`BackendKind`], so a new shape must come past this match and be
+/// given a driver rather than silently having none.
+pub fn driver_for(kind: BackendKind) -> Box<dyn BackendDriver> {
+    match kind {
+        BackendKind::SdkSidecar => Box::new(SdkSidecarDriver),
+        BackendKind::StructuredServer => Box::new(StructuredServerDriver),
+        BackendKind::Acp => Box::new(AcpDriver),
+        BackendKind::StructuredCli => Box::new(StructuredCliDriver),
+    }
+}
+
+/// Every integration compiled into this build, keyed by the backend it serves.
+///
+/// The other half of the "adding an agent is a profile plus an integration"
+/// claim: a catalog entry says *what* to run and this says *how*, and neither
+/// the orchestrator, the router, the session store, nor the delegation pipeline
+/// has to learn a name for it.
+#[derive(Default)]
+pub struct IntegrationRegistry {
+    integrations: BTreeMap<BackendId, Arc<dyn AgentIntegration>>,
+}
+
+impl std::fmt::Debug for IntegrationRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IntegrationRegistry")
+            .field(
+                "backends",
+                &self
+                    .integrations
+                    .keys()
+                    .map(BackendId::as_str)
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+/// What a catalog contributed to a resolver, and what it could not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CatalogRegistration {
+    pub registered: Vec<AgentId>,
+    /// Entries this build cannot serve, each with the code saying why.
+    /// Reported rather than dropped so a UI can say "needs a newer Bridge"
+    /// instead of showing nothing and leaving the user to guess.
+    pub skipped: Vec<(AgentId, &'static str)>,
+}
+
+impl IntegrationRegistry {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Add one integration. A second claiming the same backend is refused:
+    /// two things serving one backend is a build mistake, and picking one
+    /// quietly would make which one wins depend on registration order.
+    pub fn register(
+        &mut self,
+        integration: Arc<dyn AgentIntegration>,
+    ) -> Result<(), IntegrationError> {
+        let backend = integration.descriptor().backend;
+        if self.integrations.contains_key(&backend) {
+            return Err(IntegrationError::DuplicateIntegration {
+                backend: backend.as_str().to_owned(),
+            });
+        }
+        self.integrations.insert(backend, integration);
+        Ok(())
+    }
+
+    pub fn get(&self, backend: &BackendId) -> Option<&Arc<dyn AgentIntegration>> {
+        self.integrations.get(backend)
+    }
+
+    /// Whether this build can run this entry here: it has an integration for
+    /// the backend, and the entry supports this platform.
+    pub fn can_serve(&self, entry: &VerifiedEntry) -> bool {
+        self.integrations.contains_key(&entry.backend) && entry.installable_here()
+    }
+
+    /// Launch a verified entry: the integration by backend, the driver by
+    /// shape, and the session over both.
+    pub fn launch(
+        &self,
+        entry: &VerifiedEntry,
+        transport: Box<dyn Transport>,
+        request: &LaunchRequest,
+    ) -> Result<IntegrationSession, IntegrationError> {
+        let integration =
+            self.get(&entry.backend)
+                .cloned()
+                .ok_or_else(|| IntegrationError::NoIntegration {
+                    agent: entry.agent.as_str().to_owned(),
+                    backend: entry.backend.as_str().to_owned(),
+                })?;
+        IntegrationSession::launch(
+            integration,
+            driver_for(BackendKind::from(entry.backend_kind)),
+            transport,
+            entry,
+            request,
+        )
+    }
+
+    /// Offer every entry this build can serve to #163's resolver.
+    ///
+    /// An entry with no compiled-in integration is *skipped*, not refused. A
+    /// snapshot naming an agent that a newer Bridge supports is an ordinary
+    /// thing for an older build to receive, and rejecting the catalog over it
+    /// would make every future agent a breaking change for every build that
+    /// predates it. This is also why "the build can reach this backend" is a
+    /// question asked here rather than during snapshot validation: the same
+    /// document is valid on the build that ships the integration and on the one
+    /// that does not.
+    pub fn offer_catalog(
+        &self,
+        catalog: &Catalog,
+        resolver: &mut BackendResolver,
+    ) -> Result<CatalogRegistration, BackendError> {
+        let mut registration = CatalogRegistration::default();
+        for entry in catalog.entries() {
+            let reason = if !self.integrations.contains_key(&entry.backend) {
+                Some("no_integration")
+            } else if !entry.installable_here() {
+                Some("unsupported_platform")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                registration.skipped.push((entry.agent.clone(), reason));
+                continue;
+            }
+            resolver.register(
+                &entry.agent,
+                BackendCandidate {
+                    backend: entry.backend.clone(),
+                    // For a catalog agent the executor is this registry, which
+                    // is keyed by backend — so the backend id *is* the executor
+                    // key, rather than a second name to keep in step with it.
+                    adapter_id: entry.backend.as_str().to_owned(),
+                    kind: BackendKind::from(entry.backend_kind),
+                },
+            )?;
+            registration.registered.push(entry.agent.clone());
+        }
+        Ok(registration)
+    }
+}
+
 /// A frame nothing recognized, reported rather than dropped.
 fn unknown_event(frame: &Value) -> NormalizedEvent {
     let mut event = NormalizedEvent::new("provider.unknown");
@@ -653,6 +819,8 @@ mod tests {
                 archive: crate::verified_catalog::ArchiveKind::TarGz,
                 entrypoint: "bin/fake".into(),
             },
+            // Overwritten below for the tests that need this entry to be
+            // installable on the machine running them.
             backend: BackendId::parse(&format!("{agent}.backend")).unwrap(),
             backend_kind: kind,
             integration: IntegrationConfig {
@@ -1231,6 +1399,13 @@ mod tests {
                 found: "f".into(),
             },
             IntegrationError::RuntimeDied { reason: "r".into() },
+            IntegrationError::NoIntegration {
+                agent: "a".into(),
+                backend: "b".into(),
+            },
+            IntegrationError::DuplicateIntegration {
+                backend: "b".into(),
+            },
         ]
         .map(|error| error.code());
         let mut unique = codes.to_vec();
@@ -1241,6 +1416,196 @@ mod tests {
             codes.len(),
             "codes must be distinct: {codes:?}"
         );
+    }
+
+    /// The same entry, supporting the platform the test is running on, so
+    /// `installable_here` is true and the seam can be exercised end to end.
+    fn local_entry(agent: &str, kind: CatalogBackendKind) -> VerifiedEntry {
+        let mut entry = verified_entry(agent, kind, &["messages"]);
+        entry.platforms = vec![crate::acp_registry::PlatformTarget::current()
+            .expect("these tests need a platform the catalog can name")];
+        entry
+    }
+
+    /// A signed catalog carrying these entries, installed the way a real one
+    /// is. Hand-building a `Catalog` would prove less: the seam this test is
+    /// about starts at a document that verified.
+    fn catalog_of(entries: Vec<VerifiedEntry>) -> Catalog {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let trust = crate::verified_catalog::TrustRoot::from_keys([(
+            "seam-key".to_owned(),
+            key.verifying_key().to_bytes(),
+        )])
+        .unwrap();
+        let document = serde_json::to_string(&json!({
+            "schemaVersion": 1,
+            "generation": 2,
+            "publishedAt": "2026-08-15T00:00:00Z",
+            "minimumBridgeVersion": "0.1.0",
+            "entries": entries,
+        }))
+        .unwrap();
+        let signature = key.sign(document.as_bytes()).to_bytes();
+        Catalog::bundled("0.1.0")
+            .unwrap()
+            .install_snapshot(
+                crate::verified_catalog::SignedSnapshot {
+                    document: document.as_bytes(),
+                    key_id: "seam-key",
+                    signature: &signature,
+                },
+                &trust,
+                "0.1.0",
+            )
+            .expect("the seam fixture must be an installable snapshot")
+    }
+
+    #[test]
+    fn adding_an_agent_touches_only_a_profile_and_an_integration() {
+        // A profile and an integration, and nothing else. No orchestrator
+        // change, no router change, no session store change, no delegation
+        // change — the functional half first, the structural half below.
+        let entry = local_entry("newcomer", CatalogBackendKind::Acp);
+        let catalog = catalog_of(vec![entry.clone()]);
+
+        let mut registry = IntegrationRegistry::empty();
+        registry
+            .register(integration("newcomer", BackendKind::Acp))
+            .unwrap();
+
+        // It reaches #163's resolver as an ordinary candidate.
+        let mut resolver = BackendResolver::empty();
+        let registration = registry.offer_catalog(&catalog, &mut resolver).unwrap();
+        assert_eq!(registration.registered, [entry.agent.clone()]);
+        assert!(registration.skipped.is_empty());
+
+        // And resolves, binds, and resumes through that binding.
+        let binding = resolver
+            .resolve(&entry.agent, &Default::default())
+            .expect("a catalog agent resolves like any other");
+        assert_eq!(binding.backend, entry.backend);
+        let candidate = resolver
+            .resolve_bound(&binding)
+            .expect("the bound backend is reachable");
+        assert_eq!(candidate.kind, BackendKind::Acp);
+
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut session = registry
+            .launch(
+                &entry,
+                Box::new(ScriptedTransport {
+                    advertisement: Advertisement {
+                        capabilities: vec!["messages".into()],
+                        provider_session_id: Some("provider-9".into()),
+                        ..Default::default()
+                    },
+                    sent: sent.clone(),
+                    ..Default::default()
+                }),
+                &request(),
+            )
+            .unwrap();
+        session
+            .resume(session.provider_session_id().unwrap().to_owned().as_str())
+            .expect("an ACP backend resumes natively");
+        assert_eq!(
+            sent.lock().unwrap()[1]
+                .pointer("/params/sessionId")
+                .unwrap(),
+            "provider-9"
+        );
+
+        // The structural half. These four modules are the ones #166 promises
+        // not to touch, and the promise is worth only as much as this check.
+        for module in [
+            "orchestrator.rs",
+            "routing_policy.rs",
+            "store.rs",
+            "delegation.rs",
+        ] {
+            let source =
+                std::fs::read_to_string(format!("{}/src/{module}", env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or_else(|error| panic!("{module} must be readable: {error}"));
+            for forbidden in [
+                "agent_integration",
+                "IntegrationRegistry",
+                "verified_catalog",
+                "VerifiedEntry",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{module} mentions {forbidden:?}: adding an agent must not \
+                     require changing it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_entry_this_build_cannot_serve_is_skipped_rather_than_refused() {
+        // An older Bridge reading a newer snapshot. Rejecting the catalog over
+        // an agent it does not carry would make every future agent a breaking
+        // change for every build that predates it.
+        let known = local_entry("known", CatalogBackendKind::Acp);
+        let future = local_entry("future", CatalogBackendKind::SdkSidecar);
+        let catalog = catalog_of(vec![known.clone(), future.clone()]);
+
+        let mut registry = IntegrationRegistry::empty();
+        registry
+            .register(integration("known", BackendKind::Acp))
+            .unwrap();
+
+        let mut resolver = BackendResolver::empty();
+        let registration = registry.offer_catalog(&catalog, &mut resolver).unwrap();
+        assert_eq!(registration.registered, [known.agent.clone()]);
+        assert_eq!(
+            registration.skipped,
+            [(future.agent.clone(), "no_integration")],
+            "the skip is reported, not silent"
+        );
+        assert!(registry.can_serve(&known));
+        assert!(!registry.can_serve(&future));
+
+        // Launching it directly is refused for the same reason, with its own
+        // code rather than a transport failure further down.
+        let error = registry
+            .launch(&future, Box::new(ScriptedTransport::default()), &request())
+            .unwrap_err();
+        assert_eq!(error.code(), "no_integration");
+
+        // A platform this entry does not support is skipped for its own
+        // reason, so a UI can say which of the two happened.
+        let mut elsewhere = local_entry("elsewhere", CatalogBackendKind::Acp);
+        elsewhere.platforms = vec![
+            match crate::acp_registry::PlatformTarget::current().unwrap() {
+                crate::acp_registry::PlatformTarget::WindowsX86_64 => {
+                    crate::acp_registry::PlatformTarget::LinuxX86_64
+                }
+                _ => crate::acp_registry::PlatformTarget::WindowsX86_64,
+            },
+        ];
+        elsewhere.backend = BackendId::parse("known.backend").unwrap();
+        let catalog = catalog_of(vec![elsewhere.clone()]);
+        let registration = registry
+            .offer_catalog(&catalog, &mut BackendResolver::empty())
+            .unwrap();
+        assert_eq!(
+            registration.skipped,
+            [(elsewhere.agent, "unsupported_platform")]
+        );
+    }
+
+    #[test]
+    fn two_integrations_cannot_claim_one_backend() {
+        let mut registry = IntegrationRegistry::empty();
+        registry
+            .register(integration("fake", BackendKind::Acp))
+            .unwrap();
+        let error = registry
+            .register(integration("fake", BackendKind::Acp))
+            .unwrap_err();
+        assert_eq!(error.code(), "duplicate_integration");
     }
 
     #[test]
