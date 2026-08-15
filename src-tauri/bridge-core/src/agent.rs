@@ -271,7 +271,11 @@ fn normalize_opencode_part(
 }
 
 impl NormalizedEvent {
-    fn new(kind: &str) -> Self {
+    /// An event of this kind with every optional field empty.
+    ///
+    /// Public so an integration outside this module can build one — the
+    /// built-in normalizers live here, but #166's integrations do not.
+    pub fn new(kind: &str) -> Self {
         Self {
             kind: kind.into(),
             item_id: None,
