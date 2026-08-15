@@ -16,8 +16,8 @@ use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    verified_catalog, worker_adoption, worker_lifecycle, workspace_files, BridgeCore, BridgeError,
-    RuntimeSession,
+    verification_pipeline, verified_catalog, worker_adoption, worker_lifecycle, workspace_files,
+    BridgeCore, BridgeError, RuntimeSession,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -101,6 +101,35 @@ pub fn verified_catalog(core: &Arc<BridgeCore>) -> VerifiedCatalog<'_> {
         entries: core.catalog.entries(),
         registration: &core.catalog_registration,
         cache_rejected: core.catalog_cache_rejected.as_deref(),
+    }
+}
+
+/// What the current conformance suite checks, and which revision it is.
+///
+/// The desktop never runs the suite — #168's pipeline runs where a candidate
+/// can be installed in a clean environment and where vendor credentials live.
+/// What the desktop can usefully answer is *what a verdict means*: a UI showing
+/// "Bridge Verified" should be able to say what was checked to earn it, without
+/// the marketplace screen restating a list that would then drift from the one
+/// the suite actually runs.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationSuite {
+    pub suite_version: u32,
+    pub checks: Vec<&'static str>,
+    /// How many times the required set must agree with itself before a verdict
+    /// is trusted.
+    pub determinism_runs: usize,
+}
+
+pub fn verification_suite() -> VerificationSuite {
+    VerificationSuite {
+        suite_version: verification_pipeline::SUITE_VERSION,
+        checks: verification_pipeline::CheckId::ALL
+            .iter()
+            .map(|check| check.as_str())
+            .collect(),
+        determinism_runs: verification_pipeline::DETERMINISM_RUNS,
     }
 }
 

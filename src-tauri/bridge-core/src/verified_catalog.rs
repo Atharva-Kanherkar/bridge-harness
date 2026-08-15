@@ -254,8 +254,43 @@ pub struct Verification {
     pub suite_version: u32,
     pub verified_at: String,
     /// An opaque reference to the evidence #168 produces. Deliberately not a
-    /// path or a URL: this must not become a fetch instruction.
+    /// path or a URL: this must not become a fetch instruction — it is the
+    /// evidence's own digest, which keeps that property and adds one: the
+    /// reference can be *checked* against the evidence rather than quoted.
     pub evidence_ref: String,
+}
+
+impl Verification {
+    /// The only function in this crate that returns a `Verified` verdict.
+    ///
+    /// It takes evidence it cannot fabricate, which is what makes "evidence is
+    /// the only way to Verified" structural rather than procedural.
+    /// `only_evidence_can_produce_a_verified_status` reads this module and
+    /// `verification_pipeline` and fails if a second producer appears.
+    ///
+    /// Deserializing a snapshot is the one other way a `Verified` verdict
+    /// enters the process, and it is not a hole: that path is gated on an
+    /// Ed25519 signature over the exact bytes, so the publisher's own run of
+    /// this pipeline is what the signature attests to.
+    pub fn verified(evidence: &crate::verification_pipeline::Evidence) -> Self {
+        Self {
+            status: VerificationStatus::Verified,
+            suite_version: evidence.suite_version,
+            verified_at: evidence.produced_at.clone(),
+            evidence_ref: evidence.digest(),
+        }
+    }
+
+    /// A verdict for something queued but not yet run. Never served — an entry
+    /// carrying it fails `validate`.
+    pub fn pending() -> Self {
+        Self {
+            status: VerificationStatus::Pending,
+            suite_version: crate::verification_pipeline::SUITE_VERSION,
+            verified_at: String::new(),
+            evidence_ref: String::new(),
+        }
+    }
 }
 
 /// What the vendor requires before their agent will run. Guidance, never a
@@ -513,6 +548,30 @@ impl Catalog {
 
     pub fn provenance(&self) -> &Provenance {
         &self.provenance
+    }
+
+    /// The oldest Bridge this document is meant for.
+    pub fn minimum_bridge_version(&self) -> &str {
+        &self.snapshot.minimum_bridge_version
+    }
+
+    /// The snapshot in force. Needed by #168's rollback, which restores one
+    /// agent's entry from the document a prior generation served.
+    pub fn snapshot(&self) -> &CatalogSnapshot {
+        &self.snapshot
+    }
+
+    /// Whether an already-parsed snapshot would survive installation.
+    ///
+    /// The same validation `install_snapshot` runs, minus the signature and the
+    /// generation check — those are questions about a document that arrived,
+    /// and this is asked of one Bridge is about to publish. #168 uses it so the
+    /// pipeline cannot mint a document the catalog would refuse.
+    pub fn would_accept(
+        snapshot: &CatalogSnapshot,
+        running_bridge_version: &str,
+    ) -> Result<(), CatalogError> {
+        validate_snapshot(snapshot, running_bridge_version)
     }
 
     /// The entry serving one agent, if the catalog has one.
@@ -799,6 +858,19 @@ fn parse_and_validate(
         serde_json::from_str(text).map_err(|error| CatalogError::Unreadable {
             reason: error.to_string(),
         })?;
+    validate_snapshot(&snapshot, running_bridge_version)?;
+    Ok(snapshot)
+}
+
+/// Everything that makes a parsed snapshot servable.
+///
+/// Split out of `parse_and_validate` so #168 can ask the question of a document
+/// it is about to publish, against exactly the rules a document that arrives
+/// must satisfy. Two copies of this would be two definitions of "valid".
+fn validate_snapshot(
+    snapshot: &CatalogSnapshot,
+    running_bridge_version: &str,
+) -> Result<(), CatalogError> {
     if snapshot.schema_version != SCHEMA_VERSION {
         return Err(CatalogError::UnsupportedSchema {
             found: snapshot.schema_version,
@@ -821,7 +893,7 @@ fn parse_and_validate(
         }
         entry.validate(running_bridge_version)?;
     }
-    Ok(snapshot)
+    Ok(())
 }
 
 fn sha256_hex(text: &str) -> String {
