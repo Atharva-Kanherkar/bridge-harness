@@ -643,6 +643,18 @@ pub fn plan_continuation(
     }
 }
 
+/// How an absent version reads in a durable record: the backing did not report
+/// one, which is a different fact from it having changed.
+fn version_or_unreported(version: Option<&BackendVersion>) -> &str {
+    version.map_or("unreported", BackendVersion::as_str)
+}
+
+/// How an absent installation reads: Bridge owns no payload for this agent,
+/// which is a statement rather than a gap.
+fn installation_or_none(installation: Option<&InstallationId>) -> &str {
+    installation.map_or("none", InstallationId::as_str)
+}
+
 /// Apply a planned continuation: write the binding, and leave a durable record
 /// of anything that moved. Separated from [`plan_continuation`] so the rule
 /// stays pure and only this half needs a database.
@@ -655,24 +667,39 @@ pub fn apply_continuation(
     match continuation {
         Continuation::BindFresh(_) | Continuation::Resume(_) => {}
         Continuation::ResumeMoved { binding, previous } => {
-            crate::store::event(
-                db,
-                "backend",
-                "backend.version_changed",
-                session_id,
-                &format!(
-                    "{} {} -> {}",
-                    binding.backend,
-                    previous
-                        .version
-                        .as_ref()
-                        .map_or("unreported", BackendVersion::as_str),
-                    binding
-                        .version
-                        .as_ref()
-                        .map_or("unreported", BackendVersion::as_str)
-                ),
-            )?;
+            // Record what actually moved, not whichever dimension is easier to
+            // format. A `ResumeMoved` is produced by full binding inequality,
+            // so it covers a version bump, a change of installed copy, or both
+            // — and a version line reading `0.147.0 -> 0.147.0` for a payload
+            // that was uninstalled would name nothing that happened.
+            if previous.version != binding.version {
+                crate::store::event(
+                    db,
+                    "backend",
+                    "backend.version_changed",
+                    session_id,
+                    &format!(
+                        "{} {} -> {}",
+                        binding.backend,
+                        version_or_unreported(previous.version.as_ref()),
+                        version_or_unreported(binding.version.as_ref()),
+                    ),
+                )?;
+            }
+            if previous.installation != binding.installation {
+                crate::store::event(
+                    db,
+                    "backend",
+                    "backend.installation_changed",
+                    session_id,
+                    &format!(
+                        "{} {} -> {}",
+                        binding.backend,
+                        installation_or_none(previous.installation.as_ref()),
+                        installation_or_none(binding.installation.as_ref()),
+                    ),
+                )?;
+            }
         }
         Continuation::ResumeRebound { binding, previous } => {
             crate::store::event(
@@ -965,6 +992,21 @@ mod tests {
         db
     }
 
+    /// Every durable backend fact a test has provoked, in order, as
+    /// `(kind, body)`. The whole record — so a test that expects one event also
+    /// fails when a second one it did not ask for appears.
+    fn recorded_backend_events(db: &rusqlite::Connection) -> Vec<(String, String)> {
+        let mut statement = db
+            .prepare("SELECT kind,body FROM events WHERE source='backend' ORDER BY id")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        rows
+    }
+
     fn binding(agent_id: &str, backend_id: &str, version: Option<&str>) -> BackendBinding {
         BackendBinding {
             agent: agent(agent_id),
@@ -1222,16 +1264,64 @@ mod tests {
         };
         let planned = plan_continuation(
             &resolver,
-            &StoredBinding::Bound(stored),
+            &StoredBinding::Bound(stored.clone()),
             &agent("codex"),
             &backing(Some("0.147.0"), None),
             None,
         )
         .unwrap();
-        match planned {
+        match &planned {
             Continuation::ResumeMoved { binding, .. } => assert!(binding.installation.is_none()),
             other => panic!("expected ResumeMoved, got {other:?}"),
         }
+
+        // And the record has to name what moved. The version did not, so a
+        // version line here would read `0.147.0 -> 0.147.0` and describe
+        // nothing that happened.
+        let db = store_with_session("codex");
+        write_binding(&db, "s", &stored).unwrap();
+        apply_continuation(&db, "s", &planned).unwrap();
+        assert_eq!(
+            recorded_backend_events(&db),
+            vec![(
+                "backend.installation_changed".to_string(),
+                "codex.app-server 3f9a0c1b7e2d4856af01bc93 -> none".to_string()
+            )],
+            "an installation-only move records the installation, and only it"
+        );
+    }
+
+    #[test]
+    fn a_move_of_both_version_and_installation_records_both() {
+        let resolver = BackendResolver::built_in();
+        let stored = BackendBinding {
+            installation: Some(InstallationId::parse("3f9a0c1b7e2d4856af01bc93").unwrap()),
+            ..binding("codex", "codex.app-server", Some("0.147.0"))
+        };
+        let planned = plan_continuation(
+            &resolver,
+            &StoredBinding::Bound(stored.clone()),
+            &agent("codex"),
+            &backing(Some("0.148.0"), Some("aa11bb22cc33dd44ee55ff66")),
+            None,
+        )
+        .unwrap();
+        let db = store_with_session("codex");
+        write_binding(&db, "s", &stored).unwrap();
+        apply_continuation(&db, "s", &planned).unwrap();
+        assert_eq!(
+            recorded_backend_events(&db),
+            vec![
+                (
+                    "backend.version_changed".to_string(),
+                    "codex.app-server 0.147.0 -> 0.148.0".to_string()
+                ),
+                (
+                    "backend.installation_changed".to_string(),
+                    "codex.app-server 3f9a0c1b7e2d4856af01bc93 -> aa11bb22cc33dd44ee55ff66".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -1649,30 +1739,62 @@ mod tests {
     fn every_adapter_launch_goes_through_the_binding_choke_point() {
         // The binding is only a guarantee if no launch path can skip it. Each
         // of the three flows that reaches the adapter registry must dispatch
-        // through a plan, and a fourth added later must too — which is what
-        // fails here rather than in production.
+        // through a plan, and a fourth added later must too.
+        //
+        // An earlier version of this test blocklisted four literal spellings,
+        // which a new `start(&other_id` or a differently-wrapped call would
+        // have walked straight past. This reads the *argument* at every
+        // dispatch site instead: whatever a future path is called, the id it
+        // dispatches on has to be one that came out of a plan.
         let source = include_str!("live_turn.rs");
-        let dispatches = source.matches("adapter_registry.start(").count()
-            + source.matches("adapter_registry\n            .start(").count()
-            + source.matches("adapter_registry.resume(").count()
-            + source.matches("registry.resume(\n                &launch_adapter_id").count();
-        let planned = source.matches("backend_binding::plan_launch(").count();
-        assert_eq!(planned, 3, "the three launch flows each plan exactly once");
+        let dispatched = registry_dispatch_arguments(source);
         assert!(
-            dispatches > 0,
-            "the dispatch sites this test is guarding must still exist"
+            dispatched.len() >= 7,
+            "expected the known dispatch sites; found {dispatched:?}"
         );
-        for skipped in [
-            "adapter_registry.start(adapter_id",
-            "adapter_registry.start(&harness",
-            "adapter_registry.resume(adapter_id",
-            "adapter_registry.resume(&harness",
-        ] {
+        // `launch_adapter_id` is `dispatch_id.clone()`, moved into a closure.
+        const FROM_A_PLAN: [&str; 2] = ["dispatch_id", "launch_adapter_id"];
+        for argument in &dispatched {
+            let name = argument.trim_start_matches('&');
             assert!(
-                !source.contains(skipped),
-                "{skipped:?} dispatches on the agent id, bypassing the bound backend"
+                FROM_A_PLAN.contains(&name),
+                "{argument} dispatches on an id no plan_launch produced; every \
+                 adapter launch must go through the binding"
             );
         }
+        assert_eq!(
+            source.matches("backend_binding::plan_launch(").count(),
+            3,
+            "the three launch flows each plan exactly once — a fourth flow must \
+             add its own plan and update this count deliberately"
+        );
+    }
+
+    /// The first argument of every `AdapterRegistry` launch call in a source
+    /// file — `start`, `resume`, and the `supports_native_resume` query that
+    /// decides between them, since asking the wrong backend whether it can
+    /// resume picks the wrong plan just as surely as launching it would.
+    ///
+    /// Receiver-based rather than name-based: it matches any expression ending
+    /// in `registry`, so both `state.adapter_registry` and the cloned local
+    /// `registry` are covered however the call happens to be wrapped.
+    fn registry_dispatch_arguments(source: &str) -> Vec<String> {
+        const CALLS: [&str; 3] = [".start(", ".resume(", ".supports_native_resume("];
+        let mut arguments = Vec::new();
+        for call in CALLS {
+            for (index, _) in source.match_indices(call) {
+                if !source[..index].trim_end().ends_with("registry") {
+                    continue;
+                }
+                let open = index + call.len();
+                let rest = source[open..].trim_start();
+                let end = rest
+                    .find([',', ')'])
+                    .unwrap_or_else(|| panic!("unterminated call argument near {rest:.40}"));
+                arguments.push(rest[..end].trim().to_owned());
+            }
+        }
+        arguments
     }
 
     #[test]

@@ -39,10 +39,13 @@ backend and version actually served it.
   backend/version." Those are read as different consequences on purpose:
   refusing on every version difference would break resume on every ordinary
   vendor update, which is a routine event — Claude moved 0.3.209 forward twice
-  during #161 alone. So a differing `BackendId` blocks resume until authorized,
-  while a differing `BackendVersion` resumes and records a durable
-  `backend_version_changed` fact. Neither is silent. If review disagrees, the
-  change is one match arm and one test.
+  during #161 alone. So a differing `BackendVersion` resumes and records a
+  durable `backend.version_changed` fact, and a change of *backend* happens only
+  through an authorization. Neither is silent.
+
+  (The first half of this assumption — that a backend differing from a fresh
+  resolution blocks the resume — was amended once the launch paths were wired.
+  See "A bound session sticks to its backend" below, which supersedes it.)
 - **No new RPC method, and no UI.** The authorization is a `bridge_core::api`
   entry point. Its wire and desktop surface belong with #166's control plane;
   adding a method here would put a user-facing control in front of a resolver
@@ -83,7 +86,11 @@ backend and version actually served it.
   resolves that exact `BackendId` rather than re-picking:
   - Backend present, same version → resume normally.
   - Backend present, different version → resume, update the stored version, and
-    record a durable `backend_version_changed` fact naming both versions.
+    record a durable fact naming what moved: `backend.version_changed` when the
+    version did, `backend.installation_changed` when the installed copy did, and
+    both when both. The event kinds are dotted, matching what `events.kind`
+    actually contains — an underscore spelling here would send #166's UI work
+    looking for a row that does not exist.
   - Backend absent from the resolver → `BackendUnavailable`, naming agent,
     backend, and version. The session's history stays listable and replayable.
   - A *newer preferred* backend exists for the agent → the session still resumes
@@ -141,6 +148,11 @@ backend and version actually served it.
 - `a_version_change_resumes_and_records_the_change` — the decision is to
   proceed, the stored version is updated, and the recorded fact carries both the
   old and the new version.
+- `losing_the_managed_payload_is_recorded_as_a_move` — clearing the installation
+  records `backend.installation_changed` and **only** that: a version line for a
+  version that did not move would name nothing that happened.
+- `a_move_of_both_version_and_installation_records_both` — when both dimensions
+  move, both facts are recorded, in order.
 - `a_newer_preferred_backend_does_not_move_or_block_a_bound_session` — with a
   stronger candidate registered, the session resumes through the backend it
   recorded, and `preferred_elsewhere` names the stronger one so a caller can
