@@ -1492,3 +1492,55 @@ pub fn uninstall_managed_agent(
     let db = core.db.lock().unwrap();
     crate::managed_agents::uninstall_managed_agent(&db, agent_id)
 }
+
+// ---- agents: the session's backend binding -------------------------------
+
+/// Authorize continuing one session under a different backend.
+///
+/// A session records which implementation served it, and a resume through a
+/// different one is refused — the same history answered by a different agent
+/// runtime is a decision only a user can make. This is how that decision is
+/// given: for one session, one exact transition, spent when it is used.
+///
+/// Deliberately not an RPC method yet. Its wire and desktop surface belong with
+/// #166's control plane, where a second backend candidate first becomes
+/// reachable; exposing a control now would put a button in front of a resolver
+/// that has exactly one candidate per agent.
+pub fn authorize_backend_change(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    to_backend: &str,
+) -> Result<(), BridgeError> {
+    let to_backend = bridge_protocol::messages::BackendId::parse(to_backend)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let db = core.db.lock().unwrap();
+    let from = match crate::backend_binding::read_binding(&db, session_id)? {
+        crate::backend_binding::StoredBinding::Bound(binding) => binding,
+        // Nothing to change from: an unbound session binds on its next launch,
+        // and an unreadable one must not be rebound by a caller who cannot have
+        // been shown what it is changing away from.
+        other => {
+            return Err(BridgeError::Invalid(format!(
+                "{session_id} has no backend to change from ({other:?})"
+            )))
+        }
+    };
+    let candidate = crate::backend_binding::BackendResolver::candidate(
+        &core.backend_resolver,
+        &from.agent,
+        &to_backend,
+    )
+    .ok_or_else(|| {
+        BridgeError::Invalid(format!(
+            "{} has no backend named {to_backend}",
+            from.agent
+        ))
+    })?;
+    let to = crate::backend_binding::BackendBinding {
+        agent: from.agent.clone(),
+        backend: candidate.backend.clone(),
+        version: None,
+        installation: None,
+    };
+    crate::backend_binding::authorize_backend_change(&db, session_id, &from, &to)
+}

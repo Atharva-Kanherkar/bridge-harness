@@ -6,7 +6,7 @@
 
 use crate::events::{CoreEvent, EventBus};
 use crate::{
-    adapters, agent_config, binary, browser_bridge, credential_broker, delegation,
+    adapters, agent_config, backend_binding, binary, browser_bridge, credential_broker, delegation,
     model::AdapterDescriptor, session_supervisor, skill_marketplace, store, worker_guard,
     worker_sandbox, BridgeError,
 };
@@ -31,6 +31,9 @@ pub struct BridgeCore {
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
     pub adapter_registry: Arc<adapters::AdapterRegistry>,
+    /// Which backend serves each agent. The registry executes; this decides
+    /// what may execute, and what a session recorded last time.
+    pub backend_resolver: Arc<backend_binding::BackendResolver>,
     pub delegations: Mutex<DelegationState>,
     pub worktrees: PathBuf,
     pub database_path: PathBuf,
@@ -174,6 +177,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
+            backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             delegations: Mutex::new(DelegationState::default()),
             worktrees: scratch.join("worktrees"),
             database_path: scratch.join("bridge.db"),
@@ -238,6 +242,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             adapter_registry,
+            backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             delegations: Mutex::new(DelegationState::default()),
             worktrees: config.data_dir.join("worktrees"),
             database_path: db_path,

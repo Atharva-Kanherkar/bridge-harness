@@ -1676,7 +1676,15 @@ fn stream_file_into(path: &Path, digest: &mut Sha256) -> Result<u64, BridgeError
     }
 }
 
-fn installation_id(agent: &str, version: &str, platform: &str, integrity: &str) -> String {
+/// Derive the id for an installed payload. `pub(crate)` so the identity type
+/// that mirrors this grammar can be tested against the real derivation rather
+/// than against a hand-written example of it.
+pub(crate) fn installation_id(
+    agent: &str,
+    version: &str,
+    platform: &str,
+    integrity: &str,
+) -> String {
     let mut digest = Sha256::new();
     for value in [agent, version, platform, integrity] {
         digest.update(value.as_bytes());

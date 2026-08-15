@@ -121,6 +121,9 @@ pub enum BackendError {
     },
     /// A candidate registration collided with one already present.
     DuplicateBackend { agent: String, backend: String },
+    /// The session's recorded binding cannot be interpreted by this build. Its
+    /// history still reads; only running it again is refused.
+    BindingUnreadable { raw: String, reason: String },
 }
 
 impl BackendError {
@@ -131,6 +134,7 @@ impl BackendError {
             Self::UnknownAgent { .. } => "unknown_agent",
             Self::BackendUnavailable { .. } => "backend_unavailable",
             Self::DuplicateBackend { .. } => "duplicate_backend",
+            Self::BindingUnreadable { .. } => "binding_unreadable",
         }
     }
 }
@@ -158,6 +162,11 @@ impl std::fmt::Display for BackendError {
             Self::DuplicateBackend { agent, backend } => {
                 write!(formatter, "{agent} already has a backend named {backend}")
             }
+            Self::BindingUnreadable { raw, reason } => write!(
+                formatter,
+                "this session records the backend {raw:?}, which this build cannot \
+                 interpret: {reason}"
+            ),
         }
     }
 }
@@ -304,6 +313,14 @@ impl BackendResolver {
         })
     }
 
+    /// A stronger candidate than the one a session is bound to, when there is
+    /// one. Purely informational: it is what a caller shows to offer the move,
+    /// and it never moves anything by itself.
+    pub fn preferred_elsewhere(&self, binding: &BackendBinding) -> Option<&BackendCandidate> {
+        let preferred = self.preferred(&binding.agent).ok()?;
+        (preferred.backend != binding.backend).then_some(preferred)
+    }
+
     /// Resolve one exact backend a session already recorded. Fails with
     /// [`BackendError::BackendUnavailable`] when this build cannot reach it —
     /// which is a resume failure, never a reason to hide the session.
@@ -352,7 +369,9 @@ pub fn read_binding(
     db: &rusqlite::Connection,
     session_id: &str,
 ) -> Result<StoredBinding, BridgeError> {
-    let row: Option<(String, Option<String>, Option<String>, Option<String>)> = db
+    /// `(harness, backend_id, backend_version, backend_installation_id)`.
+    type BindingRow = (String, Option<String>, Option<String>, Option<String>);
+    let row: Option<BindingRow> = db
         .query_row(
             "SELECT harness,backend_id,backend_version,backend_installation_id
              FROM sessions WHERE id=?1",
@@ -509,6 +528,238 @@ pub fn consume_authorization(
         rusqlite::params![session_id],
     )?;
     Ok(())
+}
+
+/// How a session may continue, given what it recorded and what is installed now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Continuation {
+    /// Nothing was recorded — a legacy row, or a session that never launched.
+    /// It binds now and runs; this is not a backend change.
+    BindFresh(BackendBinding),
+    /// The same backend and the same copy of it.
+    Resume(BackendBinding),
+    /// The same backend, a different version or a different installed copy.
+    /// Proceeds, rebinds, and leaves a durable record naming both.
+    ResumeMoved {
+        binding: BackendBinding,
+        previous: BackendBinding,
+    },
+    /// A different backend, authorized for exactly this transition.
+    ResumeRebound {
+        binding: BackendBinding,
+        previous: BackendBinding,
+    },
+}
+
+impl Continuation {
+    pub fn binding(&self) -> &BackendBinding {
+        match self {
+            Self::BindFresh(binding)
+            | Self::Resume(binding)
+            | Self::ResumeMoved { binding, .. }
+            | Self::ResumeRebound { binding, .. } => binding,
+        }
+    }
+}
+
+/// Decide how a session continues. Pure: it reads nothing and writes nothing, so
+/// every rule below is testable without a database or an installed agent.
+///
+/// The asymmetry between a moved version and a changed backend is the whole
+/// rule. A version moving is the ordinary consequence of a vendor shipping —
+/// refusing it would break resume on every update — so it proceeds and is
+/// recorded. A backend changing means a different implementation would answer
+/// for the same history, which is a decision only a user can make.
+pub fn plan_continuation(
+    resolver: &BackendResolver,
+    stored: &StoredBinding,
+    agent: &AgentId,
+    backing: &BackendBacking,
+    authorization: Option<&BackendChangeAuthorization>,
+) -> Result<Continuation, BackendError> {
+    let stored = match stored {
+        StoredBinding::Unreadable { raw, reason } => {
+            return Err(BackendError::BindingUnreadable {
+                raw: raw.clone(),
+                reason: reason.clone(),
+            })
+        }
+        StoredBinding::Unbound => {
+            return Ok(Continuation::BindFresh(resolver.resolve(agent, backing)?))
+        }
+        StoredBinding::Bound(binding) => binding,
+    };
+
+    // The recorded backend has to still exist. Falling through to another
+    // candidate when it does not would be exactly the silent substitution this
+    // module exists to prevent.
+    resolver.resolve_bound(stored)?;
+
+    // A session moves backend only when a user authorizes that exact move. A
+    // stronger candidate appearing is reported by `preferred_elsewhere`, not
+    // acted on here: acting on it would make registering a backend break every
+    // session already running under the old one.
+    if let Some(authorization) = authorization {
+        let target = resolver
+            .candidate(agent, &authorization.to_backend)
+            .ok_or_else(|| BackendError::BackendUnavailable {
+                agent: agent.as_str().to_owned(),
+                backend: authorization.to_backend.as_str().to_owned(),
+                version: None,
+            })?;
+        let rebound = BackendBinding {
+            agent: agent.clone(),
+            backend: target.backend.clone(),
+            version: backing.version.clone(),
+            installation: backing.installation.clone(),
+        };
+        if !stored.same_backend(&rebound) && authorization.permits(stored, &rebound) {
+            return Ok(Continuation::ResumeRebound {
+                binding: rebound,
+                previous: stored.clone(),
+            });
+        }
+    }
+
+    let next = BackendBinding {
+        agent: stored.agent.clone(),
+        backend: stored.backend.clone(),
+        // A backing that reports no version does not erase the one already
+        // known. "Not reported" is not "changed" — an external runtime that
+        // has never been probed would otherwise blank the record every launch.
+        version: backing.version.clone().or_else(|| stored.version.clone()),
+        // An installation, unlike a version, means something by its absence:
+        // `None` says Bridge owns no payload for this agent now, which is a
+        // real transition from managed to external and must be recorded.
+        installation: backing.installation.clone(),
+    };
+    if &next == stored {
+        Ok(Continuation::Resume(next))
+    } else {
+        Ok(Continuation::ResumeMoved {
+            binding: next,
+            previous: stored.clone(),
+        })
+    }
+}
+
+/// Apply a planned continuation: write the binding, and leave a durable record
+/// of anything that moved. Separated from [`plan_continuation`] so the rule
+/// stays pure and only this half needs a database.
+pub fn apply_continuation(
+    db: &rusqlite::Connection,
+    session_id: &str,
+    continuation: &Continuation,
+) -> Result<(), BridgeError> {
+    write_binding(db, session_id, continuation.binding())?;
+    match continuation {
+        Continuation::BindFresh(_) | Continuation::Resume(_) => {}
+        Continuation::ResumeMoved { binding, previous } => {
+            crate::store::event(
+                db,
+                "backend",
+                "backend.version_changed",
+                session_id,
+                &format!(
+                    "{} {} -> {}",
+                    binding.backend,
+                    previous
+                        .version
+                        .as_ref()
+                        .map_or("unreported", BackendVersion::as_str),
+                    binding
+                        .version
+                        .as_ref()
+                        .map_or("unreported", BackendVersion::as_str)
+                ),
+            )?;
+        }
+        Continuation::ResumeRebound { binding, previous } => {
+            crate::store::event(
+                db,
+                "backend",
+                "backend.changed",
+                session_id,
+                &format!("{} -> {}", previous.backend, binding.backend),
+            )?;
+            // The authorization covered this one transition and is now spent.
+            consume_authorization(db, session_id)?;
+        }
+    }
+    Ok(())
+}
+
+/// A launch that has been decided but not yet recorded.
+///
+/// The two halves are separate because the session row is written *after* the
+/// adapter starts: a fresh session has no row to update while it is being
+/// decided. So [`plan_launch`] refuses before any process is spawned, and
+/// [`LaunchPlan::commit`] records the binding once there is a row to hold it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchPlan {
+    /// The adapter registry key to dispatch to.
+    pub adapter_id: String,
+    /// `None` for an agent the resolver does not know, whose launch is
+    /// unchanged and unrecorded.
+    continuation: Option<Continuation>,
+}
+
+impl LaunchPlan {
+    pub fn continuation(&self) -> Option<&Continuation> {
+        self.continuation.as_ref()
+    }
+
+    /// Record the binding and anything that moved. Call once the session row
+    /// exists; a no-op for an agent with no backend.
+    pub fn commit(&self, db: &rusqlite::Connection, session_id: &str) -> Result<(), BridgeError> {
+        match &self.continuation {
+            Some(continuation) => apply_continuation(db, session_id, continuation),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Decide which adapter may serve this session, and refuse before anything
+/// starts if it may not.
+///
+/// The one choke point every launch goes through, so a binding cannot be
+/// enforced on one path and skipped on another. Returns the same adapter key as
+/// before for every agent the resolver does not know, which is how `shell` and
+/// any agent without a backend row keep working untouched.
+pub fn plan_launch(
+    db: &rusqlite::Connection,
+    resolver: &BackendResolver,
+    session_id: &str,
+    harness: &str,
+    backing: &BackendBacking,
+) -> Result<LaunchPlan, BridgeError> {
+    // An agent this build has no backend table for is left exactly as it was.
+    // Binding it would mean inventing a backend id for an implementation
+    // nothing here describes.
+    let unbound = || LaunchPlan {
+        adapter_id: harness.to_owned(),
+        continuation: None,
+    };
+    let Ok(agent) = AgentId::parse(harness) else {
+        return Ok(unbound());
+    };
+    if resolver.candidates(&agent).is_empty() {
+        return Ok(unbound());
+    }
+
+    let stored = read_binding(db, session_id)?;
+    let authorization = pending_authorization(db, session_id)?;
+    let continuation = plan_continuation(resolver, &stored, &agent, backing, authorization.as_ref())
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let adapter_id = resolver
+        .resolve_bound(continuation.binding())
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+        .adapter_id
+        .clone();
+    Ok(LaunchPlan {
+        adapter_id,
+        continuation: Some(continuation),
+    })
 }
 
 #[cfg(test)]
@@ -842,6 +1093,468 @@ mod tests {
                 "claude.agent-sdk -> claude.acp".to_string(),
                 "claude.agent-sdk -> claude.cli".to_string()
             ]
+        );
+    }
+
+    /// A resolver where `claude` has moved to a second, preferred backend, so
+    /// a session bound to the SDK sidecar is facing a real change.
+    fn resolver_with_claude_moved() -> BackendResolver {
+        let mut resolver = BackendResolver::empty();
+        let claude = agent("claude");
+        resolver
+            .register(&claude, candidate("claude.agent-sdk", BackendKind::Acp))
+            .unwrap();
+        resolver
+            .register(
+                &claude,
+                BackendCandidate {
+                    backend: backend("claude.next-sdk"),
+                    // A distinct adapter key, so which backend actually
+                    // dispatched is observable rather than coincidental.
+                    adapter_id: "claude-next".into(),
+                    kind: BackendKind::SdkSidecar,
+                },
+            )
+            .unwrap();
+        resolver
+    }
+
+    fn backing(version: Option<&str>, installation: Option<&str>) -> BackendBacking {
+        BackendBacking {
+            version: version.map(|v| BackendVersion::parse(v).unwrap()),
+            installation: installation.map(|i| InstallationId::parse(i).unwrap()),
+        }
+    }
+
+    #[test]
+    fn an_unbound_session_binds_rather_than_reporting_a_change() {
+        let resolver = BackendResolver::built_in();
+        let planned = plan_continuation(
+            &resolver,
+            &StoredBinding::Unbound,
+            &agent("codex"),
+            &backing(Some("0.147.0"), None),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(planned, Continuation::BindFresh(_)));
+        assert_eq!(planned.binding().backend, backend("codex.app-server"));
+    }
+
+    #[test]
+    fn an_unchanged_session_resumes_through_its_recorded_backend() {
+        let resolver = BackendResolver::built_in();
+        let stored = StoredBinding::Bound(binding("codex", "codex.app-server", Some("0.147.0")));
+        let planned = plan_continuation(
+            &resolver,
+            &stored,
+            &agent("codex"),
+            &backing(Some("0.147.0"), None),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(planned, Continuation::Resume(_)));
+    }
+
+    #[test]
+    fn a_version_change_resumes_and_records_the_change() {
+        let resolver = BackendResolver::built_in();
+        let stored = binding("codex", "codex.app-server", Some("0.147.0"));
+        let planned = plan_continuation(
+            &resolver,
+            &StoredBinding::Bound(stored.clone()),
+            &agent("codex"),
+            &backing(Some("0.148.0"), None),
+            None,
+        )
+        .unwrap();
+        match &planned {
+            Continuation::ResumeMoved { binding, previous } => {
+                assert_eq!(binding.version.as_ref().unwrap().as_str(), "0.148.0");
+                assert_eq!(previous.version.as_ref().unwrap().as_str(), "0.147.0");
+            }
+            other => panic!("expected ResumeMoved, got {other:?}"),
+        }
+
+        let db = store_with_session("codex");
+        write_binding(&db, "s", &stored).unwrap();
+        apply_continuation(&db, "s", &planned).unwrap();
+        assert_eq!(
+            read_binding(&db, "s").unwrap(),
+            StoredBinding::Bound(planned.binding().clone()),
+            "the stored version must be updated, not merely reported"
+        );
+        let recorded: String = db
+            .query_row(
+                "SELECT body FROM events WHERE kind='backend.version_changed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, "codex.app-server 0.147.0 -> 0.148.0");
+    }
+
+    #[test]
+    fn a_backing_that_reports_no_version_does_not_erase_the_recorded_one() {
+        // An external runtime Bridge has not probed reports nothing. Blanking
+        // the record every launch would turn "unknown" into "changed" forever.
+        let resolver = BackendResolver::built_in();
+        let stored = binding("codex", "codex.app-server", Some("0.147.0"));
+        let planned = plan_continuation(
+            &resolver,
+            &StoredBinding::Bound(stored.clone()),
+            &agent("codex"),
+            &BackendBacking::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(planned, Continuation::Resume(stored));
+    }
+
+    #[test]
+    fn losing_the_managed_payload_is_recorded_as_a_move() {
+        // Absence of an installation, unlike absence of a version, is a fact:
+        // Bridge owns nothing for this agent now.
+        let resolver = BackendResolver::built_in();
+        let stored = BackendBinding {
+            installation: Some(InstallationId::parse("3f9a0c1b7e2d4856af01bc93").unwrap()),
+            ..binding("codex", "codex.app-server", Some("0.147.0"))
+        };
+        let planned = plan_continuation(
+            &resolver,
+            &StoredBinding::Bound(stored),
+            &agent("codex"),
+            &backing(Some("0.147.0"), None),
+            None,
+        )
+        .unwrap();
+        match planned {
+            Continuation::ResumeMoved { binding, .. } => assert!(binding.installation.is_none()),
+            other => panic!("expected ResumeMoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_newer_preferred_backend_does_not_move_or_block_a_bound_session() {
+        // The amended rule. A stronger candidate appearing must not turn every
+        // existing session into one that refuses to resume.
+        let resolver = resolver_with_claude_moved();
+        let stored = binding("claude", "claude.agent-sdk", Some("0.3.209"));
+        let planned = plan_continuation(
+            &resolver,
+            &StoredBinding::Bound(stored.clone()),
+            &agent("claude"),
+            &backing(Some("0.3.209"), None),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            planned,
+            Continuation::Resume(stored.clone()),
+            "a bound session sticks to the backend it recorded"
+        );
+
+        // The divergence is still visible, so a caller can offer the move.
+        assert_eq!(
+            resolver.preferred_elsewhere(&stored).unwrap().backend,
+            backend("claude.next-sdk")
+        );
+        // And there is nothing to offer once it is on the preferred one.
+        let moved = binding("claude", "claude.next-sdk", None);
+        assert!(resolver.preferred_elsewhere(&moved).is_none());
+    }
+
+    #[test]
+    fn a_backend_change_happens_only_through_an_authorization() {
+        let resolver = resolver_with_claude_moved();
+        let stored = binding("claude", "claude.agent-sdk", Some("0.3.209"));
+        let plan = |authorization: Option<&BackendChangeAuthorization>| {
+            plan_continuation(
+                &resolver,
+                &StoredBinding::Bound(stored.clone()),
+                &agent("claude"),
+                &backing(Some("0.4.0"), None),
+                authorization,
+            )
+        };
+
+        // An authorization for a backend this agent does not have is refused
+        // rather than quietly ignored.
+        let absent = BackendChangeAuthorization {
+            from_backend: backend("claude.agent-sdk"),
+            to_backend: backend("claude.acp"),
+            to_version: None,
+        };
+        assert_eq!(
+            plan(Some(&absent)).unwrap_err().code(),
+            "backend_unavailable"
+        );
+
+        // An authorization whose origin is stale does not move the session.
+        let stale = BackendChangeAuthorization {
+            from_backend: backend("claude.next-sdk"),
+            to_backend: backend("claude.next-sdk"),
+            to_version: None,
+        };
+        assert!(matches!(
+            plan(Some(&stale)).unwrap(),
+            Continuation::ResumeMoved { .. } | Continuation::Resume(_)
+        ));
+
+        let right = BackendChangeAuthorization {
+            from_backend: backend("claude.agent-sdk"),
+            to_backend: backend("claude.next-sdk"),
+            to_version: None,
+        };
+        match plan(Some(&right)).unwrap() {
+            Continuation::ResumeRebound { binding, previous } => {
+                assert_eq!(binding.backend, backend("claude.next-sdk"));
+                assert_eq!(previous.backend, backend("claude.agent-sdk"));
+            }
+            other => panic!("expected ResumeRebound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn applying_an_authorized_change_spends_the_authorization() {
+        let resolver = resolver_with_claude_moved();
+        let db = store_with_session("claude");
+        let stored = binding("claude", "claude.agent-sdk", Some("0.3.209"));
+        write_binding(&db, "s", &stored).unwrap();
+        let target = binding("claude", "claude.next-sdk", Some("0.4.0"));
+        authorize_backend_change(&db, "s", &stored, &target).unwrap();
+
+        let authorization = pending_authorization(&db, "s").unwrap().unwrap();
+        let planned = plan_continuation(
+            &resolver,
+            &read_binding(&db, "s").unwrap(),
+            &agent("claude"),
+            &backing(Some("0.4.0"), None),
+            Some(&authorization),
+        )
+        .unwrap();
+        apply_continuation(&db, "s", &planned).unwrap();
+
+        assert_eq!(
+            read_binding(&db, "s").unwrap().bound().unwrap().backend,
+            backend("claude.next-sdk")
+        );
+        assert!(
+            pending_authorization(&db, "s").unwrap().is_none(),
+            "the authorization covered one transition and is spent"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT body FROM events WHERE kind='backend.changed'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "claude.agent-sdk -> claude.next-sdk"
+        );
+
+        // And the next resume needs no authorization at all, because the
+        // session now names the backend that would be chosen anyway.
+        assert!(matches!(
+            plan_continuation(
+                &resolver,
+                &read_binding(&db, "s").unwrap(),
+                &agent("claude"),
+                &backing(Some("0.4.0"), None),
+                None,
+            )
+            .unwrap(),
+            Continuation::Resume(_)
+        ));
+    }
+
+    #[test]
+    fn a_session_whose_backend_is_gone_is_unavailable_not_changed() {
+        // The distinction matters: "changed" invites the user to authorize a
+        // move, and there is nothing to move to.
+        let resolver = BackendResolver::built_in();
+        let stored = StoredBinding::Bound(binding("codex", "codex.acp", Some("0.147.0")));
+        let error = plan_continuation(
+            &resolver,
+            &stored,
+            &agent("codex"),
+            &backing(Some("0.147.0"), None),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "backend_unavailable");
+    }
+
+    #[test]
+    fn an_uninterpretable_binding_refuses_to_run_and_never_rebinds() {
+        let resolver = BackendResolver::built_in();
+        let stored = StoredBinding::Unreadable {
+            raw: "Codex::AppServer/2".into(),
+            reason: "invalid backend id".into(),
+        };
+        let error = plan_continuation(
+            &resolver,
+            &stored,
+            &agent("codex"),
+            &backing(Some("0.147.0"), None),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "binding_unreadable");
+        assert!(error.to_string().contains("Codex::AppServer/2"));
+    }
+
+    #[test]
+    fn every_backend_error_condition_has_its_own_code() {
+        let codes = [
+            BackendError::UnknownAgent { agent: "a".into() },
+            BackendError::BackendUnavailable {
+                agent: "a".into(),
+                backend: "b".into(),
+                version: None,
+            },
+            BackendError::DuplicateBackend {
+                agent: "a".into(),
+                backend: "b".into(),
+            },
+            BackendError::BindingUnreadable {
+                raw: "r".into(),
+                reason: "why".into(),
+            },
+        ]
+        .map(|error| error.code());
+        let mut unique = codes.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), codes.len(), "codes must be distinct: {codes:?}");
+    }
+
+    #[test]
+    fn installation_ids_from_the_payload_engine_parse_as_identities() {
+        // The identity type claims the payload engine's grammar. Check it
+        // against the real derivation rather than a hand-written example, so a
+        // change to either side fails here.
+        let derived = crate::managed_payload::installation_id(
+            "claude",
+            "npm:@anthropic-ai/claude-agent-sdk@0.3.209",
+            "darwin-arm64",
+            "sha256-0000",
+        );
+        assert_eq!(
+            InstallationId::parse(&derived).unwrap().as_str(),
+            derived,
+            "a derived installation id must satisfy InstallationId"
+        );
+        // And the npm-coordinate spelling a recipe pins is a legal version.
+        assert!(
+            BackendVersion::parse("npm:@anthropic-ai/claude-agent-sdk@0.3.209").is_ok(),
+            "the recipe's own version spelling must round-trip"
+        );
+    }
+
+    #[test]
+    fn an_agent_with_no_backend_row_is_left_exactly_as_it_was() {
+        // `shell` is a harness, not a marketplace agent: it has no backend and
+        // must dispatch to the same adapter key it always did, unbound.
+        let db = store_with_session("shell");
+        let resolver = BackendResolver::built_in();
+        let plan =
+            plan_launch(&db, &resolver, "s", "shell", &BackendBacking::default()).unwrap();
+        assert_eq!(plan.adapter_id, "shell");
+        assert!(plan.continuation().is_none(), "nothing to record");
+        plan.commit(&db, "s").unwrap();
+        assert_eq!(read_binding(&db, "s").unwrap(), StoredBinding::Unbound);
+
+        // Same for an id this build cannot even parse.
+        let db = store_with_session("acp:gemini");
+        let plan =
+            plan_launch(&db, &resolver, "s", "acp:gemini", &BackendBacking::default()).unwrap();
+        assert_eq!(plan.adapter_id, "acp:gemini");
+    }
+
+    #[test]
+    fn a_launch_binds_the_session_and_dispatches_to_the_backends_adapter() {
+        let db = store_with_session("codex");
+        let resolver = BackendResolver::built_in();
+        let plan =
+            plan_launch(&db, &resolver, "s", "codex", &backing(Some("0.147.0"), None)).unwrap();
+        assert_eq!(plan.adapter_id, "codex", "the registry key is unchanged");
+        assert_eq!(
+            read_binding(&db, "s").unwrap(),
+            StoredBinding::Unbound,
+            "planning decides; it must not write before the session row exists"
+        );
+        plan.commit(&db, "s").unwrap();
+        assert_eq!(
+            read_binding(&db, "s").unwrap(),
+            StoredBinding::Bound(binding("codex", "codex.app-server", Some("0.147.0"))),
+            "committing the launch is what records the binding"
+        );
+
+        // A second launch after a vendor update rebinds rather than refusing.
+        plan_launch(&db, &resolver, "s", "codex", &backing(Some("0.148.0"), None))
+            .unwrap()
+            .commit(&db, "s")
+            .unwrap();
+        assert_eq!(
+            read_binding(&db, "s")
+                .unwrap()
+                .bound()
+                .unwrap()
+                .version
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "0.148.0"
+        );
+    }
+
+    #[test]
+    fn a_launch_dispatches_to_the_bound_backend_not_the_preferred_one() {
+        let db = store_with_session("claude");
+        let resolver = resolver_with_claude_moved();
+        let stored = binding("claude", "claude.agent-sdk", Some("0.3.209"));
+        write_binding(&db, "s", &stored).unwrap();
+
+        // `claude.next-sdk` is preferred and would win a fresh resolution. The
+        // bound session must still reach the adapter its own backend names.
+        let plan =
+            plan_launch(&db, &resolver, "s", "claude", &backing(Some("0.3.209"), None)).unwrap();
+        assert_eq!(plan.adapter_id, "claude");
+        assert_eq!(
+            resolver.preferred(&agent("claude")).unwrap().adapter_id,
+            "claude-next",
+            "the preferred candidate is genuinely a different adapter"
+        );
+
+        // Authorized, the same launch dispatches to the new backend instead.
+        let target = binding("claude", "claude.next-sdk", None);
+        authorize_backend_change(&db, "s", &stored, &target).unwrap();
+        let plan =
+            plan_launch(&db, &resolver, "s", "claude", &backing(Some("0.4.0"), None)).unwrap();
+        assert_eq!(plan.adapter_id, "claude-next");
+        plan.commit(&db, "s").unwrap();
+        assert_eq!(
+            read_binding(&db, "s").unwrap().bound().unwrap().backend,
+            backend("claude.next-sdk")
+        );
+        assert!(pending_authorization(&db, "s").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_launch_through_a_backend_this_build_lost_refuses_before_starting() {
+        let db = store_with_session("codex");
+        let resolver = BackendResolver::built_in();
+        write_binding(&db, "s", &binding("codex", "codex.acp", Some("0.147.0"))).unwrap();
+
+        let error = plan_launch(&db, &resolver, "s", "codex", &backing(Some("0.147.0"), None))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("codex.acp"), "{error}");
+        assert_eq!(
+            read_binding(&db, "s").unwrap().bound().unwrap().backend,
+            backend("codex.acp"),
+            "a refused launch must not have substituted another backend"
         );
     }
 
