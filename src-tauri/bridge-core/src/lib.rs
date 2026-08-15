@@ -12,6 +12,7 @@ pub mod agent;
 pub mod agent_config;
 pub mod agent_lifecycle;
 pub mod api;
+pub mod backend_binding;
 pub mod binary;
 pub mod browser_bridge;
 pub mod builtin_compatibility;

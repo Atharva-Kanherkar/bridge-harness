@@ -12,8 +12,9 @@ use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::sessions;
 use crate::{
-    adapters, agent, agent_config, compaction_controller, completion, delegation, handoff,
-    learning_job, learning_router, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
+    adapters, agent, agent_config, backend_binding, compaction_controller, completion, delegation,
+    handoff, learning_job, learning_router, managed_agents, orchestrator, policy,
+    policy_coordinator, prompt_compiler, restoration,
     secret_interception, session_forest, session_supervisor, skill_marketplace, slash, store,
     worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
     check_runner, git, worker_adoption, worktree_coordinator, BridgeError,
@@ -246,6 +247,21 @@ pub fn start_session(
     // Exclusive with model switches (and other starts) on this session for
     // the rest of the launch flow.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    // Which backend may serve this session, decided before anything is spawned
+    // so a changed one is refused rather than silently substituted. `adapter_id`
+    // stays the agent — it is what `sessions.harness` records — and `dispatch_id`
+    // is the registry key the chosen backend runs under.
+    let launch_plan = {
+        let db = state.db.lock().unwrap();
+        backend_binding::plan_launch(
+            &db,
+            &state.backend_resolver,
+            &session_id,
+            adapter_id,
+            &managed_agents::backend_backing(adapter_id),
+        )?
+    };
+    let dispatch_id = launch_plan.adapter_id.as_str();
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)
@@ -320,12 +336,12 @@ pub fn start_session(
     let plan = restoration::select_plan(
         false,
         stored_provider_id.as_deref(),
-        state.adapter_registry.supports_native_resume(adapter_id),
+        state.adapter_registry.supports_native_resume(dispatch_id),
         checkpoint_context.is_some(),
     );
     let start_fresh = |instructions: &str| {
         state.adapter_registry.start(
-            adapter_id,
+            dispatch_id,
             adapters::StartRequest {
                 cwd: &path,
                 model: chosen_model.as_deref(),
@@ -346,7 +362,7 @@ pub fn start_session(
                 .as_deref()
                 .expect("native plan has provider id");
             match state.adapter_registry.resume(
-                adapter_id,
+                dispatch_id,
                 adapters::ResumeRequest {
                     provider_session_id: provider_id,
                     cwd: &path,
@@ -481,6 +497,8 @@ pub fn start_session(
             ],
         )?;
     }
+    // The row exists now, so the binding has somewhere to live.
+    launch_plan.commit(&db, &session_id)?;
     if let Err(error) = persist_prompt_compilation(
         &db,
         &session_id,
@@ -646,6 +664,19 @@ pub fn start_chat(
             "{adapter_id} is disabled in Settings"
         )));
     }
+    // Same rule as the orchestrator launch: decide the backend before spawning,
+    // dispatch through it, and record it once the row is updated.
+    let launch_plan = {
+        let db = state.db.lock().unwrap();
+        backend_binding::plan_launch(
+            &db,
+            &state.backend_resolver,
+            &session_id,
+            adapter_id,
+            &managed_agents::backend_backing(adapter_id),
+        )?
+    };
+    let dispatch_id = launch_plan.adapter_id.clone();
     let tier = if is_orchestrator {
         orchestrator::TIER
     } else {
@@ -688,9 +719,9 @@ pub fn start_chat(
         .or(configured_effort);
     let resumable = provider_id
         .filter(|value| !value.is_empty())
-        .filter(|_| state.adapter_registry.supports_native_resume(adapter_id));
+        .filter(|_| state.adapter_registry.supports_native_resume(&dispatch_id));
     let registry = state.adapter_registry.clone();
-    let launch_adapter_id = adapter_id.to_owned();
+    let launch_adapter_id = dispatch_id.clone();
     let launch_cwd = cwd.clone();
     let launch_model = chosen_model.clone();
     let (mut started, mode, eligibility) = (match resumable {
@@ -760,6 +791,7 @@ pub fn start_chat(
                 params![session_id, started_at, thread_id, chosen_model, cwd],
             )?;
         }
+        launch_plan.commit(&db, &session_id)?;
         if let Err(error) = persist_prompt_compilation(
             &db,
             &session_id,
@@ -2579,6 +2611,34 @@ pub fn launch_worker_outcome(
         }
     }
 
+    // A worker is a session too: it resumes through the backend it recorded, and
+    // a launch under a changed one is refused here rather than substituted.
+    let launch_plan = {
+        let db = state.db.lock().unwrap();
+        backend_binding::plan_launch(
+            &db,
+            &state.backend_resolver,
+            &reservation.session_id,
+            &harness,
+            &managed_agents::backend_backing(&harness),
+        )
+    };
+    let launch_plan = match launch_plan {
+        Ok(plan) => plan,
+        Err(error) => {
+            fail_reserved_worker(
+                core,
+                &reservation.session_id,
+                &label,
+                &format!("Could not launch this worker: {error}"),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
+    };
+    // Kept separate from `harness`: that stays the agent, which is what
+    // `sessions.harness` holds and what `handoff::assess` compares against.
+    let dispatch_id = launch_plan.adapter_id.clone();
+
     let compile_restored_prompt = |checkpoint: Option<String>| {
         let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
         compile_worker_prompt(
@@ -2624,10 +2684,10 @@ pub fn launch_worker_outcome(
                 .flatten();
         let resumed = provider_id
             .as_deref()
-            .filter(|_| state.adapter_registry.supports_native_resume(&harness))
+            .filter(|_| state.adapter_registry.supports_native_resume(&dispatch_id))
             .map(|provider_session_id| {
                 state.adapter_registry.resume(
-                    &harness,
+                    &dispatch_id,
                     adapters::ResumeRequest {
                         provider_session_id,
                         cwd: &reservation.path,
@@ -2644,7 +2704,7 @@ pub fn launch_worker_outcome(
             Ok(Some(started)) => Ok((started, WorkerActivation::Native)),
             Err(error) => {
                 let _ = restoration::record_resume_failed(&state.db.lock().unwrap(), &reservation.session_id, &error.to_string());
-                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&harness, adapters::StartRequest {
+                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&dispatch_id, adapters::StartRequest {
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
@@ -2654,7 +2714,7 @@ pub fn launch_worker_outcome(
                 })).map(|started| (started, WorkerActivation::CheckpointRestored))
             }
             Ok(None) => {
-                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&harness, adapters::StartRequest {
+                compile_restored_prompt(checkpoint).and_then(|restored_instructions| state.adapter_registry.start(&dispatch_id, adapters::StartRequest {
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
@@ -2668,7 +2728,7 @@ pub fn launch_worker_outcome(
         state
             .adapter_registry
             .start(
-                &harness,
+                &dispatch_id,
                 adapters::StartRequest {
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
@@ -2708,6 +2768,17 @@ pub fn launch_worker_outcome(
         }
     };
     let session_id = reservation.session_id;
+    // The provider is up, so the backend that served it is now a fact worth
+    // recording. A launch that failed above records nothing: nothing served it.
+    if let Err(error) = launch_plan.commit(&state.db.lock().unwrap(), &session_id) {
+        let _ = store::event(
+            &state.db.lock().unwrap(),
+            "backend",
+            "backend.binding_not_recorded",
+            &session_id,
+            &error.to_string(),
+        );
+    }
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let reader = started.reader;

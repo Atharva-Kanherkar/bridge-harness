@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 21;
+const LATEST_SCHEMA_VERSION: i64 = 22;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -242,6 +242,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             19 => migration_19_repair_learning_router_schema(&transaction)?,
             20 => migration_20_repair_legacy_learning_constraints(&transaction)?,
             21 => migration_21_approval_deadlines_and_worktree_adoption(&transaction)?,
+            22 => migration_22_session_backend_binding(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -514,6 +515,36 @@ fn migration_21_approval_deadlines_and_worktree_adoption(
         );
         CREATE INDEX IF NOT EXISTS idx_worker_worktree_adoptions_parent
             ON worker_worktree_adoptions(parent_session_id,state);",
+    )?;
+    Ok(())
+}
+
+/// Which backend actually served a session, and the authorization to change it.
+///
+/// `sessions.harness` says which agent a user picked. It has never said which
+/// implementation ran, because until the marketplace there was only ever one —
+/// so a session resumed after an install or a backend swap had no way to know it
+/// had moved. These three columns are that missing provenance.
+///
+/// All nullable, and no backfill. A row written before this migration is
+/// genuinely unbound rather than bound to a guess: inferring a backend for it
+/// would be inventing history, and the read path treats null as "not recorded"
+/// and binds it on its next successful start.
+fn migration_22_session_backend_binding(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "sessions", "backend_id", "TEXT")?;
+    add_column_if_missing(transaction, "sessions", "backend_version", "TEXT")?;
+    add_column_if_missing(transaction, "sessions", "backend_installation_id", "TEXT")?;
+    // A backend change is refused until it is authorized for that exact
+    // transition. One pending authorization per session, consumed when it is
+    // used, so it cannot be spent twice or generalize to a later change.
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS backend_change_authorizations (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+            from_backend TEXT NOT NULL,
+            to_backend TEXT NOT NULL,
+            to_version TEXT,
+            authorized_at TEXT NOT NULL
+        );",
     )?;
     Ok(())
 }
@@ -2569,7 +2600,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
         );
         for table in [
             "model_profiles",
@@ -2620,6 +2651,36 @@ mod tests {
         }
         assert_eq!(db.query_row("SELECT COUNT(*) FROM routing_policies WHERE status='active'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(db.query_row("SELECT COUNT(*) FROM learning_triggers WHERE kind IN ('manual','in_app') AND registration_id='built-in'", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        // Migration 22 adds the backend binding without inventing one. A row
+        // that predates it stays readable and reads as unbound — a guessed
+        // backend would be fabricated provenance for a session that never had
+        // any, and the resume path treats null as "not recorded", not as
+        // "changed".
+        let (backend, version, installation): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = db
+            .query_row(
+                "SELECT backend_id,backend_version,backend_installation_id FROM sessions WHERE id='s'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((backend, version, installation), (None, None, None));
+        assert!(db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backend_change_authorizations')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        {
+            let transaction = db.unchecked_transaction().unwrap();
+            migration_22_session_backend_binding(&transaction).unwrap();
+            transaction.commit().unwrap();
+        }
+
         // Legacy agent_events were backfilled into the immutable forest.
         assert_eq!(session_entries(&db, "s").unwrap().len(), 2);
         drop(db);
@@ -2637,7 +2698,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }

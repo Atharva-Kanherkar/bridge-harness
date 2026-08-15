@@ -290,6 +290,29 @@ fn status_from_payload(
     })
 }
 
+/// What the copy of an agent Bridge owns reports about itself, for the session
+/// backend binding.
+///
+/// Degrades to "nothing reported" rather than failing. A runtime on PATH has no
+/// receipt to read, and a host that has not registered a managed root has no
+/// payload store at all — in both cases the honest answer is that the backing
+/// reports no version and no installation, not that the launch should fail.
+pub fn backend_backing(agent_id: &str) -> crate::backend_binding::BackendBacking {
+    let backing = crate::backend_binding::BackendBacking::default();
+    let Ok(store) = store() else { return backing };
+    let Ok(payload) = store.status(agent_id) else {
+        return backing;
+    };
+    let Some(receipt) = receipt_of(&payload) else {
+        return backing;
+    };
+    crate::backend_binding::BackendBacking {
+        version: bridge_protocol::messages::BackendVersion::parse(&receipt.version).ok(),
+        installation: bridge_protocol::messages::InstallationId::parse(&receipt.installation_id)
+            .ok(),
+    }
+}
+
 /// Every built-in integration and its current state.
 pub fn list_managed_agents() -> Result<ManagedAgentList> {
     let mut agents = Vec::with_capacity(BUILT_IN_AGENTS.len());

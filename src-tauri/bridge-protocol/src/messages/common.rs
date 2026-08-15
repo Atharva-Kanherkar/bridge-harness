@@ -314,6 +314,325 @@ impl JsonSchema for StoredHarnessId {
     }
 }
 
+/// The public identity of an agent — the name a user picks, the name history is
+/// filed under, and the only one of the four marketplace identities a user ever
+/// sees.
+///
+/// An alias of [`HarnessId`] rather than a rename. `HarnessId` is the protocol
+/// 0.8 wire spelling and already says exactly this in its own documentation:
+/// **which agent**, never how Bridge runs it. Renaming it would churn every
+/// message and break minor-version compatibility to change a word. `AgentId` is
+/// the vocabulary the marketplace work reads in; they are the same type on
+/// purpose, and the separation that matters — agent versus implementation — is
+/// carried by [`BackendId`], which is genuinely distinct.
+pub type AgentId = HarnessId;
+
+/// Why a backend identity was refused. Carries the offending value so a caller
+/// is told what it actually sent, bounded so an oversized value cannot inflate
+/// the error it provokes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityError {
+    kind: &'static str,
+    value: String,
+    reason: &'static str,
+}
+
+impl IdentityError {
+    fn new(kind: &'static str, value: &str, reason: &'static str) -> Self {
+        const MAX_ECHO: usize = 80;
+        let mut echoed: String = value.chars().take(MAX_ECHO).collect();
+        if echoed.chars().count() < value.chars().count() {
+            echoed.push('…');
+        }
+        Self { kind, value: echoed, reason }
+    }
+
+    /// Which identity was refused — `"backend id"`, `"backend version"`, or
+    /// `"installation id"`. Lets a caller branch without matching the message.
+    pub fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+}
+
+impl std::fmt::Display for IdentityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid {} {:?}: {}",
+            self.kind, self.value, self.reason
+        )
+    }
+}
+
+impl std::error::Error for IdentityError {}
+
+/// Upper bound on a backend id, matching [`HarnessId`]'s so the two grammars
+/// stay one rule rather than two that drift.
+const MAX_BACKEND_ID: usize = MAX_HARNESS_ID;
+
+const BACKEND_ID_PATTERN: &str = HARNESS_ID_PATTERN;
+
+/// **How** Bridge reaches an agent: which implementation served a session.
+///
+/// ```text
+/// BackendId := [a-z0-9][a-z0-9._-]{0,63}
+/// ```
+///
+/// The counterpart to [`AgentId`], and deliberately a distinct type: one public
+/// agent may have several implementations over its life — an official SDK today,
+/// an ACP server tomorrow — and a session that resumes into a different one is
+/// not the same session continuing. `AgentId` answers *what the user picked*;
+/// `BackendId` answers *what actually ran*, which is Bridge's problem to record
+/// and never the user's to name.
+///
+/// The convention is `<agent>.<transport>` — `claude.agent-sdk`,
+/// `codex.app-server`, `opencode.server` — but it is a convention, not a rule.
+/// Nothing here parses the parts, because a shared driver serving two agents
+/// under one id is a shape this must not forbid in advance.
+///
+/// Both identities are lowercase dotted strings under the same grammar, so the
+/// type system is the only thing that stops one being passed where the other
+/// belongs. These must not compile:
+///
+/// ```compile_fail
+/// use bridge_protocol::messages::{AgentId, BackendId};
+/// fn takes_an_agent(_: AgentId) {}
+/// takes_an_agent(BackendId::parse("claude.agent-sdk").unwrap());
+/// ```
+///
+/// ```compile_fail
+/// use bridge_protocol::messages::{AgentId, BackendId};
+/// fn takes_a_backend(_: BackendId) {}
+/// takes_a_backend(AgentId::parse("claude").unwrap());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct BackendId(String);
+
+impl BackendId {
+    /// Accepts exactly [`HarnessId`]'s charset: ASCII lowercase alphanumerics,
+    /// `-`, `.`, and `_`, opening on an alphanumeric.
+    pub fn parse(value: &str) -> Result<Self, IdentityError> {
+        const KIND: &str = "backend id";
+        if value.is_empty() {
+            return Err(IdentityError::new(KIND, value, "a backend id cannot be empty"));
+        }
+        if value.len() > MAX_BACKEND_ID {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "a backend id may not exceed 64 characters",
+            ));
+        }
+        if !value.starts_with(|first: char| first.is_ascii_lowercase() || first.is_ascii_digit()) {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "a backend id must start with a lowercase letter or digit",
+            ));
+        }
+        if !value
+            .chars()
+            .all(|character| matches!(character, 'a'..='z' | '0'..='9' | '-' | '.' | '_'))
+        {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "a backend id may only contain lowercase letters, digits, '-', '.', and '_'",
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BackendId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for BackendId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+impl JsonSchema for BackendId {
+    fn schema_name() -> String {
+        "BackendId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        serde_json::from_value(serde_json::json!({
+            "type": "string",
+            "pattern": BACKEND_ID_PATTERN,
+            "description": "Which implementation serves an agent, e.g. 'claude.agent-sdk', \
+                            'codex.app-server'. Bridge's record of how a session was run — \
+                            never the agent's public identity.",
+        }))
+        .unwrap()
+    }
+}
+
+/// Upper bound on a backend version. Long enough for the longest real spelling
+/// Bridge records — an npm coordinate with a scoped package name — and short
+/// enough that an arbitrary string cannot become one.
+const MAX_BACKEND_VERSION: usize = 64;
+
+/// The concrete version of the implementation that served a session.
+///
+/// **Not semver, and not parsed.** The three proven integrations already report
+/// `0.3.209`, `0.147.0`, and `1.18.16`, and a managed recipe pins a version as
+/// `npm:@anthropic-ai/claude-agent-sdk@0.3.209`. Imposing a version *grammar*
+/// here would be Bridge inventing a versioning policy for software it does not
+/// publish; the only rules are the ones storage and display actually need — a
+/// bounded, single-line, printable value.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct BackendVersion(String);
+
+impl BackendVersion {
+    pub fn parse(value: &str) -> Result<Self, IdentityError> {
+        const KIND: &str = "backend version";
+        if value.is_empty() {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "a backend version cannot be empty",
+            ));
+        }
+        if value.len() > MAX_BACKEND_VERSION {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "a backend version may not exceed 64 characters",
+            ));
+        }
+        if !value.chars().all(|character| character.is_ascii_graphic()) {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "a backend version may only contain printable ASCII without spaces",
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BackendVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for BackendVersion {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+impl JsonSchema for BackendVersion {
+    fn schema_name() -> String {
+        "BackendVersion".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        serde_json::from_value(serde_json::json!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_BACKEND_VERSION,
+            "description": "The version of the implementation that served a session, as the \
+                            vendor spells it. Deliberately not semver-constrained.",
+        }))
+        .unwrap()
+    }
+}
+
+/// How many characters `managed_payload::installation_id` produces: the leading
+/// 24 of a SHA-256 hex digest over agent, version, platform, and integrity.
+const INSTALLATION_ID_LENGTH: usize = 24;
+
+/// Which managed payload a backend was launched from.
+///
+/// Present only when Bridge owns the copy that ran. An agent served by a runtime
+/// on PATH has a [`BackendId`] and usually a [`BackendVersion`], but no
+/// installation id — there is no receipt, because there is nothing Bridge
+/// installed and nothing it may remove.
+///
+/// The grammar is exactly what the payload engine derives, so a value that did
+/// not come from a receipt cannot be mistaken for one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct InstallationId(String);
+
+impl InstallationId {
+    pub fn parse(value: &str) -> Result<Self, IdentityError> {
+        const KIND: &str = "installation id";
+        if value.len() != INSTALLATION_ID_LENGTH {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "an installation id is exactly 24 characters",
+            ));
+        }
+        if !value
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+        {
+            return Err(IdentityError::new(
+                KIND,
+                value,
+                "an installation id is lowercase hexadecimal",
+            ));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for InstallationId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for InstallationId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+impl JsonSchema for InstallationId {
+    fn schema_name() -> String {
+        "InstallationId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        serde_json::from_value(serde_json::json!({
+            "type": "string",
+            "pattern": "^[0-9a-f]{24}$",
+            "description": "The managed payload a backend was launched from. Absent when the \
+                            runtime is the user's own, because Bridge installed nothing.",
+        }))
+        .unwrap()
+    }
+}
+
 /// A reasoning-effort level on the wire. Mirrors `bridge_core::delegation::Effort`
 /// variant for variant; a mirror test in bridge-core keeps the two from drifting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -349,6 +668,119 @@ mod tests {
     fn unit_results_are_explicit_json_null() {
         assert_eq!(serde_json::to_value(UnitResult(())).unwrap(), serde_json::Value::Null);
         assert_eq!(round_trip(&UnitResult(())), UnitResult(()));
+    }
+
+    /// The runtime half of the claim; the half that matters — that neither
+    /// converts to the other — is two `compile_fail` doc tests on [`BackendId`],
+    /// where rustdoc actually collects them.
+    #[test]
+    fn backend_id_and_agent_id_are_distinct_types() {
+        // Same grammar, so only the types tell them apart.
+        for value in ["claude", "codex.app-server", "a", "gemini-cli.acp"] {
+            assert_eq!(
+                BackendId::parse(value).unwrap().as_str(),
+                AgentId::parse(value).unwrap().as_str(),
+                "{value} must be legal under both grammars"
+            );
+        }
+        for value in ["", "Claude", "-codex", "codex/app-server", "codex server"] {
+            assert!(BackendId::parse(value).is_err(), "{value:?} must be refused");
+            assert!(AgentId::parse(value).is_err(), "{value:?} must be refused");
+        }
+        assert!(BackendId::parse(&"a".repeat(65)).is_err());
+        assert_eq!(BackendId::parse(&"a".repeat(64)).unwrap().as_str().len(), 64);
+
+        let backend = BackendId::parse("claude.agent-sdk").unwrap();
+        assert_eq!(round_trip(&backend), backend);
+        assert_eq!(
+            serde_json::to_value(&backend).unwrap(),
+            serde_json::json!("claude.agent-sdk")
+        );
+        assert!(serde_json::from_value::<BackendId>(serde_json::json!("Claude")).is_err());
+    }
+
+    #[test]
+    fn backend_version_accepts_real_vendor_spellings_and_bounds_the_rest() {
+        // Every one of these is a version Bridge has actually recorded: the
+        // three payloads #179 installed, and the npm coordinate a recipe pins.
+        for value in [
+            "0.3.209",
+            "0.147.0",
+            "1.18.16",
+            "npm:@anthropic-ai/claude-agent-sdk@0.3.209",
+            "2.0.0-beta.1+build.7",
+        ] {
+            assert_eq!(BackendVersion::parse(value).unwrap().as_str(), value);
+        }
+        for value in ["", "1.0.0 ", "1.0\n0", "1.0\t0", "1.0.0\u{0}"] {
+            assert!(
+                BackendVersion::parse(value).is_err(),
+                "{value:?} must be refused"
+            );
+        }
+        assert!(BackendVersion::parse(&"9".repeat(65)).is_err());
+        assert!(BackendVersion::parse(&"9".repeat(64)).is_ok());
+
+        let version = BackendVersion::parse("0.3.209").unwrap();
+        assert_eq!(round_trip(&version), version);
+        assert_eq!(serde_json::to_value(&version).unwrap(), serde_json::json!("0.3.209"));
+    }
+
+    #[test]
+    fn installation_id_matches_what_the_payload_engine_derives() {
+        // 24 lowercase hex characters — the leading half of a SHA-256 digest,
+        // exactly as `managed_payload::installation_id` formats it. A core-side
+        // test asserts a real receipt's id parses here.
+        let derived = "3f9a0c1b7e2d4856af01bc93";
+        assert_eq!(derived.len(), INSTALLATION_ID_LENGTH);
+        let id = InstallationId::parse(derived).unwrap();
+        assert_eq!(id.as_str(), derived);
+        assert_eq!(round_trip(&id), id);
+
+        for wrong in [
+            "",
+            "3f9a0c1b7e2d4856af01bc9",   // 23
+            "3f9a0c1b7e2d4856af01bc934", // 25
+            "3F9A0C1B7E2D4856AF01BC93",  // uppercase
+            "3f9a0c1b7e2d4856af01bcg3",  // not hex
+        ] {
+            assert!(
+                InstallationId::parse(wrong).is_err(),
+                "{wrong:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn an_identity_error_is_branchable_without_matching_its_message() {
+        let backend = BackendId::parse("Claude").unwrap_err();
+        let version = BackendVersion::parse("").unwrap_err();
+        let installation = InstallationId::parse("nope").unwrap_err();
+        assert_eq!(backend.kind(), "backend id");
+        assert_eq!(version.kind(), "backend version");
+        assert_eq!(installation.kind(), "installation id");
+        assert!(backend.to_string().starts_with("invalid backend id"), "{backend}");
+
+        // Bounded echo: an oversized value cannot inflate the error it provokes.
+        let huge = "Z".repeat(5_000);
+        let error = BackendId::parse(&huge).unwrap_err().to_string();
+        assert!(error.len() < 200, "error echoed {} bytes", error.len());
+    }
+
+    #[test]
+    fn no_identity_type_can_carry_a_credential() {
+        // A credential is not a printable-ASCII-and-short problem; the reason
+        // these types are safe is that they are opaque, validated scalars with
+        // no free-text field. Pin the shape so a later field addition has to
+        // come past this test.
+        let backend = serde_json::to_value(BackendId::parse("codex.app-server").unwrap()).unwrap();
+        let version = serde_json::to_value(BackendVersion::parse("0.147.0").unwrap()).unwrap();
+        let installation =
+            serde_json::to_value(InstallationId::parse("3f9a0c1b7e2d4856af01bc93").unwrap())
+                .unwrap();
+        for value in [&backend, &version, &installation] {
+            assert!(value.is_string(), "identities are scalars, not objects: {value}");
+        }
     }
 
     #[test]
