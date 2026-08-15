@@ -34,6 +34,7 @@ use crate::managed_payload::{
 use crate::BridgeError;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     fs,
     io::Read,
     time::Duration,
@@ -81,10 +82,14 @@ pub enum RuntimeSource {
         package: String,
         version: String,
         /// Contents of the `package.json` Bridge writes into staging.
-        manifest: &'static str,
+        ///
+        /// `Cow` rather than `&'static str` so a recipe carried as catalog data
+        /// (#164) can produce one of these without leaking. Every built-in
+        /// recipe still passes a compiled-in `&'static str`, which borrows.
+        manifest: Cow<'static, str>,
         /// Contents of the `package-lock.json` that pins every tarball's
         /// integrity. This is the supply-chain guarantee for this source kind.
-        lockfile: &'static str,
+        lockfile: Cow<'static, str>,
         /// Module entry inside the installed tree, relative to the payload root.
         entrypoint: PathBuf,
     },
@@ -415,9 +420,9 @@ fn prepare_into(
         } => {
             let tree = staging.join("closure");
             fs::create_dir_all(&tree).map_err(|error| (PrepareStage::Extract, error.into()))?;
-            fs::write(tree.join("package.json"), manifest)
+            fs::write(tree.join("package.json"), manifest.as_bytes())
                 .map_err(|error| (PrepareStage::Extract, error.into()))?;
-            fs::write(tree.join("package-lock.json"), lockfile)
+            fs::write(tree.join("package-lock.json"), lockfile.as_bytes())
                 .map_err(|error| (PrepareStage::Extract, error.into()))?;
 
             // `npm ci` installs exactly the lockfile, verifying each tarball
@@ -845,8 +850,8 @@ pub fn claude_recipe() -> Option<RuntimeSource> {
     Some(RuntimeSource::NpmClosure {
         package: "@anthropic-ai/claude-agent-sdk".into(),
         version: CLAUDE_SDK_VERSION.into(),
-        manifest: CLAUDE_MANIFEST,
-        lockfile: CLAUDE_LOCKFILE,
+        manifest: Cow::Borrowed(CLAUDE_MANIFEST),
+        lockfile: Cow::Borrowed(CLAUDE_LOCKFILE),
         entrypoint: PathBuf::from("node_modules/@anthropic-ai")
             .join(format!("claude-agent-sdk-{suffix}"))
             .join(executable_name("claude")),
@@ -865,8 +870,8 @@ pub fn codex_recipe() -> Option<RuntimeSource> {
     Some(RuntimeSource::NpmClosure {
         package: "@openai/codex".into(),
         version: CODEX_VERSION.into(),
-        manifest: CODEX_MANIFEST,
-        lockfile: CODEX_LOCKFILE,
+        manifest: Cow::Borrowed(CODEX_MANIFEST),
+        lockfile: Cow::Borrowed(CODEX_LOCKFILE),
         entrypoint: PathBuf::from("node_modules/@openai")
             .join(format!("codex-{suffix}"))
             .join("vendor")
@@ -886,8 +891,8 @@ pub fn opencode_recipe() -> Option<RuntimeSource> {
     Some(RuntimeSource::NpmClosure {
         package: "opencode-ai".into(),
         version: OPENCODE_VERSION.into(),
-        manifest: OPENCODE_MANIFEST,
-        lockfile: OPENCODE_LOCKFILE,
+        manifest: Cow::Borrowed(OPENCODE_MANIFEST),
+        lockfile: Cow::Borrowed(OPENCODE_LOCKFILE),
         entrypoint: PathBuf::from(format!("node_modules/opencode-{suffix}"))
             .join("bin")
             .join(executable_name("opencode")),
@@ -1130,8 +1135,8 @@ mod tests {
         let closure = |version: &str, lockfile: &'static str| RuntimeSource::NpmClosure {
             package: "@scope/pkg".into(),
             version: version.into(),
-            manifest: MANIFEST,
-            lockfile,
+            manifest: Cow::Borrowed(MANIFEST),
+            lockfile: Cow::Borrowed(lockfile),
             entrypoint: PathBuf::from("node_modules/x/index.mjs"),
         };
         assert!(closure("1.2.3", LOCKFILE).validate().is_ok());
@@ -1843,6 +1848,59 @@ mod tests {
             Path::new("node_modules/pkg/index.js")
         )
         .is_ok());
+    }
+
+    /// `manifest` and `lockfile` widened from `&'static str` to `Cow` so a
+    /// recipe carried as catalog data (#164) can produce a `RuntimeSource`
+    /// without leaking. The built-ins must be untouched by that: same bytes,
+    /// and still borrowed rather than copied onto the heap at every call.
+    #[test]
+    fn built_in_recipes_still_borrow_their_compiled_in_closures() {
+        for (agent_id, source) in builtin_recipes() {
+            let RuntimeSource::NpmClosure {
+                manifest, lockfile, ..
+            } = &source
+            else {
+                panic!("{agent_id} must install from npm");
+            };
+            assert!(
+                matches!(manifest, Cow::Borrowed(_)),
+                "{agent_id} manifest is allocated; a compiled-in closure must borrow"
+            );
+            assert!(
+                matches!(lockfile, Cow::Borrowed(_)),
+                "{agent_id} lockfile is allocated; a compiled-in closure must borrow"
+            );
+        }
+    }
+
+    /// The other half: an *owned* closure — what catalog data produces — is
+    /// accepted by exactly the validation the built-ins face, with no separate
+    /// path and no weaker rules.
+    #[test]
+    fn an_owned_closure_faces_the_same_validation_as_a_compiled_in_one() {
+        let owned = |version: &str| RuntimeSource::NpmClosure {
+            package: "example-agent".into(),
+            version: version.to_owned(),
+            manifest: Cow::Owned(MANIFEST.to_owned()),
+            lockfile: Cow::Owned(LOCKFILE.to_owned()),
+            entrypoint: PathBuf::from("node_modules/example-agent/bin/agent"),
+        };
+        owned("1.2.3").validate().expect("a pinned owned closure installs");
+        // And the range that is refused for a built-in is refused here too.
+        assert!(owned("^1.2.3").validate().is_err());
+
+        let unpinned = RuntimeSource::NpmClosure {
+            package: "example-agent".into(),
+            version: "1.2.3".into(),
+            manifest: Cow::Owned(MANIFEST.to_owned()),
+            lockfile: Cow::Owned("{\"lockfileVersion\":3}".to_owned()),
+            entrypoint: PathBuf::from("node_modules/example-agent/bin/agent"),
+        };
+        assert!(
+            unpinned.validate().is_err(),
+            "a lockfile with no integrity hashes pins nothing, owned or not"
+        );
     }
 
     #[test]
