@@ -245,6 +245,18 @@ pub trait AgentIntegration: Send + Sync {
 
     fn permissions(&self) -> PermissionModel;
 
+    /// Whether this agent's runtime can pick a prior session back up.
+    ///
+    /// Defaults to whatever the backend shape allows, and exists so an
+    /// integration can say *no* on a shape that otherwise could — an ACP server
+    /// that never implemented `session/load`, say. `AdapterRegistry`'s
+    /// `supports_native_resume` already draws this line per adapter rather than
+    /// per transport, and the same runtime can be reached over a shape that
+    /// resumes without itself being able to.
+    fn resume(&self) -> ResumeSupport {
+        ResumeSupport::Native
+    }
+
     /// A typed handler for one vendor-specific official method.
     ///
     /// Only ever reached for a method the catalog permits *and* this
@@ -536,10 +548,10 @@ impl IntegrationSession {
         }
     }
 
-    /// Pick a prior provider session back up, or refuse because this shape has
-    /// no native resume — the same refusal `AdapterRegistry` already makes.
+    /// Pick a prior provider session back up, or refuse because nothing here
+    /// can — the same refusal `AdapterRegistry` already makes.
     pub fn resume(&mut self, provider_session_id: &str) -> Result<(), IntegrationError> {
-        match self.driver.resume_support() {
+        match self.resume_support() {
             ResumeSupport::Native => {
                 let frame = self.driver.resume_frame(provider_session_id);
                 self.transport.send(frame)
@@ -550,8 +562,17 @@ impl IntegrationSession {
         }
     }
 
+    /// The narrower of what the shape allows and what the agent declares.
+    ///
+    /// Both get a veto and neither gets to grant: a transport with no resume
+    /// cannot be talked into one by an integration, and an integration whose
+    /// runtime cannot resume is not made able to by running on a shape that
+    /// could.
     pub fn resume_support(&self) -> ResumeSupport {
-        self.driver.resume_support()
+        match (self.driver.resume_support(), self.integration.resume()) {
+            (ResumeSupport::Native, ResumeSupport::Native) => ResumeSupport::Native,
+            _ => ResumeSupport::None,
+        }
     }
 
     pub fn permissions(&self) -> PermissionModel {
@@ -823,7 +844,7 @@ mod tests {
         CatalogBackendKind, CatalogRecipe, VendorRequirement, Verification, VerificationStatus,
     };
     use bridge_protocol::messages::BackendVersion;
-    use std::sync::Mutex;
+    use std::{collections::BTreeSet, sync::Mutex};
 
     /// A verified entry for a fake agent on one backend shape.
     fn verified_entry(
@@ -922,6 +943,7 @@ mod tests {
         agent: String,
         kind: BackendKind,
         permissions: PermissionModel,
+        resume: ResumeSupport,
         extension_calls: Arc<Mutex<Vec<String>>>,
     }
 
@@ -949,7 +971,7 @@ mod tests {
                     vec![event]
                 }
                 Some("permission") => {
-                    let mut event = NormalizedEvent::new("permission.requested");
+                    let mut event = NormalizedEvent::new("approval.requested");
                     event.data =
                         json!({"requestId": frame.get("id").cloned().unwrap_or(json!(null))});
                     vec![event]
@@ -959,6 +981,9 @@ mod tests {
         }
         fn permissions(&self) -> PermissionModel {
             self.permissions
+        }
+        fn resume(&self) -> ResumeSupport {
+            self.resume
         }
         fn handle_extension(&self, method: &str, _params: &Value) -> Option<Vec<NormalizedEvent>> {
             self.extension_calls.lock().unwrap().push(method.to_owned());
@@ -972,6 +997,19 @@ mod tests {
             agent: agent.into(),
             kind,
             permissions: PermissionModel::RequestsApproval,
+            resume: ResumeSupport::Native,
+            extension_calls: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+
+    /// The same fake, on a shape that resumes, declaring that its own runtime
+    /// cannot.
+    fn integration_without_resume(agent: &str, kind: BackendKind) -> Arc<FakeIntegration> {
+        Arc::new(FakeIntegration {
+            agent: agent.into(),
+            kind,
+            permissions: PermissionModel::RequestsApproval,
+            resume: ResumeSupport::None,
             extension_calls: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -1089,7 +1127,7 @@ mod tests {
         assert_eq!(session.permissions(), PermissionModel::RequestsApproval);
 
         let events = session.drain();
-        assert_eq!(events[0].kind, "permission.requested");
+        assert_eq!(events[0].kind, "approval.requested");
         // Draining a permission request sends nothing. The only frame on the
         // wire is the startup one: no self-approval happened on the way past.
         assert_eq!(
@@ -1197,6 +1235,109 @@ mod tests {
         // Declared and honoured: refusing means nothing went to the runtime,
         // so it was never asked to do something it cannot do.
         assert_eq!(sent.lock().unwrap().len(), 1, "only the startup frame");
+
+        // The other direction: a shape that resumes, carrying an agent whose
+        // own runtime does not. Both get a veto, so this refuses too — the
+        // distinction AdapterRegistry already draws per adapter rather than
+        // per transport.
+        let entry = verified_entry("fake", CatalogBackendKind::Acp, &["messages"]);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut session = IntegrationSession::launch(
+            integration_without_resume("fake", BackendKind::Acp),
+            Box::new(AcpDriver),
+            Box::new(ScriptedTransport {
+                advertisement: Advertisement {
+                    capabilities: vec!["messages".into()],
+                    ..Default::default()
+                },
+                sent: sent.clone(),
+                ..Default::default()
+            }),
+            &entry,
+            &request(),
+        )
+        .unwrap();
+        assert_eq!(
+            AcpDriver.resume_support(),
+            ResumeSupport::Native,
+            "the shape itself can resume"
+        );
+        assert_eq!(
+            session.resume_support(),
+            ResumeSupport::None,
+            "but the agent declared it cannot, and the narrower answer wins"
+        );
+        assert_eq!(
+            session.resume("provider-1").unwrap_err().code(),
+            "resume_unsupported"
+        );
+        assert_eq!(sent.lock().unwrap().len(), 1, "only the startup frame");
+    }
+
+    #[test]
+    fn a_fake_integrations_events_are_shaped_like_a_built_in_adapters() {
+        // The whole point of normalizing: a marketplace agent's events must be
+        // indistinguishable in shape from the three Bridge already ships, so
+        // nothing downstream needs to know which kind of agent produced them.
+        //
+        // The vocabulary is read out of `agent.rs` rather than restated here —
+        // a hand-copied list would drift from the normalizers the moment one
+        // gains a kind, and drift is exactly what this is checking for.
+        let normalizers = include_str!("agent.rs");
+        let built_in_kinds: BTreeSet<&str> = normalizers
+            .match_indices("with_data(\"")
+            .chain(normalizers.match_indices("NormalizedEvent::new(\""))
+            .filter_map(|(index, needle)| {
+                normalizers[index + needle.len()..]
+                    .split('"')
+                    .next()
+                    .filter(|kind| !kind.is_empty())
+            })
+            .collect();
+        assert!(
+            built_in_kinds.len() > 10,
+            "expected the built-in event vocabulary, found {built_in_kinds:?}"
+        );
+
+        let entry = verified_entry("fake", CatalogBackendKind::Acp, &["messages"]);
+        let mut session = IntegrationSession::launch(
+            integration("fake", BackendKind::Acp),
+            Box::new(AcpDriver),
+            Box::new(ScriptedTransport {
+                advertisement: Advertisement {
+                    capabilities: vec!["messages".into()],
+                    ..Default::default()
+                },
+                frames: vec![
+                    Ok(json!({"type": "text", "text": "hello"})),
+                    Ok(json!({"type": "permission", "id": 4})),
+                    Ok(json!({"type": "somethingNew"})),
+                ],
+                ..Default::default()
+            }),
+            &entry,
+            &request(),
+        )
+        .unwrap();
+        session.send_turn("do the thing").unwrap();
+
+        let events = session.drain();
+        assert_eq!(events.len(), 3);
+        for event in &events {
+            event
+                .validate()
+                .unwrap_or_else(|error| panic!("{}: {error}", event.kind));
+            assert!(
+                built_in_kinds.contains(event.kind.as_str()),
+                "{:?} is not a kind a built-in adapter produces; a marketplace \
+                 agent must not invent its own vocabulary",
+                event.kind
+            );
+        }
+        // Including the one for a frame nothing recognized: the built-ins
+        // already report provider.unknown, so an integration's unknown frame
+        // arrives looking like theirs rather than like a new kind of problem.
+        assert_eq!(events[2].kind, "provider.unknown");
     }
 
     #[test]
