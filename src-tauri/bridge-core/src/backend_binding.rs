@@ -1559,6 +1559,123 @@ mod tests {
     }
 
     #[test]
+    fn a_session_whose_backend_is_gone_still_lists_and_replays() {
+        // The half of "fails legibly" that is easy to lose: only *resuming* may
+        // fail. A session whose backend this build no longer has must still
+        // appear, under its own name, with its transcript intact.
+        let db = store_with_session("codex");
+        write_binding(&db, "s", &binding("codex", "codex.acp", Some("0.147.0"))).unwrap();
+        crate::store::append_session_entry(
+            &db,
+            "s",
+            None,
+            "message",
+            &serde_json::json!({"role": "user", "text": "still readable"}),
+            None,
+            "visible",
+            None,
+        )
+        .unwrap();
+
+        let state = crate::store::state(&db).unwrap();
+        let session = state
+            .sessions
+            .iter()
+            .find(|session| session.id == "s")
+            .expect("a session with a lost backend must still list");
+        assert_eq!(session.harness, crate::model::Harness::Codex);
+        assert_eq!(
+            crate::store::session_entries(&db, "s").unwrap().len(),
+            1,
+            "its transcript must still replay"
+        );
+
+        // And only the resume is refused.
+        assert!(plan_launch(
+            &db,
+            &BackendResolver::built_in(),
+            "s",
+            "codex",
+            &BackendBacking::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn no_part_of_the_binding_surface_can_carry_a_credential() {
+        // The identity scalars are checked in bridge-protocol. This is the
+        // composite half: a binding, a candidate, and an authorization together
+        // hold no field a token, key, or vendor configuration value could live
+        // in. A field added later has to come past this test.
+        let candidate = candidate("codex.app-server", BackendKind::StructuredServer);
+        let bound = binding("codex", "codex.app-server", Some("0.147.0"));
+        let authorization = BackendChangeAuthorization {
+            from_backend: backend("codex.app-server"),
+            to_backend: backend("codex.acp"),
+            to_version: None,
+        };
+        // Destructured exhaustively and without `..`: adding a field to any of
+        // the three makes this a compile error rather than a silent widening.
+        let BackendCandidate {
+            backend: _,
+            adapter_id,
+            kind: _,
+        } = &candidate;
+        let BackendBinding {
+            agent,
+            backend: _,
+            version: _,
+            installation: _,
+        } = &bound;
+        let BackendChangeAuthorization {
+            from_backend: _,
+            to_backend: _,
+            to_version: _,
+        } = &authorization;
+
+        // Every field above is either a validated identity scalar or, in the
+        // one free-text case, an adapter registry key. That one is the only
+        // place a value could hide, so it is the one checked by content.
+        for forbidden in ["token", "key", "secret", "password", "credential"] {
+            assert!(
+                !adapter_id.to_lowercase().contains(forbidden),
+                "{forbidden:?} appears in an adapter key: {adapter_id}"
+            );
+        }
+        assert_eq!(agent.as_str(), "codex");
+    }
+
+    #[test]
+    fn every_adapter_launch_goes_through_the_binding_choke_point() {
+        // The binding is only a guarantee if no launch path can skip it. Each
+        // of the three flows that reaches the adapter registry must dispatch
+        // through a plan, and a fourth added later must too — which is what
+        // fails here rather than in production.
+        let source = include_str!("live_turn.rs");
+        let dispatches = source.matches("adapter_registry.start(").count()
+            + source.matches("adapter_registry\n            .start(").count()
+            + source.matches("adapter_registry.resume(").count()
+            + source.matches("registry.resume(\n                &launch_adapter_id").count();
+        let planned = source.matches("backend_binding::plan_launch(").count();
+        assert_eq!(planned, 3, "the three launch flows each plan exactly once");
+        assert!(
+            dispatches > 0,
+            "the dispatch sites this test is guarding must still exist"
+        );
+        for skipped in [
+            "adapter_registry.start(adapter_id",
+            "adapter_registry.start(&harness",
+            "adapter_registry.resume(adapter_id",
+            "adapter_registry.resume(&harness",
+        ] {
+            assert!(
+                !source.contains(skipped),
+                "{skipped:?} dispatches on the agent id, bypassing the bound backend"
+            );
+        }
+    }
+
+    #[test]
     fn the_backend_policy_orders_the_strongest_interface_first() {
         let mut kinds = [
             BackendKind::StructuredCli,
