@@ -35,6 +35,8 @@ async function render(node: React.ReactElement) {
     button: (label: string) =>
       [...host.querySelectorAll("button")].find(item => item.textContent?.trim() === label) ?? null,
     buttons: () => [...host.querySelectorAll("button")].map(item => item.textContent?.trim()),
+    cardButton: (agentId: string) =>
+      host.querySelector(`[data-testid="agent-card-${agentId}"]`)?.querySelector("button")?.textContent?.trim() ?? null,
     click: async (item: Element | null) => {
       expect(item, "control must exist to be clicked").not.toBeNull();
       await act(async () => { (item as HTMLButtonElement).click(); });
@@ -123,6 +125,57 @@ describe("AgentMarketplace", () => {
     const view = await render(<AgentMarketplace/>);
     expect(view.buttons().filter(label => label === "Uninstall")).toHaveLength(1);
     expect(view.buttons().filter(label => label === "Install")).toHaveLength(2);
+    // Bound to the card that owns it, not merely counted.
+    expect(view.cardButton("opencode")).toBe("Uninstall");
+    expect(view.cardButton("claude")).toBe("Install");
+    await view.unmount();
+  });
+
+  it("reads removable, not backing or state", async () => {
+    // The gate must be `removable` alone. A fixture that varies removable
+    // together with backing and state cannot tell this apart from
+    // `backing === "managed"` or `state === "ready"`, so these two disagree
+    // with those on purpose.
+    vi.spyOn(bridgeApi, "listManagedAgents").mockResolvedValue({
+      agents: [
+        // Looks managed and ready, but the API says Bridge may not remove it.
+        agent({ agentId: "codex", label: "Codex", state: "ready", backing: "managed", removable: false }),
+        // A state string this build does not know, and backing Bridge did not
+        // set — but the API says it is Bridge's to remove.
+        agent({ agentId: "opencode", label: "OpenCode", state: "quiesced" as ManagedAgentStatus["state"], backing: "external", removable: true }),
+      ],
+    } as Awaited<ReturnType<typeof bridgeApi.listManagedAgents>>);
+
+    const view = await render(<AgentMarketplace/>);
+    expect(view.cardButton("codex")).toBe("Install");
+    expect(view.cardButton("opencode")).toBe("Uninstall");
+    await view.unmount();
+  });
+
+  it("does not let a slow refresh undo a completed install", async () => {
+    // The list is read before the install lands and returns after it. Applying
+    // it would flip the card back to Install for an agent Bridge just
+    // installed — and the refresh control sits next to the button.
+    let releaseList: (value: { agents: ManagedAgentStatus[] }) => void = () => {};
+    const slow = new Promise<{ agents: ManagedAgentStatus[] }>(resolve => { releaseList = resolve; });
+
+    vi.spyOn(bridgeApi, "listManagedAgents")
+      .mockResolvedValueOnce({ agents: [external("claude", "Claude Code")] } as Awaited<ReturnType<typeof bridgeApi.listManagedAgents>>)
+      .mockReturnValueOnce(slow as ReturnType<typeof bridgeApi.listManagedAgents>);
+    vi.spyOn(bridgeApi, "installManagedAgent").mockResolvedValue({
+      agentId: "claude",
+      status: agent({ agentId: "claude", label: "Claude Code", removable: true }),
+    } as Awaited<ReturnType<typeof bridgeApi.installManagedAgent>>);
+
+    const view = await render(<AgentMarketplace/>);
+    // Start a refresh that will not settle yet, then install.
+    await act(async () => { (view.button("Refresh agents") ?? view.host.querySelector<HTMLButtonElement>('[aria-label="Refresh agents"]'))?.click(); });
+    await view.click(view.button("Install"));
+    expect(view.cardButton("claude")).toBe("Uninstall");
+
+    // The stale list lands last and must be discarded.
+    await act(async () => { releaseList({ agents: [external("claude", "Claude Code")] }); await Promise.resolve(); });
+    expect(view.cardButton("claude")).toBe("Uninstall");
     await view.unmount();
   });
 });

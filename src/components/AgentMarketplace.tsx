@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, LoaderCircle, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { ManagedAgentStatus } from "../protocol/generated/protocol";
@@ -18,12 +18,22 @@ export function AgentMarketplace() {
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
 
+  // Bumped every time an operation writes a row. A refresh that started before
+  // that write is discarding a list it read *before* the install landed, so
+  // applying it would flip the card back to Install.
+  const writes = useRef(0);
+
   const refresh = useCallback(async () => {
     setLoading(true);
+    const before = writes.current;
     try {
-      setAgents((await bridgeApi.listManagedAgents()).agents);
+      const list = await bridgeApi.listManagedAgents();
+      // A newer result already won. The list in hand is stale by construction.
+      if (writes.current !== before) return;
+      setAgents(list.agents);
       setError(null);
     } catch (failure) {
+      if (writes.current !== before) return;
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
       setLoading(false);
@@ -31,6 +41,8 @@ export function AgentMarketplace() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const working = Object.keys(busy).length > 0;
 
   const run = useCallback(async (
     id: string,
@@ -41,6 +53,7 @@ export function AgentMarketplace() {
     setFailures(current => { const next = { ...current }; delete next[id]; return next; });
     try {
       const result = await operation(id);
+      writes.current += 1;
       setAgents(current => (current ?? []).map(a => (a.agentId === result.agentId ? result.status : a)));
     } catch (failure) {
       setFailures(current => ({ ...current, [id]: failure instanceof Error ? failure.message : String(failure) }));
@@ -56,7 +69,7 @@ export function AgentMarketplace() {
           <h1 className="font-display text-[32px] font-semibold tracking-[-0.025em] text-white">Agents</h1>
           <p className="mt-1.5 text-[13.5px] leading-relaxed text-neutral-500">Install and uninstall coding agents</p>
         </div>
-        <button type="button" onClick={() => void refresh()} disabled={loading} aria-label="Refresh agents"
+        <button type="button" onClick={() => void refresh()} disabled={loading || working} aria-label="Refresh agents"
           className="mt-1.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200 disabled:opacity-40">
           <RefreshCw size={14} className={loading ? "animate-spin" : ""}/>
         </button>
