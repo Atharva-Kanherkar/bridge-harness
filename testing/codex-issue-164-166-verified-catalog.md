@@ -55,6 +55,32 @@ Builds directly on #163 (#186): `AgentId`/`BackendId`/`BackendVersion`/
   *models* verification status and refuses to promote an unverified entry; it
   does not produce evidence. Nothing here decides that an entry is verified.
 
+## As Built: Where The Code Departs From This Contract
+
+Two deviations, both deliberate, recorded here so a reviewer reading the
+contract against the diff does not have to guess whether they were decisions.
+
+- **`Catalog::load` is `CatalogStore::load`.** The catalog in force and the
+  place it is cached are different concerns: `Catalog` is the verified document,
+  `CatalogStore` owns the directory it survives a restart in. Loading is a
+  question about the *store* — it is the thing that knows whether a cache exists
+  — so it lives there. `Catalog::bundled` and `Catalog::install_snapshot` are
+  unchanged and still the only ways a catalog comes into being.
+- **"Its backend is not one the build can reach" is not entry validation.** It
+  was listed under the conditions that fail an entry, which would mean an older
+  Bridge refuses a whole snapshot for naming an agent a newer Bridge supports —
+  making every future agent a breaking change for every build that predates it.
+  The same document is legitimately valid on the build that ships the
+  integration and the one that does not, so the question is asked at
+  registration instead: `IntegrationRegistry::offer_catalog` skips the entry,
+  reports `no_integration`, and the rest of the catalog serves.
+
+Also worth naming, because both went further than the contract asked:
+`offer_catalog` cannot fail at all — a snapshot arrives from the network, and no
+entry in one may leave Bridge unable to resolve the agents it already had — and
+`AgentIntegration` declares its own resume support, so an agent whose runtime
+cannot resume is not asked to merely because its transport could.
+
 ## Functional Behavior
 
 ### The catalog (#164)
