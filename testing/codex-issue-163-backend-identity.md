@@ -86,8 +86,20 @@ backend and version actually served it.
     record a durable `backend_version_changed` fact naming both versions.
   - Backend absent from the resolver → `BackendUnavailable`, naming agent,
     backend, and version. The session's history stays listable and replayable.
-  - Backend would differ from what a fresh resolution picks → `BackendChanged`,
-    carrying both bindings, until authorized.
+  - A *newer preferred* backend exists for the agent → the session still resumes
+    through the one it recorded. The divergence is reported, never acted on.
+    See the amendment below.
+- **A bound session sticks to its backend; it is never blocked by a newer one.**
+  Amended after the launch paths were wired — the original rule refused any
+  session whose backend differed from a fresh resolution, which reads fine until
+  #166 registers a second candidate for `claude` and *every existing Claude
+  session* refuses to resume until individually authorized. That contradicts
+  #161's delivered promise that existing users do not lose working agents, and
+  it makes adding a backend a breaking change. Sticking is also the more literal
+  reading of "resume only through the persisted binding": a session that
+  continues on the backend it recorded has not chosen a different one.
+  `preferred_elsewhere` reports the divergence so a UI can offer the move, and
+  the move happens only through an authorization.
 - `api::authorize_backend_change` records an explicit authorization for one
   session and one exact transition. A stored authorization that does not match
   the transition being attempted does not permit it; consuming it rebinds the
@@ -129,9 +141,13 @@ backend and version actually served it.
 - `a_version_change_resumes_and_records_the_change` — the decision is to
   proceed, the stored version is updated, and the recorded fact carries both the
   old and the new version.
-- `a_backend_change_is_refused_until_it_is_authorized` — the first attempt
-  yields `BackendChanged` carrying both bindings; after authorizing that exact
-  transition, the same attempt proceeds.
+- `a_newer_preferred_backend_does_not_move_or_block_a_bound_session` — with a
+  stronger candidate registered, the session resumes through the backend it
+  recorded, and `preferred_elsewhere` names the stronger one so a caller can
+  offer the move.
+- `a_backend_change_happens_only_through_an_authorization` — without one, the
+  session stays on its recorded backend; with one for that exact transition, it
+  rebinds, records the change, and dispatches to the new backend's adapter.
 - `an_authorization_does_not_generalize` — an authorization recorded for one
   transition does not permit a different target backend, a different session, or
   a second unrelated change.
