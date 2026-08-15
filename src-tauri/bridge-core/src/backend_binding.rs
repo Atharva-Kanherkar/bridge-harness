@@ -11,7 +11,9 @@
 //! picks a candidate and yields a [`BackendBinding`]; the binding names the
 //! adapter the registry then runs. Nothing here launches a process.
 
+use crate::BridgeError;
 use bridge_protocol::messages::{AgentId, BackendId, BackendVersion, InstallationId};
+use rusqlite::OptionalExtension;
 use std::collections::BTreeMap;
 
 /// The strongest official machine interface a backend speaks, in the order the
@@ -318,6 +320,197 @@ impl BackendResolver {
     }
 }
 
+/// What storage says about a session's backend. Total, because a session that
+/// cannot be interpreted must still list and replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredBinding {
+    /// No backend was recorded. Either the row predates migration 22, or it was
+    /// written by a path that has not started an adapter yet. It is bound on its
+    /// next successful start, and it is **not** a backend change.
+    Unbound,
+    Bound(BackendBinding),
+    /// A recorded value this build cannot interpret — a row written by a newer
+    /// Bridge, or a corrupted one. Kept raw so the session still reads under its
+    /// own name, and never silently rebound: resuming it fails, which is the
+    /// legible outcome. The same choice `Harness::Unknown` already makes.
+    Unreadable { raw: String, reason: String },
+}
+
+impl StoredBinding {
+    pub fn bound(&self) -> Option<&BackendBinding> {
+        match self {
+            Self::Bound(binding) => Some(binding),
+            Self::Unbound | Self::Unreadable { .. } => None,
+        }
+    }
+}
+
+/// Read a session's binding. Never fails on a value it cannot parse — that is
+/// [`StoredBinding::Unreadable`], not an error, because a database read that
+/// refuses to return makes history unreadable rather than a resume unsafe.
+pub fn read_binding(
+    db: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<StoredBinding, BridgeError> {
+    let row: Option<(String, Option<String>, Option<String>, Option<String>)> = db
+        .query_row(
+            "SELECT harness,backend_id,backend_version,backend_installation_id
+             FROM sessions WHERE id=?1",
+            rusqlite::params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((harness, backend, version, installation)) = row else {
+        return Ok(StoredBinding::Unbound);
+    };
+    let Some(backend_raw) = backend else {
+        return Ok(StoredBinding::Unbound);
+    };
+
+    let unreadable = |raw: &str, reason: String| StoredBinding::Unreadable {
+        raw: raw.to_owned(),
+        reason,
+    };
+    let agent = match AgentId::parse(&harness) {
+        Ok(agent) => agent,
+        Err(error) => return Ok(unreadable(&harness, error.to_string())),
+    };
+    let backend = match BackendId::parse(&backend_raw) {
+        Ok(backend) => backend,
+        Err(error) => return Ok(unreadable(&backend_raw, error.to_string())),
+    };
+    let version = match version.as_deref().map(BackendVersion::parse).transpose() {
+        Ok(version) => version,
+        Err(error) => return Ok(unreadable(&backend_raw, error.to_string())),
+    };
+    let installation = match installation.as_deref().map(InstallationId::parse).transpose() {
+        Ok(installation) => installation,
+        Err(error) => return Ok(unreadable(&backend_raw, error.to_string())),
+    };
+    Ok(StoredBinding::Bound(BackendBinding {
+        agent,
+        backend,
+        version,
+        installation,
+    }))
+}
+
+/// Record which backend served a session. Called on every successful start and
+/// resume, so an unbound legacy row acquires its binding the first time it runs
+/// under a build that has one.
+pub fn write_binding(
+    db: &rusqlite::Connection,
+    session_id: &str,
+    binding: &BackendBinding,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE sessions SET backend_id=?2,backend_version=?3,backend_installation_id=?4
+         WHERE id=?1",
+        rusqlite::params![
+            session_id,
+            binding.backend.as_str(),
+            binding.version.as_ref().map(BackendVersion::as_str),
+            binding.installation.as_ref().map(InstallationId::as_str),
+        ],
+    )?;
+    Ok(())
+}
+
+/// An explicit authorization to continue one session under a different backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendChangeAuthorization {
+    pub from_backend: BackendId,
+    pub to_backend: BackendId,
+    pub to_version: Option<BackendVersion>,
+}
+
+impl BackendChangeAuthorization {
+    /// Whether this authorization covers exactly the transition being
+    /// attempted. Deliberately exact on both ends: an authorization to move
+    /// *from* a backend that is no longer the recorded one is stale, and one
+    /// *to* a different target is not the change the user agreed to.
+    pub fn permits(&self, from: &BackendBinding, to: &BackendBinding) -> bool {
+        self.from_backend == from.backend && self.to_backend == to.backend
+    }
+}
+
+/// Record an authorization for one session. Replaces any pending one — a user
+/// who authorizes a second, different change means the second one.
+pub fn authorize_backend_change(
+    db: &rusqlite::Connection,
+    session_id: &str,
+    from: &BackendBinding,
+    to: &BackendBinding,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT INTO backend_change_authorizations
+            (session_id,from_backend,to_backend,to_version,authorized_at)
+         VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(session_id) DO UPDATE SET
+            from_backend=excluded.from_backend,
+            to_backend=excluded.to_backend,
+            to_version=excluded.to_version,
+            authorized_at=excluded.authorized_at",
+        rusqlite::params![
+            session_id,
+            from.backend.as_str(),
+            to.backend.as_str(),
+            to.version.as_ref().map(BackendVersion::as_str),
+            chrono::Utc::now().to_rfc3339(),
+        ],
+    )?;
+    crate::store::event(
+        db,
+        "backend",
+        "backend.change_authorized",
+        session_id,
+        &format!("{} -> {}", from.backend, to.backend),
+    )?;
+    Ok(())
+}
+
+/// The pending authorization for a session, if any. An unparseable row reads as
+/// no authorization: failing closed here refuses a change, which is the safe
+/// direction.
+pub fn pending_authorization(
+    db: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Option<BackendChangeAuthorization>, BridgeError> {
+    let row: Option<(String, String, Option<String>)> = db
+        .query_row(
+            "SELECT from_backend,to_backend,to_version FROM backend_change_authorizations
+             WHERE session_id=?1",
+            rusqlite::params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((from, to, version)) = row else {
+        return Ok(None);
+    };
+    let (Ok(from_backend), Ok(to_backend)) = (BackendId::parse(&from), BackendId::parse(&to)) else {
+        return Ok(None);
+    };
+    Ok(Some(BackendChangeAuthorization {
+        from_backend,
+        to_backend,
+        to_version: version.as_deref().and_then(|v| BackendVersion::parse(v).ok()),
+    }))
+}
+
+/// Spend the authorization for a session. One-shot: once a change is applied the
+/// session's binding names the new backend, so a later resume matches and needs
+/// no authorization at all. Leaving it behind would silently permit a second.
+pub fn consume_authorization(
+    db: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "DELETE FROM backend_change_authorizations WHERE session_id=?1",
+        rusqlite::params![session_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +698,151 @@ mod tests {
         };
         assert!(one.same_backend(&moved), "a version bump is the same backend");
         assert!(!one.same_backend(&replaced), "a different backend is not");
+    }
+
+    /// A store with one session row, migrated to the current schema.
+    fn store_with_session(harness: &str) -> rusqlite::Connection {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        // A repo-optional direct chat: no workspace, which migration 7 made
+        // legal and which keeps this fixture to the one table under test.
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind)
+             VALUES('s',NULL,?1,'S','idle','reported','direct')",
+            rusqlite::params![harness],
+        )
+        .unwrap();
+        db
+    }
+
+    fn binding(agent_id: &str, backend_id: &str, version: Option<&str>) -> BackendBinding {
+        BackendBinding {
+            agent: agent(agent_id),
+            backend: backend(backend_id),
+            version: version.map(|v| BackendVersion::parse(v).unwrap()),
+            installation: None,
+        }
+    }
+
+    #[test]
+    fn a_binding_round_trips_through_storage() {
+        let db = store_with_session("claude");
+        let full = BackendBinding {
+            installation: Some(InstallationId::parse("3f9a0c1b7e2d4856af01bc93").unwrap()),
+            ..binding("claude", "claude.agent-sdk", Some("0.3.209"))
+        };
+        write_binding(&db, "s", &full).unwrap();
+        assert_eq!(read_binding(&db, "s").unwrap(), StoredBinding::Bound(full));
+
+        // An external runtime reports no version and owns no installation, and
+        // that has to survive the round trip as absence rather than as "".
+        let bare = binding("claude", "claude.agent-sdk", None);
+        write_binding(&db, "s", &bare).unwrap();
+        let read = read_binding(&db, "s").unwrap();
+        assert_eq!(read, StoredBinding::Bound(bare));
+        assert!(read.bound().unwrap().version.is_none());
+    }
+
+    #[test]
+    fn an_unbound_legacy_session_reads_as_unbound_not_as_changed() {
+        let db = store_with_session("codex");
+        // Exactly what migration 22 leaves behind: the row is untouched.
+        let stored = read_binding(&db, "s").unwrap();
+        assert_eq!(stored, StoredBinding::Unbound);
+        assert!(stored.bound().is_none());
+
+        // And an unknown session id is unbound rather than an error, because a
+        // caller asking about a row that is gone is not a storage failure.
+        assert_eq!(read_binding(&db, "missing").unwrap(), StoredBinding::Unbound);
+    }
+
+    #[test]
+    fn a_binding_this_build_cannot_interpret_is_kept_not_guessed() {
+        let db = store_with_session("codex");
+        // A backend id a newer Bridge could write and this one cannot parse.
+        db.execute(
+            "UPDATE sessions SET backend_id='Codex::AppServer/2' WHERE id='s'",
+            [],
+        )
+        .unwrap();
+        match read_binding(&db, "s").unwrap() {
+            StoredBinding::Unreadable { raw, reason } => {
+                assert_eq!(raw, "Codex::AppServer/2");
+                assert!(!reason.is_empty(), "the reason must say what was wrong");
+            }
+            other => panic!("expected Unreadable, got {other:?}"),
+        }
+
+        // A harness id this build cannot parse is the same situation: the
+        // session reads, and nothing about it is guessed.
+        let db = store_with_session("acp:gemini");
+        db.execute(
+            "UPDATE sessions SET backend_id='gemini.acp' WHERE id='s'",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            read_binding(&db, "s").unwrap(),
+            StoredBinding::Unreadable { .. }
+        ));
+    }
+
+    #[test]
+    fn an_authorization_does_not_generalize() {
+        let db = store_with_session("claude");
+        let from = binding("claude", "claude.agent-sdk", Some("0.3.209"));
+        let to = binding("claude", "claude.acp", None);
+        assert!(pending_authorization(&db, "s").unwrap().is_none());
+
+        authorize_backend_change(&db, "s", &from, &to).unwrap();
+        let authorization = pending_authorization(&db, "s").unwrap().unwrap();
+        assert!(authorization.permits(&from, &to));
+
+        // Not a different target,
+        let elsewhere = binding("claude", "claude.cli", None);
+        assert!(!authorization.permits(&from, &elsewhere));
+        // not a different origin,
+        let moved_on = binding("claude", "claude.acp", None);
+        assert!(!authorization.permits(&moved_on, &to));
+        // and not a different session.
+        assert!(pending_authorization(&db, "other").unwrap().is_none());
+
+        // One-shot: spending it leaves nothing behind for a second change.
+        consume_authorization(&db, "s").unwrap();
+        assert!(pending_authorization(&db, "s").unwrap().is_none());
+    }
+
+    #[test]
+    fn authorizing_a_second_change_replaces_the_first() {
+        let db = store_with_session("claude");
+        let from = binding("claude", "claude.agent-sdk", None);
+        let first = binding("claude", "claude.acp", None);
+        let second = binding("claude", "claude.cli", None);
+        authorize_backend_change(&db, "s", &from, &first).unwrap();
+        authorize_backend_change(&db, "s", &from, &second).unwrap();
+
+        let authorization = pending_authorization(&db, "s").unwrap().unwrap();
+        assert!(authorization.permits(&from, &second));
+        assert!(
+            !authorization.permits(&from, &first),
+            "the superseded authorization must not still permit its target"
+        );
+
+        // Both authorizations are on the durable record, in order.
+        let mut statement = db
+            .prepare("SELECT body FROM events WHERE kind='backend.change_authorized' ORDER BY id")
+            .unwrap();
+        let recorded: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                "claude.agent-sdk -> claude.acp".to_string(),
+                "claude.agent-sdk -> claude.cli".to_string()
+            ]
+        );
     }
 
     #[test]
