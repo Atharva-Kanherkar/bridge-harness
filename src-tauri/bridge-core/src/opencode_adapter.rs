@@ -1285,7 +1285,9 @@ mod tests {
     #[test]
     fn read_only_transport_fails_closed_before_launch() {
         let error = ensure_read_only_transport_supported(true).unwrap_err();
-        assert!(error.to_string().contains("refusing to start without isolation"));
+        assert!(error
+            .to_string()
+            .contains("refusing to start without isolation"));
         assert!(ensure_read_only_transport_supported(false).is_ok());
     }
 

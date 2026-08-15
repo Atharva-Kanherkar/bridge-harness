@@ -11,14 +11,12 @@
 //! DB commit, per the event contract) — never through a host event system.
 
 use crate::events::CoreEvent;
-use crate::model::{
-    AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot,
-};
+use crate::model::{AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot};
 use crate::{
     adapters, agent, agent_config, binary, browser_bridge, completion, git, learning_job,
-    learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
-    secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    worker_adoption, worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
+    learning_router, live_turn, marketplace, model_profiles, opencode_adapter, secret_interception,
+    session_supervisor, sessions, skill_marketplace, slash, store, worker_adoption,
+    worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -269,7 +267,10 @@ pub fn resolve_approval(
     event_id: i64,
     decision: &str,
 ) -> Result<(), BridgeError> {
-    if !matches!(decision, "accept" | "acceptForSession" | "decline" | "cancel") {
+    if !matches!(
+        decision,
+        "accept" | "acceptForSession" | "decline" | "cancel"
+    ) {
         return Err(BridgeError::Invalid("Unsupported approval decision".into()));
     }
     let db = core.db.lock().unwrap();
@@ -637,12 +638,9 @@ fn completion_repository_stamp(
     session_id: &str,
 ) -> Result<completion::RepositoryStamp, BridgeError> {
     let state = store::repository_state_for_session(db, session_id)?;
-    let head = state
-        .get("head")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
-        })?;
+    let head = state.get("head").and_then(Value::as_str).ok_or_else(|| {
+        BridgeError::Invalid("completion proof requires a Git repository HEAD".into())
+    })?;
     let dirty = state
         .get("dirtyHash")
         .and_then(Value::as_str)
@@ -694,8 +692,7 @@ fn live_available_capabilities(core: &BridgeCore) -> HashSet<String> {
         .filter(|descriptor| descriptor.available)
         .flat_map(|descriptor| descriptor.capabilities)
         .collect::<HashSet<_>>();
-    if let Ok(skills) = skill_marketplace::available_capabilities(&user_home(), &core.skill_store)
-    {
+    if let Ok(skills) = skill_marketplace::available_capabilities(&user_home(), &core.skill_store) {
         capabilities.extend(skills);
     }
     capabilities
@@ -790,7 +787,14 @@ pub fn waive_completion(
 ) -> Result<completion::CompletionSummary, BridgeError> {
     let db = core.db.lock().unwrap();
     let (session_id, repository) = completion_attempt_repository(&db, attempt_id)?;
-    completion::waive(&db, attempt_id, check_ids, reason, "local_user", &repository)?;
+    completion::waive(
+        &db,
+        attempt_id,
+        check_ids,
+        reason,
+        "local_user",
+        &repository,
+    )?;
     completion::finalize(&db, attempt_id, &repository)?;
     completion::reconcile_parent_readiness(&db, &session_id)?;
     let summary = completion::latest_summary(&db, &session_id)?
@@ -1303,10 +1307,7 @@ pub fn browser_action(
     core.browser_bridge.issue(request)
 }
 
-pub fn set_browser_permission(
-    core: &Arc<BridgeCore>,
-    permission: &str,
-) -> Result<(), BridgeError> {
+pub fn set_browser_permission(core: &Arc<BridgeCore>, permission: &str) -> Result<(), BridgeError> {
     core.browser_bridge.set_permission(permission)
 }
 
@@ -1356,8 +1357,8 @@ pub fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
     marketplace::catalog()
 }
 
-pub fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError>
-{
+pub fn marketplace_app_auth_states(
+) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
     marketplace::app_auth_states()
 }
 
@@ -1432,7 +1433,9 @@ mod tests {
         // locked-connection call would serialize the whole app behind model
         // evaluation.
         let source = include_str!("api.rs");
-        assert!(source.contains("learning_job::run_local_database(&core.database_path, trigger_kind)"));
+        assert!(
+            source.contains("learning_job::run_local_database(&core.database_path, trigger_kind)")
+        );
         let locked_learning_call = [
             "learning_job::run_learning(",
             "&core.db.lock().unwrap()",
@@ -1531,10 +1534,7 @@ pub fn authorize_backend_change(
         &to_backend,
     )
     .ok_or_else(|| {
-        BridgeError::Invalid(format!(
-            "{} has no backend named {to_backend}",
-            from.agent
-        ))
+        BridgeError::Invalid(format!("{} has no backend named {to_backend}", from.agent))
     })?;
     let to = crate::backend_binding::BackendBinding {
         agent: from.agent.clone(),

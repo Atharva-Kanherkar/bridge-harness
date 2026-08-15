@@ -79,7 +79,11 @@ impl std::fmt::Debug for SessionLifecycleClaim<'_> {
 
 impl Drop for SessionLifecycleClaim<'_> {
     fn drop(&mut self) {
-        self.core.lifecycle_claims.lock().unwrap().remove(&self.session_id);
+        self.core
+            .lifecycle_claims
+            .lock()
+            .unwrap()
+            .remove(&self.session_id);
     }
 }
 
@@ -162,7 +166,10 @@ impl BridgeCore {
             )));
         }
         claims.insert(session_id.to_owned(), operation);
-        Ok(SessionLifecycleClaim { core: self, session_id: session_id.to_owned() })
+        Ok(SessionLifecycleClaim {
+            core: self,
+            session_id: session_id.to_owned(),
+        })
     }
 
     /// A runtime around in-memory stores with no adapters, no discovery, and
@@ -229,7 +236,9 @@ impl BridgeCore {
         let discovery_events = events.clone();
         let adapter_registry = Arc::new(adapters::AdapterRegistry::built_in_with_opencode_notify(
             opencode_settings,
-            Some(Box::new(move || discovery_events.publish(CoreEvent::AdaptersChanged))),
+            Some(Box::new(move || {
+                discovery_events.publish(CoreEvent::AdaptersChanged)
+            })),
         )?);
         let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()?);
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
@@ -302,15 +311,26 @@ mod tests {
         assert!(data_dir.join("bridge.db").is_file());
         assert!(data_dir.join("bridge-telemetry.db").is_file());
         assert_eq!(core.database_path, data_dir.join("bridge.db"));
-        assert_eq!(core.telemetry_database_path, data_dir.join("bridge-telemetry.db"));
+        assert_eq!(
+            core.telemetry_database_path,
+            data_dir.join("bridge-telemetry.db")
+        );
         assert_eq!(core.worktrees, data_dir.join("worktrees"));
         assert_eq!(core.snapshot_dir, data_dir.join("history-snapshots"));
         assert_eq!(core.skill_store, data_dir.join("skills"));
         assert!(core.runtimes.lock().unwrap().is_empty());
         assert!(core.adapters.lock().unwrap().is_empty());
-        assert!(core.delegations.lock().unwrap().last_turn_by_session.is_empty());
+        assert!(core
+            .delegations
+            .lock()
+            .unwrap()
+            .last_turn_by_session
+            .is_empty());
         // Both stores must be usable connections, not just files on disk.
-        let sessions: i64 = core.db.lock().unwrap()
+        let sessions: i64 = core
+            .db
+            .lock()
+            .unwrap()
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(sessions, 0);
@@ -344,7 +364,12 @@ mod tests {
             command.arg("30");
             crate::adapters::configure_process_group(&mut command);
             let child = command.spawn().unwrap();
-            crate::session_supervisor::SessionSupervisor::track_adapter_process(&db, "s", child.id()).unwrap();
+            crate::session_supervisor::SessionSupervisor::track_adapter_process(
+                &db,
+                "s",
+                child.id(),
+            )
+            .unwrap();
             child
         };
 
@@ -358,9 +383,11 @@ mod tests {
 
         let db = core.db.lock().unwrap();
         let (pid, status): (Option<i64>, String) = db
-            .query_row("SELECT adapter_pid,status FROM sessions WHERE id='s'", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT adapter_pid,status FROM sessions WHERE id='s'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(pid, None, "boot must clear tracked orphan PIDs");
         // store::open already marks live sessions stopped before recovery runs,
@@ -376,7 +403,9 @@ mod tests {
         // Reconciliation runs last: the workspace seeded as 'working' must end
         // 'ready' because its only session is stopped, not live.
         let workspace: String = db
-            .query_row("SELECT status FROM workspaces WHERE id='w'", [], |row| row.get(0))
+            .query_row("SELECT status FROM workspaces WHERE id='w'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(workspace, "ready");
     }
@@ -423,8 +452,13 @@ mod tests {
             events: None,
         })
         .unwrap();
-        let name: String = core.db.lock().unwrap()
-            .query_row("SELECT name FROM projects WHERE id='p'", [], |row| row.get(0))
+        let name: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT name FROM projects WHERE id='p'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(name, "Demo");
     }

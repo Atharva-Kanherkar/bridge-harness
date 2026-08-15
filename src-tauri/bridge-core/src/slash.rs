@@ -80,9 +80,18 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
 
     if available.contains("opencode") {
         out.extend(opencode_builtins());
-        for root in [home.join(".config/opencode/skills"), home.join(".agents/skills"), home.join(".claude/skills")] {
+        for root in [
+            home.join(".config/opencode/skills"),
+            home.join(".agents/skills"),
+            home.join(".claude/skills"),
+        ] {
             for (name, path) in collect_skills(&root) {
-                out.push(SlashCommand { name, description: read_md_description(&path), harness: "opencode".into(), kind: "skill".into() });
+                out.push(SlashCommand {
+                    name,
+                    description: read_md_description(&path),
+                    harness: "opencode".into(),
+                    kind: "skill".into(),
+                });
             }
         }
     }
@@ -97,7 +106,11 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
 }
 
 /// Parse a leading `/name …` turn and decide how Bridge should handle it.
-pub fn dispatch(text: &str, session_harness: &str, available: &std::collections::HashSet<String>) -> SlashDispatch {
+pub fn dispatch(
+    text: &str,
+    session_harness: &str,
+    available: &std::collections::HashSet<String>,
+) -> SlashDispatch {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix('/') else {
         return SlashDispatch::Forward {
@@ -110,7 +123,10 @@ pub fn dispatch(text: &str, session_harness: &str, available: &std::collections:
             text: text.to_string(),
         };
     };
-    let args = parts.next().map(str::trim).filter(|value| !value.is_empty());
+    let args = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     match name {
         "usage" | "cost" | "stats" => return SlashDispatch::Usage,
@@ -124,7 +140,10 @@ pub fn dispatch(text: &str, session_harness: &str, available: &std::collections:
     }
 
     let catalog = list_commands(available);
-    let matches: Vec<_> = catalog.iter().filter(|command| command.name.eq_ignore_ascii_case(name)).collect();
+    let matches: Vec<_> = catalog
+        .iter()
+        .filter(|command| command.name.eq_ignore_ascii_case(name))
+        .collect();
     if matches.is_empty() {
         // Unknown slash — still forward so the provider can try.
         return SlashDispatch::Forward {
@@ -207,19 +226,15 @@ fn is_forwardable_builtin(harness: &str, name: &str) -> bool {
         "design-sync",
     ];
     const CODEX: &[&str] = &[
-        "init",
-        "plan",
-        "review",
-        "diff",
-        "mention",
-        "btw",
-        "side",
-        "goal",
+        "init", "plan", "review", "diff", "mention", "btw", "side", "goal",
     ];
     match harness {
         "claude" => CLAUDE.iter().any(|value| *value == name),
         "codex" => CODEX.iter().any(|value| *value == name),
-        "opencode" => matches!(name, "models" | "sessions" | "new" | "undo" | "redo" | "share" | "help"),
+        "opencode" => matches!(
+            name,
+            "models" | "sessions" | "new" | "undo" | "redo" | "share" | "help"
+        ),
         _ => false,
     }
 }
@@ -236,7 +251,9 @@ fn load_expandable_body(harness: &str, name: &str) -> Option<String> {
             home.join(".codex/skills").join(name).join("SKILL.md"),
         ],
         "opencode" => vec![
-            home.join(".config/opencode/skills").join(name).join("SKILL.md"),
+            home.join(".config/opencode/skills")
+                .join(name)
+                .join("SKILL.md"),
             home.join(".agents/skills").join(name).join("SKILL.md"),
             home.join(".claude/skills").join(name).join("SKILL.md"),
         ],
@@ -369,16 +386,25 @@ fn claude_builtins() -> Vec<SlashCommand> {
         ("add-dir", "Add a working directory for this session"),
         ("advisor", "Enable or disable the advisor tool"),
         ("agents", "Create or manage subagents"),
-        ("autofix-pr", "Watch the branch PR and fix CI/review comments"),
+        (
+            "autofix-pr",
+            "Watch the branch PR and fix CI/review comments",
+        ),
         ("background", "Detach this session as a background agent"),
         ("batch", "Fan out a large change across parallel worktrees"),
-        ("branch", "Branch the conversation to try a different direction"),
+        (
+            "branch",
+            "Branch the conversation to try a different direction",
+        ),
         ("btw", "Ask a side question without adding to history"),
         ("cd", "Move this session to a new working directory"),
         ("chrome", "Configure Claude in Chrome"),
         ("claude-api", "Load Claude API reference material"),
         ("clear", "Start a fresh conversation (keep project memory)"),
-        ("code-review", "Review the current diff for bugs and cleanups"),
+        (
+            "code-review",
+            "Review the current diff for bugs and cleanups",
+        ),
         ("color", "Set the prompt bar color"),
         ("compact", "Summarize the conversation to free context"),
         ("config", "Open or set Claude Code settings"),
@@ -389,7 +415,10 @@ fn claude_builtins() -> Vec<SlashCommand> {
         ("debug", "Enable debug logging and troubleshoot issues"),
         ("deep-research", "Fan out web research into a cited report"),
         ("design-login", "Authorize design-system access"),
-        ("design-sync", "Sync your React design system to Claude Design"),
+        (
+            "design-sync",
+            "Sync your React design system to Claude Design",
+        ),
         ("desktop", "Continue this session in Claude Desktop"),
         ("diff", "Show uncommitted and per-turn diffs"),
         ("doctor", "Run a setup checkup and fix issues"),
@@ -398,7 +427,10 @@ fn claude_builtins() -> Vec<SlashCommand> {
         ("export", "Export the conversation as plain text"),
         ("fast", "Toggle fast mode"),
         ("feedback", "Submit feedback or report a bug"),
-        ("fewer-permission-prompts", "Auto-allow common read-only tools"),
+        (
+            "fewer-permission-prompts",
+            "Auto-allow common read-only tools",
+        ),
         ("focus", "Toggle focus view"),
         ("fork", "Spawn a forked subagent from this conversation"),
         ("goal", "Set a persistent goal across turns"),
@@ -406,7 +438,10 @@ fn claude_builtins() -> Vec<SlashCommand> {
         ("hooks", "View hook configurations"),
         ("ide", "Manage IDE integrations"),
         ("init", "Initialize a CLAUDE.md for the project"),
-        ("insights", "Generate a report from your Claude Code sessions"),
+        (
+            "insights",
+            "Generate a report from your Claude Code sessions",
+        ),
         ("install-github-app", "Install the Claude GitHub App"),
         ("install-slack-app", "Install the Claude Slack app"),
         ("keybindings", "Open keyboard shortcuts"),
@@ -434,10 +469,16 @@ fn claude_builtins() -> Vec<SlashCommand> {
         ("review", "Fast read-only review of a GitHub PR"),
         ("rewind", "Rewind conversation and/or code to a checkpoint"),
         ("run", "Launch and drive the project app to verify a change"),
-        ("run-skill-generator", "Teach /run how to drive this project"),
+        (
+            "run-skill-generator",
+            "Teach /run how to drive this project",
+        ),
         ("sandbox", "Toggle sandbox mode"),
         ("schedule", "Create or manage cloud routines"),
-        ("security-review", "Review the branch diff for security issues"),
+        (
+            "security-review",
+            "Review the branch diff for security issues",
+        ),
         ("simplify", "Cleanup review that applies fixes"),
         ("skills", "List available skills"),
         ("stats", "Alias for /usage"),
@@ -467,7 +508,10 @@ fn codex_builtins() -> Vec<SlashCommand> {
     [
         ("agent", "Switch the active agent thread"),
         ("app", "Continue in the ChatGPT desktop app"),
-        ("approve", "Approve one retry of a recent auto-review denial"),
+        (
+            "approve",
+            "Approve one retry of a recent auto-review denial",
+        ),
         ("apps", "Browse apps/connectors and insert them"),
         ("archive", "Archive the current session and exit"),
         ("btw", "Start an ephemeral side conversation"),
@@ -505,8 +549,14 @@ fn codex_builtins() -> Vec<SlashCommand> {
         ("rename", "Rename the current task"),
         ("resume", "Resume a saved conversation"),
         ("review", "Ask Codex to review the working tree"),
-        ("sandbox-add-read-dir", "Grant sandbox read access to a directory"),
-        ("setup-default-sandbox", "Set up the elevated Windows sandbox"),
+        (
+            "sandbox-add-read-dir",
+            "Grant sandbox read access to a directory",
+        ),
+        (
+            "setup-default-sandbox",
+            "Set up the elevated Windows sandbox",
+        ),
         ("side", "Start an ephemeral side conversation"),
         ("skills", "Browse and use skills"),
         ("status", "Display session configuration and token usage"),
@@ -550,16 +600,26 @@ mod tests {
     fn catalogs_include_native_commands() {
         let available = HashSet::from(["claude".into(), "codex".into()]);
         let list = list_commands(&available);
-        assert!(list.iter().any(|c| c.harness == "claude" && c.name == "compact"));
-        assert!(list.iter().any(|c| c.harness == "codex" && c.name == "status"));
+        assert!(list
+            .iter()
+            .any(|c| c.harness == "claude" && c.name == "compact"));
+        assert!(list
+            .iter()
+            .any(|c| c.harness == "codex" && c.name == "status"));
         assert!(list.iter().any(|c| c.kind == "builtin"));
     }
 
     #[test]
     fn dispatch_usage_and_clear() {
         let available = HashSet::from(["claude".into()]);
-        assert!(matches!(dispatch("/usage", "claude", &available), SlashDispatch::Usage));
-        assert!(matches!(dispatch("/clear", "claude", &available), SlashDispatch::Clear));
+        assert!(matches!(
+            dispatch("/usage", "claude", &available),
+            SlashDispatch::Usage
+        ));
+        assert!(matches!(
+            dispatch("/clear", "claude", &available),
+            SlashDispatch::Clear
+        ));
         assert!(matches!(
             dispatch("/compact focus on errors", "claude", &available),
             SlashDispatch::Compact { focus: Some(_) }

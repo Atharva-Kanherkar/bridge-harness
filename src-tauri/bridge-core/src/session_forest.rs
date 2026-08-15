@@ -1,7 +1,6 @@
 use crate::{
     model::{
-        SessionEntry, MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION,
-        SEMANTIC_EVENT_SCHEMA_VERSION,
+        SessionEntry, MIN_SUPPORTED_SEMANTIC_EVENT_SCHEMA_VERSION, SEMANTIC_EVENT_SCHEMA_VERSION,
     },
     store, BridgeError,
 };

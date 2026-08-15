@@ -72,9 +72,13 @@ fn status_of(agent_id: &str) -> ManagedPayloadStatus {
 
 fn tree_size(path: &Path) -> (u64, usize) {
     fn walk(path: &Path, bytes: &mut u64, files: &mut usize) {
-        let Ok(entries) = std::fs::read_dir(path) else { return };
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
         for entry in entries.flatten() {
-            let Ok(metadata) = entry.metadata() else { continue };
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
             if metadata.is_dir() {
                 walk(&entry.path(), bytes, files);
             } else {
@@ -109,7 +113,11 @@ fn prove(agent_id: &str, user_owned: &Path) {
     let install_time = started.elapsed();
     println!("  install: {:?} -> {:?}", install_time, installed.outcome);
 
-    let ManagedPayloadStatus::Installed { receipt, entrypoint } = status_of(agent_id) else {
+    let ManagedPayloadStatus::Installed {
+        receipt,
+        entrypoint,
+    } = status_of(agent_id)
+    else {
         panic!("{agent_id} is not installed after a successful install");
     };
     let root = managed_runtime::managed_root().unwrap();
@@ -119,7 +127,10 @@ fn prove(agent_id: &str, user_owned: &Path) {
         "  payload: {} MB across {files} files",
         bytes / (1024 * 1024)
     );
-    println!("  version: {} platform: {}", receipt.version, receipt.platform);
+    println!(
+        "  version: {} platform: {}",
+        receipt.version, receipt.platform
+    );
     println!("  entrypoint: {}", entrypoint.display());
 
     // The entrypoint the receipt names has to be a real, executable file — this is
@@ -159,7 +170,10 @@ fn prove(agent_id: &str, user_owned: &Path) {
         matches!(status_of(agent_id), ManagedPayloadStatus::NotInstalled),
         "{agent_id} still reports installed after uninstall"
     );
-    assert!(!installation.exists(), "{agent_id} payload survived uninstall");
+    assert!(
+        !installation.exists(),
+        "{agent_id} payload survived uninstall"
+    );
 
     // Step 6, the half a machine can check: the user's own runtime is untouched.
     assert_eq!(
@@ -185,9 +199,13 @@ fn prove(agent_id: &str, user_owned: &Path) {
 fn symlinks_under(path: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     fn walk(path: &Path, found: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(path) else { return };
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
         for entry in entries.flatten() {
-            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else { continue };
+            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
             if metadata.file_type().is_symlink() {
                 found.push(entry.path());
             } else if metadata.is_dir() {
@@ -264,7 +282,8 @@ fn a_live_process_blocks_removal_of_a_real_payload() {
     println!("live process refused removal: {refused}");
 
     // With the session gone, removal proceeds.
-    db.execute("DELETE FROM sessions", []).expect("clear sessions");
+    db.execute("DELETE FROM sessions", [])
+        .expect("clear sessions");
     managed_agents::uninstall_managed_agent(&db, agent_id).expect("removal after the process ends");
     assert!(!installation.exists());
 }

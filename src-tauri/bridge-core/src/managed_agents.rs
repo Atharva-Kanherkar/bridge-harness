@@ -394,7 +394,11 @@ fn result_of(
 /// A blanket "not permitted" would have made `CorruptReceipt` and the 1000-range
 /// I/O codes unreachable on the destructive path, which is exactly where a caller
 /// most needs to know which of the three it is hitting.
-fn classify(agent_id: &str, error: BridgeError, receipt: Option<RepairReason>) -> ManagedAgentError {
+fn classify(
+    agent_id: &str,
+    error: BridgeError,
+    receipt: Option<RepairReason>,
+) -> ManagedAgentError {
     let message = error.to_string();
     if let Some(reason) = receipt {
         return ManagedAgentError::CorruptReceipt {
@@ -520,7 +524,10 @@ pub fn repair_managed_agent(agent_id: &str) -> Result<ManagedAgentOperationResul
 /// Refuses a runtime Bridge does not own, and refuses while a provider process is
 /// still alive for this agent: deleting the tree under a running session is the
 /// failure this whole epic exists to prevent.
-pub fn uninstall_managed_agent(db: &Connection, agent_id: &str) -> Result<ManagedAgentOperationResult> {
+pub fn uninstall_managed_agent(
+    db: &Connection,
+    agent_id: &str,
+) -> Result<ManagedAgentOperationResult> {
     label_for(agent_id)?;
     let store = store()?;
     let payload = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
@@ -592,7 +599,11 @@ mod tests {
     fn install_fixture(store: &ManagedPayloadStore, fixture: &Path, agent_id: &str) -> PathBuf {
         let source = fixture.join(format!("{agent_id}-tree"));
         std::fs::create_dir_all(source.join("bin")).unwrap();
-        std::fs::write(source.join("bin/agent"), format!("{agent_id} fixture").as_bytes()).unwrap();
+        std::fs::write(
+            source.join("bin/agent"),
+            format!("{agent_id} fixture").as_bytes(),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -947,7 +958,11 @@ mod tests {
         assert!(io.source().is_some(), "the real cause stays reachable");
 
         // A known repair reason is reported as itself.
-        let reason = classify("codex", BridgeError::Invalid("x".into()), Some(RepairReason::IntegrityDrift));
+        let reason = classify(
+            "codex",
+            BridgeError::Invalid("x".into()),
+            Some(RepairReason::IntegrityDrift),
+        );
         assert!(matches!(
             reason,
             ManagedAgentError::CorruptReceipt {

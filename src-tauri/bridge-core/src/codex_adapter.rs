@@ -506,11 +506,13 @@ mod tests {
 
     #[test]
     fn codex_receives_the_compiled_stable_prefix_before_variable_context() {
-        let compile = |evidence: &str| crate::prompt_compiler::PromptCompiler::new("worker:verification")
-            .stable_section("contract", "stable-provider-contract")
-            .variable_section("evidence", evidence)
-            .compile()
-            .unwrap();
+        let compile = |evidence: &str| {
+            crate::prompt_compiler::PromptCompiler::new("worker:verification")
+                .stable_section("contract", "stable-provider-contract")
+                .variable_section("evidence", evidence)
+                .compile()
+                .unwrap()
+        };
         let first = compile("variable-task-evidence-one");
         let second = compile("variable-task-evidence-two");
         assert_eq!(first.metadata.prefix_hash, second.metadata.prefix_hash);
@@ -527,7 +529,10 @@ mod tests {
             let instructions = params["developerInstructions"].as_str().unwrap();
             assert_eq!(params["instructions"], params["developerInstructions"]);
             assert!(instructions.starts_with("<bridge-stable-prompt"));
-            assert!(instructions.find("stable-provider-contract").unwrap() < instructions.find("variable-task-evidence").unwrap());
+            assert!(
+                instructions.find("stable-provider-contract").unwrap()
+                    < instructions.find("variable-task-evidence").unwrap()
+            );
         }
     }
 

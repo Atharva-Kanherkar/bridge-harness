@@ -145,9 +145,7 @@ impl DataDirLease {
                         holder,
                     });
                 }
-                Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(OwnershipError::Io(error))
-                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(OwnershipError::Io(error)),
             }
         }
         let identity = OwnerIdentity {
@@ -199,9 +197,18 @@ mod tests {
         let refused = DataDirLease::acquire(fixture.path(), OwnerKind::Embedded).unwrap_err();
         let message = refused.to_string();
         assert!(message.contains("a bridged daemon"), "{message}");
-        assert!(message.contains(&std::process::id().to_string()), "{message}");
-        assert!(message.contains(&fixture.path().display().to_string()), "{message}");
-        assert!(message.contains("--data-dir"), "the error must say what to do: {message}");
+        assert!(
+            message.contains(&std::process::id().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&fixture.path().display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains("--data-dir"),
+            "the error must say what to do: {message}"
+        );
     }
 
     #[test]
@@ -243,7 +250,11 @@ mod tests {
         // thread would share ours. Re-exec the test binary in helper mode.
         let exe = std::env::current_exe().unwrap();
         let mut child = std::process::Command::new(exe)
-            .args(["--nocapture", "--exact", "ownership::tests::helper_hold_lock_forever"])
+            .args([
+                "--nocapture",
+                "--exact",
+                "ownership::tests::helper_hold_lock_forever",
+            ])
             .env("BRIDGE_LOCK_HELPER_DIR", &helper_dir)
             .env("BRIDGE_LOCK_HELPER", "1")
             .stdout(std::process::Stdio::piped())
@@ -253,7 +264,10 @@ mod tests {
         let marker = helper_dir.join("helper-holds-lock");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !marker.exists() {
-            assert!(std::time::Instant::now() < deadline, "helper never took the lock");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "helper never took the lock"
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(matches!(

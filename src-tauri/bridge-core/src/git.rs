@@ -329,16 +329,19 @@ pub fn base_branch_divergence(worktree: &Path, allow_fetch: bool) -> BaseBranchD
         .ok()
         .map(|value| value.trim().to_owned());
     let range = format!("{base_ref}...HEAD");
-    let (behind, ahead) = run(worktree, ["rev-list", "--left-right", "--count", range.as_str()])
-        .ok()
-        .and_then(|counts| {
-            let mut parts = counts.split_whitespace();
-            Some((
-                parts.next()?.parse::<i64>().ok()?,
-                parts.next()?.parse::<i64>().ok()?,
-            ))
-        })
-        .unwrap_or((0, 0));
+    let (behind, ahead) = run(
+        worktree,
+        ["rev-list", "--left-right", "--count", range.as_str()],
+    )
+    .ok()
+    .and_then(|counts| {
+        let mut parts = counts.split_whitespace();
+        Some((
+            parts.next()?.parse::<i64>().ok()?,
+            parts.next()?.parse::<i64>().ok()?,
+        ))
+    })
+    .unwrap_or((0, 0));
     let ref_age_seconds = run(worktree, ["log", "-1", "--format=%ct", base_ref.as_str()])
         .ok()
         .and_then(|value| value.trim().parse::<i64>().ok())
@@ -408,10 +411,13 @@ fn resolve_base_ref(worktree: &Path) -> Option<String> {
     if let Some(upstream) = upstream.filter(|candidate| exists(candidate)) {
         return Some(upstream);
     }
-    let remote_head = run(worktree, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
+    let remote_head = run(
+        worktree,
+        ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .map(|value| value.trim().to_owned())
+    .filter(|value| !value.is_empty());
     if let Some(remote_head) = remote_head.filter(|candidate| exists(candidate)) {
         return Some(remote_head);
     }
@@ -500,7 +506,13 @@ pub fn derive_repository_evidence(
                 nonempty_lines(&run(worktree, ["rev-list", "--reverse", range.as_str()])?),
                 nonempty_lines(&run(
                     worktree,
-                    ["-c", "core.quotePath=false", "diff", "--name-only", range.as_str()],
+                    [
+                        "-c",
+                        "core.quotePath=false",
+                        "diff",
+                        "--name-only",
+                        range.as_str(),
+                    ],
                 )?),
             )
         }
@@ -542,7 +554,11 @@ pub fn derive_repository_evidence(
 }
 
 fn commit_exists(worktree: &Path, commit: &str) -> bool {
-    run(worktree, ["cat-file", "-e", &format!("{commit}^{{commit}}")]).is_ok()
+    run(
+        worktree,
+        ["cat-file", "-e", &format!("{commit}^{{commit}}")],
+    )
+    .is_ok()
 }
 
 /// Paths from `git status --porcelain`, including the destination half of a
@@ -628,7 +644,10 @@ pub fn commit_worker_worktree(
     worker_worktree: &Path,
     message: &str,
 ) -> Result<Option<String>, BridgeError> {
-    if run(worker_worktree, ["status", "--porcelain"])?.trim().is_empty() {
+    if run(worker_worktree, ["status", "--porcelain"])?
+        .trim()
+        .is_empty()
+    {
         return Ok(None);
     }
     run(worker_worktree, ["add", "--all", "."])?;
@@ -640,7 +659,9 @@ pub fn commit_worker_worktree(
         ["commit", "--no-verify", "--no-gpg-sign", "-m", message],
     )?;
     Ok(Some(
-        run(worker_worktree, ["rev-parse", "HEAD"])?.trim().to_owned(),
+        run(worker_worktree, ["rev-parse", "HEAD"])?
+            .trim()
+            .to_owned(),
     ))
 }
 
@@ -1076,8 +1097,12 @@ mod tests {
             .committed_paths
             .iter()
             .all(|path| !path.contains('\\') && !path.starts_with('"')));
-        assert!(committed.committed_paths.contains(&"src/café.rs".to_owned()));
-        assert!(committed.changed_paths().contains(&"src/nested/deep.rs".to_owned()));
+        assert!(committed
+            .committed_paths
+            .contains(&"src/café.rs".to_owned()));
+        assert!(committed
+            .changed_paths()
+            .contains(&"src/nested/deep.rs".to_owned()));
         assert_eq!(committed.base_commit.as_deref(), Some(base.as_str()));
         assert!(committed.diffstat().contains("insertion(s)"));
     }
@@ -1090,20 +1115,37 @@ mod tests {
         let seed = fixture.path().join("seed");
         std::fs::create_dir(&seed).unwrap();
         git(&seed, &["init", "-q", "-b", "main"]);
-        git(&seed, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(
+            &seed,
+            &["config", "user.email", "bridge-test@example.invalid"],
+        );
         git(&seed, &["config", "user.name", "Bridge Test"]);
         std::fs::write(seed.join("shared.txt"), "base\n").unwrap();
         git(&seed, &["add", "."]);
         git(&seed, &["commit", "-q", "-m", "base"]);
-        git(&seed, &["clone", "-q", "--bare", ".", origin.to_str().unwrap()]);
+        git(
+            &seed,
+            &["clone", "-q", "--bare", ".", origin.to_str().unwrap()],
+        );
         // `seed` was the clone source, so it has no `origin` of its own.
-        git(&seed, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(
+            &seed,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         let clone = fixture.path().join("clone");
         git(
             fixture.path(),
-            &["clone", "-q", origin.to_str().unwrap(), clone.to_str().unwrap()],
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
         );
-        git(&clone, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(
+            &clone,
+            &["config", "user.email", "bridge-test@example.invalid"],
+        );
         git(&clone, &["config", "user.name", "Bridge Test"]);
         (fixture, clone, seed)
     }
@@ -1122,7 +1164,12 @@ mod tests {
 
         // Upstream moves well past the workspace.
         for index in 0..BaseBranchDivergence::WARN_BEHIND + 5 {
-            commit_file(&seed, "shared.txt", &format!("upstream {index}\n"), "upstream");
+            commit_file(
+                &seed,
+                "shared.txt",
+                &format!("upstream {index}\n"),
+                "upstream",
+            );
         }
         git(&seed, &["push", "-q", "origin", "main"]);
         // And the workspace has one local commit of its own.
@@ -1144,7 +1191,15 @@ mod tests {
     #[test]
     fn a_failed_fetch_is_reported_instead_of_being_presented_as_current() {
         let (_fixture, clone, _seed) = cloned_repository();
-        git(&clone, &["remote", "set-url", "origin", "/bridge/definitely-not-a-remote"]);
+        git(
+            &clone,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "/bridge/definitely-not-a-remote",
+            ],
+        );
         let divergence = base_branch_divergence(&clone, true);
         assert!(divergence.fetch_attempted);
         assert!(!divergence.fetched);
@@ -1160,7 +1215,10 @@ mod tests {
         // No remote and no conventionally-named default branch: there is nothing
         // to compare against, and saying "0 behind" would be a false all-clear.
         git(&repo, &["init", "-q", "-b", "bridge/task"]);
-        git(&repo, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(
+            &repo,
+            &["config", "user.email", "bridge-test@example.invalid"],
+        );
         git(&repo, &["config", "user.name", "Bridge Test"]);
         std::fs::write(repo.join("only.txt"), "solo\n").unwrap();
         git(&repo, &["add", "."]);

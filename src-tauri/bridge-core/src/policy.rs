@@ -95,9 +95,7 @@ impl RouteReason {
             Self::ConcurrencyLimit | Self::WriterConflict | Self::ChildWorktreeUnavailable => {
                 "the worker was queued behind active work and will start when capacity frees up."
             }
-            Self::ParentExecutionPreferred => {
-                "the parent session should execute this step itself."
-            }
+            Self::ParentExecutionPreferred => "the parent session should execute this step itself.",
             Self::CompatibleWarmWorker | Self::EligibleFreshSpawn => {
                 "no action needed; the route was accepted."
             }
@@ -597,7 +595,11 @@ impl UsageReport {
             ),
             cache_write_tokens: integer_alias(
                 usage,
-                &["cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens"],
+                &[
+                    "cache_write_tokens",
+                    "cacheWriteTokens",
+                    "cache_creation_input_tokens",
+                ],
             ),
             uncached_input_tokens: integer_alias(
                 usage,
@@ -606,12 +608,28 @@ impl UsageReport {
             context_percent: integer_alias(data, &["context_percent", "contextPercent"])
                 .or_else(|| integer_alias(usage, &["context_percent", "contextPercent"])),
             runtime_ms: integer_alias(data, &["runtime_ms", "runtimeMs", "duration_ms"]),
-            cost_microusd: decimal_alias(data, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
-                .or_else(|| decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"]))
-                .map(|value| (value * 1_000_000.0).round() as i64),
-            cost_source: decimal_alias(data, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"])
-                .or_else(|| decimal_alias(usage, &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"]))
-                .map(|_| "provider_reported".into()),
+            cost_microusd: decimal_alias(
+                data,
+                &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"],
+            )
+            .or_else(|| {
+                decimal_alias(
+                    usage,
+                    &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"],
+                )
+            })
+            .map(|value| (value * 1_000_000.0).round() as i64),
+            cost_source: decimal_alias(
+                data,
+                &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"],
+            )
+            .or_else(|| {
+                decimal_alias(
+                    usage,
+                    &["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"],
+                )
+            })
+            .map(|_| "provider_reported".into()),
         };
         (report != Self::default()).then_some(report)
     }
@@ -699,7 +717,8 @@ pub fn record_provider_usage(
             if source == "provider.claude" {
                 input.max(0)
             } else {
-                input.saturating_sub(report.cache_read_tokens.unwrap_or(0))
+                input
+                    .saturating_sub(report.cache_read_tokens.unwrap_or(0))
                     .saturating_sub(report.cache_write_tokens.unwrap_or(0))
                     .max(0)
             }
@@ -985,22 +1004,54 @@ mod tests {
     /// `src/**` both authorize `src/foo.rs`.
     #[test]
     fn owned_path_coverage_matches_how_the_lease_was_granted() {
-        let scope = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+        let scope = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
+        };
         for pattern in [scope(&["src/**"]), scope(&["src"])] {
-            assert!(owned_paths_cover_path(&pattern, "src/foo.rs"), "{pattern:?}");
-            assert!(owned_paths_cover_path(&pattern, "src/a/b/c.rs"), "{pattern:?}");
-            assert!(!owned_paths_cover_path(&pattern, "docs/foo.md"), "{pattern:?}");
-            assert!(!owned_paths_cover_path(&pattern, "srcx/foo.rs"), "{pattern:?}");
+            assert!(
+                owned_paths_cover_path(&pattern, "src/foo.rs"),
+                "{pattern:?}"
+            );
+            assert!(
+                owned_paths_cover_path(&pattern, "src/a/b/c.rs"),
+                "{pattern:?}"
+            );
+            assert!(
+                !owned_paths_cover_path(&pattern, "docs/foo.md"),
+                "{pattern:?}"
+            );
+            assert!(
+                !owned_paths_cover_path(&pattern, "srcx/foo.rs"),
+                "{pattern:?}"
+            );
         }
         // `*` and `?` stay inside one segment.
         assert!(owned_paths_cover_path(&scope(&["src/*.rs"]), "src/foo.rs"));
-        assert!(!owned_paths_cover_path(&scope(&["src/*.rs"]), "src/a/foo.rs"));
-        assert!(owned_paths_cover_path(&scope(&["src/f?o.rs"]), "src/foo.rs"));
+        assert!(!owned_paths_cover_path(
+            &scope(&["src/*.rs"]),
+            "src/a/foo.rs"
+        ));
+        assert!(owned_paths_cover_path(
+            &scope(&["src/f?o.rs"]),
+            "src/foo.rs"
+        ));
         // An exact file authorizes only itself.
-        assert!(owned_paths_cover_path(&scope(&["src/index.css"]), "src/index.css"));
-        assert!(!owned_paths_cover_path(&scope(&["src/index.css"]), "src/index.css.map"));
+        assert!(owned_paths_cover_path(
+            &scope(&["src/index.css"]),
+            "src/index.css"
+        ));
+        assert!(!owned_paths_cover_path(
+            &scope(&["src/index.css"]),
+            "src/index.css.map"
+        ));
         // A traversal attempt is never covered.
-        assert!(!owned_paths_cover_path(&scope(&["src/**"]), "../secrets.env"));
+        assert!(!owned_paths_cover_path(
+            &scope(&["src/**"]),
+            "../secrets.env"
+        ));
         assert!(!owned_paths_cover_path(&scope(&["../**"]), "src/foo.rs"));
     }
     use super::*;
@@ -1459,9 +1510,12 @@ mod tests {
             },
             "total_cost_usd": 0.012345
         }));
-        let claude_data = &claude_events.iter().find(|event| event.kind == "usage.updated").unwrap().data;
-        let claude = UsageReport::from_normalized(claude_data)
-        .unwrap();
+        let claude_data = &claude_events
+            .iter()
+            .find(|event| event.kind == "usage.updated")
+            .unwrap()
+            .data;
+        let claude = UsageReport::from_normalized(claude_data).unwrap();
         assert_eq!(claude.output_tokens, Some(5));
         assert_eq!(claude.cache_read_tokens, Some(2));
         assert_eq!(claude.cache_write_tokens, Some(1));
@@ -1495,7 +1549,9 @@ mod tests {
             created_at: "now".into(),
         };
         store::record_prompt_compilation(&db, &first_compilation).unwrap();
-        assert!(store::bind_latest_prompt_compilation_to_turn(&db, "parent", "turn-usage").unwrap());
+        assert!(
+            store::bind_latest_prompt_compilation_to_turn(&db, "parent", "turn-usage").unwrap()
+        );
         assert!(record_provider_usage(
             &db,
             "w",
@@ -1515,7 +1571,10 @@ mod tests {
         assert_eq!(rows[0].uncached_input_tokens, Some(7));
         assert_eq!(rows[0].runtime_ms, Some(42));
         assert_eq!(rows[0].source, "provider.claude");
-        assert_eq!(rows[0].stable_prefix_id.as_deref(), Some("bridge-prompt-v1-deadbeef"));
+        assert_eq!(
+            rows[0].stable_prefix_id.as_deref(),
+            Some("bridge-prompt-v1-deadbeef")
+        );
         assert_eq!(rows[0].prefix_token_estimate, Some(100));
         assert_eq!(rows[0].harness.as_deref(), Some("claude"));
         assert_eq!(rows[0].restoration_mode.as_deref(), Some("fresh"));
@@ -1533,9 +1592,13 @@ mod tests {
             Some("turn-usage"),
             "provider.claude",
             &json!({"usage":{"input_tokens":2,"cache_read_input_tokens":1}}),
-        ).unwrap());
+        )
+        .unwrap());
         let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
-        assert_eq!(rows[1].stable_prefix_id.as_deref(), Some("bridge-prompt-v1-deadbeef"));
+        assert_eq!(
+            rows[1].stable_prefix_id.as_deref(),
+            Some("bridge-prompt-v1-deadbeef")
+        );
         assert_eq!(rows[1].model.as_deref(), Some("sonnet"));
         assert_eq!(rows[1].restoration_mode.as_deref(), Some("fresh"));
 
@@ -1546,7 +1609,8 @@ mod tests {
             Some("turn-codex"),
             "provider.codex",
             &json!({"usage":{"input_tokens":10,"cache_read_tokens":4,"cache_write_tokens":1}}),
-        ).unwrap());
+        )
+        .unwrap());
         let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
         assert_eq!(rows[2].uncached_input_tokens, Some(5));
     }

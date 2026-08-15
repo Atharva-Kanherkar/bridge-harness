@@ -15,9 +15,9 @@
 use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::{
-    adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion,
-    git, model_profiles, orchestrator, policy, restoration, session_forest, session_supervisor,
-    store, BridgeError,
+    adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion, git,
+    model_profiles, orchestrator, policy, restoration, session_forest, session_supervisor, store,
+    BridgeError,
 };
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
@@ -293,7 +293,15 @@ impl BridgeCore {
         ) = self.db.lock().unwrap().query_row(
             "SELECT kind,harness,model,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
             params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
         if parent_session_id.is_some() || !matches!(kind.as_str(), "direct" | "orchestrator") {
             return Err(BridgeError::Invalid(
@@ -325,9 +333,7 @@ impl BridgeCore {
         } else {
             CapabilityTier::Fast
         };
-        let selected = if let Some(requested) =
-            model.filter(|value| !value.trim().is_empty())
-        {
+        let selected = if let Some(requested) = model.filter(|value| !value.trim().is_empty()) {
             descriptor
                 .models
                 .iter()
@@ -411,9 +417,9 @@ impl BridgeCore {
     /// Interrupt the session's active turn on its live adapter runtime.
     pub fn interrupt_turn(&self, session_id: &str) -> Result<(), BridgeError> {
         let adapters = self.adapters.lock().unwrap();
-        let runtime = adapters
-            .get(session_id)
-            .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+        let runtime = adapters.get(session_id).ok_or_else(|| {
+            BridgeError::Invalid("Structured adapter session is not running".into())
+        })?;
         runtime.interrupt()
     }
 
@@ -567,7 +573,13 @@ impl BridgeCore {
             change.adapter_id,
             change.selected.id,
         );
-        store::event(&transaction, "chat", "session.model_changed", session_id, &detail)?;
+        store::event(
+            &transaction,
+            "chat",
+            "session.model_changed",
+            session_id,
+            &detail,
+        )?;
         let event = store::session_event_in_transaction(
             &transaction,
             session_id,
@@ -591,7 +603,8 @@ impl BridgeCore {
             &serde_json::json!({"source": "user-selection"}),
         )?;
         transaction.commit()?;
-        self.events.publish(crate::events::CoreEvent::Agent(event.clone()));
+        self.events
+            .publish(crate::events::CoreEvent::Agent(event.clone()));
         Ok(event)
     }
 }
@@ -715,9 +728,7 @@ pub fn prepare_orchestrator_worktree(
     session_id: &str,
 ) -> Result<OrchestratorWorktree, BridgeError> {
     git::validate_repo(workspace_path).map_err(|_| {
-        BridgeError::Invalid(
-            "Connect a Git repository before creating an isolated worktree".into(),
-        )
+        BridgeError::Invalid("Connect a Git repository before creating an isolated worktree".into())
     })?;
     let workspace_slug = {
         let value = git::slug(workspace_title);
@@ -856,10 +867,16 @@ mod tests {
                 default_model: None,
             }
         }
-        fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+        fn start(
+            &self,
+            _: adapters::StartRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
             Err(BridgeError::Adapter("stub adapter cannot start".into()))
         }
-        fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+        fn resume(
+            &self,
+            _: adapters::ResumeRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
             Err(BridgeError::Adapter("stub adapter cannot resume".into()))
         }
         fn supports_native_resume(&self) -> bool {
@@ -894,7 +911,9 @@ mod tests {
     #[test]
     fn create_chat_persists_a_scratch_dir_direct_session() {
         let (_scratch, core) = fixture();
-        let snapshot = core.create_chat(&Harness::Codex, Some("stub-fast"), Some("  Billing  ")).unwrap();
+        let snapshot = core
+            .create_chat(&Harness::Codex, Some("stub-fast"), Some("  Billing  "))
+            .unwrap();
         assert_eq!(snapshot.sessions.len(), 1);
         let db = core.db.lock().unwrap();
         let (kind, label, model, cwd): (String, String, Option<String>, String) = db
@@ -905,15 +924,21 @@ mod tests {
         assert_eq!(kind, "direct");
         assert_eq!(label, "Billing");
         assert_eq!(model.as_deref(), Some("stub-fast"));
-        assert!(cwd.contains("chats"), "direct chats run in a private scratch dir: {cwd}");
+        assert!(
+            cwd.contains("chats"),
+            "direct chats run in a private scratch dir: {cwd}"
+        );
     }
 
     #[test]
     fn create_chat_defaults_the_label_when_the_title_is_blank() {
         let (_scratch, core) = fixture();
-        core.create_chat(&Harness::Claude, None, Some("   ")).unwrap();
+        core.create_chat(&Harness::Claude, None, Some("   "))
+            .unwrap();
         let db = core.db.lock().unwrap();
-        let label: String = db.query_row("SELECT label FROM sessions", [], |row| row.get(0)).unwrap();
+        let label: String = db
+            .query_row("SELECT label FROM sessions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(label, "New chat");
     }
 
@@ -929,8 +954,14 @@ mod tests {
         }
         let mut events = core.events.subscribe();
         let snapshot = core.activate_session_entry("s", "e1").unwrap();
-        assert_eq!(snapshot.head.unwrap().active_entry_id.as_deref(), Some("e1"));
-        assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::StateChanged));
+        assert_eq!(
+            snapshot.head.unwrap().active_entry_id.as_deref(),
+            Some("e1")
+        );
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::StateChanged
+        ));
         let db = core.db.lock().unwrap();
         assert!(db
             .query_row(
@@ -959,26 +990,40 @@ mod tests {
         }
         let mut events = core.events.subscribe();
         assert!(core.activate_session_entry("s", "e1").is_err());
-        assert!(events.try_recv().is_err(), "a rolled-back head move must publish nothing");
+        assert!(
+            events.try_recv().is_err(),
+            "a rolled-back head move must publish nothing"
+        );
         let active: String = core
             .db
             .lock()
             .unwrap()
-            .query_row("SELECT active_entry_id FROM session_heads WHERE session_id='s'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT active_entry_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(active, "e2", "the head move and audit must roll back together");
+        assert_eq!(
+            active, "e2",
+            "the head move and audit must roll back together"
+        );
     }
 
     #[test]
     fn plan_workspace_session_validates_isolation_and_resolves_a_selection() {
         let (_scratch, core) = fixture();
-        assert!(matches!(core.plan_workspace_session("missing", false), Err(BridgeError::Db(_))));
+        assert!(matches!(
+            core.plan_workspace_session("missing", false),
+            Err(BridgeError::Db(_))
+        ));
 
         seed_workspace(&core, false);
         let error = core.plan_workspace_session("w", true).unwrap_err();
-        assert!(error.to_string().contains("Connect a Git repository"), "{error}");
+        assert!(
+            error.to_string().contains("Connect a Git repository"),
+            "{error}"
+        );
 
         let plan = core.plan_workspace_session("w", false).unwrap();
         assert_eq!(plan.selection.adapter_id, "codex");
@@ -997,7 +1042,10 @@ mod tests {
         let core = BridgeCore::for_tests(scratch.path());
         seed_workspace(&core, false);
         let error = core.plan_workspace_session("w", false).unwrap_err();
-        assert!(error.to_string().contains("no available adapter"), "{error}");
+        assert!(
+            error.to_string().contains("no available adapter"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1014,7 +1062,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kind, "orchestrator");
-        assert_eq!(cwd, "/tmp/sessions-demo", "cwd falls back to the workspace path");
+        assert_eq!(
+            cwd, "/tmp/sessions-demo",
+            "cwd falls back to the workspace path"
+        );
         assert_eq!(harness, "codex");
         assert!(db
             .query_row(
@@ -1036,15 +1087,29 @@ mod tests {
             vec!["config", "user.email", "bridge-test@example.invalid"],
             vec!["config", "user.name", "Bridge Test"],
         ] {
-            assert!(std::process::Command::new("git").args(&args).current_dir(&repo).status().unwrap().success());
+            assert!(std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
         std::fs::write(repo.join("base.txt"), "base\n").unwrap();
         for args in [vec!["add", "."], vec!["commit", "-m", "fixture", "-q"]] {
-            assert!(std::process::Command::new("git").args(&args).current_dir(&repo).status().unwrap().success());
+            assert!(std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
         {
             let db = core.db.lock().unwrap();
-            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![repo.to_string_lossy()]).unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
             db.execute(
                 "INSERT INTO workspaces(id,project_id,title,path,status,created_at) VALUES('w','p','Payments API',?1,'idle','now')",
                 params![repo.to_string_lossy()],
@@ -1071,7 +1136,10 @@ mod tests {
             .unwrap();
         let result = core.persist_workspace_session(plan, Some(worktree.clone()));
         assert!(result.is_err());
-        assert!(!worktree.path.exists(), "failed persistence must remove the worktree");
+        assert!(
+            !worktree.path.exists(),
+            "failed persistence must remove the worktree"
+        );
     }
 
     #[test]
@@ -1086,25 +1154,41 @@ mod tests {
             .unwrap();
 
         // Unknown adapter (claude has no stub registered).
-        let error = core.plan_chat_model_change(&session_id, &Harness::Claude, None).unwrap_err();
+        let error = core
+            .plan_chat_model_change(&session_id, &Harness::Claude, None)
+            .unwrap_err();
         assert!(error.to_string().contains("No model adapter"), "{error}");
         // Unknown model on a registered adapter.
         let error = core
             .plan_chat_model_change(&session_id, &Harness::Codex, Some("no-such-model"))
             .unwrap_err();
-        assert!(error.to_string().contains("does not offer model"), "{error}");
+        assert!(
+            error.to_string().contains("does not offer model"),
+            "{error}"
+        );
         // Busy chats cannot switch.
         core.db
             .lock()
             .unwrap()
-            .execute("UPDATE sessions SET active_turn_id='turn' WHERE id=?1", params![session_id])
+            .execute(
+                "UPDATE sessions SET active_turn_id='turn' WHERE id=?1",
+                params![session_id],
+            )
             .unwrap();
-        let error = core.plan_chat_model_change(&session_id, &Harness::Codex, None).unwrap_err();
-        assert!(error.to_string().contains("Wait for the current response"), "{error}");
+        let error = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Wait for the current response"),
+            "{error}"
+        );
         core.db
             .lock()
             .unwrap()
-            .execute("UPDATE sessions SET active_turn_id=NULL WHERE id=?1", params![session_id])
+            .execute(
+                "UPDATE sessions SET active_turn_id=NULL WHERE id=?1",
+                params![session_id],
+            )
             .unwrap();
 
         // Plan + commit: direct chats default to the Fast tier.
@@ -1126,9 +1210,11 @@ mod tests {
         }
         let db = core.db.lock().unwrap();
         let (harness, model): (String, Option<String>) = db
-            .query_row("SELECT harness,model FROM sessions WHERE id=?1", params![session_id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT harness,model FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(harness, "codex");
         assert_eq!(model.as_deref(), Some("stub-fast"));
@@ -1167,7 +1253,10 @@ mod tests {
 
         let mut events = core.events.subscribe();
         assert!(core.commit_chat_model_change(change).is_err());
-        assert!(events.try_recv().is_err(), "a rolled-back model change must publish nothing");
+        assert!(
+            events.try_recv().is_err(),
+            "a rolled-back model change must publish nothing"
+        );
         let (harness, model): (String, Option<String>) = core
             .db
             .lock()
@@ -1179,7 +1268,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(harness, "claude");
-        assert_eq!(model, None, "session state and durable history must commit together");
+        assert_eq!(
+            model, None,
+            "session state and durable history must commit together"
+        );
     }
 
     #[test]
@@ -1207,7 +1299,16 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .unwrap();
-        assert_eq!(actual, ("claude".into(), "opus".into(), "strong".into(), "idle".into(), None));
+        assert_eq!(
+            actual,
+            (
+                "claude".into(),
+                "opus".into(),
+                "strong".into(),
+                "idle".into(),
+                None
+            )
+        );
 
         // A stale revision (the session changed since planning) updates nothing.
         let stale = persist_chat_model_selection(
@@ -1226,13 +1327,16 @@ mod tests {
     fn lifecycle_claims_serialize_starts_against_model_switches() {
         let (_scratch, core) = fixture();
         let claim = core.claim_session_lifecycle("s", "model switch").unwrap();
-        let error = core.claim_session_lifecycle("s", "session start").unwrap_err();
+        let error = core
+            .claim_session_lifecycle("s", "session start")
+            .unwrap_err();
         assert!(
             error.to_string().contains("model switch"),
             "the conflict names the operation in flight: {error}"
         );
         // Other sessions are unaffected; releasing the claim reopens the session.
-        core.claim_session_lifecycle("other", "session start").unwrap();
+        core.claim_session_lifecycle("other", "session start")
+            .unwrap();
         drop(claim);
         core.claim_session_lifecycle("s", "session start").unwrap();
     }
@@ -1256,19 +1360,38 @@ mod tests {
         core.db
             .lock()
             .unwrap()
-            .execute("UPDATE sessions SET model='switched-elsewhere' WHERE id=?1", params![session_id])
+            .execute(
+                "UPDATE sessions SET model='switched-elsewhere' WHERE id=?1",
+                params![session_id],
+            )
             .unwrap();
         let mut events = core.events.subscribe();
         let error = core.commit_chat_model_change(change).unwrap_err();
-        assert!(error.to_string().contains("changed while the switch was in flight"), "{error}");
-        assert!(events.try_recv().is_err(), "a stale model-change plan must publish nothing");
+        assert!(
+            error
+                .to_string()
+                .contains("changed while the switch was in flight"),
+            "{error}"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "a stale model-change plan must publish nothing"
+        );
         let model: Option<String> = core
             .db
             .lock()
             .unwrap()
-            .query_row("SELECT model FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+            .query_row(
+                "SELECT model FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(model.as_deref(), Some("switched-elsewhere"), "the interleaved state survives");
+        assert_eq!(
+            model.as_deref(),
+            Some("switched-elsewhere"),
+            "the interleaved state survives"
+        );
     }
 
     #[test]
@@ -1288,10 +1411,18 @@ mod tests {
         core.db
             .lock()
             .unwrap()
-            .execute("UPDATE sessions SET parent_session_id='parent' WHERE id=?1", params![session_id])
+            .execute(
+                "UPDATE sessions SET parent_session_id='parent' WHERE id=?1",
+                params![session_id],
+            )
             .unwrap();
         let error = core.commit_chat_model_change(change).unwrap_err();
-        assert!(error.to_string().contains("changed while the switch was in flight"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("changed while the switch was in flight"),
+            "{error}"
+        );
     }
 
     /// A live adapter runtime that records control calls.
@@ -1313,14 +1444,16 @@ mod tests {
             Ok(())
         }
         fn interrupt(&self) -> Result<(), BridgeError> {
-            self.interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.interrupted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
             Ok(())
         }
         fn read_usage(&self) -> Result<(), BridgeError> {
-            self.usage_requested.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.usage_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         fn stop(&mut self, _: adapters::ShutdownReason) {}
@@ -1362,7 +1495,10 @@ mod tests {
             .unwrap();
         // No meaningful conversation yet: the controller suppresses it.
         let error = core.begin_manual_compaction("s").unwrap_err();
-        assert!(error.to_string().contains("Compaction suppressed"), "{error}");
+        assert!(
+            error.to_string().contains("Compaction suppressed"),
+            "{error}"
+        );
 
         core.db
             .lock()
@@ -1415,7 +1551,10 @@ mod tests {
         let mut events = core.events.subscribe();
         core.publish_account_usage("codex", serde_json::json!({"remaining": 5}));
         match events.try_recv().unwrap() {
-            crate::events::CoreEvent::AccountUsage { provider, rate_limits } => {
+            crate::events::CoreEvent::AccountUsage {
+                provider,
+                rate_limits,
+            } => {
                 assert_eq!(provider, "codex");
                 assert_eq!(rate_limits, serde_json::json!({"remaining": 5}));
             }
@@ -1451,7 +1590,8 @@ mod tests {
             )
             .unwrap();
             drop(db);
-            core.events.publish(crate::events::CoreEvent::Agent(event.clone()));
+            core.events
+                .publish(crate::events::CoreEvent::Agent(event.clone()));
             event.sequence
         };
 
@@ -1477,7 +1617,9 @@ mod tests {
         // client drops live cursors at or below the replay high-water mark.
         let mut reconnected = core.events.subscribe();
         let raced = persist("raced");
-        let replayed = core.replay_session_events(&session_id, last_seen, None).unwrap();
+        let replayed = core
+            .replay_session_events(&session_id, last_seen, None)
+            .unwrap();
         let sequences: Vec<i64> = replayed.iter().map(|event| event.sequence).collect();
         assert_eq!(
             sequences,
@@ -1486,8 +1628,14 @@ mod tests {
         );
         assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(replayed[0].text.as_deref(), Some("three"));
-        assert_eq!(replayed[0].kind, "assistant.message", "replay carries the durable forest kind");
-        assert!(replayed[0].sequence > 0, "durable events always carry a positive cursor");
+        assert_eq!(
+            replayed[0].kind, "assistant.message",
+            "replay carries the durable forest kind"
+        );
+        assert!(
+            replayed[0].sequence > 0,
+            "durable events always carry a positive cursor"
+        );
         let replay_high_water = *sequences.last().unwrap();
         let raced_live = match reconnected.try_recv().unwrap() {
             crate::events::CoreEvent::Agent(event) => event,
@@ -1506,13 +1654,21 @@ mod tests {
         if newer_live.sequence > replay_high_water {
             delivered.push(newer_live.sequence);
         }
-        assert_eq!(delivered, vec![third, third + 1, fifth, raced, after_replay]);
+        assert_eq!(
+            delivered,
+            vec![third, third + 1, fifth, raced, after_replay]
+        );
         // Replaying from the newest cursor is empty; from zero is everything durable.
         assert!(core
             .replay_session_events(&session_id, after_replay, None)
             .unwrap()
             .is_empty());
-        assert!(core.replay_session_events(&session_id, 0, None).unwrap().len() >= 5);
+        assert!(
+            core.replay_session_events(&session_id, 0, None)
+                .unwrap()
+                .len()
+                >= 5
+        );
         // Unknown sessions replay nothing rather than erroring.
         assert!(core
             .replay_session_events("no-such-session", 0, None)

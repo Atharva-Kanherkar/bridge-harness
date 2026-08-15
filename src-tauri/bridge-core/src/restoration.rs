@@ -62,7 +62,12 @@ pub fn checkpoint_context(
         }
     } else if let Some(summary) = branch.iter().rev().find_map(|entry| {
         (entry.kind == "checkpoint")
-            .then(|| entry.payload.get("summary").and_then(serde_json::Value::as_str))
+            .then(|| {
+                entry
+                    .payload
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+            })
             .flatten()
     }) {
         selected.push(format!("checkpoint: {summary}"));

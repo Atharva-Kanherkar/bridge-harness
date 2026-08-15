@@ -1900,7 +1900,10 @@ mod tests {
         let error = route(&db, "parent", "turn-pinned", &pinned, &descriptors)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("codex cannot run a read_only worker"), "{error}");
+        assert!(
+            error.contains("codex cannot run a read_only worker"),
+            "{error}"
+        );
         assert!(error.contains("claude"), "{error}");
     }
 

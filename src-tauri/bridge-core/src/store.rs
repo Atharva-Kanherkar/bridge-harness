@@ -40,7 +40,9 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // recreate parent tables) don't trip referential checks; re-enabled after.
     connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
     run_migrations(&mut connection, path)?;
-    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+    )?;
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
@@ -274,11 +276,26 @@ fn migration_17_configuration_entries(transaction: &Transaction<'_>) -> Result<(
 }
 
 fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
-    add_column_if_missing(transaction, "usage_ledger", "uncached_input_tokens", "INTEGER")?;
+    add_column_if_missing(
+        transaction,
+        "usage_ledger",
+        "uncached_input_tokens",
+        "INTEGER",
+    )?;
     add_column_if_missing(transaction, "usage_ledger", "stable_prefix_id", "TEXT")?;
     add_column_if_missing(transaction, "usage_ledger", "stable_prefix_hash", "TEXT")?;
-    add_column_if_missing(transaction, "usage_ledger", "prompt_schema_version", "INTEGER")?;
-    add_column_if_missing(transaction, "usage_ledger", "prefix_token_estimate", "INTEGER")?;
+    add_column_if_missing(
+        transaction,
+        "usage_ledger",
+        "prompt_schema_version",
+        "INTEGER",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "usage_ledger",
+        "prefix_token_estimate",
+        "INTEGER",
+    )?;
     add_column_if_missing(transaction, "usage_ledger", "harness", "TEXT")?;
     add_column_if_missing(transaction, "usage_ledger", "model", "TEXT")?;
     add_column_if_missing(transaction, "usage_ledger", "role", "TEXT")?;
@@ -306,12 +323,12 @@ fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<
         CREATE INDEX IF NOT EXISTS idx_prompt_compilations_session
             ON prompt_compilations(session_id,id DESC);
         CREATE INDEX IF NOT EXISTS idx_prompt_compilations_prefix
-            ON prompt_compilations(harness,prefix_hash,id DESC);"
+            ON prompt_compilations(harness,prefix_hash,id DESC);",
     )?;
     add_column_if_missing(transaction, "prompt_compilations", "turn_id", "TEXT")?;
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_prompt_compilations_turn
-            ON prompt_compilations(session_id,turn_id,id DESC);"
+            ON prompt_compilations(session_id,turn_id,id DESC);",
     )?;
     Ok(())
 }
@@ -403,8 +420,18 @@ fn migration_19_repair_learning_router_schema(
     )?;
     add_column_if_missing(transaction, "routing_policies", "replay_report", "TEXT")?;
     add_column_if_missing(transaction, "routing_policies", "promoted_at", "TEXT")?;
-    add_column_if_missing(transaction, "routing_policies", "activation_boundary", "INTEGER")?;
-    add_column_if_missing(transaction, "learning_trigger_events", "registration_id", "TEXT")?;
+    add_column_if_missing(
+        transaction,
+        "routing_policies",
+        "activation_boundary",
+        "INTEGER",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_trigger_events",
+        "registration_id",
+        "TEXT",
+    )?;
     add_column_if_missing(transaction, "learning_trigger_events", "reason", "TEXT")?;
     migration_15_role_profiles_and_learning_jobs(transaction)?;
     if column_exists(transaction, "routing_evaluations", "run_id")? {
@@ -895,7 +922,12 @@ fn migration_7_optional_repo_and_direct_chats(
 }
 
 fn migration_8_reliability_primitives(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
-    add_column_if_missing(transaction, "worker_queue", "attempt_count", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        transaction,
+        "worker_queue",
+        "attempt_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     add_column_if_missing(transaction, "worker_queue", "expires_at", "TEXT")?;
     add_column_if_missing(transaction, "worker_queue", "claimed_at", "TEXT")?;
     add_column_if_missing(transaction, "worker_queue", "last_error", "TEXT")?;
@@ -1110,24 +1142,69 @@ fn migration_15_role_profiles_and_learning_jobs(
 ) -> Result<(), BridgeError> {
     add_column_if_missing(transaction, "usage_ledger", "cost_microusd", "INTEGER")?;
     add_column_if_missing(transaction, "usage_ledger", "cost_source", "TEXT")?;
-    add_column_if_missing(transaction, "router_decisions", "task_fingerprint", "TEXT NOT NULL DEFAULT 'legacy'")?;
+    add_column_if_missing(
+        transaction,
+        "router_decisions",
+        "task_fingerprint",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    )?;
     add_column_if_missing(transaction, "router_decisions", "trace_id", "TEXT")?;
-    add_column_if_missing(transaction, "router_decisions", "repository_revision", "TEXT")?;
-    add_column_if_missing(transaction, "router_decisions", "profile_version", "INTEGER")?;
+    add_column_if_missing(
+        transaction,
+        "router_decisions",
+        "repository_revision",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "router_decisions",
+        "profile_version",
+        "INTEGER",
+    )?;
     add_column_if_missing(transaction, "router_decisions", "profile_purpose", "TEXT")?;
-    add_column_if_missing(transaction, "router_decisions", "policy_version", "INTEGER NOT NULL DEFAULT 1")?;
-    add_column_if_missing(transaction, "router_decisions", "catalog_snapshot", "TEXT NOT NULL DEFAULT '{}'")?;
+    add_column_if_missing(
+        transaction,
+        "router_decisions",
+        "policy_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "router_decisions",
+        "catalog_snapshot",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
     add_column_if_missing(transaction, "router_decisions", "selection_reason", "TEXT")?;
     add_column_if_missing(transaction, "router_decisions", "actual_provider", "TEXT")?;
     add_column_if_missing(transaction, "router_decisions", "actual_model", "TEXT")?;
     add_column_if_missing(transaction, "router_decisions", "actual_effort", "TEXT")?;
-    add_column_if_missing(transaction, "router_outcomes", "success_state", "TEXT NOT NULL DEFAULT 'unknown'")?;
-    add_column_if_missing(transaction, "router_outcomes", "acceptance_state", "TEXT NOT NULL DEFAULT 'unknown'")?;
+    add_column_if_missing(
+        transaction,
+        "router_outcomes",
+        "success_state",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "router_outcomes",
+        "acceptance_state",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )?;
     add_column_if_missing(transaction, "router_outcomes", "cost_microusd", "INTEGER")?;
     add_column_if_missing(transaction, "router_outcomes", "cost_source", "TEXT")?;
     add_column_if_missing(transaction, "router_outcomes", "confidence_bps", "INTEGER")?;
-    add_column_if_missing(transaction, "router_outcomes", "edit_count", "INTEGER NOT NULL DEFAULT 0")?;
-    add_column_if_missing(transaction, "router_outcomes", "override_signal", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        transaction,
+        "router_outcomes",
+        "edit_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "router_outcomes",
+        "override_signal",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     add_column_if_missing(transaction, "router_outcomes", "total_tokens", "INTEGER")?;
     add_column_if_missing(transaction, "router_outcomes", "latency_source", "TEXT")?;
     transaction.execute_batch(
@@ -1261,8 +1338,18 @@ fn migration_15_role_profiles_and_learning_jobs(
         INSERT OR IGNORE INTO learning_triggers(id,job_id,kind,registration_id,enabled,experimental,created_at,updated_at)
             VALUES('builtin-in-app','default','in_app','built-in',1,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);",
     )?;
-    add_column_if_missing(transaction, "model_profiles", "profile_id", "TEXT NOT NULL DEFAULT 'legacy'")?;
-    add_column_if_missing(transaction, "learning_jobs", "last_evidence_boundary", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        transaction,
+        "model_profiles",
+        "profile_id",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_jobs",
+        "last_evidence_boundary",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     transaction.execute(
         "CREATE INDEX IF NOT EXISTS idx_model_profiles_id ON model_profiles(profile_id,version)",
         [],
@@ -1616,7 +1703,10 @@ pub fn repository_path_for_session(
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
-    let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(path).output();
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output();
     let status = Command::new("git")
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(path)
@@ -1683,12 +1773,12 @@ pub fn session_events_after(
     entries
         .into_iter()
         .map(|entry| {
-            forest
-                .validate_stored_entry(&entry)
-                .map_err(|error| BridgeError::Invalid(format!(
+            forest.validate_stored_entry(&entry).map_err(|error| {
+                BridgeError::Invalid(format!(
                     "cannot replay session entry {} at sequence {}: {error}",
                     entry.id, entry.sequence
-                )))?;
+                ))
+            })?;
             let payload = &entry.payload;
             let field = |name: &str| {
                 payload
@@ -2009,7 +2099,10 @@ pub fn fair_queued_workspaces(db: &Connection) -> Result<Vec<String>, BridgeErro
     query_with_params(db, "SELECT workspace_id FROM worker_queue WHERE queue_status='queued' GROUP BY workspace_id ORDER BY MIN(sequence),workspace_id", [], |row| row.get(0))
 }
 
-pub fn enqueue_outbox(transaction: &Transaction<'_>, message: &OutboxMessage) -> Result<(), BridgeError> {
+pub fn enqueue_outbox(
+    transaction: &Transaction<'_>,
+    message: &OutboxMessage,
+) -> Result<(), BridgeError> {
     transaction.execute("INSERT INTO durable_outbox(id,destination,event_type,payload,idempotency_key,status,attempt_count,next_attempt_at,last_error,created_at,delivered_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(idempotency_key) DO NOTHING", params![message.id,message.destination,message.event_type,message.payload.to_string(),message.idempotency_key,message.status,message.attempt_count,message.next_attempt_at,message.last_error,message.created_at,message.delivered_at])?;
     Ok(())
 }
@@ -2149,14 +2242,22 @@ pub fn latest_prompt_compilation(
     ).optional()?)
 }
 
-pub fn bind_latest_prompt_compilation_to_turn(db: &Connection, session_id: &str, turn_id: &str) -> Result<bool, BridgeError> {
+pub fn bind_latest_prompt_compilation_to_turn(
+    db: &Connection,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<bool, BridgeError> {
     Ok(db.execute(
         "UPDATE prompt_compilations SET turn_id=?2 WHERE id=(SELECT id FROM prompt_compilations WHERE session_id=?1 AND turn_id IS NULL ORDER BY id DESC LIMIT 1)",
         params![session_id, turn_id],
     )? == 1)
 }
 
-pub fn prompt_compilation_for_turn(db: &Connection, session_id: &str, turn_id: &str) -> Result<Option<PromptCompilationRecord>, BridgeError> {
+pub fn prompt_compilation_for_turn(
+    db: &Connection,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<Option<PromptCompilationRecord>, BridgeError> {
     Ok(db.query_row(
         "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
          FROM prompt_compilations WHERE session_id=?1 AND turn_id=?2 ORDER BY id DESC LIMIT 1",
@@ -2223,7 +2324,13 @@ pub(crate) fn session_event_in_transaction(
         )
         .optional()?
         .flatten();
-    let trace_id: String = transaction.query_row("SELECT COALESCE(trace_id,id) FROM sessions WHERE id=?1", params![session_id], |row| row.get(0)).unwrap_or_else(|_| session_id.to_owned());
+    let trace_id: String = transaction
+        .query_row(
+            "SELECT COALESCE(trace_id,id) FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| session_id.to_owned());
     let payload = serde_json::json!({
         "protocolVersion": 1,
         "itemId": event.item_id,
@@ -2242,9 +2349,23 @@ pub(crate) fn session_event_in_transaction(
         } else {
             "assistant.message"
         };
-    } else if final_kind == "tool.started" || final_kind == "tool.completed" || final_kind == "approval.requested" || final_kind == "approval.resolved" || final_kind == "delegation.requested" || final_kind == "delegation.approved" || final_kind == "delegation.rejected" || final_kind == "worker.result" {
+    } else if final_kind == "tool.started"
+        || final_kind == "tool.completed"
+        || final_kind == "approval.requested"
+        || final_kind == "approval.resolved"
+        || final_kind == "delegation.requested"
+        || final_kind == "delegation.approved"
+        || final_kind == "delegation.rejected"
+        || final_kind == "worker.result"
+    {
         // Keep as is, it maps directly.
-    } else if final_kind.ends_with(".delta") || final_kind.ends_with(".progress") || final_kind == "turn.started" || final_kind == "turn.completed" || final_kind == "usage.updated" || final_kind == "plan.updated" {
+    } else if final_kind.ends_with(".delta")
+        || final_kind.ends_with(".progress")
+        || final_kind == "turn.started"
+        || final_kind == "turn.completed"
+        || final_kind == "usage.updated"
+        || final_kind == "plan.updated"
+    {
         // Do not store transient or internal events in the immutable forest.
         return Ok(AgentEvent {
             id: 0,
@@ -2549,22 +2670,48 @@ mod tests {
             text: Some("durable".into()),
             data: json!({}),
         };
-        let committed = session_event(&primary, "s", &event, &json!({"adapter":"codex"}))
-            .unwrap();
+        let committed = session_event(&primary, "s", &event, &json!({"adapter":"codex"})).unwrap();
         let write_lock = primary.unchecked_transaction().unwrap();
         write_lock
             .execute("UPDATE sessions SET label='locked' WHERE id='s'", [])
             .unwrap();
         let span = telemetry_span("trace", "s", "codex", &event, &committed.created_at);
-        assert_eq!(append_telemetry_batch(&telemetry, &[span.clone()]).unwrap(), 1);
+        assert_eq!(
+            append_telemetry_batch(&telemetry, &[span.clone()]).unwrap(),
+            1
+        );
         write_lock.rollback().unwrap();
-        assert_eq!(telemetry.query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
-        assert_eq!(primary.query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
-        assert_eq!(primary.query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(
+            telemetry
+                .query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            primary
+                .query_row("SELECT COUNT(*) FROM session_entries", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            primary
+                .query_row("SELECT COUNT(*) FROM telemetry_spans", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
 
         telemetry.execute("DROP TABLE telemetry_spans", []).unwrap();
         assert!(append_telemetry_batch(&telemetry, &[span]).is_err());
-        assert_eq!(primary.query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            primary
+                .query_row("SELECT COUNT(*) FROM session_entries", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -2575,15 +2722,23 @@ mod tests {
         event(&primary, "test", "history.saved", "entity", "durable").unwrap();
         let readonly = Connection::open_with_flags(
             &primary_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .unwrap();
         let (snapshot, manifest) =
             export_history_snapshot(&readonly, &dir.path().join("snapshots")).unwrap();
         assert!(verify_history_snapshot(&snapshot, &manifest).unwrap());
         let snapshot_db = Connection::open(&snapshot).unwrap();
-        assert_eq!(snapshot_db.query_row("SELECT body FROM events WHERE kind='history.saved'", [], |row| row.get::<_, String>(0)).unwrap(), "durable");
+        assert_eq!(
+            snapshot_db
+                .query_row(
+                    "SELECT body FROM events WHERE kind='history.saved'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "durable"
+        );
         drop(snapshot_db);
 
         let mut bytes = std::fs::read(&snapshot).unwrap();
@@ -2613,11 +2768,15 @@ mod tests {
             "routing_policy_promotions",
             "prompt_compilations",
         ] {
-            assert!(db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                params![table],
-                |row| row.get::<_, bool>(0),
-            ).unwrap(), "missing migration-15 table {table}");
+            assert!(
+                db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    params![table],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap(),
+                "missing migration-15 table {table}"
+            );
         }
         for (table, column) in [
             ("usage_ledger", "cost_microusd"),
@@ -2649,7 +2808,15 @@ mod tests {
             migration_15_role_profiles_and_learning_jobs(&transaction).unwrap();
             transaction.commit().unwrap();
         }
-        assert_eq!(db.query_row("SELECT COUNT(*) FROM routing_policies WHERE status='active'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE status='active'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
         assert_eq!(db.query_row("SELECT COUNT(*) FROM learning_triggers WHERE kind IN ('manual','in_app') AND registration_id='built-in'", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
         // Migration 22 adds the backend binding without inventing one. A row
         // that predates it stays readable and reads as unbound — a guessed
@@ -2722,8 +2889,14 @@ mod tests {
         let legacy_path = dir.path().join("legacy.db");
         create_legacy_fixture(&legacy_path);
         let upgraded = open(&legacy_path).unwrap();
-        assert_eq!(columns(&current, "usage_ledger"), columns(&upgraded, "usage_ledger"));
-        assert_eq!(columns(&current, "prompt_compilations"), columns(&upgraded, "prompt_compilations"));
+        assert_eq!(
+            columns(&current, "usage_ledger"),
+            columns(&upgraded, "usage_ledger")
+        );
+        assert_eq!(
+            columns(&current, "prompt_compilations"),
+            columns(&upgraded, "prompt_compilations")
+        );
         for required in [
             "uncached_input_tokens",
             "stable_prefix_id",
@@ -2732,7 +2905,9 @@ mod tests {
             "prefix_token_estimate",
             "cross_harness_reuse",
         ] {
-            assert!(columns(&upgraded, "usage_ledger").iter().any(|column| column == required));
+            assert!(columns(&upgraded, "usage_ledger")
+                .iter()
+                .any(|column| column == required));
         }
     }
 
@@ -2782,24 +2957,42 @@ mod tests {
         let path = dir.path().join("bridge.db");
         let db = open(&path).unwrap();
         let late_columns = [
-            ("router_decisions", "task_fingerprint"), ("router_decisions", "trace_id"),
-            ("router_decisions", "repository_revision"), ("router_decisions", "profile_version"),
-            ("router_decisions", "profile_purpose"), ("router_decisions", "policy_version"),
-            ("router_decisions", "catalog_snapshot"), ("router_decisions", "selection_reason"),
-            ("router_decisions", "actual_provider"), ("router_decisions", "actual_model"),
-            ("router_decisions", "actual_effort"), ("router_outcomes", "success_state"),
-            ("router_outcomes", "acceptance_state"), ("router_outcomes", "cost_microusd"),
-            ("router_outcomes", "cost_source"), ("router_outcomes", "confidence_bps"),
-            ("router_outcomes", "edit_count"), ("router_outcomes", "override_signal"),
-            ("router_outcomes", "total_tokens"), ("router_outcomes", "latency_source"),
-            ("learning_jobs", "run_budget_tokens"), ("learning_triggers", "auth_digest"),
-            ("learning_triggers", "expires_at"), ("learning_triggers", "experimental"),
-            ("learning_triggers", "updated_at"), ("learning_job_runs", "lease_owner"),
-            ("learning_job_runs", "lease_expires_at"), ("learning_job_runs", "snapshot_frozen_at"),
-            ("learning_job_runs", "evaluated_spend_microusd"), ("learning_job_runs", "evaluated_tokens"),
-            ("learning_job_runs", "replay_passed"), ("learning_job_runs", "promotion_status"),
-            ("routing_policies", "rollback_of"), ("routing_policies", "replay_report"),
-            ("routing_policies", "promoted_at"), ("routing_policies", "activation_boundary"),
+            ("router_decisions", "task_fingerprint"),
+            ("router_decisions", "trace_id"),
+            ("router_decisions", "repository_revision"),
+            ("router_decisions", "profile_version"),
+            ("router_decisions", "profile_purpose"),
+            ("router_decisions", "policy_version"),
+            ("router_decisions", "catalog_snapshot"),
+            ("router_decisions", "selection_reason"),
+            ("router_decisions", "actual_provider"),
+            ("router_decisions", "actual_model"),
+            ("router_decisions", "actual_effort"),
+            ("router_outcomes", "success_state"),
+            ("router_outcomes", "acceptance_state"),
+            ("router_outcomes", "cost_microusd"),
+            ("router_outcomes", "cost_source"),
+            ("router_outcomes", "confidence_bps"),
+            ("router_outcomes", "edit_count"),
+            ("router_outcomes", "override_signal"),
+            ("router_outcomes", "total_tokens"),
+            ("router_outcomes", "latency_source"),
+            ("learning_jobs", "run_budget_tokens"),
+            ("learning_triggers", "auth_digest"),
+            ("learning_triggers", "expires_at"),
+            ("learning_triggers", "experimental"),
+            ("learning_triggers", "updated_at"),
+            ("learning_job_runs", "lease_owner"),
+            ("learning_job_runs", "lease_expires_at"),
+            ("learning_job_runs", "snapshot_frozen_at"),
+            ("learning_job_runs", "evaluated_spend_microusd"),
+            ("learning_job_runs", "evaluated_tokens"),
+            ("learning_job_runs", "replay_passed"),
+            ("learning_job_runs", "promotion_status"),
+            ("routing_policies", "rollback_of"),
+            ("routing_policies", "replay_report"),
+            ("routing_policies", "promoted_at"),
+            ("routing_policies", "activation_boundary"),
         ];
         for (table, column) in late_columns {
             db.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))
@@ -2830,7 +3023,8 @@ mod tests {
                 created_at TEXT NOT NULL
              );
              DELETE FROM schema_version WHERE version >= 19;",
-        ).unwrap();
+        )
+        .unwrap();
         drop(db);
 
         let db = open(&path).unwrap();
@@ -2863,12 +3057,14 @@ mod tests {
             "INSERT INTO routing_evaluations(id,evaluator_kind,evaluator_version,created_at)
              VALUES('post-repair-eval','deterministic','test-v1','now')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         db.execute(
             "INSERT INTO learning_trigger_events(id,run_id,trigger_kind,result,created_at)
              VALUES('post-repair-trigger',NULL,'manual','accepted','now')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let trigger_delete_action: String = db.query_row(
             "SELECT on_delete FROM pragma_foreign_key_list('learning_trigger_events') WHERE \"from\"='run_id'",
             [],
@@ -2955,17 +3151,35 @@ mod tests {
         let mut db = open(Path::new(":memory:")).unwrap();
         db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/fidelity','now')", []).unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/fidelity-w','idle','now')", []).unwrap();
-        for (id, parent) in [("root", None), ("boundary", Some("root")), ("mid", Some("root")), ("resumed", Some("root"))] {
+        for (id, parent) in [
+            ("root", None),
+            ("boundary", Some("root")),
+            ("mid", Some("root")),
+            ("resumed", Some("root")),
+        ] {
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,continuation_fidelity) VALUES(?1,'w','codex','Session','stopped','reported',?2,'native')", params![id,parent]).unwrap();
         }
-        for (id, mode) in [("root","fresh"),("boundary","checkpoint_restored"),("mid","fresh"),("resumed","native")] {
+        for (id, mode) in [
+            ("root", "fresh"),
+            ("boundary", "checkpoint_restored"),
+            ("mid", "fresh"),
+            ("resumed", "native"),
+        ] {
             db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES(?1,?2,'now')", params![id,mode]).unwrap();
         }
         let transaction = db.transaction().unwrap();
         migration_10_continuation_fidelity(&transaction).unwrap();
         transaction.commit().unwrap();
         let values = query(&db, "SELECT continuation_fidelity FROM sessions ORDER BY CASE id WHEN 'root' THEN 1 WHEN 'boundary' THEN 2 WHEN 'mid' THEN 3 ELSE 4 END", |row| row.get::<_,String>(0)).unwrap();
-        assert_eq!(values, vec!["native", "projected_at_boundary", "projected_mid_turn", "native"]);
+        assert_eq!(
+            values,
+            vec![
+                "native",
+                "projected_at_boundary",
+                "projected_mid_turn",
+                "native"
+            ]
+        );
     }
 
     #[test]
@@ -2975,8 +3189,23 @@ mod tests {
         let transaction = db.transaction().unwrap();
         migration_11_human_blocked_queue(&transaction).unwrap();
         transaction.commit().unwrap();
-        let row = db.query_row("SELECT queue_status,expires_at,blocked_at FROM worker_queue WHERE id='q'", [], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).unwrap();
-        assert_eq!(row, ("queued".into(), "2099-01-01T00:00:00+00:00".into(), None));
+        let row = db
+            .query_row(
+                "SELECT queue_status,expires_at,blocked_at FROM worker_queue WHERE id='q'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("queued".into(), "2099-01-01T00:00:00+00:00".into(), None)
+        );
     }
 
     #[test]
@@ -2986,7 +3215,19 @@ mod tests {
         let transaction = db.transaction().unwrap();
         migration_12_adapter_process_claims(&transaction).unwrap();
         transaction.commit().unwrap();
-        let row = db.query_row("SELECT status,adapter_pid,adapter_process_identity FROM sessions WHERE id='s'", [], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<i64>>(1)?,row.get::<_,Option<String>>(2)?))).unwrap();
+        let row = db
+            .query_row(
+                "SELECT status,adapter_pid,adapter_process_identity FROM sessions WHERE id='s'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(row, ("working".into(), None, None));
     }
 
@@ -3061,7 +3302,9 @@ mod tests {
         assert_eq!(entries[1].parent_entry_id.as_deref(), Some(&*entries[0].id));
         assert_eq!(entries[1].payload["providerMeta"]["rawId"], 2);
         assert_eq!(entries[1].provider_event_id.as_deref(), Some("m2"));
-        assert!(entries.iter().all(|entry| entry.semantic_schema_version == 1));
+        assert!(entries
+            .iter()
+            .all(|entry| entry.semantic_schema_version == 1));
         let head = session_head(&db, "s").unwrap().unwrap();
         assert_eq!(head.active_entry_id.as_deref(), Some(&*entries[1].id));
         assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
@@ -3098,7 +3341,10 @@ mod tests {
         .unwrap();
         assert_eq!((first.sequence, second.sequence), (1, 2));
         assert_eq!(first.semantic_schema_version, SEMANTIC_EVENT_SCHEMA_VERSION);
-        assert_eq!(second.semantic_schema_version, SEMANTIC_EVENT_SCHEMA_VERSION);
+        assert_eq!(
+            second.semantic_schema_version,
+            SEMANTIC_EVENT_SCHEMA_VERSION
+        );
         assert_eq!(
             session_head(&db, "s").unwrap().unwrap().active_entry_id,
             Some(second.id.clone())
@@ -3200,14 +3446,23 @@ mod tests {
         assert_eq!(stored_compilation.prefix_hash, "hash-1");
         assert_eq!(stored_compilation.prefix_token_estimate, 100);
         assert!(bind_latest_prompt_compilation_to_turn(&db, "s", "turn-1").unwrap());
-        assert_eq!(prompt_compilation_for_turn(&db, "s", "turn-1").unwrap().unwrap().id, compilation_id);
+        assert_eq!(
+            prompt_compilation_for_turn(&db, "s", "turn-1")
+                .unwrap()
+                .unwrap()
+                .id,
+            compilation_id
+        );
         let mut replacement = compilation.clone();
         replacement.prefix_id = "prefix-unsent".into();
         replacement.prefix_hash = "hash-unsent".into();
         let replacement_id = record_prompt_compilation(&db, &replacement).unwrap();
         assert!(delete_prompt_compilation(&db, replacement_id).unwrap());
         assert!(!delete_prompt_compilation(&db, replacement_id).unwrap());
-        assert_eq!(latest_prompt_compilation(&db, "s").unwrap().unwrap().id, compilation_id);
+        assert_eq!(
+            latest_prompt_compilation(&db, "s").unwrap().unwrap().id,
+            compilation_id
+        );
 
         let usage = UsageLedgerRow {
             id: 0,
@@ -3277,12 +3532,37 @@ mod tests {
         assert_eq!(outstanding_children(&db, "s").unwrap(), 1);
 
         for id in ["q1", "q2"] {
-            enqueue_worker_request(&db, &QueuedWorkerRequest {
-                id: id.into(), parent_session_id: "s".into(), workspace_id: "w".into(), turn_id: "turn".into(), request: json!({"role":"implementation"}), actual_model: "runtime-model".into(), queue_status: "queued".into(), sequence: 0, dispatched_session_id: None, attempt_count: 0, expires_at: "2099-01-01T00:00:00+00:00".into(), blocked_at: None, claimed_at: None, last_error: None, created_at: "now".into(), updated_at: "now".into(),
-            }).unwrap();
+            enqueue_worker_request(
+                &db,
+                &QueuedWorkerRequest {
+                    id: id.into(),
+                    parent_session_id: "s".into(),
+                    workspace_id: "w".into(),
+                    turn_id: "turn".into(),
+                    request: json!({"role":"implementation"}),
+                    actual_model: "runtime-model".into(),
+                    queue_status: "queued".into(),
+                    sequence: 0,
+                    dispatched_session_id: None,
+                    attempt_count: 0,
+                    expires_at: "2099-01-01T00:00:00+00:00".into(),
+                    blocked_at: None,
+                    claimed_at: None,
+                    last_error: None,
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                },
+            )
+            .unwrap();
         }
         let queued = queued_worker_requests(&db, "w").unwrap();
-        assert_eq!(queued.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), vec!["q1", "q2"]);
+        assert_eq!(
+            queued
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["q1", "q2"]
+        );
         assert!(queued[0].sequence < queued[1].sequence);
     }
 

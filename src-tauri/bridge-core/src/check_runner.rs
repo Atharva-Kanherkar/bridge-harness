@@ -51,7 +51,10 @@ use std::{
 /// execute arbitrary registry code, and a planned command is LLM-authored.
 const ALLOWED_SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("bun", &["build", "check", "run", "test", "tsc", "vitest"]),
-    ("cargo", &["bench", "build", "check", "clippy", "fmt", "test"]),
+    (
+        "cargo",
+        &["bench", "build", "check", "clippy", "fmt", "test"],
+    ),
     (
         "git",
         &[
@@ -191,9 +194,7 @@ pub fn authorize(command: &str) -> Result<ShellCommand, String> {
         }
     }
     if let Some(flag) = expect_path {
-        return Err(format!(
-            "the planned command ends with {flag} and no value"
-        ));
+        return Err(format!("the planned command ends with {flag} and no value"));
     }
     // Pass 2: the first non-flag token is the verb. Flags may precede it (`cargo
     // --locked test`), and a separated flag's value must not be mistaken for it.
@@ -365,7 +366,9 @@ fn join_drain(drain: Drain) -> String {
         // The thread is parked on a pipe an escaped descendant still owns. Take
         // what was captured and move on; the thread ends when that process does.
         let mut text = drain.captured.lock().unwrap().clone();
-        text.push_str("\n[Bridge stopped waiting for this stream: a descendant process kept it open]");
+        text.push_str(
+            "\n[Bridge stopped waiting for this stream: a descendant process kept it open]",
+        );
         return text;
     }
     match drain.handle.join() {
@@ -518,7 +521,10 @@ pub fn record_outcome(
 
 /// Test/convenience seam: execute and record in one call. Production goes through
 /// the split pair so the command never runs under the database lock.
-pub fn run_claimed_check(db: &Connection, check: &PendingCheck) -> Result<CheckStatus, BridgeError> {
+pub fn run_claimed_check(
+    db: &Connection,
+    check: &PendingCheck,
+) -> Result<CheckStatus, BridgeError> {
     let outcome = run_claimed_check_offline(check);
     record_outcome(db, check, &outcome)?;
     Ok(outcome.status)
@@ -535,7 +541,9 @@ pub struct ExecutedCheck {
 
 /// Attempts whose planned checks have not settled within the verify deadline,
 /// with the check ids that never reached a terminal state.
-pub fn stalled_attempts(db: &Connection) -> Result<Vec<(String, String, Vec<String>)>, BridgeError> {
+pub fn stalled_attempts(
+    db: &Connection,
+) -> Result<Vec<(String, String, Vec<String>)>, BridgeError> {
     let candidates = {
         let mut statement = db.prepare(
             "SELECT id,session_id,started_at FROM eval_attempts WHERE status IN ('verifying','changes_requested') ORDER BY started_at",
@@ -554,7 +562,10 @@ pub fn stalled_attempts(db: &Connection) -> Result<Vec<(String, String, Vec<Stri
     for (attempt_id, session_id, started_at) in candidates {
         let Some(age) = chrono::DateTime::parse_from_rfc3339(&started_at)
             .ok()
-            .map(|started| now.signed_duration_since(started.with_timezone(&Utc)).num_seconds())
+            .map(|started| {
+                now.signed_duration_since(started.with_timezone(&Utc))
+                    .num_seconds()
+            })
         else {
             continue;
         };
@@ -658,7 +669,11 @@ mod tests {
             "bun run build",
             "git diff --check",
         ] {
-            assert!(authorize(command).is_ok(), "{command}: {:?}", authorize(command));
+            assert!(
+                authorize(command).is_ok(),
+                "{command}: {:?}",
+                authorize(command)
+            );
         }
         assert_eq!(
             authorize("cargo test --manifest-path src-tauri/Cargo.toml --workspace").unwrap(),
@@ -676,12 +691,24 @@ mod tests {
 
     #[test]
     fn shell_syntax_and_unlisted_programs_are_refused() {
-        assert!(authorize("cargo test; rm -rf /").unwrap_err().contains("metacharacter"));
-        assert!(authorize("cargo test && curl evil.example").unwrap_err().contains("metacharacter"));
-        assert!(authorize("cargo test | tee /tmp/out").unwrap_err().contains("metacharacter"));
-        assert!(authorize("cargo test $(whoami)").unwrap_err().contains("metacharacter"));
-        assert!(authorize("rm -rf target").unwrap_err().contains("not an allowlisted"));
-        assert!(authorize("sh -c cargo").unwrap_err().contains("not an allowlisted"));
+        assert!(authorize("cargo test; rm -rf /")
+            .unwrap_err()
+            .contains("metacharacter"));
+        assert!(authorize("cargo test && curl evil.example")
+            .unwrap_err()
+            .contains("metacharacter"));
+        assert!(authorize("cargo test | tee /tmp/out")
+            .unwrap_err()
+            .contains("metacharacter"));
+        assert!(authorize("cargo test $(whoami)")
+            .unwrap_err()
+            .contains("metacharacter"));
+        assert!(authorize("rm -rf target")
+            .unwrap_err()
+            .contains("not an allowlisted"));
+        assert!(authorize("sh -c cargo")
+            .unwrap_err()
+            .contains("not an allowlisted"));
         assert!(authorize("   ").unwrap_err().contains("empty command"));
     }
 
@@ -724,7 +751,9 @@ mod tests {
         }
         // A program that takes a script needs no verb; one that takes a verb needs it.
         assert!(authorize("node scripts/check.js").is_ok());
-        assert!(authorize("cargo").unwrap_err().contains("names no subcommand"));
+        assert!(authorize("cargo")
+            .unwrap_err()
+            .contains("names no subcommand"));
     }
 
     /// The flag's *value* is what decides whether the check leaves the checkout.
@@ -745,12 +774,23 @@ mod tests {
                 "{command}: {error}"
             );
         }
-        assert!(authorize("cargo test --manifest-path").unwrap_err().contains("and no value"));
+        assert!(authorize("cargo test --manifest-path")
+            .unwrap_err()
+            .contains("and no value"));
         // Registry code fetched at check time is not verification evidence.
-        assert!(authorize("npx some-package").unwrap_err().contains("not an allowlisted"));
-        for command in ["npm exec some-package", "pnpm dlx some-package", "yarn dlx some-package", "bun x some-package"] {
+        assert!(authorize("npx some-package")
+            .unwrap_err()
+            .contains("not an allowlisted"));
+        for command in [
+            "npm exec some-package",
+            "pnpm dlx some-package",
+            "yarn dlx some-package",
+            "bun x some-package",
+        ] {
             assert!(
-                authorize(command).unwrap_err().contains("downloads and runs code"),
+                authorize(command)
+                    .unwrap_err()
+                    .contains("downloads and runs code"),
                 "{command}"
             );
         }
@@ -785,10 +825,20 @@ mod tests {
         let expired = (Utc::now()
             - chrono::Duration::seconds(COMPLETION_VERIFY_TIMEOUT_SECONDS + 60))
         .to_rfc3339();
-        db.execute("UPDATE eval_attempts SET started_at=?2 WHERE id=?1", params![attempt_id, expired]).unwrap();
-        assert_eq!(escalate_stalled_attempts(&db).unwrap(), vec![attempt_id.clone()]);
+        db.execute(
+            "UPDATE eval_attempts SET started_at=?2 WHERE id=?1",
+            params![attempt_id, expired],
+        )
+        .unwrap();
         assert_eq!(
-            completion::latest_summary(&db, "s").unwrap().unwrap().verdict,
+            escalate_stalled_attempts(&db).unwrap(),
+            vec![attempt_id.clone()]
+        );
+        assert_eq!(
+            completion::latest_summary(&db, "s")
+                .unwrap()
+                .unwrap()
+                .verdict,
             completion::CompletionVerdict::Failed
         );
         // The parent is released, which is the point of the escalation.
@@ -845,7 +895,6 @@ mod tests {
         assert!(outcome.detail.len() < 4 * MAX_STREAM_BYTES);
     }
 
-
     fn fixture() -> (tempfile::TempDir, Connection, String) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("task");
@@ -855,14 +904,28 @@ mod tests {
             vec!["config", "user.email", "bridge-test@example.invalid"],
             vec!["config", "user.name", "Bridge Test"],
         ] {
-            assert!(StdCommand::new("git").args(&args).current_dir(&repo).status().unwrap().success());
+            assert!(StdCommand::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
         std::fs::write(repo.join("file.txt"), "base\n").unwrap();
         for args in [vec!["add", "."], vec!["commit", "-q", "-m", "base"]] {
-            assert!(StdCommand::new("git").args(&args).current_dir(&repo).status().unwrap().success());
+            assert!(StdCommand::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
         }
         let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![repo.to_string_lossy()]).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+            params![repo.to_string_lossy()],
+        )
+        .unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','main',?1,'ready','now')", params![repo.to_string_lossy()]).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind) VALUES('s','w','codex','Parent','waiting','reported','orchestrator')", []).unwrap();
         (dir, db, repo.to_string_lossy().into_owned())
@@ -903,7 +966,16 @@ mod tests {
             head: "abc123".into(),
             dirty_digest: "deadbeef".into(),
         };
-        completion::create_flow(db, &contract, &plan, "s", repository_path, &repository, Some("claude")).unwrap()
+        completion::create_flow(
+            db,
+            &contract,
+            &plan,
+            "s",
+            repository_path,
+            &repository,
+            Some("claude"),
+        )
+        .unwrap()
     }
 
     /// The whole point of #5: a planned `bridge.shell` check must actually run
@@ -911,7 +983,11 @@ mod tests {
     #[test]
     fn a_planned_command_runs_in_the_attempt_repository_and_records_a_real_verdict() {
         let (_dir, db, repo) = fixture();
-        let attempt_id = attempt(&db, &repo, vec![shell_check("deterministic-0", "git diff --check")]);
+        let attempt_id = attempt(
+            &db,
+            &repo,
+            vec![shell_check("deterministic-0", "git diff --check")],
+        );
         let pending = pending_shell_checks(&db).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].attempt_id, attempt_id);
@@ -919,7 +995,10 @@ mod tests {
         assert!(claim(&db, &pending[0]).unwrap());
         // A second pass cannot claim the same check.
         assert!(!claim(&db, &pending[0]).unwrap());
-        assert_eq!(run_claimed_check(&db, &pending[0]).unwrap(), CheckStatus::Passed);
+        assert_eq!(
+            run_claimed_check(&db, &pending[0]).unwrap(),
+            CheckStatus::Passed
+        );
 
         let summary = completion::latest_summary(&db, "s").unwrap().unwrap();
         assert_eq!(summary.passed_required, 1);
@@ -945,36 +1024,72 @@ mod tests {
     #[test]
     fn a_failing_command_records_failed_with_its_captured_output() {
         let (_dir, db, repo) = fixture();
-        attempt(&db, &repo, vec![shell_check("deterministic-0", "git rev-parse --verify no-such-ref")]);
+        attempt(
+            &db,
+            &repo,
+            vec![shell_check(
+                "deterministic-0",
+                "git rev-parse --verify no-such-ref",
+            )],
+        );
         let pending = pending_shell_checks(&db).unwrap();
         assert!(claim(&db, &pending[0]).unwrap());
-        assert_eq!(run_claimed_check(&db, &pending[0]).unwrap(), CheckStatus::Failed);
+        assert_eq!(
+            run_claimed_check(&db, &pending[0]).unwrap(),
+            CheckStatus::Failed
+        );
         let summary = completion::latest_summary(&db, "s").unwrap().unwrap();
         assert_eq!(summary.verdict, completion::CompletionVerdict::Verifying);
-        assert!(summary.checks[0].detail.as_ref().unwrap().contains("--- stderr ---"));
+        assert!(summary.checks[0]
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("--- stderr ---"));
     }
 
     #[test]
     fn a_command_outside_the_allowlist_is_blocked_with_the_reason_not_executed() {
         let (_dir, db, repo) = fixture();
-        attempt(&db, &repo, vec![shell_check("deterministic-0", "rm -rf src")]);
+        attempt(
+            &db,
+            &repo,
+            vec![shell_check("deterministic-0", "rm -rf src")],
+        );
         let pending = pending_shell_checks(&db).unwrap();
         assert!(claim(&db, &pending[0]).unwrap());
-        assert_eq!(run_claimed_check(&db, &pending[0]).unwrap(), CheckStatus::Blocked);
+        assert_eq!(
+            run_claimed_check(&db, &pending[0]).unwrap(),
+            CheckStatus::Blocked
+        );
         assert!(std::path::Path::new(&repo).join("file.txt").exists());
         let summary = completion::latest_summary(&db, "s").unwrap().unwrap();
-        assert!(summary.checks[0].detail.as_ref().unwrap().contains("not an allowlisted"));
+        assert!(summary.checks[0]
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("not an allowlisted"));
     }
 
     #[test]
     fn a_missing_repository_path_blocks_the_check_instead_of_hanging() {
         let (_dir, db, _repo) = fixture();
-        attempt(&db, "/bridge/definitely-not-here", vec![shell_check("deterministic-0", "git diff --check")]);
+        attempt(
+            &db,
+            "/bridge/definitely-not-here",
+            vec![shell_check("deterministic-0", "git diff --check")],
+        );
         let pending = pending_shell_checks(&db).unwrap();
         assert!(claim(&db, &pending[0]).unwrap());
-        assert_eq!(run_claimed_check(&db, &pending[0]).unwrap(), CheckStatus::Blocked);
+        assert_eq!(
+            run_claimed_check(&db, &pending[0]).unwrap(),
+            CheckStatus::Blocked
+        );
         let summary = completion::latest_summary(&db, "s").unwrap().unwrap();
-        assert!(summary.checks[0].detail.as_ref().unwrap().contains("does not exist"));
+        assert!(summary.checks[0]
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("does not exist"));
     }
 
     /// "Verifying 0/7" must not be a steady state. Past the deadline the attempt
@@ -1002,23 +1117,41 @@ mod tests {
         );
         assert!(escalate_stalled_attempts(&db).unwrap().is_empty());
 
-        let expired = (Utc::now() - chrono::Duration::seconds(COMPLETION_VERIFY_TIMEOUT_SECONDS + 60)).to_rfc3339();
-        db.execute("UPDATE eval_attempts SET started_at=?2 WHERE id=?1", params![attempt_id, expired]).unwrap();
+        let expired = (Utc::now()
+            - chrono::Duration::seconds(COMPLETION_VERIFY_TIMEOUT_SECONDS + 60))
+        .to_rfc3339();
+        db.execute(
+            "UPDATE eval_attempts SET started_at=?2 WHERE id=?1",
+            params![attempt_id, expired],
+        )
+        .unwrap();
 
-        assert_eq!(escalate_stalled_attempts(&db).unwrap(), vec![attempt_id.clone()]);
+        assert_eq!(
+            escalate_stalled_attempts(&db).unwrap(),
+            vec![attempt_id.clone()]
+        );
         let summary = completion::latest_summary(&db, "s").unwrap().unwrap();
         assert_eq!(summary.verdict, completion::CompletionVerdict::Failed);
-        assert!(summary.checks.iter().all(|check| check.status == CheckStatus::Blocked));
         assert!(summary
             .checks
             .iter()
-            .any(|check| check.detail.as_ref().unwrap().contains("No eligible verifier claimed")));
-        assert!(summary
-            .checks
-            .iter()
-            .all(|check| check.detail.as_ref().unwrap().contains("deterministic-0, scrutiny-review")));
+            .all(|check| check.status == CheckStatus::Blocked));
+        assert!(summary.checks.iter().any(|check| check
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("No eligible verifier claimed")));
+        assert!(summary.checks.iter().all(|check| check
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("deterministic-0, scrutiny-review")));
         // Terminal failure releases the session rather than pinning it in waiting.
-        let status: String = db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get(0)).unwrap();
+        let status: String = db
+            .query_row("SELECT status FROM sessions WHERE id='s'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_ne!(status, "waiting");
         // Escalation is idempotent: the attempt is terminal now.
         assert!(escalate_stalled_attempts(&db).unwrap().is_empty());

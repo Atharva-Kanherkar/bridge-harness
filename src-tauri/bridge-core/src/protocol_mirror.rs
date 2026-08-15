@@ -31,9 +31,8 @@ where
 {
     let name = std::any::type_name::<Mirror>();
     let core_json = serde_json::to_value(core).unwrap();
-    let mirror: Mirror = serde_json::from_value(core_json.clone()).unwrap_or_else(|error| {
-        panic!("{name} rejects what core emits: {error}\n{core_json:#}")
-    });
+    let mirror: Mirror = serde_json::from_value(core_json.clone())
+        .unwrap_or_else(|error| panic!("{name} rejects what core emits: {error}\n{core_json:#}"));
     assert_eq!(
         serde_json::to_value(&mirror).unwrap(),
         core_json,
@@ -205,7 +204,10 @@ fn a_registry_agent_sharing_a_builtin_name_is_one_identity_not_two() {
     // An agent with no bespoke adapter is named by its own id, not by how it
     // is run — so writing one later changes nothing about its sessions.
     let gemini = model::Harness::from_stored("gemini");
-    assert_eq!(gemini, model::Harness::Agent(wire::HarnessId::parse("gemini").unwrap()));
+    assert_eq!(
+        gemini,
+        model::Harness::Agent(wire::HarnessId::parse("gemini").unwrap())
+    );
     assert_eq!(gemini.id(), "gemini");
     assert_eq!(mirror_harness(&gemini).as_str(), "gemini");
 }
@@ -228,7 +230,10 @@ fn the_state_snapshot_mirrors_a_session_whose_harness_cannot_be_interpreted() {
         let state = model::BridgeState {
             projects: Vec::new(),
             workspaces: Vec::new(),
-            sessions: vec![model::Session { harness, ..populated_session() }],
+            sessions: vec![model::Session {
+                harness,
+                ..populated_session()
+            }],
             events: Vec::new(),
         };
         assert_mirrors::<wire::BridgeState>(&state);
@@ -253,7 +258,10 @@ fn unknown_harnesses_serialize_under_their_own_id_but_are_not_valid_parameters()
     // inbound strict, because nothing can be done with such an id.
     let unknown = model::Harness::from_stored("acp:gemini");
     assert_eq!(unknown, model::Harness::Unknown("acp:gemini".into()));
-    assert_eq!(serde_json::to_value(&unknown).unwrap(), serde_json::json!("acp:gemini"));
+    assert_eq!(
+        serde_json::to_value(&unknown).unwrap(),
+        serde_json::json!("acp:gemini")
+    );
     assert_eq!(unknown.label(), "acp:gemini");
     assert!(wire::HarnessId::try_from(&unknown).is_err());
     assert!(model::Harness::parse("acp:gemini").is_err());
@@ -266,8 +274,15 @@ fn a_stored_harness_id_is_idempotent_through_its_canonical_form() {
     // `from_stored` produces must never alias a different variant: two
     // harnesses that serialize the same are the same harness.
     let ids = [
-        "claude", "codex", "opencode", "shell", "gemini", "github-copilot-cli", "",
-        "acp:gemini", "Gemini",
+        "claude",
+        "codex",
+        "opencode",
+        "shell",
+        "gemini",
+        "github-copilot-cli",
+        "",
+        "acp:gemini",
+        "Gemini",
     ];
     let mut seen: Vec<(String, model::Harness)> = Vec::new();
     for raw in ids {
@@ -280,7 +295,10 @@ fn a_stored_harness_id_is_idempotent_through_its_canonical_form() {
             "{raw:?} is not a fixed point"
         );
         if let Some((_, other)) = seen.iter().find(|(id, _)| id == &canonical) {
-            assert_eq!(other, &harness, "{canonical:?} names two different harnesses");
+            assert_eq!(
+                other, &harness,
+                "{canonical:?} names two different harnesses"
+            );
         }
         seen.push((canonical, harness));
     }
@@ -650,9 +668,7 @@ fn snapshot_enums_share_their_wire_values() {
         let mirrored = match mode {
             model::RestorationMode::Hot => wire::RestorationMode::Hot,
             model::RestorationMode::Native => wire::RestorationMode::Native,
-            model::RestorationMode::CheckpointRestored => {
-                wire::RestorationMode::CheckpointRestored
-            }
+            model::RestorationMode::CheckpointRestored => wire::RestorationMode::CheckpointRestored,
             model::RestorationMode::Fresh => wire::RestorationMode::Fresh,
         };
         assert_same_wire_value(&mode, &mirrored);

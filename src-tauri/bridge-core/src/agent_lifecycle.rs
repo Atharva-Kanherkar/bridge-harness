@@ -23,7 +23,8 @@
 
 use crate::adapters::ShutdownReason;
 use crate::managed_payload::{
-    inspect_external_runtime, ManagedPayloadStatus, ManagedPayloadStore, PayloadRecipe, RepairReason,
+    inspect_external_runtime, ManagedPayloadStatus, ManagedPayloadStore, PayloadRecipe,
+    RepairReason,
 };
 use crate::secret_interception;
 use crate::BridgeError;
@@ -195,10 +196,7 @@ pub const LEGAL_TRANSITIONS: [(AgentLifecycleState, AgentLifecycleState); 32] = 
         AgentLifecycleState::Installing,
         AgentLifecycleState::Repairable,
     ),
-    (
-        AgentLifecycleState::Installing,
-        AgentLifecycleState::Broken,
-    ),
+    (AgentLifecycleState::Installing, AgentLifecycleState::Broken),
     // Readiness is a separate promotion from ownership.
     (AgentLifecycleState::Installed, AgentLifecycleState::Ready),
     (
@@ -892,7 +890,9 @@ impl AgentLifecycleCoordinator {
                 ProcessCondition::Running { pid } => Some(pid),
                 ProcessCondition::None => None,
             },
-            consecutive_failures: record.map(|record| record.budget.consecutive()).unwrap_or(0),
+            consecutive_failures: record
+                .map(|record| record.budget.consecutive())
+                .unwrap_or(0),
             last_failure: record.and_then(|record| record.budget.last_failure().cloned()),
         }
     }
@@ -906,7 +906,12 @@ impl AgentLifecycleCoordinator {
         Ok(self.status(agent_id, external_candidates)?.state)
     }
 
-    fn begin(&self, agent_id: &str, from: AgentLifecycleState, to: AgentLifecycleState) -> Result<(), LifecycleError> {
+    fn begin(
+        &self,
+        agent_id: &str,
+        from: AgentLifecycleState,
+        to: AgentLifecycleState,
+    ) -> Result<(), LifecycleError> {
         validate_transition(from, to)?;
         let mut records = self.records();
         records.entry(agent_id.to_owned()).or_default().in_flight = Some(to);
@@ -1354,10 +1359,7 @@ impl AgentLifecycleCoordinator {
             .map(|(agent_id, _)| agent_id.clone())
             .collect::<Vec<_>>();
         idle.into_iter()
-            .filter_map(|agent_id| {
-                self.stop(&agent_id, ShutdownReason::UserStopped, &[])
-                    .err()
-            })
+            .filter_map(|agent_id| self.stop(&agent_id, ShutdownReason::UserStopped, &[]).err())
             .collect()
     }
 }
@@ -1405,7 +1407,10 @@ mod tests {
         let mut seen = HashSet::new();
         for state in AgentLifecycleState::ALL {
             assert!(seen.insert(state.as_str()), "duplicate wire string");
-            assert_eq!(state.as_str().parse::<AgentLifecycleState>().unwrap(), state);
+            assert_eq!(
+                state.as_str().parse::<AgentLifecycleState>().unwrap(),
+                state
+            );
             assert_eq!(state.to_string(), state.as_str());
         }
         assert_eq!(
@@ -1451,9 +1456,10 @@ mod tests {
     #[test]
     fn no_state_that_may_hold_a_process_reaches_uninstalling_directly() {
         // `stopping` is the one exception: reaching it is the act of reaping.
-        for from in AgentLifecycleState::ALL.into_iter().filter(|state| {
-            state.may_have_process() && *state != AgentLifecycleState::Stopping
-        }) {
+        for from in AgentLifecycleState::ALL
+            .into_iter()
+            .filter(|state| state.may_have_process() && *state != AgentLifecycleState::Stopping)
+        {
             assert!(
                 validate_transition(from, AgentLifecycleState::Uninstalling).is_err(),
                 "{from} must stop before uninstalling"
@@ -1496,7 +1502,9 @@ mod tests {
             broken.transition_to(AgentLifecycleState::Ready).is_err(),
             "a broken agent must be reinstalled or repaired, never promoted straight to ready"
         );
-        broken.transition_to(AgentLifecycleState::Installing).unwrap();
+        broken
+            .transition_to(AgentLifecycleState::Installing)
+            .unwrap();
     }
 
     fn installed_payload() -> PayloadCondition {
@@ -1514,7 +1522,10 @@ mod tests {
     #[test]
     fn settled_state_separates_payload_readiness_and_process() {
         let cases: [(LifecycleObservation, AgentLifecycleState); 9] = [
-            (LifecycleObservation::absent(), AgentLifecycleState::NotInstalled),
+            (
+                LifecycleObservation::absent(),
+                AgentLifecycleState::NotInstalled,
+            ),
             (
                 LifecycleObservation {
                     external: external(),
@@ -1604,7 +1615,9 @@ mod tests {
 
         // And that last case really is recoverable rather than a dead end.
         let mut stranded = AgentLifecycle::new(AgentLifecycleState::Running);
-        stranded.transition_to(AgentLifecycleState::Stopping).unwrap();
+        stranded
+            .transition_to(AgentLifecycleState::Stopping)
+            .unwrap();
         stranded
             .transition_to(AgentLifecycleState::Uninstalling)
             .unwrap();
@@ -1731,7 +1744,10 @@ mod tests {
             assert_eq!(recorded.attempt, attempt);
             assert_eq!(budget.consecutive(), attempt);
         }
-        assert!(budget.is_exhausted(), "three failures must exhaust a budget of three");
+        assert!(
+            budget.is_exhausted(),
+            "three failures must exhaust a budget of three"
+        );
         assert!(
             !budget.may_retry(),
             "Bridge must stop relaunching once the budget is spent"
@@ -1883,7 +1899,10 @@ mod tests {
     impl ProcessSupervisor for RecordingSupervisor {
         fn launch(&self, agent_id: &str, _entrypoint: &Path) -> Result<LaunchedProcess, String> {
             if let Some(error) = self.launch_error.lock().unwrap().clone() {
-                self.log.lock().unwrap().push(format!("launch-failed:{agent_id}"));
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("launch-failed:{agent_id}"));
                 return Err(error);
             }
             if !*self.launch_gate_open.lock().unwrap() {
@@ -1900,7 +1919,10 @@ mod tests {
             *next += 1;
             let pid = *next;
             self.running.lock().unwrap().insert(pid);
-            self.log.lock().unwrap().push(format!("launch:{agent_id}:{pid}"));
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("launch:{agent_id}:{pid}"));
             Ok(LaunchedProcess { pid })
         }
 
@@ -2030,7 +2052,10 @@ mod tests {
             ),
             "a vendor-blocked agent is installed, not launchable: {error}"
         );
-        assert!(harness.supervisor.log().is_empty(), "no launch was attempted");
+        assert!(
+            harness.supervisor.log().is_empty(),
+            "no launch was attempted"
+        );
 
         // ready: launches.
         harness.probe.set(ReadinessOutcome::Ready { version: None });
@@ -2121,7 +2146,10 @@ mod tests {
             .coordinator
             .uninstall("fixture-agent", NO_CANDIDATES)
             .unwrap_err();
-        assert!(matches!(error, LifecycleError::StopFailed { .. }), "{error}");
+        assert!(
+            matches!(error, LifecycleError::StopFailed { .. }),
+            "{error}"
+        );
         assert!(
             installation.is_dir(),
             "a payload must never be removed while its process is still alive"
@@ -2150,9 +2178,7 @@ mod tests {
 
         // A supervisor may acknowledge the stop request before the process has
         // actually reaped. That acknowledgement alone cannot authorize removal.
-        harness
-            .supervisor
-            .acknowledge_stop_without_stopping(true);
+        harness.supervisor.acknowledge_stop_without_stopping(true);
         let error = harness
             .coordinator
             .uninstall("fixture-agent", NO_CANDIDATES)
@@ -2270,7 +2296,10 @@ mod tests {
             .coordinator
             .install(&recipe, NO_CANDIDATES, &go())
             .unwrap_err();
-        assert!(matches!(error, LifecycleError::Payload(BridgeError::Invalid(_))));
+        assert!(matches!(
+            error,
+            LifecycleError::Payload(BridgeError::Invalid(_))
+        ));
         assert_eq!(
             harness
                 .coordinator
@@ -2543,9 +2572,9 @@ mod tests {
             .coordinator
             .install(&recipe, NO_CANDIDATES, &go())
             .unwrap();
-        harness
-            .supervisor
-            .fail_launch_with("spawn failed: ANTHROPIC_API_KEY=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA");
+        harness.supervisor.fail_launch_with(
+            "spawn failed: ANTHROPIC_API_KEY=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA",
+        );
 
         for _ in 0..DEFAULT_MAX_CONSECUTIVE_FAILURES {
             let error = harness
@@ -2577,7 +2606,10 @@ mod tests {
             .coordinator
             .status("fixture-agent", NO_CANDIDATES)
             .unwrap();
-        assert_eq!(status.consecutive_failures, DEFAULT_MAX_CONSECUTIVE_FAILURES);
+        assert_eq!(
+            status.consecutive_failures,
+            DEFAULT_MAX_CONSECUTIVE_FAILURES
+        );
         assert_eq!(
             status.state,
             AgentLifecycleState::Broken,
@@ -2608,7 +2640,9 @@ mod tests {
             .coordinator
             .install(&recipe, NO_CANDIDATES, &go())
             .unwrap();
-        harness.supervisor.fail_launch_with("process repeatedly crashed");
+        harness
+            .supervisor
+            .fail_launch_with("process repeatedly crashed");
         for _ in 0..DEFAULT_MAX_CONSECUTIVE_FAILURES {
             assert!(matches!(
                 harness
@@ -2632,7 +2666,10 @@ mod tests {
             "the vendor login state must outrank the retry breaker"
         );
         assert_eq!(status.vendor_message(), Some("Run `codex login` first."));
-        assert_eq!(status.consecutive_failures, DEFAULT_MAX_CONSECUTIVE_FAILURES);
+        assert_eq!(
+            status.consecutive_failures,
+            DEFAULT_MAX_CONSECUTIVE_FAILURES
+        );
     }
 
     #[test]
@@ -2727,7 +2764,10 @@ mod tests {
             .root()
             .join("agents/fixture-agent/active.json")
             .exists());
-        assert!(unrelated.exists(), "unrelated managed-root content survives");
+        assert!(
+            unrelated.exists(),
+            "unrelated managed-root content survives"
+        );
         assert_eq!(
             fs::read(&external).unwrap(),
             b"user's own runtime",
@@ -2880,7 +2920,9 @@ mod tests {
 
         // Give the launcher time to get as far as it is allowed to.
         std::thread::sleep(Duration::from_millis(80));
-        let removed = harness.coordinator.uninstall("fixture-agent", NO_CANDIDATES);
+        let removed = harness
+            .coordinator
+            .uninstall("fixture-agent", NO_CANDIDATES);
         harness.supervisor.open_launch_gate();
         let launched = launcher.join().unwrap();
 
@@ -3006,11 +3048,7 @@ mod tests {
 
         harness
             .coordinator
-            .note_process_exit(
-                "fixture-agent",
-                first_pid,
-                Some("stale crash notification"),
-            )
+            .note_process_exit("fixture-agent", first_pid, Some("stale crash notification"))
             .unwrap();
         let status = harness
             .coordinator

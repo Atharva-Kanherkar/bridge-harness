@@ -16,6 +16,7 @@ pub mod backend_binding;
 pub mod binary;
 pub mod browser_bridge;
 pub mod builtin_compatibility;
+pub mod check_runner;
 pub mod claude_adapter;
 pub mod codex_adapter;
 pub mod compaction_controller;
@@ -57,7 +58,7 @@ pub mod sessions;
 pub mod skill_marketplace;
 pub mod slash;
 pub mod store;
-pub mod check_runner;
+pub mod verified_catalog;
 pub mod worker_adoption;
 pub mod worker_guard;
 pub mod worker_lifecycle;
@@ -68,9 +69,8 @@ pub mod workspaces;
 pub mod worktree_coordinator;
 
 pub use runtime::{
-    SessionLifecycleClaim,
     start_health_server, BootConfig, BridgeCore, DelegationState, RuntimeSession,
-    COMPLETION_VERIFY_TIMEOUT_SECONDS, WORKER_APPROVAL_TIMEOUT_SECONDS,
+    SessionLifecycleClaim, COMPLETION_VERIFY_TIMEOUT_SECONDS, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
 
@@ -131,7 +131,11 @@ mod tests {
         let cases: Vec<(BridgeError, ErrorCode, i64)> = vec![
             (BridgeError::Invalid("x".into()), ErrorCode::Invalid, 1000),
             (BridgeError::Git("x".into()), ErrorCode::Git, 1001),
-            (BridgeError::Db(rusqlite::Error::QueryReturnedNoRows), ErrorCode::Database, 1002),
+            (
+                BridgeError::Db(rusqlite::Error::QueryReturnedNoRows),
+                ErrorCode::Database,
+                1002,
+            ),
             (
                 BridgeError::Io(std::io::Error::new(std::io::ErrorKind::Other, "x")),
                 ErrorCode::Io,

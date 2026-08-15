@@ -1,4 +1,7 @@
-use crate::{delegation::{DelegationRequest, TestStatus, WorkerResult, WorkerResultStatus}, store, BridgeError};
+use crate::{
+    delegation::{DelegationRequest, TestStatus, WorkerResult, WorkerResultStatus},
+    store, BridgeError,
+};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -199,13 +202,18 @@ impl VerifierManifest {
             .cloned()
             .collect::<Vec<_>>();
         if !missing.is_empty() {
-            return Err(format!("missing verifier capabilities: {}", missing.join(", ")));
+            return Err(format!(
+                "missing verifier capabilities: {}",
+                missing.join(", ")
+            ));
         }
         if self.different_model_family {
             let implementer = implementer_family.filter(|value| !value.trim().is_empty());
             let verifier = verifier_family.filter(|value| !value.trim().is_empty());
             if implementer.is_none() || verifier.is_none() || implementer == verifier {
-                return Err("verifier must use a different model family from the implementer".into());
+                return Err(
+                    "verifier must use a different model family from the implementer".into(),
+                );
             }
         }
         Ok(())
@@ -219,7 +227,9 @@ pub fn register_verifier_manifest(
 ) -> Result<(), BridgeError> {
     manifest.validate()?;
     if source.trim().is_empty() {
-        return Err(BridgeError::Invalid("verifier manifest source cannot be empty".into()));
+        return Err(BridgeError::Invalid(
+            "verifier manifest source cannot be empty".into(),
+        ));
     }
     db.execute(
         "INSERT INTO verifier_manifests(id,source,schema_version,manifest,enabled,updated_at) VALUES(?1,?2,?3,?4,1,?5)
@@ -234,22 +244,48 @@ pub fn verifier_candidates(
     change_labels: &[String],
     available_capabilities: &HashSet<String>,
 ) -> Result<Vec<VerifierCandidate>, BridgeError> {
-    let labels = change_labels.iter().map(|label| label.to_ascii_lowercase()).collect::<HashSet<_>>();
-    let mut statement = db.prepare("SELECT manifest FROM verifier_manifests WHERE enabled=1 ORDER BY id")?;
-    let manifests = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-    manifests.into_iter().map(|serialized| {
-        let manifest: VerifierManifest = serde_json::from_str(&serialized).map_err(|error| BridgeError::Invalid(format!("stored verifier manifest is malformed: {error}")))?;
-        manifest.validate()?;
-        let mut exclusion_reasons = Vec::new();
-        if !manifest.triggers.is_empty() && !manifest.triggers.iter().any(|trigger| labels.contains(&trigger.to_ascii_lowercase())) {
-            exclusion_reasons.push("change triggers do not match".into());
-        }
-        let missing = manifest.required_capabilities.iter().filter(|capability| !available_capabilities.contains(capability.as_str())).cloned().collect::<Vec<_>>();
-        if !missing.is_empty() {
-            exclusion_reasons.push(format!("missing capabilities: {}", missing.join(", ")));
-        }
-        Ok(VerifierCandidate { eligible: exclusion_reasons.is_empty(), manifest, exclusion_reasons })
-    }).collect()
+    let labels = change_labels
+        .iter()
+        .map(|label| label.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let mut statement =
+        db.prepare("SELECT manifest FROM verifier_manifests WHERE enabled=1 ORDER BY id")?;
+    let manifests = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    manifests
+        .into_iter()
+        .map(|serialized| {
+            let manifest: VerifierManifest =
+                serde_json::from_str(&serialized).map_err(|error| {
+                    BridgeError::Invalid(format!("stored verifier manifest is malformed: {error}"))
+                })?;
+            manifest.validate()?;
+            let mut exclusion_reasons = Vec::new();
+            if !manifest.triggers.is_empty()
+                && !manifest
+                    .triggers
+                    .iter()
+                    .any(|trigger| labels.contains(&trigger.to_ascii_lowercase()))
+            {
+                exclusion_reasons.push("change triggers do not match".into());
+            }
+            let missing = manifest
+                .required_capabilities
+                .iter()
+                .filter(|capability| !available_capabilities.contains(capability.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                exclusion_reasons.push(format!("missing capabilities: {}", missing.join(", ")));
+            }
+            Ok(VerifierCandidate {
+                eligible: exclusion_reasons.is_empty(),
+                manifest,
+                exclusion_reasons,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,10 +332,32 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             .iter()
             .any(|path| needles.iter().any(|needle| path.contains(needle)))
     };
-    let risk_tokens = lower_paths.iter().flat_map(|path| path.split(|character: char| !character.is_ascii_alphanumeric())).collect::<HashSet<_>>();
-    let high_risk = ["auth", "secret", "credential", "migration", "migrations", "policy", "adapter", "adapters"]
-        .iter().any(|token| risk_tokens.contains(token))
-        || lower_paths.iter().any(|path| ["store.rs", "worker_lifecycle.rs", "session_supervisor.rs", "learning_router.rs"].iter().any(|name| path.ends_with(name)));
+    let risk_tokens = lower_paths
+        .iter()
+        .flat_map(|path| path.split(|character: char| !character.is_ascii_alphanumeric()))
+        .collect::<HashSet<_>>();
+    let high_risk = [
+        "auth",
+        "secret",
+        "credential",
+        "migration",
+        "migrations",
+        "policy",
+        "adapter",
+        "adapters",
+    ]
+    .iter()
+    .any(|token| risk_tokens.contains(token))
+        || lower_paths.iter().any(|path| {
+            [
+                "store.rs",
+                "worker_lifecycle.rs",
+                "session_supervisor.rs",
+                "learning_router.rs",
+            ]
+            .iter()
+            .any(|name| path.ends_with(name))
+        });
     let user_facing = touches(&[".tsx", ".jsx", "src/components", "src/app"])
         || ["browser", "screen", "dialog", "button", "user journey"]
             .iter()
@@ -398,7 +456,10 @@ pub fn plan_with_registered_manifests(
                 command: None,
                 required_capabilities: candidate.manifest.required_capabilities.clone(),
                 different_model_family: candidate.manifest.different_model_family,
-                reason: format!("registered verifier manifest {} matched this change", candidate.manifest.id),
+                reason: format!(
+                    "registered verifier manifest {} matched this change",
+                    candidate.manifest.id
+                ),
             });
         }
     }
@@ -496,25 +557,74 @@ pub struct CompletionBenchmarkReport {
 }
 
 pub fn benchmark(cases: &[CompletionBenchmarkCase]) -> CompletionBenchmarkReport {
-    let proof_claimed_done = |case: &&CompletionBenchmarkCase| case.proof_verdict == CompletionVerdict::Verified;
-    let baseline_claims = cases.iter().filter(|case| case.baseline_claimed_done).count();
+    let proof_claimed_done =
+        |case: &&CompletionBenchmarkCase| case.proof_verdict == CompletionVerdict::Verified;
+    let baseline_claims = cases
+        .iter()
+        .filter(|case| case.baseline_claimed_done)
+        .count();
     let proof_claims = cases.iter().filter(proof_claimed_done).count();
-    let baseline_correct = cases.iter().filter(|case| case.baseline_claimed_done && case.actual_accepted).count();
-    let proof_correct = cases.iter().filter(|case| case.proof_verdict == CompletionVerdict::Verified && case.actual_accepted).count();
-    let accepted = cases.iter().filter(|case| case.actual_accepted).count().max(1) as i64;
+    let baseline_correct = cases
+        .iter()
+        .filter(|case| case.baseline_claimed_done && case.actual_accepted)
+        .count();
+    let proof_correct = cases
+        .iter()
+        .filter(|case| case.proof_verdict == CompletionVerdict::Verified && case.actual_accepted)
+        .count();
+    let accepted = cases
+        .iter()
+        .filter(|case| case.actual_accepted)
+        .count()
+        .max(1) as i64;
     let count = cases.len().max(1) as i64;
     CompletionBenchmarkReport {
         cases: cases.len(),
-        baseline_false_done: cases.iter().filter(|case| case.baseline_claimed_done && !case.actual_accepted).count(),
-        proof_false_done: cases.iter().filter(|case| case.proof_verdict == CompletionVerdict::Verified && !case.actual_accepted).count(),
-        baseline_verified_quality_bps: if baseline_claims == 0 { 0 } else { (baseline_correct * 10_000 / baseline_claims) as u16 },
-        proof_verified_quality_bps: if proof_claims == 0 { 0 } else { (proof_correct * 10_000 / proof_claims) as u16 },
-        baseline_cost_per_accepted: cases.iter().map(|case| case.baseline_normalized_cost).sum::<i64>() / accepted,
-        proof_cost_per_accepted: cases.iter().map(|case| case.proof_normalized_cost).sum::<i64>() / accepted,
-        baseline_average_latency_ms: cases.iter().map(|case| case.baseline_latency_ms).sum::<i64>() / count,
-        proof_average_latency_ms: cases.iter().map(|case| case.proof_latency_ms).sum::<i64>() / count,
-        baseline_human_interventions: cases.iter().map(|case| case.baseline_human_interventions).sum(),
-        proof_human_interventions: cases.iter().map(|case| case.proof_human_interventions).sum(),
+        baseline_false_done: cases
+            .iter()
+            .filter(|case| case.baseline_claimed_done && !case.actual_accepted)
+            .count(),
+        proof_false_done: cases
+            .iter()
+            .filter(|case| {
+                case.proof_verdict == CompletionVerdict::Verified && !case.actual_accepted
+            })
+            .count(),
+        baseline_verified_quality_bps: if baseline_claims == 0 {
+            0
+        } else {
+            (baseline_correct * 10_000 / baseline_claims) as u16
+        },
+        proof_verified_quality_bps: if proof_claims == 0 {
+            0
+        } else {
+            (proof_correct * 10_000 / proof_claims) as u16
+        },
+        baseline_cost_per_accepted: cases
+            .iter()
+            .map(|case| case.baseline_normalized_cost)
+            .sum::<i64>()
+            / accepted,
+        proof_cost_per_accepted: cases
+            .iter()
+            .map(|case| case.proof_normalized_cost)
+            .sum::<i64>()
+            / accepted,
+        baseline_average_latency_ms: cases
+            .iter()
+            .map(|case| case.baseline_latency_ms)
+            .sum::<i64>()
+            / count,
+        proof_average_latency_ms: cases.iter().map(|case| case.proof_latency_ms).sum::<i64>()
+            / count,
+        baseline_human_interventions: cases
+            .iter()
+            .map(|case| case.baseline_human_interventions)
+            .sum(),
+        proof_human_interventions: cases
+            .iter()
+            .map(|case| case.proof_human_interventions)
+            .sum(),
     }
 }
 
@@ -606,15 +716,29 @@ pub fn latest_summary(
         params![session_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
     ).optional()?;
-    let Some((attempt_id, contract_id, status, head, dirty_digest, waiver_reason, markdown_committed)) = row else {
+    let Some((
+        attempt_id,
+        contract_id,
+        status,
+        head,
+        dirty_digest,
+        waiver_reason,
+        markdown_committed,
+    )) = row
+    else {
         return Ok(None);
     };
     let mut statement = db.prepare(
         "SELECT check_id,kind,required,status,executor,command,verifier_family,detail,output_digest,artifact_refs FROM eval_check_runs WHERE attempt_id=?1 ORDER BY required DESC,rowid",
     )?;
-    let checks = statement.query_map(params![attempt_id], map_check_run)?.collect::<Result<Vec<_>, _>>()?;
+    let checks = statement
+        .query_map(params![attempt_id], map_check_run)?
+        .collect::<Result<Vec<_>, _>>()?;
     let total_required = checks.iter().filter(|check| check.required).count();
-    let passed_required = checks.iter().filter(|check| check.required && check.status == CheckStatus::Passed).count();
+    let passed_required = checks
+        .iter()
+        .filter(|check| check.required && check.status == CheckStatus::Passed)
+        .count();
     Ok(Some(CompletionSummary {
         attempt_id,
         contract_id,
@@ -719,21 +843,46 @@ fn worker_completion_context(
 
 fn repository_stamp(path: &str) -> Result<RepositoryStamp, BridgeError> {
     let state = store::repository_state_for_path(Path::new(path));
-    let head = state.get("head").and_then(serde_json::Value::as_str)
-        .ok_or_else(|| BridgeError::Invalid("completion requires a Git HEAD before verification".into()))?;
-    let dirty_digest = state.get("dirtyHash").and_then(serde_json::Value::as_str)
-        .ok_or_else(|| BridgeError::Invalid("completion requires a dirty-tree digest before verification".into()))?;
-    Ok(RepositoryStamp { head: head.into(), dirty_digest: dirty_digest.into() })
+    let head = state
+        .get("head")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            BridgeError::Invalid("completion requires a Git HEAD before verification".into())
+        })?;
+    let dirty_digest = state
+        .get("dirtyHash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "completion requires a dirty-tree digest before verification".into(),
+            )
+        })?;
+    Ok(RepositoryStamp {
+        head: head.into(),
+        dirty_digest: dirty_digest.into(),
+    })
 }
 
 pub fn labels_for_paths(paths: &[String]) -> Vec<String> {
     let mut labels = BTreeSet::new();
     for path in paths {
         let lower = path.to_ascii_lowercase();
-        if lower.ends_with(".rs") { labels.insert("rust".into()); }
-        if lower.ends_with(".ts") || lower.ends_with(".tsx") || lower.ends_with(".js") || lower.ends_with(".jsx") { labels.insert("frontend".into()); }
-        if lower.contains("migration") { labels.insert("migration".into()); }
-        if lower.contains("adapter") { labels.insert("adapter".into()); }
+        if lower.ends_with(".rs") {
+            labels.insert("rust".into());
+        }
+        if lower.ends_with(".ts")
+            || lower.ends_with(".tsx")
+            || lower.ends_with(".js")
+            || lower.ends_with(".jsx")
+        {
+            labels.insert("frontend".into());
+        }
+        if lower.contains("migration") {
+            labels.insert("migration".into());
+        }
+        if lower.contains("adapter") {
+            labels.insert("adapter".into());
+        }
     }
     labels.into_iter().collect()
 }
@@ -748,24 +897,43 @@ pub fn create_from_worker_result(
         return Ok(None);
     };
     if context.role == "verification" {
-        let request = context.serialized_request.as_deref().ok_or_else(|| BridgeError::Invalid("verification worker is missing its durable completion input".into()))?;
-        let request: DelegationRequest = serde_json::from_str(request)
-            .map_err(|error| BridgeError::Invalid(format!("stored verification request is malformed: {error}")))?;
+        let request = context.serialized_request.as_deref().ok_or_else(|| {
+            BridgeError::Invalid(
+                "verification worker is missing its durable completion input".into(),
+            )
+        })?;
+        let request: DelegationRequest = serde_json::from_str(request).map_err(|error| {
+            BridgeError::Invalid(format!("stored verification request is malformed: {error}"))
+        })?;
         return settle_verification_result(db, &context, &request, result);
     }
     if context.role != "implementation" || result.status != WorkerResultStatus::Completed {
         return Ok(None);
     }
-    let serialized_request = context.serialized_request.as_deref()
-        .ok_or_else(|| BridgeError::Invalid("completed implementation is missing its durable completion input".into()))?;
-    let request: DelegationRequest = serde_json::from_str(serialized_request)
-        .map_err(|error| BridgeError::Invalid(format!("stored delegation request is malformed: {error}")))?;
+    let serialized_request = context.serialized_request.as_deref().ok_or_else(|| {
+        BridgeError::Invalid(
+            "completed implementation is missing its durable completion input".into(),
+        )
+    })?;
+    let request: DelegationRequest = serde_json::from_str(serialized_request).map_err(|error| {
+        BridgeError::Invalid(format!("stored delegation request is malformed: {error}"))
+    })?;
     request.validate().map_err(BridgeError::Invalid)?;
-    let repository_path = context.worktree_path.clone().or(context.parent_path.clone()).ok_or_else(|| BridgeError::Invalid("implementation completion requires a repository path before verification".into()))?;
+    let repository_path = context
+        .worktree_path
+        .clone()
+        .or(context.parent_path.clone())
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "implementation completion requires a repository path before verification".into(),
+            )
+        })?;
     let repository = repository_stamp(&repository_path)?;
     if let Some(existing) = latest_summary(db, &context.parent_session_id)? {
-        if matches!(existing.verdict, CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested)
-            && existing.repository == repository
+        if matches!(
+            existing.verdict,
+            CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested
+        ) && existing.repository == repository
         {
             return Ok(Some(existing));
         }
@@ -779,13 +947,26 @@ pub fn create_from_worker_result(
         markdown_projection: None,
         markdown_committed: false,
     };
-    let plan = plan_with_registered_manifests(db, PlanInput {
-        contract_id: contract.id.clone(),
-        acceptance_criteria: request.acceptance_criteria,
-        changed_paths: result.files_changed.clone(),
-        repository_commands: request.verification,
-    }, &labels_for_paths(&result.files_changed), available_capabilities)?;
-    let attempt_id = create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
+    let plan = plan_with_registered_manifests(
+        db,
+        PlanInput {
+            contract_id: contract.id.clone(),
+            acceptance_criteria: request.acceptance_criteria,
+            changed_paths: result.files_changed.clone(),
+            repository_commands: request.verification,
+        },
+        &labels_for_paths(&result.files_changed),
+        available_capabilities,
+    )?;
+    let attempt_id = create_flow(
+        db,
+        &contract,
+        &plan,
+        &context.parent_session_id,
+        &repository_path,
+        &repository,
+        Some(&context.harness),
+    )?;
     // A bare HEAD cannot say what the change is relative to or who produced it.
     // Binding the attempt to the worker's base revision, branch, and session
     // makes the proof answer "what changed, from what, by whom".
@@ -811,7 +992,9 @@ fn settle_verification_result(
     result: &WorkerResult,
 ) -> Result<Option<CompletionSummary>, BridgeError> {
     let Some(summary) = latest_summary(db, &context.parent_session_id)? else {
-        return Err(BridgeError::Invalid("verification worker completed without an active completion gate".into()));
+        return Err(BridgeError::Invalid(
+            "verification worker completed without an active completion gate".into(),
+        ));
     };
     // Terminal verdicts are final. A late verification result must not re-open a
     // gate that already failed, superseded, or passed: `finalize` would recompute
@@ -833,7 +1016,12 @@ fn settle_verification_result(
         |row| row.get(0),
     )?;
     let current_repository = repository_stamp(&repository_path)?;
-    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(result).map_err(|error| BridgeError::Invalid(error.to_string()))?));
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(result).map_err(|error| BridgeError::Invalid(error.to_string()))?
+        )
+    );
     let mut updated = 0usize;
     // Deterministic checks planned as `bridge.shell` belong to the check runner:
     // a worker's `tests[]` entry is a claim, and hashing the JSON it arrived in
@@ -844,30 +1032,122 @@ fn settle_verification_result(
             && check.status != CheckStatus::Passed
             && check.executor != SHELL_EXECUTOR
     }) {
-        if let Some(test) = result.tests.iter().find(|test| Some(test.command.as_str()) == check.command.as_deref()) {
-            let status = match test.status { TestStatus::Passed => CheckStatus::Passed, TestStatus::Failed => CheckStatus::Failed, TestStatus::Skipped => CheckStatus::Skipped };
-            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: WORKER_RESULT_EXECUTOR.into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: test.detail.clone(), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
+        if let Some(test) = result
+            .tests
+            .iter()
+            .find(|test| Some(test.command.as_str()) == check.command.as_deref())
+        {
+            let status = match test.status {
+                TestStatus::Passed => CheckStatus::Passed,
+                TestStatus::Failed => CheckStatus::Failed,
+                TestStatus::Skipped => CheckStatus::Skipped,
+            };
+            record_check(
+                db,
+                &summary.attempt_id,
+                &CheckRun {
+                    check_id: check.check_id.clone(),
+                    kind: check.kind,
+                    required: check.required,
+                    status,
+                    executor: WORKER_RESULT_EXECUTOR.into(),
+                    command: check.command.clone(),
+                    verifier_family: Some(context.harness.clone()),
+                    detail: test.detail.clone(),
+                    output_digest: Some(digest.clone()),
+                    artifact_refs: vec![],
+                },
+            )?;
             updated += 1;
         }
     }
-    let request_text = format!("{} {} {}", request.objective, request.acceptance_criteria.join(" "), request.verification.join(" ")).to_ascii_lowercase();
-    let unresolved_semantic = summary.checks.iter().filter(|check| check.kind != EvalKind::Deterministic && check.status != CheckStatus::Passed).collect::<Vec<_>>();
-    let semantic = unresolved_semantic.iter().find(|check| request_text.contains(&check.check_id.to_ascii_lowercase()))
+    let request_text = format!(
+        "{} {} {}",
+        request.objective,
+        request.acceptance_criteria.join(" "),
+        request.verification.join(" ")
+    )
+    .to_ascii_lowercase();
+    let unresolved_semantic = summary
+        .checks
+        .iter()
+        .filter(|check| {
+            check.kind != EvalKind::Deterministic && check.status != CheckStatus::Passed
+        })
+        .collect::<Vec<_>>();
+    let semantic = unresolved_semantic
+        .iter()
+        .find(|check| request_text.contains(&check.check_id.to_ascii_lowercase()))
         .copied()
-        .or_else(|| unresolved_semantic.iter().find(|check| check.kind == EvalKind::UserTesting && ["user journey", "browser", "playwright", "screen", "console", "network"].iter().any(|term| request_text.contains(term))).copied())
-        .or_else(|| unresolved_semantic.iter().find(|check| check.kind == EvalKind::Scrutiny && ["scrutiny", "review", "test quality", "code review"].iter().any(|term| request_text.contains(term))).copied())
+        .or_else(|| {
+            unresolved_semantic
+                .iter()
+                .find(|check| {
+                    check.kind == EvalKind::UserTesting
+                        && [
+                            "user journey",
+                            "browser",
+                            "playwright",
+                            "screen",
+                            "console",
+                            "network",
+                        ]
+                        .iter()
+                        .any(|term| request_text.contains(term))
+                })
+                .copied()
+        })
+        .or_else(|| {
+            unresolved_semantic
+                .iter()
+                .find(|check| {
+                    check.kind == EvalKind::Scrutiny
+                        && ["scrutiny", "review", "test quality", "code review"]
+                            .iter()
+                            .any(|term| request_text.contains(term))
+                })
+                .copied()
+        })
         .or_else(|| unresolved_semantic.first().copied());
     if let Some(check) = semantic {
         let status = match result.status {
-            WorkerResultStatus::Completed if result.risks.is_empty() && result.remaining_work.is_empty() => CheckStatus::Passed,
+            WorkerResultStatus::Completed
+                if result.risks.is_empty() && result.remaining_work.is_empty() =>
+            {
+                CheckStatus::Passed
+            }
             WorkerResultStatus::Completed => CheckStatus::Failed,
             WorkerResultStatus::Failed => CheckStatus::Failed,
-            WorkerResultStatus::Cancelled | WorkerResultStatus::Blocked | WorkerResultStatus::NeedsDelegation => CheckStatus::Blocked,
+            WorkerResultStatus::Cancelled
+            | WorkerResultStatus::Blocked
+            | WorkerResultStatus::NeedsDelegation => CheckStatus::Blocked,
         };
         let mut detail = result.summary.clone();
-        if !result.risks.is_empty() { detail.push_str(&format!("\nRisks: {}", result.risks.join(" | "))); }
-        if !result.remaining_work.is_empty() { detail.push_str(&format!("\nRemaining: {}", result.remaining_work.join(" | "))); }
-        record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: check.required, status, executor: WORKER_RESULT_EXECUTOR.into(), command: None, verifier_family: Some(context.harness.clone()), detail: Some(detail), output_digest: Some(digest.clone()), artifact_refs: vec![] })?;
+        if !result.risks.is_empty() {
+            detail.push_str(&format!("\nRisks: {}", result.risks.join(" | ")));
+        }
+        if !result.remaining_work.is_empty() {
+            detail.push_str(&format!(
+                "\nRemaining: {}",
+                result.remaining_work.join(" | ")
+            ));
+        }
+        record_check(
+            db,
+            &summary.attempt_id,
+            &CheckRun {
+                check_id: check.check_id.clone(),
+                kind: check.kind,
+                required: check.required,
+                status,
+                executor: WORKER_RESULT_EXECUTOR.into(),
+                command: None,
+                verifier_family: Some(context.harness.clone()),
+                detail: Some(detail),
+                output_digest: Some(digest.clone()),
+                artifact_refs: vec![],
+            },
+        )?;
         updated += 1;
     }
     if updated == 0 {
@@ -875,12 +1155,34 @@ fn settle_verification_result(
         // fallback only touches checks a worker is allowed to settle. Any shell
         // check left pending is the runner's, or the deadline's.
         if let Some(check) = summary.checks.iter().find(|check| {
-            check.required && check.status != CheckStatus::Passed && check.executor != SHELL_EXECUTOR
+            check.required
+                && check.status != CheckStatus::Passed
+                && check.executor != SHELL_EXECUTOR
         }) {
-            record_check(db, &summary.attempt_id, &CheckRun { check_id: check.check_id.clone(), kind: check.kind, required: true, status: CheckStatus::Blocked, executor: WORKER_RESULT_EXECUTOR.into(), command: check.command.clone(), verifier_family: Some(context.harness.clone()), detail: Some("Verification worker returned no matching typed evidence".into()), output_digest: Some(digest), artifact_refs: vec![] })?;
+            record_check(
+                db,
+                &summary.attempt_id,
+                &CheckRun {
+                    check_id: check.check_id.clone(),
+                    kind: check.kind,
+                    required: true,
+                    status: CheckStatus::Blocked,
+                    executor: WORKER_RESULT_EXECUTOR.into(),
+                    command: check.command.clone(),
+                    verifier_family: Some(context.harness.clone()),
+                    detail: Some("Verification worker returned no matching typed evidence".into()),
+                    output_digest: Some(digest),
+                    artifact_refs: vec![],
+                },
+            )?;
         }
     }
-    for (index, finding) in result.risks.iter().chain(&result.remaining_work).enumerate() {
+    for (index, finding) in result
+        .risks
+        .iter()
+        .chain(&result.remaining_work)
+        .enumerate()
+    {
         db.execute(
             "INSERT INTO eval_findings(id,attempt_id,check_id,severity,summary,affected_paths,created_at) VALUES(?1,?2,'verification-worker',?3,?4,?5,?6)",
             params![Uuid::new_v4().to_string(), summary.attempt_id, if index < result.risks.len() { "warning" } else { "info" }, finding, serde_json::to_string(&result.files_changed).unwrap_or_else(|_| "[]".into()), Utc::now().to_rfc3339()],
@@ -895,20 +1197,76 @@ pub fn record_gate_error(
     child_session_id: &str,
     message: &str,
 ) -> Result<Option<CompletionSummary>, BridgeError> {
-    let Some(context) = worker_completion_context(db, child_session_id)? else { return Ok(None); };
-    let repository_path = context.worktree_path.or(context.parent_path).unwrap_or_else(|| ".".into());
+    let Some(context) = worker_completion_context(db, child_session_id)? else {
+        return Ok(None);
+    };
+    let repository_path = context
+        .worktree_path
+        .or(context.parent_path)
+        .unwrap_or_else(|| ".".into());
     let repository = repository_stamp(&repository_path).unwrap_or_else(|_| RepositoryStamp {
-        head: "unavailable".into(), dirty_digest: format!("{:x}", Sha256::digest(message.as_bytes())),
+        head: "unavailable".into(),
+        dirty_digest: format!("{:x}", Sha256::digest(message.as_bytes())),
     });
-    let contract = CompletionContract { id: Uuid::new_v4().to_string(), workspace_id: context.workspace_id, session_id: context.parent_session_id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, acceptance_criteria: vec!["Resolve completion gate creation failure".into()], markdown_projection: None, markdown_committed: false };
-    let plan = EvalPlan { id: Uuid::new_v4().to_string(), contract_id: contract.id.clone(), schema_version: COMPLETION_SCHEMA_VERSION, risk: RiskTier::High, checks: vec![EvalCheck { id: "gate-error".into(), label: "Completion gate creation failed".into(), kind: EvalKind::Deterministic, required: true, executor: SYSTEM_EXECUTOR.into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "Bridge could not construct the required completion gate".into() }] };
-    let attempt_id = create_flow(db, &contract, &plan, &context.parent_session_id, &repository_path, &repository, Some(&context.harness))?;
+    let contract = CompletionContract {
+        id: Uuid::new_v4().to_string(),
+        workspace_id: context.workspace_id,
+        session_id: context.parent_session_id.clone(),
+        schema_version: COMPLETION_SCHEMA_VERSION,
+        acceptance_criteria: vec!["Resolve completion gate creation failure".into()],
+        markdown_projection: None,
+        markdown_committed: false,
+    };
+    let plan = EvalPlan {
+        id: Uuid::new_v4().to_string(),
+        contract_id: contract.id.clone(),
+        schema_version: COMPLETION_SCHEMA_VERSION,
+        risk: RiskTier::High,
+        checks: vec![EvalCheck {
+            id: "gate-error".into(),
+            label: "Completion gate creation failed".into(),
+            kind: EvalKind::Deterministic,
+            required: true,
+            executor: SYSTEM_EXECUTOR.into(),
+            command: None,
+            required_capabilities: vec![],
+            different_model_family: false,
+            reason: "Bridge could not construct the required completion gate".into(),
+        }],
+    };
+    let attempt_id = create_flow(
+        db,
+        &contract,
+        &plan,
+        &context.parent_session_id,
+        &repository_path,
+        &repository,
+        Some(&context.harness),
+    )?;
     db.execute(
         "UPDATE eval_attempts SET status='superseded',completed_at=?3 WHERE session_id=?1 AND id<>?2 AND status IN ('verifying','changes_requested','failed')",
         params![context.parent_session_id, attempt_id, Utc::now().to_rfc3339()],
     )?;
-    record_check(db, &attempt_id, &CheckRun { check_id: "gate-error".into(), kind: EvalKind::Deterministic, required: true, status: CheckStatus::Blocked, executor: SYSTEM_EXECUTOR.into(), command: None, verifier_family: None, detail: Some(message.into()), output_digest: Some(format!("{:x}", Sha256::digest(message.as_bytes()))), artifact_refs: vec![] })?;
-    db.execute("UPDATE eval_attempts SET status='failed' WHERE id=?1", params![attempt_id])?;
+    record_check(
+        db,
+        &attempt_id,
+        &CheckRun {
+            check_id: "gate-error".into(),
+            kind: EvalKind::Deterministic,
+            required: true,
+            status: CheckStatus::Blocked,
+            executor: SYSTEM_EXECUTOR.into(),
+            command: None,
+            verifier_family: None,
+            detail: Some(message.into()),
+            output_digest: Some(format!("{:x}", Sha256::digest(message.as_bytes()))),
+            artifact_refs: vec![],
+        },
+    )?;
+    db.execute(
+        "UPDATE eval_attempts SET status='failed' WHERE id=?1",
+        params![attempt_id],
+    )?;
     latest_summary(db, &context.parent_session_id)
 }
 
@@ -928,9 +1286,21 @@ fn map_check_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<CheckRun> {
     let status: String = row.get(3)?;
     Ok(CheckRun {
         check_id: row.get(0)?,
-        kind: match kind.as_str() { "scrutiny" => EvalKind::Scrutiny, "user_testing" => EvalKind::UserTesting, _ => EvalKind::Deterministic },
+        kind: match kind.as_str() {
+            "scrutiny" => EvalKind::Scrutiny,
+            "user_testing" => EvalKind::UserTesting,
+            _ => EvalKind::Deterministic,
+        },
         required: row.get(2)?,
-        status: match status.as_str() { "running" => CheckStatus::Running, "passed" => CheckStatus::Passed, "failed" => CheckStatus::Failed, "skipped" => CheckStatus::Skipped, "blocked" => CheckStatus::Blocked, "stale" => CheckStatus::Stale, _ => CheckStatus::Pending },
+        status: match status.as_str() {
+            "running" => CheckStatus::Running,
+            "passed" => CheckStatus::Passed,
+            "failed" => CheckStatus::Failed,
+            "skipped" => CheckStatus::Skipped,
+            "blocked" => CheckStatus::Blocked,
+            "stale" => CheckStatus::Stale,
+            _ => CheckStatus::Pending,
+        },
         executor: row.get(4)?,
         command: row.get(5)?,
         verifier_family: row.get(6)?,
@@ -964,7 +1334,9 @@ pub fn create_flow(
     }
     repository.validate()?;
     if repository_path.trim().is_empty() {
-        return Err(BridgeError::Invalid("completion flow requires the exact repository path being evaluated".into()));
+        return Err(BridgeError::Invalid(
+            "completion flow requires the exact repository path being evaluated".into(),
+        ));
     }
     let now = Utc::now().to_rfc3339();
     let attempt_id = Uuid::new_v4().to_string();
@@ -991,7 +1363,10 @@ pub fn create_flow(
             params![Uuid::new_v4().to_string(), attempt_id, check.id, check.kind.as_str(), check.required, check.executor, check.command],
         )?;
     }
-    transaction.execute("UPDATE sessions SET status='waiting' WHERE id=?1 AND status IN ('idle','ready')", params![session_id])?;
+    transaction.execute(
+        "UPDATE sessions SET status='waiting' WHERE id=?1 AND status IN ('idle','ready')",
+        params![session_id],
+    )?;
     transaction.commit()?;
     Ok(attempt_id)
 }
@@ -1006,7 +1381,9 @@ pub fn begin_attempt(
 ) -> Result<String, BridgeError> {
     repository.validate()?;
     if repository_path.trim().is_empty() {
-        return Err(BridgeError::Invalid("verification attempt requires a repository path".into()));
+        return Err(BridgeError::Invalid(
+            "verification attempt requires a repository path".into(),
+        ));
     }
     let id = Uuid::new_v4().to_string();
     let transaction = db.unchecked_transaction()?;
@@ -1028,11 +1405,7 @@ pub fn begin_attempt(
     Ok(id)
 }
 
-pub fn record_check(
-    db: &Connection,
-    attempt_id: &str,
-    run: &CheckRun,
-) -> Result<(), BridgeError> {
+pub fn record_check(db: &Connection, attempt_id: &str, run: &CheckRun) -> Result<(), BridgeError> {
     let attempt: Option<(String, String, Option<String>, String)> = db
         .query_row(
             "SELECT a.repository_head,a.dirty_digest,a.implementer_family,p.plan FROM eval_attempts a JOIN eval_plans p ON p.id=a.plan_id WHERE a.id=?1 AND a.status NOT IN ('verified','waived','superseded') AND (a.status<>'failed' OR a.escalation IS NULL)",
@@ -1051,7 +1424,12 @@ pub fn record_check(
         .checks
         .iter()
         .find(|check| check.id == run.check_id)
-        .ok_or_else(|| BridgeError::Invalid(format!("unknown check {} for verification attempt", run.check_id)))?;
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!(
+                "unknown check {} for verification attempt",
+                run.check_id
+            ))
+        })?;
     // `bridge.system` is Bridge reporting on its own machinery — a deadline that
     // expired, a gate it could not build. Those are never passes, so it must not
     // become a way to mark any check passed without an executor having run it.
@@ -1073,8 +1451,13 @@ pub fn record_check(
         )));
     }
     if run.status == CheckStatus::Passed && check.different_model_family {
-        let verifier = run.verifier_family.as_deref().filter(|value| !value.trim().is_empty());
-        let implementer = implementer_family.as_deref().filter(|value| !value.trim().is_empty());
+        let verifier = run
+            .verifier_family
+            .as_deref()
+            .filter(|value| !value.trim().is_empty());
+        let implementer = implementer_family
+            .as_deref()
+            .filter(|value| !value.trim().is_empty());
         if verifier.is_none() || implementer.is_none() || verifier == implementer {
             return Err(BridgeError::Invalid(
                 "independent verifier evidence must come from a different model family".into(),
@@ -1082,7 +1465,12 @@ pub fn record_check(
         }
     }
     if run.status == CheckStatus::Passed
-        && run.output_digest.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_none()
+        && run
+            .output_digest
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
     {
         return Err(BridgeError::Invalid(
             "passing check evidence requires an output digest produced by the executor".into(),
@@ -1119,7 +1507,10 @@ pub fn finalize(
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
     if head != current_repository.head || dirty != current_repository.dirty_digest {
-        db.execute("UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE id=?1", params![attempt_id, Utc::now().to_rfc3339()])?;
+        db.execute(
+            "UPDATE eval_attempts SET status='superseded',completed_at=?2 WHERE id=?1",
+            params![attempt_id, Utc::now().to_rfc3339()],
+        )?;
         return Err(BridgeError::Invalid(
             "repository changed after evaluation; prior proof is stale".into(),
         ));
@@ -1133,26 +1524,48 @@ pub fn finalize(
     let mut waiver_statement = db.prepare(
         "SELECT check_ids,reason FROM eval_waivers WHERE attempt_id=?1 AND repository_head=?2 AND dirty_digest=?3 ORDER BY created_at,rowid",
     )?;
-    let waivers = waiver_statement.query_map(params![attempt_id, head, dirty], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+    let waivers = waiver_statement
+        .query_map(params![attempt_id, head, dirty], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut waived_check_ids = HashSet::new();
     let mut waiver_reasons = Vec::new();
     for (serialized_ids, reason) in waivers {
-        waived_check_ids.extend(serde_json::from_str::<Vec<String>>(&serialized_ids).unwrap_or_default());
+        waived_check_ids
+            .extend(serde_json::from_str::<Vec<String>>(&serialized_ids).unwrap_or_default());
         waiver_reasons.push(reason);
     }
     let waiver_reason = (!waiver_reasons.is_empty()).then(|| waiver_reasons.join(" | "));
-    let blockers = checks.iter().filter(|run| run.required && run.status != CheckStatus::Passed).collect::<Vec<_>>();
+    let blockers = checks
+        .iter()
+        .filter(|run| run.required && run.status != CheckStatus::Passed)
+        .collect::<Vec<_>>();
     let verdict = if blockers.is_empty() {
         CompletionVerdict::Verified
-    } else if blockers.iter().all(|run| waived_check_ids.contains(&run.check_id)) {
+    } else if blockers
+        .iter()
+        .all(|run| waived_check_ids.contains(&run.check_id))
+    {
         CompletionVerdict::Waived
     } else if blockers.iter().any(|run| run.status == CheckStatus::Failed) {
         CompletionVerdict::ChangesRequested
     } else {
         CompletionVerdict::Verifying
     };
-    let failed_or_skipped = checks.iter().filter(|run| matches!(run.status, CheckStatus::Failed | CheckStatus::Skipped | CheckStatus::Blocked | CheckStatus::Stale)).map(|run| run.check_id.clone()).collect();
+    let failed_or_skipped = checks
+        .iter()
+        .filter(|run| {
+            matches!(
+                run.status,
+                CheckStatus::Failed
+                    | CheckStatus::Skipped
+                    | CheckStatus::Blocked
+                    | CheckStatus::Stale
+            )
+        })
+        .map(|run| run.check_id.clone())
+        .collect();
     let bundle = ProofBundle {
         schema_version: COMPLETION_SCHEMA_VERSION,
         attempt_id: attempt_id.into(),
@@ -1165,7 +1578,8 @@ pub fn finalize(
         failed_or_skipped,
         waiver_reason,
     };
-    let serialized = serde_json::to_string(&bundle).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let serialized =
+        serde_json::to_string(&bundle).map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let digest = format!("{:x}", Sha256::digest(serialized.as_bytes()));
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
@@ -1205,7 +1619,9 @@ pub fn waive(
         ));
     }
     if check_ids.iter().collect::<HashSet<_>>().len() != check_ids.len() {
-        return Err(BridgeError::Invalid("waiver check scope contains duplicates".into()));
+        return Err(BridgeError::Invalid(
+            "waiver check scope contains duplicates".into(),
+        ));
     }
     for check_id in check_ids {
         let exists: bool = db.query_row(
@@ -1233,51 +1649,129 @@ mod tests {
 
     fn fixture() -> Connection {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
-        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','p','/tmp/p','now')", []).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','p','/tmp/p','now')",
+            [],
+        )
+        .unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','x','w','main','/tmp/w','idle','now')", []).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,continuation_fidelity) VALUES('s','w','codex','s','idle','estimated','orchestrator','native')", []).unwrap();
         db
     }
 
     fn contract() -> CompletionContract {
-        CompletionContract { id: "contract".into(), workspace_id: "w".into(), session_id: "s".into(), schema_version: 1, acceptance_criteria: vec!["Router dialog saves preferences".into()], markdown_projection: None, markdown_committed: false }
+        CompletionContract {
+            id: "contract".into(),
+            workspace_id: "w".into(),
+            session_id: "s".into(),
+            schema_version: 1,
+            acceptance_criteria: vec!["Router dialog saves preferences".into()],
+            markdown_projection: None,
+            markdown_committed: false,
+        }
     }
 
     #[test]
     fn planner_selects_independent_scrutiny_and_browser_journey() {
-        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["User opens the dialog".into()], changed_paths: vec!["src/components/Dialog.tsx".into(), "src-tauri/src/policy.rs".into()], repository_commands: vec![] });
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["User opens the dialog".into()],
+            changed_paths: vec![
+                "src/components/Dialog.tsx".into(),
+                "src-tauri/src/policy.rs".into(),
+            ],
+            repository_commands: vec![],
+        });
         assert_eq!(result.risk, RiskTier::High);
-        assert!(result.checks.iter().any(|check| check.kind == EvalKind::Scrutiny && check.different_model_family));
-        assert!(result.checks.iter().any(|check| check.kind == EvalKind::UserTesting && check.required_capabilities.contains(&"browser".into())));
-        assert!(result.checks.iter().any(|check| check.command.as_deref() == Some("bun run build")));
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.kind == EvalKind::Scrutiny && check.different_model_family));
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.kind == EvalKind::UserTesting
+                && check.required_capabilities.contains(&"browser".into())));
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.command.as_deref() == Some("bun run build")));
     }
 
     #[test]
     fn rust_changes_verify_the_whole_cargo_workspace() {
         // Without --workspace, cargo at the workspace root only exercises the
         // bridge-deck shell and silently skips every bridge-core test.
-        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["Worker pool retries stalled workers".into()], changed_paths: vec!["src-tauri/bridge-core/src/worker_pool.rs".into()], repository_commands: vec![] });
-        assert!(result.checks.iter().any(|check| check.command.as_deref() == Some("cargo test --manifest-path src-tauri/Cargo.toml --workspace")));
-        assert!(result.checks.iter().any(|check| check.command.as_deref() == Some("cargo check --manifest-path src-tauri/Cargo.toml --workspace")));
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["Worker pool retries stalled workers".into()],
+            changed_paths: vec!["src-tauri/bridge-core/src/worker_pool.rs".into()],
+            repository_commands: vec![],
+        });
+        assert!(result.checks.iter().any(|check| check.command.as_deref()
+            == Some("cargo test --manifest-path src-tauri/Cargo.toml --workspace")));
+        assert!(result.checks.iter().any(|check| check.command.as_deref()
+            == Some("cargo check --manifest-path src-tauri/Cargo.toml --workspace")));
     }
 
     #[test]
     fn verifier_rejects_same_family_and_missing_tools() {
-        let manifest = VerifierManifest { id: "web".into(), kind: EvalKind::UserTesting, triggers: vec!["frontend".into()], required_capabilities: vec!["browser".into()], different_model_family: true, checks: vec!["open app".into()], evidence_required: vec!["screenshot".into()] };
-        assert!(manifest.eligible(Some("codex"), Some("codex"), &HashSet::from(["browser".into()])).is_err());
-        assert!(manifest.eligible(Some("codex"), Some("claude"), &HashSet::new()).unwrap_err().contains("browser"));
-        assert!(manifest.eligible(Some("codex"), Some("claude"), &HashSet::from(["browser".into()])).is_ok());
+        let manifest = VerifierManifest {
+            id: "web".into(),
+            kind: EvalKind::UserTesting,
+            triggers: vec!["frontend".into()],
+            required_capabilities: vec!["browser".into()],
+            different_model_family: true,
+            checks: vec!["open app".into()],
+            evidence_required: vec!["screenshot".into()],
+        };
+        assert!(manifest
+            .eligible(
+                Some("codex"),
+                Some("codex"),
+                &HashSet::from(["browser".into()])
+            )
+            .is_err());
+        assert!(manifest
+            .eligible(Some("codex"), Some("claude"), &HashSet::new())
+            .unwrap_err()
+            .contains("browser"));
+        assert!(manifest
+            .eligible(
+                Some("codex"),
+                Some("claude"),
+                &HashSet::from(["browser".into()])
+            )
+            .is_ok());
     }
 
     #[test]
     fn skill_verifier_manifests_add_checks_without_granting_missing_tools() {
         let db = fixture();
-        let manifest = VerifierManifest { id: "playwright-journey".into(), kind: EvalKind::UserTesting, triggers: vec!["frontend".into()], required_capabilities: vec!["browser".into(), "network_inspection".into()], different_model_family: true, checks: vec!["exercise acceptance journey".into()], evidence_required: vec!["trace".into(), "screenshot".into()] };
+        let manifest = VerifierManifest {
+            id: "playwright-journey".into(),
+            kind: EvalKind::UserTesting,
+            triggers: vec!["frontend".into()],
+            required_capabilities: vec!["browser".into(), "network_inspection".into()],
+            different_model_family: true,
+            checks: vec!["exercise acceptance journey".into()],
+            evidence_required: vec!["trace".into(), "screenshot".into()],
+        };
         register_verifier_manifest(&db, "skill:review-checkpoint", &manifest).unwrap();
-        let blocked = verifier_candidates(&db, &["frontend".into()], &HashSet::from(["browser".into()])).unwrap();
+        let blocked = verifier_candidates(
+            &db,
+            &["frontend".into()],
+            &HashSet::from(["browser".into()]),
+        )
+        .unwrap();
         assert!(!blocked[0].eligible);
         assert!(blocked[0].exclusion_reasons[0].contains("network_inspection"));
-        let eligible = verifier_candidates(&db, &["frontend".into()], &HashSet::from(["browser".into(), "network_inspection".into()])).unwrap();
+        let eligible = verifier_candidates(
+            &db,
+            &["frontend".into()],
+            &HashSet::from(["browser".into(), "network_inspection".into()]),
+        )
+        .unwrap();
         assert!(eligible[0].eligible);
         assert!(eligible[0].manifest.different_model_family);
     }
@@ -1286,45 +1780,137 @@ mod tests {
     fn completed_implementation_opens_a_private_verification_gate() {
         use crate::delegation::{SuggestedNextAction, WorkerTestResult};
         let db = fixture();
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
-        db.execute("UPDATE sessions SET cwd='/bridge/missing-parent-worktree' WHERE id='s'", []).unwrap();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        db.execute(
+            "UPDATE sessions SET cwd='/bridge/missing-parent-worktree' WHERE id='s'",
+            [],
+        )
+        .unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES('child','w','claude','impl','completed','estimated','s','worker','native')", []).unwrap();
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','standard','implementation','[]','isolated','released','now','now')", []).unwrap();
         db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at) VALUES('child','s','completed','implementation','key','reported',0,'now')", []).unwrap();
-        db.execute("UPDATE worker_runtime SET worktree_path=?2 WHERE session_id=?1", params!["child", cwd]).unwrap();
+        db.execute(
+            "UPDATE worker_runtime SET worktree_path=?2 WHERE session_id=?1",
+            params!["child", cwd],
+        )
+        .unwrap();
         let request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["Proof card is visible"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
         db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')", params![request.to_string()]).unwrap();
-        let result = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "implemented".into(), files_changed: vec!["src/App.tsx".into()], tests: Vec::<WorkerTestResult>::new(), decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
-        let summary = create_from_worker_result(&db, "child", &result, &HashSet::new()).unwrap().unwrap();
+        let result = WorkerResult {
+            schema_version: 1,
+            status: WorkerResultStatus::Completed,
+            summary: "implemented".into(),
+            files_changed: vec!["src/App.tsx".into()],
+            tests: Vec::<WorkerTestResult>::new(),
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec![],
+            suggested_next_action: SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        let summary = create_from_worker_result(&db, "child", &result, &HashSet::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(summary.verdict, CompletionVerdict::Verifying);
         assert!(!summary.markdown_committed);
-        assert!(summary.checks.iter().any(|check| check.kind == EvalKind::Scrutiny));
-        assert_eq!(db.query_row("SELECT repository_path FROM eval_attempts WHERE id=?1", params![summary.attempt_id], |row| row.get::<_, String>(0)).unwrap(), cwd);
-        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "waiting");
-        let duplicate = create_from_worker_result(&db, "child", &result, &HashSet::new()).unwrap().unwrap();
+        assert!(summary
+            .checks
+            .iter()
+            .any(|check| check.kind == EvalKind::Scrutiny));
+        assert_eq!(
+            db.query_row(
+                "SELECT repository_path FROM eval_attempts WHERE id=?1",
+                params![summary.attempt_id],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            cwd
+        );
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "waiting"
+        );
+        let duplicate = create_from_worker_result(&db, "child", &result, &HashSet::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(duplicate.attempt_id, summary.attempt_id);
-        db.execute("UPDATE eval_attempts SET dirty_digest='prior-revision' WHERE id=?1", params![summary.attempt_id]).unwrap();
-        let rebound = create_from_worker_result(&db, "child", &result, &HashSet::new()).unwrap().unwrap();
+        db.execute(
+            "UPDATE eval_attempts SET dirty_digest='prior-revision' WHERE id=?1",
+            params![summary.attempt_id],
+        )
+        .unwrap();
+        let rebound = create_from_worker_result(&db, "child", &result, &HashSet::new())
+            .unwrap()
+            .unwrap();
         assert_ne!(rebound.attempt_id, summary.attempt_id);
-        assert_eq!(db.query_row("SELECT status FROM eval_attempts WHERE id=?1", params![summary.attempt_id], |row| row.get::<_, String>(0)).unwrap(), "superseded");
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM eval_attempts WHERE id=?1",
+                params![summary.attempt_id],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "superseded"
+        );
     }
 
     #[test]
     fn verifiers_close_semantic_checks_but_never_shell_checks() {
         use crate::delegation::{SuggestedNextAction, WorkerTestResult};
         let db = fixture();
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
-        db.execute("UPDATE sessions SET cwd=?2 WHERE id=?1", params!["s", cwd]).unwrap();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        db.execute("UPDATE sessions SET cwd=?2 WHERE id=?1", params!["s", cwd])
+            .unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES('impl','w','claude','impl','completed','estimated','s','worker','native')", []).unwrap();
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('impl','w','implementation','standard','implementation','[]','isolated','released','now','now')", []).unwrap();
         db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES('impl','s','completed','implementation','key','reported',0,?1,'now')", params![cwd]).unwrap();
         let implementation_request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["User opens the dialog"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
         db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('impl',?1,'now')", params![implementation_request.to_string()]).unwrap();
-        let implementation = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "implemented".into(), files_changed: vec!["src/App.tsx".into()], tests: vec![], decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
-        let first = create_from_worker_result(&db, "impl", &implementation, &HashSet::new()).unwrap().unwrap();
+        let implementation = WorkerResult {
+            schema_version: 1,
+            status: WorkerResultStatus::Completed,
+            summary: "implemented".into(),
+            files_changed: vec!["src/App.tsx".into()],
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec![],
+            suggested_next_action: SuggestedNextAction::Finish,
+            suggested_role: None,
+            suggested_task: None,
+        };
+        let first = create_from_worker_result(&db, "impl", &implementation, &HashSet::new())
+            .unwrap()
+            .unwrap();
 
         for (id, objective, tests) in [
-            ("verify-code", "Run scrutiny-review", vec![WorkerTestResult { command: "bun run test".into(), status: TestStatus::Passed, detail: Some("green".into()) }, WorkerTestResult { command: "bun run build".into(), status: TestStatus::Passed, detail: Some("built".into()) }]),
+            (
+                "verify-code",
+                "Run scrutiny-review",
+                vec![
+                    WorkerTestResult {
+                        command: "bun run test".into(),
+                        status: TestStatus::Passed,
+                        detail: Some("green".into()),
+                    },
+                    WorkerTestResult {
+                        command: "bun run build".into(),
+                        status: TestStatus::Passed,
+                        detail: Some("built".into()),
+                    },
+                ],
+            ),
             ("verify-ui", "Run user-journey in browser", vec![]),
         ] {
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES(?1,'w','codex','verify','completed','estimated','s','worker','native')", params![id]).unwrap();
@@ -1332,7 +1918,19 @@ mod tests {
             db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES(?1,'s','completed','verification','key','reported',0,?2,'now')", params![id, cwd]).unwrap();
             let request = serde_json::json!({"schemaVersion":1,"role":"verification","objective":objective,"acceptanceCriteria":["Report typed evidence"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":[],"writeMode":"readOnly","capabilityTier":"standard","effort":"medium","verification":[],"outputContract":"verification-result","harness":"codex"});
             db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,'now')", params![id, request.to_string()]).unwrap();
-            let verification = WorkerResult { schema_version: 1, status: WorkerResultStatus::Completed, summary: "verified".into(), files_changed: vec![], tests, decisions: vec![], risks: vec![], remaining_work: vec![], suggested_next_action: SuggestedNextAction::Finish, suggested_role: None, suggested_task: None };
+            let verification = WorkerResult {
+                schema_version: 1,
+                status: WorkerResultStatus::Completed,
+                summary: "verified".into(),
+                files_changed: vec![],
+                tests,
+                decisions: vec![],
+                risks: vec![],
+                remaining_work: vec![],
+                suggested_next_action: SuggestedNextAction::Finish,
+                suggested_role: None,
+                suggested_task: None,
+            };
             create_from_worker_result(&db, id, &verification, &HashSet::new()).unwrap();
         }
         let final_summary = latest_summary(&db, "s").unwrap().unwrap();
@@ -1351,24 +1949,35 @@ mod tests {
             .iter()
             .filter(|check| check.executor == SHELL_EXECUTOR)
             .collect();
-        assert!(shell.iter().any(|check| check.command.as_deref() == Some("bun run test")));
-        assert!(shell.iter().all(|check| check.status == CheckStatus::Pending));
+        assert!(shell
+            .iter()
+            .any(|check| check.command.as_deref() == Some("bun run test")));
+        assert!(shell
+            .iter()
+            .all(|check| check.status == CheckStatus::Pending));
         assert_eq!(final_summary.verdict, CompletionVerdict::Verifying);
         // And they cannot be closed that way even directly.
-        let refused = record_check(&db, &final_summary.attempt_id, &CheckRun {
-            check_id: shell[0].check_id.clone(),
-            kind: EvalKind::Deterministic,
-            required: true,
-            status: CheckStatus::Passed,
-            executor: WORKER_RESULT_EXECUTOR.into(),
-            command: shell[0].command.clone(),
-            verifier_family: Some("codex".into()),
-            detail: Some("the worker said it passed".into()),
-            output_digest: Some("digest-of-received-json".into()),
-            artifact_refs: vec![],
-        })
+        let refused = record_check(
+            &db,
+            &final_summary.attempt_id,
+            &CheckRun {
+                check_id: shell[0].check_id.clone(),
+                kind: EvalKind::Deterministic,
+                required: true,
+                status: CheckStatus::Passed,
+                executor: WORKER_RESULT_EXECUTOR.into(),
+                command: shell[0].command.clone(),
+                verifier_family: Some("codex".into()),
+                detail: Some("the worker said it passed".into()),
+                output_digest: Some("digest-of-received-json".into()),
+                artifact_refs: vec![],
+            },
+        )
         .unwrap_err();
-        assert!(refused.to_string().contains("cannot satisfy it"), "{refused}");
+        assert!(
+            refused.to_string().contains("cannot satisfy it"),
+            "{refused}"
+        );
     }
 
     /// `bridge.system` exists so Bridge can say *why* a check could not run. It
@@ -1377,8 +1986,27 @@ mod tests {
     fn the_system_executor_can_explain_a_failure_but_never_pass_a_check() {
         let db = fixture();
         let contract = contract();
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "tests".into(), label: "tests".into(), kind: EvalKind::Deterministic, required: true, executor: SHELL_EXECUTOR.into(), command: Some("bun run test".into()), required_capabilities: vec!["shell".into()], different_model_family: false, reason: "policy".into() }] };
-        let stamp = RepositoryStamp { head: "head".into(), dirty_digest: "dirty".into() };
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::Low,
+            checks: vec![EvalCheck {
+                id: "tests".into(),
+                label: "tests".into(),
+                kind: EvalKind::Deterministic,
+                required: true,
+                executor: SHELL_EXECUTOR.into(),
+                command: Some("bun run test".into()),
+                required_capabilities: vec!["shell".into()],
+                different_model_family: false,
+                reason: "policy".into(),
+            }],
+        };
+        let stamp = RepositoryStamp {
+            head: "head".into(),
+            dirty_digest: "dirty".into(),
+        };
         let attempt = create_flow(&db, &contract, &plan, "s", ".", &stamp, Some("codex")).unwrap();
 
         let forged = |executor: &str| CheckRun {
@@ -1398,15 +2026,37 @@ mod tests {
         assert!(system.to_string().contains("cannot pass check"), "{system}");
         let worker = record_check(&db, &attempt, &forged(WORKER_RESULT_EXECUTOR)).unwrap_err();
         assert!(worker.to_string().contains("cannot satisfy it"), "{worker}");
-        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().passed_required, 0);
+        assert_eq!(
+            latest_summary(&db, "s").unwrap().unwrap().passed_required,
+            0
+        );
 
         // The system executor may still record why the check could not run.
-        record_check(&db, &attempt, &CheckRun { status: CheckStatus::Blocked, detail: Some("deadline expired".into()), ..forged(SYSTEM_EXECUTOR) }).unwrap();
-        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().checks[0].status, CheckStatus::Blocked);
+        record_check(
+            &db,
+            &attempt,
+            &CheckRun {
+                status: CheckStatus::Blocked,
+                detail: Some("deadline expired".into()),
+                ..forged(SYSTEM_EXECUTOR)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            latest_summary(&db, "s").unwrap().unwrap().checks[0].status,
+            CheckStatus::Blocked
+        );
         // And the runner itself can pass it.
-        db.execute("UPDATE eval_check_runs SET status='pending' WHERE attempt_id=?1", params![attempt]).unwrap();
+        db.execute(
+            "UPDATE eval_check_runs SET status='pending' WHERE attempt_id=?1",
+            params![attempt],
+        )
+        .unwrap();
         record_check(&db, &attempt, &forged(SHELL_EXECUTOR)).unwrap();
-        assert_eq!(latest_summary(&db, "s").unwrap().unwrap().passed_required, 1);
+        assert_eq!(
+            latest_summary(&db, "s").unwrap().unwrap().passed_required,
+            1
+        );
     }
 
     #[test]
@@ -1414,15 +2064,60 @@ mod tests {
         let db = fixture();
         let contract = contract();
         save_contract(&db, &contract).unwrap();
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::High, checks: vec![EvalCheck { id: "tests".into(), label: "tests".into(), kind: EvalKind::Deterministic, required: true, executor: "shell".into(), command: Some("bun test".into()), required_capabilities: vec!["shell".into()], different_model_family: false, reason: "policy".into() }] };
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::High,
+            checks: vec![EvalCheck {
+                id: "tests".into(),
+                label: "tests".into(),
+                kind: EvalKind::Deterministic,
+                required: true,
+                executor: "shell".into(),
+                command: Some("bun test".into()),
+                required_capabilities: vec!["shell".into()],
+                different_model_family: false,
+                reason: "policy".into(),
+            }],
+        };
         save_plan(&db, &plan).unwrap();
-        let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
+        let stamp = RepositoryStamp {
+            head: "abc".into(),
+            dirty_digest: "clean".into(),
+        };
         let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
-        record_check(&db, &attempt, &CheckRun { check_id: "tests".into(), kind: EvalKind::Deterministic, required: true, status: CheckStatus::Failed, executor: "shell".into(), command: Some("bun test".into()), verifier_family: None, detail: Some("failure".into()), output_digest: Some("digest".into()), artifact_refs: vec![] }).unwrap();
+        record_check(
+            &db,
+            &attempt,
+            &CheckRun {
+                check_id: "tests".into(),
+                kind: EvalKind::Deterministic,
+                required: true,
+                status: CheckStatus::Failed,
+                executor: "shell".into(),
+                command: Some("bun test".into()),
+                verifier_family: None,
+                detail: Some("failure".into()),
+                output_digest: Some("digest".into()),
+                artifact_refs: vec![],
+            },
+        )
+        .unwrap();
         let bundle = finalize(&db, &attempt, &stamp).unwrap();
         assert_eq!(bundle.verdict, CompletionVerdict::ChangesRequested);
         assert_eq!(bundle.failed_or_skipped, vec!["tests"]);
-        assert!(finalize(&db, &attempt, &RepositoryStamp { head: "def".into(), dirty_digest: "clean".into() }).unwrap_err().to_string().contains("stale"));
+        assert!(finalize(
+            &db,
+            &attempt,
+            &RepositoryStamp {
+                head: "def".into(),
+                dirty_digest: "clean".into()
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("stale"));
     }
 
     #[test]
@@ -1430,11 +2125,46 @@ mod tests {
         let db = fixture();
         let contract = contract();
         save_contract(&db, &contract).unwrap();
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::High, checks: vec![EvalCheck { id: "scrutiny".into(), label: "scrutiny".into(), kind: EvalKind::Scrutiny, required: true, executor: "worker".into(), command: None, required_capabilities: vec!["code_review".into()], different_model_family: true, reason: "risk".into() }] };
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::High,
+            checks: vec![EvalCheck {
+                id: "scrutiny".into(),
+                label: "scrutiny".into(),
+                kind: EvalKind::Scrutiny,
+                required: true,
+                executor: "worker".into(),
+                command: None,
+                required_capabilities: vec!["code_review".into()],
+                different_model_family: true,
+                reason: "risk".into(),
+            }],
+        };
         save_plan(&db, &plan).unwrap();
-        let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
+        let stamp = RepositoryStamp {
+            head: "abc".into(),
+            dirty_digest: "clean".into(),
+        };
         let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
-        let error = record_check(&db, &attempt, &CheckRun { check_id: "scrutiny".into(), kind: EvalKind::Scrutiny, required: true, status: CheckStatus::Passed, executor: "worker".into(), command: None, verifier_family: Some("codex".into()), detail: None, output_digest: None, artifact_refs: vec![] }).unwrap_err();
+        let error = record_check(
+            &db,
+            &attempt,
+            &CheckRun {
+                check_id: "scrutiny".into(),
+                kind: EvalKind::Scrutiny,
+                required: true,
+                status: CheckStatus::Passed,
+                executor: "worker".into(),
+                command: None,
+                verifier_family: Some("codex".into()),
+                detail: None,
+                output_digest: None,
+                artifact_refs: vec![],
+            },
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("different model family"));
     }
 
@@ -1443,12 +2173,42 @@ mod tests {
         let db = fixture();
         let contract = contract();
         save_contract(&db, &contract).unwrap();
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "manual".into(), label: "manual".into(), kind: EvalKind::UserTesting, required: true, executor: "worker".into(), command: None, required_capabilities: vec!["computer".into()], different_model_family: true, reason: "journey".into() }] };
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::Low,
+            checks: vec![EvalCheck {
+                id: "manual".into(),
+                label: "manual".into(),
+                kind: EvalKind::UserTesting,
+                required: true,
+                executor: "worker".into(),
+                command: None,
+                required_capabilities: vec!["computer".into()],
+                different_model_family: true,
+                reason: "journey".into(),
+            }],
+        };
         save_plan(&db, &plan).unwrap();
-        let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
+        let stamp = RepositoryStamp {
+            head: "abc".into(),
+            dirty_digest: "clean".into(),
+        };
         let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
-        waive(&db, &attempt, &["manual".into()], "tool unavailable", "user", &stamp).unwrap();
-        assert_eq!(finalize(&db, &attempt, &stamp).unwrap().verdict, CompletionVerdict::Waived);
+        waive(
+            &db,
+            &attempt,
+            &["manual".into()],
+            "tool unavailable",
+            "user",
+            &stamp,
+        )
+        .unwrap();
+        assert_eq!(
+            finalize(&db, &attempt, &stamp).unwrap().verdict,
+            CompletionVerdict::Waived
+        );
     }
 
     #[test]
@@ -1460,15 +2220,64 @@ mod tests {
             ("tests", EvalKind::Deterministic, CheckStatus::Failed),
             ("journey", EvalKind::UserTesting, CheckStatus::Skipped),
         ];
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::High, checks: checks.iter().map(|(id, kind, _)| EvalCheck { id: (*id).into(), label: (*id).into(), kind: *kind, required: true, executor: "worker".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "required".into() }).collect() };
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::High,
+            checks: checks
+                .iter()
+                .map(|(id, kind, _)| EvalCheck {
+                    id: (*id).into(),
+                    label: (*id).into(),
+                    kind: *kind,
+                    required: true,
+                    executor: "worker".into(),
+                    command: None,
+                    required_capabilities: vec![],
+                    different_model_family: false,
+                    reason: "required".into(),
+                })
+                .collect(),
+        };
         save_plan(&db, &plan).unwrap();
-        let stamp = RepositoryStamp { head: "abc".into(), dirty_digest: "clean".into() };
+        let stamp = RepositoryStamp {
+            head: "abc".into(),
+            dirty_digest: "clean".into(),
+        };
         let attempt = begin_attempt(&db, &plan, "s", ".", &stamp, Some("codex")).unwrap();
         for (id, kind, status) in checks {
-            record_check(&db, &attempt, &CheckRun { check_id: id.into(), kind, required: true, status, executor: "worker".into(), command: None, verifier_family: None, detail: None, output_digest: Some("digest".into()), artifact_refs: vec![] }).unwrap();
+            record_check(
+                &db,
+                &attempt,
+                &CheckRun {
+                    check_id: id.into(),
+                    kind,
+                    required: true,
+                    status,
+                    executor: "worker".into(),
+                    command: None,
+                    verifier_family: None,
+                    detail: None,
+                    output_digest: Some("digest".into()),
+                    artifact_refs: vec![],
+                },
+            )
+            .unwrap();
         }
-        waive(&db, &attempt, &["journey".into()], "browser unavailable", "user", &stamp).unwrap();
-        assert_eq!(finalize(&db, &attempt, &stamp).unwrap().verdict, CompletionVerdict::ChangesRequested);
+        waive(
+            &db,
+            &attempt,
+            &["journey".into()],
+            "browser unavailable",
+            "user",
+            &stamp,
+        )
+        .unwrap();
+        assert_eq!(
+            finalize(&db, &attempt, &stamp).unwrap().verdict,
+            CompletionVerdict::ChangesRequested
+        );
     }
 
     #[test]
@@ -1477,57 +2286,178 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('broken','w','claude','broken','failed','estimated','s')", []).unwrap();
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('broken','w','implementation','standard','implementation','[]','isolated','released','now','now')", []).unwrap();
         db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at) VALUES('broken','s','failed','implementation','key','reported',0,'now')", []).unwrap();
-        let summary = record_gate_error(&db, "broken", "worktree disappeared").unwrap().unwrap();
+        let summary = record_gate_error(&db, "broken", "worktree disappeared")
+            .unwrap()
+            .unwrap();
         assert_eq!(summary.verdict, CompletionVerdict::Failed);
         assert_eq!(summary.checks[0].status, CheckStatus::Blocked);
         assert!(!completion_allows_ready(&db, "s").unwrap());
-        waive(&db, &summary.attempt_id, &["gate-error".into()], "continue without automated proof", "user", &summary.repository).unwrap();
-        assert_eq!(finalize(&db, &summary.attempt_id, &summary.repository).unwrap().verdict, CompletionVerdict::Waived);
+        waive(
+            &db,
+            &summary.attempt_id,
+            &["gate-error".into()],
+            "continue without automated proof",
+            "user",
+            &summary.repository,
+        )
+        .unwrap();
+        assert_eq!(
+            finalize(&db, &summary.attempt_id, &summary.repository)
+                .unwrap()
+                .verdict,
+            CompletionVerdict::Waived
+        );
     }
 
     #[test]
     fn readiness_requires_zero_unsettled_children_and_a_terminal_gate() {
         let db = fixture();
-        db.execute("UPDATE sessions SET status='waiting' WHERE id='s'", []).unwrap();
+        db.execute("UPDATE sessions SET status='waiting' WHERE id='s'", [])
+            .unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('active','w','claude','active','working','estimated','s')", []).unwrap();
         db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at) VALUES('active','s','working','implementation','key','pending',0,'now')", []).unwrap();
         assert!(!reconcile_parent_readiness(&db, "s").unwrap());
-        db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='active'", []).unwrap();
+        db.execute(
+            "UPDATE worker_runtime SET result_status='reported' WHERE session_id='active'",
+            [],
+        )
+        .unwrap();
         assert!(reconcile_parent_readiness(&db, "s").unwrap());
-        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "ready");
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "ready"
+        );
         let contract = contract();
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "pending".into(), label: "pending".into(), kind: EvalKind::Deterministic, required: true, executor: "worker".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "required".into() }] };
-        create_flow(&db, &contract, &plan, "s", ".", &RepositoryStamp { head: "head".into(), dirty_digest: "dirty".into() }, Some("codex")).unwrap();
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::Low,
+            checks: vec![EvalCheck {
+                id: "pending".into(),
+                label: "pending".into(),
+                kind: EvalKind::Deterministic,
+                required: true,
+                executor: "worker".into(),
+                command: None,
+                required_capabilities: vec![],
+                different_model_family: false,
+                reason: "required".into(),
+            }],
+        };
+        create_flow(
+            &db,
+            &contract,
+            &plan,
+            "s",
+            ".",
+            &RepositoryStamp {
+                head: "head".into(),
+                dirty_digest: "dirty".into(),
+            },
+            Some("codex"),
+        )
+        .unwrap();
         assert!(!reconcile_parent_readiness(&db, "s").unwrap());
-        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "waiting");
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "waiting"
+        );
     }
 
     #[test]
     fn explicit_plan_creation_does_not_interrupt_a_working_parent() {
         let db = fixture();
-        db.execute("UPDATE sessions SET status='working' WHERE id='s'", []).unwrap();
+        db.execute("UPDATE sessions SET status='working' WHERE id='s'", [])
+            .unwrap();
         let contract = contract();
-        let plan = EvalPlan { id: "plan".into(), contract_id: contract.id.clone(), schema_version: 1, risk: RiskTier::Low, checks: vec![EvalCheck { id: "pending".into(), label: "pending".into(), kind: EvalKind::Deterministic, required: true, executor: "worker".into(), command: None, required_capabilities: vec![], different_model_family: false, reason: "required".into() }] };
-        create_flow(&db, &contract, &plan, "s", ".", &RepositoryStamp { head: "head".into(), dirty_digest: "dirty".into() }, Some("codex")).unwrap();
-        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get::<_, String>(0)).unwrap(), "working");
+        let plan = EvalPlan {
+            id: "plan".into(),
+            contract_id: contract.id.clone(),
+            schema_version: 1,
+            risk: RiskTier::Low,
+            checks: vec![EvalCheck {
+                id: "pending".into(),
+                label: "pending".into(),
+                kind: EvalKind::Deterministic,
+                required: true,
+                executor: "worker".into(),
+                command: None,
+                required_capabilities: vec![],
+                different_model_family: false,
+                reason: "required".into(),
+            }],
+        };
+        create_flow(
+            &db,
+            &contract,
+            &plan,
+            "s",
+            ".",
+            &RepositoryStamp {
+                head: "head".into(),
+                dirty_digest: "dirty".into(),
+            },
+            Some("codex"),
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            "working"
+        );
     }
 
     #[test]
     fn author_filename_does_not_trigger_auth_risk() {
-        let result = plan(PlanInput { contract_id: "c".into(), acceptance_criteria: vec!["Render author".into()], changed_paths: vec!["src/author.rs".into()], repository_commands: vec![] });
+        let result = plan(PlanInput {
+            contract_id: "c".into(),
+            acceptance_criteria: vec!["Render author".into()],
+            changed_paths: vec!["src/author.rs".into()],
+            repository_commands: vec![],
+        });
         assert_eq!(result.risk, RiskTier::Low);
     }
 
     #[test]
     fn compact_packet_selects_relevant_contract_and_bounded_findings() {
-        let packet = compact_packet("a", RepositoryStamp { head: "h".into(), dirty_digest: "d".into() }, &["Router saves settings".into(), "Unrelated billing works".into()], &["src/router/settings.rs".into()], &[], &(0..30).map(|index| format!("finding {index}")).collect::<Vec<_>>());
+        let packet = compact_packet(
+            "a",
+            RepositoryStamp {
+                head: "h".into(),
+                dirty_digest: "d".into(),
+            },
+            &[
+                "Router saves settings".into(),
+                "Unrelated billing works".into(),
+            ],
+            &["src/router/settings.rs".into()],
+            &[],
+            &(0..30)
+                .map(|index| format!("finding {index}"))
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(packet.relevant_criteria, vec!["Router saves settings"]);
         assert_eq!(packet.unresolved_findings.len(), 16);
     }
 
     #[test]
     fn completion_benchmark_fixture_enforces_the_measurement_contract() {
-        let cases: Vec<CompletionBenchmarkCase> = serde_json::from_str(include_str!("../../../testing/fixtures/completion-benchmark-v1.json")).unwrap();
+        let cases: Vec<CompletionBenchmarkCase> = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/completion-benchmark-v1.json"
+        ))
+        .unwrap();
         let report = benchmark(&cases);
         assert_eq!(report.cases, 10);
         assert_eq!(report.baseline_false_done, 3);

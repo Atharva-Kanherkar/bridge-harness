@@ -960,10 +960,7 @@ fn payload_matches_receipt(payload_root: &Path, expected: &str) -> Result<bool, 
         if let Some(verified) = cache.get(payload_root) {
             if verified.integrity == expected
                 && verified.witness == witness
-                && verification_outran_the_mtime_bucket(
-                    newest_modified,
-                    verified.started_at_nanos,
-                )
+                && verification_outran_the_mtime_bucket(newest_modified, verified.started_at_nanos)
             {
                 return Ok(true);
             }
@@ -1513,9 +1510,9 @@ fn collect_tree_entries(
                 path.display()
             )));
         }
-        let relative = path.strip_prefix(root).map_err(|_| {
-            BridgeError::Invalid("managed payload source escaped its root".into())
-        })?;
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| BridgeError::Invalid("managed payload source escaped its root".into()))?;
         let canonical = canonical_relative("artifact path", relative)?;
         if metadata.is_dir() {
             entries.push(PayloadEntry {
@@ -2499,9 +2496,15 @@ mod tests {
         fs::write(unproven.join("keep"), b"keep").unwrap();
 
         let new = store.install(&v2).unwrap().receipt().clone();
-        assert!(!store.root().join(&old.owned_paths[0]).exists(), "upgrade reclaims the old version");
+        assert!(
+            !store.root().join(&old.owned_paths[0]).exists(),
+            "upgrade reclaims the old version"
+        );
         assert!(store.root().join(&new.owned_paths[0]).is_dir());
-        assert!(unproven.join("keep").exists(), "unproven content is never pruned");
+        assert!(
+            unproven.join("keep").exists(),
+            "unproven content is never pruned"
+        );
 
         // A receipt-owned installation that nothing points at is still ours.
         let orphan_recipe = v1.validate().unwrap();
@@ -2532,14 +2535,10 @@ mod tests {
         let recipe = file_recipe(fixture.path());
         store.install(&recipe).unwrap();
 
-        let ours = store
-            .root()
-            .join(".staging/fixture-agent/deadbeefcrash");
+        let ours = store.root().join(".staging/fixture-agent/deadbeefcrash");
         // A prefix-matching agent id must not be collateral: staging is keyed
         // by directory, not by name prefix.
-        let theirs = store
-            .root()
-            .join(".staging/fixture-agent-sidecar/inflight");
+        let theirs = store.root().join(".staging/fixture-agent-sidecar/inflight");
         fs::create_dir_all(&ours).unwrap();
         fs::write(ours.join("payload-fragment"), b"partial").unwrap();
         fs::create_dir_all(&theirs).unwrap();
@@ -2719,9 +2718,7 @@ mod tests {
     ///
     /// The tree is aged so the cache can engage at all; a test that needs a
     /// freshly-written mtime sets one explicitly.
-    fn installed_tree(
-        fixture: &Path,
-    ) -> (ManagedPayloadStore, ManagedPayloadReceipt, PathBuf) {
+    fn installed_tree(fixture: &Path) -> (ManagedPayloadStore, ManagedPayloadReceipt, PathBuf) {
         let store = ManagedPayloadStore::new(fixture.join("managed"));
         let recipe = directory_recipe(fixture);
         let receipt = store.install(&recipe).unwrap().receipt().clone();
@@ -2919,7 +2916,10 @@ mod tests {
         // Put the file's mtime just barely in the past, so the verification that
         // follows lands inside its bucket rather than a later one.
         let bucket = std::time::SystemTime::now() - std::time::Duration::from_millis(50);
-        fs::File::open(&readme).unwrap().set_modified(bucket).unwrap();
+        fs::File::open(&readme)
+            .unwrap()
+            .set_modified(bucket)
+            .unwrap();
         assert!(matches!(
             store.status("directory-agent").unwrap(),
             ManagedPayloadStatus::Installed { .. }
@@ -2930,7 +2930,10 @@ mod tests {
         let after: Vec<u8> = before.iter().map(|byte| byte ^ 0x20).collect();
         assert_eq!(before.len(), after.len());
         fs::write(&readme, &after).unwrap();
-        fs::File::open(&readme).unwrap().set_modified(bucket).unwrap();
+        fs::File::open(&readme)
+            .unwrap()
+            .set_modified(bucket)
+            .unwrap();
 
         assert_eq!(
             store.status("directory-agent").unwrap(),

@@ -388,9 +388,10 @@ mod tests {
 
     #[test]
     fn checked_in_v1_fixture_is_an_exact_default_regression() {
-        let rows: Vec<FixtureRow> =
-            serde_json::from_str(include_str!("../../../testing/fixtures/policy-replay-v1.json"))
-                .unwrap();
+        let rows: Vec<FixtureRow> = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/policy-replay-v1.json"
+        ))
+        .unwrap();
         let loaded = parse_payloads(
             rows.into_iter()
                 .map(|row| (row.id, row.payload.to_string()))

@@ -1032,17 +1032,23 @@ mod tests {
     #[test]
     fn normalizes_opencode_streaming_messages_and_usage() {
         let mut state = OpenCodeStreamState::default();
-        let usage = normalize_opencode_message_with_state(&json!({
-            "type":"message.updated",
-            "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}},"cost":0.01,"modelID":"model","providerID":"provider"}}
-        }), &mut state);
+        let usage = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}},"cost":0.01,"modelID":"model","providerID":"provider"}}
+            }),
+            &mut state,
+        );
         assert_eq!(usage[0].kind, "usage.updated");
         assert_eq!(usage[0].data["usage"]["input_tokens"], 4);
 
-        let delta = normalize_opencode_message_with_state(&json!({
-            "type":"message.part.delta",
-            "properties":{"sessionID":"ses_1","messageID":"msg_1","partID":"prt_1","field":"text","delta":"hello"}
-        }), &mut state);
+        let delta = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.delta",
+                "properties":{"sessionID":"ses_1","messageID":"msg_1","partID":"prt_1","field":"text","delta":"hello"}
+            }),
+            &mut state,
+        );
         assert_eq!(delta[0].kind, "message.delta");
         assert_eq!(delta[0].item_id.as_deref(), Some("prt_1"));
         assert_eq!(delta[0].text.as_deref(), Some("hello"));
@@ -1051,31 +1057,46 @@ mod tests {
     #[test]
     fn normalizes_opencode_tools_permissions_and_turn_state() {
         let mut state = OpenCodeStreamState::default();
-        let _ = normalize_opencode_message_with_state(&json!({
-            "type":"message.updated",
-            "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant"}}
-        }), &mut state);
-        let tool = normalize_opencode_message_with_state(&json!({
-            "type":"message.part.updated",
-            "properties":{"sessionID":"ses_1","part":{"id":"prt_2","sessionID":"ses_1","messageID":"msg_1","type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/tmp","title":"Run pwd"}}}
-        }), &mut state);
+        let _ = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant"}}
+            }),
+            &mut state,
+        );
+        let tool = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.updated",
+                "properties":{"sessionID":"ses_1","part":{"id":"prt_2","sessionID":"ses_1","messageID":"msg_1","type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"pwd"},"output":"/tmp","title":"Run pwd"}}}
+            }),
+            &mut state,
+        );
         assert_eq!(tool[0].kind, "command.completed");
         assert_eq!(tool[0].text.as_deref(), Some("/tmp"));
 
-        let permission = normalize_opencode_message_with_state(&json!({
-            "type":"permission.v2.asked",
-            "properties":{"id":"per_1","sessionID":"ses_1","action":"bash","resources":["git status"],"source":{"callID":"call_1"}}
-        }), &mut state);
+        let permission = normalize_opencode_message_with_state(
+            &json!({
+                "type":"permission.v2.asked",
+                "properties":{"id":"per_1","sessionID":"ses_1","action":"bash","resources":["git status"],"source":{"callID":"call_1"}}
+            }),
+            &mut state,
+        );
         assert_eq!(permission[0].kind, "approval.requested");
         assert_eq!(permission[0].data["requestId"], "per_1");
 
-        let busy = normalize_opencode_message_with_state(&json!({
-            "id":"evt_1","type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}
-        }), &mut state);
+        let busy = normalize_opencode_message_with_state(
+            &json!({
+                "id":"evt_1","type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}
+            }),
+            &mut state,
+        );
         assert_eq!(busy[0].kind, "turn.started");
-        let idle = normalize_opencode_message_with_state(&json!({
-            "type":"session.idle","properties":{"sessionID":"ses_1"}
-        }), &mut state);
+        let idle = normalize_opencode_message_with_state(
+            &json!({
+                "type":"session.idle","properties":{"sessionID":"ses_1"}
+            }),
+            &mut state,
+        );
         assert_eq!(idle[0].kind, "turn.completed");
     }
 }

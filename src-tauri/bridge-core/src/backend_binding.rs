@@ -350,7 +350,10 @@ pub enum StoredBinding {
     /// Bridge, or a corrupted one. Kept raw so the session still reads under its
     /// own name, and never silently rebound: resuming it fails, which is the
     /// legible outcome. The same choice `Harness::Unknown` already makes.
-    Unreadable { raw: String, reason: String },
+    Unreadable {
+        raw: String,
+        reason: String,
+    },
 }
 
 impl StoredBinding {
@@ -402,7 +405,11 @@ pub fn read_binding(
         Ok(version) => version,
         Err(error) => return Ok(unreadable(&backend_raw, error.to_string())),
     };
-    let installation = match installation.as_deref().map(InstallationId::parse).transpose() {
+    let installation = match installation
+        .as_deref()
+        .map(InstallationId::parse)
+        .transpose()
+    {
         Ok(installation) => installation,
         Err(error) => return Ok(unreadable(&backend_raw, error.to_string())),
     };
@@ -506,13 +513,16 @@ pub fn pending_authorization(
     let Some((from, to, version)) = row else {
         return Ok(None);
     };
-    let (Ok(from_backend), Ok(to_backend)) = (BackendId::parse(&from), BackendId::parse(&to)) else {
+    let (Ok(from_backend), Ok(to_backend)) = (BackendId::parse(&from), BackendId::parse(&to))
+    else {
         return Ok(None);
     };
     Ok(Some(BackendChangeAuthorization {
         from_backend,
         to_backend,
-        to_version: version.as_deref().and_then(|v| BackendVersion::parse(v).ok()),
+        to_version: version
+            .as_deref()
+            .and_then(|v| BackendVersion::parse(v).ok()),
     }))
 }
 
@@ -776,8 +786,9 @@ pub fn plan_launch(
 
     let stored = read_binding(db, session_id)?;
     let authorization = pending_authorization(db, session_id)?;
-    let continuation = plan_continuation(resolver, &stored, &agent, backing, authorization.as_ref())
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let continuation =
+        plan_continuation(resolver, &stored, &agent, backing, authorization.as_ref())
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let adapter_id = resolver
         .resolve_bound(continuation.binding())
         .map_err(|error| BridgeError::Invalid(error.to_string()))?
@@ -836,11 +847,18 @@ mod tests {
             .register(&gemini, candidate("gemini.acp", BackendKind::Acp))
             .unwrap_err();
         assert_eq!(duplicate.code(), "duplicate_backend");
-        assert_eq!(resolver.candidates(&gemini).len(), 2, "refused, not appended");
+        assert_eq!(
+            resolver.candidates(&gemini).len(),
+            2,
+            "refused, not appended"
+        );
 
         // The same backend id serving a different agent is a permitted shape.
         resolver
-            .register(&agent("gemini-pro"), candidate("gemini.acp", BackendKind::Acp))
+            .register(
+                &agent("gemini-pro"),
+                candidate("gemini.acp", BackendKind::Acp),
+            )
             .unwrap();
         assert_eq!(resolver.candidates(&agent("gemini-pro")).len(), 1);
     }
@@ -863,7 +881,10 @@ mod tests {
             assert_eq!(candidates.len(), 1, "{id} has exactly one proven backend");
             assert_eq!(candidates[0].backend, backend(backend_id));
             assert_eq!(candidates[0].kind, kind);
-            assert_eq!(candidates[0].adapter_id, id, "{id} dispatches to its adapter");
+            assert_eq!(
+                candidates[0].adapter_id, id,
+                "{id} dispatches to its adapter"
+            );
         }
     }
 
@@ -934,7 +955,11 @@ mod tests {
 
         let unknown = resolver.preferred(&agent("gemini")).unwrap_err();
         assert_eq!(unknown.code(), "unknown_agent");
-        assert_ne!(unknown.code(), error.code(), "distinct conditions, distinct codes");
+        assert_ne!(
+            unknown.code(),
+            error.code(),
+            "distinct conditions, distinct codes"
+        );
     }
 
     #[test]
@@ -974,7 +999,10 @@ mod tests {
             backend: backend("claude.acp"),
             ..one.clone()
         };
-        assert!(one.same_backend(&moved), "a version bump is the same backend");
+        assert!(
+            one.same_backend(&moved),
+            "a version bump is the same backend"
+        );
         assert!(!one.same_backend(&replaced), "a different backend is not");
     }
 
@@ -1045,7 +1073,10 @@ mod tests {
 
         // And an unknown session id is unbound rather than an error, because a
         // caller asking about a row that is gone is not a storage failure.
-        assert_eq!(read_binding(&db, "missing").unwrap(), StoredBinding::Unbound);
+        assert_eq!(
+            read_binding(&db, "missing").unwrap(),
+            StoredBinding::Unbound
+        );
     }
 
     #[test]
@@ -1318,7 +1349,8 @@ mod tests {
                 ),
                 (
                     "backend.installation_changed".to_string(),
-                    "codex.app-server 3f9a0c1b7e2d4856af01bc93 -> aa11bb22cc33dd44ee55ff66".to_string()
+                    "codex.app-server 3f9a0c1b7e2d4856af01bc93 -> aa11bb22cc33dd44ee55ff66"
+                        .to_string()
                 ),
             ]
         );
@@ -1516,7 +1548,11 @@ mod tests {
         let mut unique = codes.to_vec();
         unique.sort_unstable();
         unique.dedup();
-        assert_eq!(unique.len(), codes.len(), "codes must be distinct: {codes:?}");
+        assert_eq!(
+            unique.len(),
+            codes.len(),
+            "codes must be distinct: {codes:?}"
+        );
     }
 
     #[test]
@@ -1548,8 +1584,7 @@ mod tests {
         // must dispatch to the same adapter key it always did, unbound.
         let db = store_with_session("shell");
         let resolver = BackendResolver::built_in();
-        let plan =
-            plan_launch(&db, &resolver, "s", "shell", &BackendBacking::default()).unwrap();
+        let plan = plan_launch(&db, &resolver, "s", "shell", &BackendBacking::default()).unwrap();
         assert_eq!(plan.adapter_id, "shell");
         assert!(plan.continuation().is_none(), "nothing to record");
         plan.commit(&db, "s").unwrap();
@@ -1557,8 +1592,14 @@ mod tests {
 
         // Same for an id this build cannot even parse.
         let db = store_with_session("acp:gemini");
-        let plan =
-            plan_launch(&db, &resolver, "s", "acp:gemini", &BackendBacking::default()).unwrap();
+        let plan = plan_launch(
+            &db,
+            &resolver,
+            "s",
+            "acp:gemini",
+            &BackendBacking::default(),
+        )
+        .unwrap();
         assert_eq!(plan.adapter_id, "acp:gemini");
     }
 
@@ -1566,8 +1607,14 @@ mod tests {
     fn a_launch_binds_the_session_and_dispatches_to_the_backends_adapter() {
         let db = store_with_session("codex");
         let resolver = BackendResolver::built_in();
-        let plan =
-            plan_launch(&db, &resolver, "s", "codex", &backing(Some("0.147.0"), None)).unwrap();
+        let plan = plan_launch(
+            &db,
+            &resolver,
+            "s",
+            "codex",
+            &backing(Some("0.147.0"), None),
+        )
+        .unwrap();
         assert_eq!(plan.adapter_id, "codex", "the registry key is unchanged");
         assert_eq!(
             read_binding(&db, "s").unwrap(),
@@ -1582,10 +1629,16 @@ mod tests {
         );
 
         // A second launch after a vendor update rebinds rather than refusing.
-        plan_launch(&db, &resolver, "s", "codex", &backing(Some("0.148.0"), None))
-            .unwrap()
-            .commit(&db, "s")
-            .unwrap();
+        plan_launch(
+            &db,
+            &resolver,
+            "s",
+            "codex",
+            &backing(Some("0.148.0"), None),
+        )
+        .unwrap()
+        .commit(&db, "s")
+        .unwrap();
         assert_eq!(
             read_binding(&db, "s")
                 .unwrap()
@@ -1608,8 +1661,14 @@ mod tests {
 
         // `claude.next-sdk` is preferred and would win a fresh resolution. The
         // bound session must still reach the adapter its own backend names.
-        let plan =
-            plan_launch(&db, &resolver, "s", "claude", &backing(Some("0.3.209"), None)).unwrap();
+        let plan = plan_launch(
+            &db,
+            &resolver,
+            "s",
+            "claude",
+            &backing(Some("0.3.209"), None),
+        )
+        .unwrap();
         assert_eq!(plan.adapter_id, "claude");
         assert_eq!(
             resolver.preferred(&agent("claude")).unwrap().adapter_id,
@@ -1637,9 +1696,15 @@ mod tests {
         let resolver = BackendResolver::built_in();
         write_binding(&db, "s", &binding("codex", "codex.acp", Some("0.147.0"))).unwrap();
 
-        let error = plan_launch(&db, &resolver, "s", "codex", &backing(Some("0.147.0"), None))
-            .unwrap_err()
-            .to_string();
+        let error = plan_launch(
+            &db,
+            &resolver,
+            "s",
+            "codex",
+            &backing(Some("0.147.0"), None),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("codex.acp"), "{error}");
         assert_eq!(
             read_binding(&db, "s").unwrap().bound().unwrap().backend,
