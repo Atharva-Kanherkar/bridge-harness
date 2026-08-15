@@ -62,6 +62,45 @@ managed lifecycle (#174/#176) for installing a candidate, and on #163's
 - Out of scope: AI-assisted anomaly triage, which #168 explicitly bars from
   being a promotion oracle; the marketplace UI; and adding any specific agent.
 
+## As Built: Where The Code Departs From This Contract
+
+Four deviations, recorded so a reviewer reading the contract against the diff
+does not have to work out which were decisions.
+
+- **The constructors live in `verified_catalog`, not here.** `Verification` is
+  that module's type; a constructor for it that lived in the pipeline would be
+  the one place a reader looking at `Verification` would not think to check.
+  `Verification::verified` and `Verification::pending` sit next to the type they
+  build, and the pipeline is their only caller.
+- **Deserialization is a second way a `Verified` verdict enters the process,
+  and the contract's wording did not admit it.** "No code path outside this
+  module can hand-write a verified verdict" is true of Bridge's own code and
+  false of `serde`: a signed snapshot deserializes straight into
+  `VerificationStatus::Verified`. This is not a hole — that path is gated on an
+  Ed25519 signature over the exact bytes, so what the signature attests to is
+  the publisher's own run of this pipeline — but it is the honest shape of the
+  claim, and `only_evidence_can_produce_a_verified_status` asserts the narrower
+  thing it can: exactly one site *constructs* the status.
+- **Capability drift is checked offline, not against a live session.** The
+  contract put it among the checks that drive a session. But drift is refused
+  *at launch* by #166, so a candidate that drifted failed launch, cascaded, and
+  produced evidence with no drift record at all — the one case the check exists
+  for was the one case it could not report. Drift is a property of the
+  advertisement against the profile, so it is asked of both directly.
+- **`api::verification_suite` describes the suite; it does not run it.** The
+  contract said the pipeline is reachable through `bridge_core::api`, which
+  read as "expose `run_suite`". The desktop never runs the suite — it has no
+  clean environment to install into and no vendor credentials — so what the API
+  usefully answers is *what a verdict means*, letting a future "Bridge
+  Verified" badge name what was checked without restating a list that would
+  then drift from the one the suite runs.
+
+Also worth naming: the three managed-lifecycle checks (update from prior,
+rollback, uninstall retaining history) are delegated to
+`SuiteHarness::lifecycle_transitions` rather than implemented here. #161's own
+suite already proves those transitions; the pipeline's job is to *require* them,
+and reimplementing them would create a second definition of what they mean.
+
 ## Functional Behavior
 
 ### Evidence (#168 steps 2, 6)

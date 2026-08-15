@@ -470,14 +470,11 @@ fn run_once(
     // Everything below drives IntegrationSession — the same surface a real
     // session uses. A private path to the runtime would verify a path no user
     // ever takes.
-    let mut session = match harness
-        .transport()
-        .map_err(|error| error)
-        .and_then(|transport| {
-            registry
-                .launch(&entry, transport, &request)
-                .map_err(|error| error.to_string())
-        }) {
+    let mut session = match harness.transport().and_then(|transport| {
+        registry
+            .launch(&entry, transport, &request)
+            .map_err(|error| error.to_string())
+    }) {
         Ok(session) => {
             record!(CheckId::Launch, CheckOutcome::Passed);
             Some(session)
@@ -1558,6 +1555,62 @@ mod tests {
                 "a candidate must not convert to a served entry: found {forbidden}"
             );
         }
+    }
+
+    // ---- the seam -------------------------------------------------------
+
+    #[test]
+    fn a_candidate_becomes_a_served_entry_only_through_the_whole_pipeline() {
+        // #164, #166, and #168 meeting: detect, run the suite, produce
+        // evidence, promote, sign, install, and serve — with every step the
+        // real one rather than a hand-built object standing in for it.
+        let base = catalog();
+        let detected = candidate();
+        assert!(
+            base.entry(&detected.agent).is_none(),
+            "the agent must not be served before it is verified"
+        );
+
+        let evidence = run_suite(&detected, &registry(), &FakeHarness::default(), BRIDGE, NOW);
+        assert!(evidence.deterministic);
+        assert!(evidence.all_required_passed(), "{:?}", evidence.blocking());
+
+        let snapshot = promote(&base, &detected, &evidence, NOW).unwrap();
+        let installed = install_for_test(snapshot, &base);
+
+        let served = installed
+            .entry(&detected.agent)
+            .expect("a promoted entry must be served");
+        assert_eq!(served.version, detected.version);
+        assert_eq!(served.verification.evidence_ref, evidence.digest());
+        assert_eq!(served.verification.suite_version, SUITE_VERSION);
+
+        // And #166 can now resolve it: the registry offers the catalog and the
+        // entry becomes a backend candidate, with no change to anything else.
+        let mut resolver = crate::backend_binding::BackendResolver::empty();
+        let registration = registry().offer_catalog(&installed, &mut resolver);
+        assert!(
+            registration.registered.contains(&detected.agent),
+            "a served entry with an integration must resolve: {registration:?}"
+        );
+        assert!(
+            resolver.candidates(&detected.agent).iter().any(
+                |candidate| candidate.backend == detected.backend
+            ),
+            "and the resolver must offer its backend"
+        );
+    }
+
+    #[test]
+    fn evidence_survives_a_round_trip_and_keeps_its_digest() {
+        // Evidence is a published artifact: it has to mean the same thing after
+        // being written down and read back, or its digest is not a reference to
+        // anything.
+        let evidence = evidence_for(&FakeHarness::default());
+        let encoded = serde_json::to_string(&evidence).unwrap();
+        let decoded: Evidence = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, evidence);
+        assert_eq!(decoded.digest(), evidence.digest());
     }
 
     /// Promote-then-install, for tests that need the promoted snapshot to be
