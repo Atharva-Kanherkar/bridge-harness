@@ -1,6 +1,7 @@
 use crate::{delegation::DelegationRequest, policy, session_forest::SessionForest, BridgeError};
 use rusqlite::{params, Connection};
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 pub struct WorkerRouteContext {
     pub workspace_id: String,
@@ -306,10 +307,15 @@ fn approved_path_token(token: &str, workspace: &Path) -> Option<String> {
 }
 
 fn subtree_has_escaping_symlink(root: &Path, workspace: &Path) -> bool {
-    subtree_has_escaping_symlink_with_limit(root, workspace, 4_096)
+    subtree_has_escaping_symlink_with_limit(root, workspace, 65_536)
 }
 
 fn subtree_has_escaping_symlink_with_limit(root: &Path, workspace: &Path, limit: usize) -> bool {
+    // Build trees like target/ and node_modules/ hold far more entries than
+    // any budget, so walking them fails every scope closed even without a
+    // single symlink. Skip git-ignored directories and .git; a skipped entry
+    // is still symlink-checked before the descent would happen.
+    let ignored = git_ignored_directories(root);
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
@@ -338,11 +344,46 @@ fn subtree_has_escaping_symlink_with_limit(root: &Path, workspace: &Path, limit:
                 continue;
             }
             if metadata.is_dir() {
+                if path.file_name().is_some_and(|name| name == ".git")
+                    || path
+                        .strip_prefix(root)
+                        .is_ok_and(|relative| ignored.contains(relative))
+                {
+                    continue;
+                }
                 pending.push(path);
             }
         }
     }
     false
+}
+
+/// Directories under `root` that git ignores, relative to `root`. Empty when
+/// `root` is not inside a repository, in which case the walk visits everything
+/// as before.
+fn git_ignored_directories(root: &Path) -> HashSet<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ])
+        .current_dir(root)
+        .output();
+    let Ok(output) = output else {
+        return HashSet::new();
+    };
+    if !output.status.success() {
+        return HashSet::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter_map(|entry| entry.strip_suffix('/'))
+        .map(PathBuf::from)
+        .collect()
 }
 
 #[cfg(test)]
@@ -578,6 +619,39 @@ mod tests {
             &root,
             workspace.path(),
             3
+        ));
+    }
+
+    #[test]
+    fn symlink_scan_skips_git_ignored_directories() {
+        use std::os::unix::fs::symlink;
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("src-tauri");
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(root.join("main.rs"), "").unwrap();
+        std::fs::write(workspace.path().join(".gitignore"), "target/\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        for index in 0..8 {
+            std::fs::write(root.join("target/debug").join(index.to_string()), "").unwrap();
+        }
+        // without the skip, target/ alone blows this budget and fails closed
+        assert!(!subtree_has_escaping_symlink_with_limit(
+            &root,
+            workspace.path(),
+            4
+        ));
+        // an escaping symlink outside the ignored tree is still caught
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), root.join("external")).unwrap();
+        assert!(subtree_has_escaping_symlink_with_limit(
+            &root,
+            workspace.path(),
+            4
         ));
     }
 
