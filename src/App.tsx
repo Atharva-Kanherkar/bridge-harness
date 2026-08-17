@@ -4,7 +4,7 @@ import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileM
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { isVisibleWorker } from "./components/workerStatus";
@@ -775,7 +775,134 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function ChangesPanel({ workspace }: { workspace: Workspace }) { return <div className="p-[38px_44px] max-w-[780px]"><div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGE STORY</div><h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{workspace.dirtyFiles ? `${workspace.dirtyFiles} files changed` : "Workspace is clean"}</h2><p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">Behavior-grouped review will live here. High-risk authentication, migrations, test weakening, and evaluation thresholds are always expanded.</p><div className="mt-6 h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]"><b className="text-success font-medium">+{workspace.additions}</b><b className="text-destructive font-medium">−{workspace.deletions}</b><span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/><small className="text-muted-foreground">{workspace.branch}</small></div><div className="mt-5 flex flex-col gap-2.5">{[78,92,64,85,51,70].map((n,i)=><i key={i} className="block h-[7px] bg-muted rounded-[3px]" style={{width:`${n}%`}}/>)}</div></div>; }
+const IMPORTANCE_RANK: Record<RiskTier, number> = { high: 0, medium: 1, low: 2 };
+const IMPORTANCE_BADGE: Record<RiskTier, { label: string; variant: "error" | "warning" | "outline" }> = {
+  high: { label: "High", variant: "error" },
+  medium: { label: "Medium", variant: "warning" },
+  low: { label: "Low", variant: "outline" },
+};
+
+function DiffLine({ line }: { line: string }) {
+  const kind = line.startsWith("+++") || line.startsWith("---") ? "meta"
+    : line.startsWith("+") ? "add"
+    : line.startsWith("-") ? "del"
+    : line.startsWith("@@") ? "hunk"
+    : "context";
+  const color = kind === "add" ? "text-success bg-success/8"
+    : kind === "del" ? "text-destructive bg-destructive/8"
+    : kind === "hunk" ? "text-info"
+    : kind === "meta" ? "text-muted-foreground/60"
+    : "text-muted-foreground";
+  return <div className={`whitespace-pre px-3 ${color}`}>{line.length ? line : " "}</div>;
+}
+
+function FileDiffView({ patch, binary }: { patch: string; binary: boolean }) {
+  if (binary) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Binary file — no diff to show.</div>;
+  const lines = patch.split("\n").filter((_, index, all) => !(index === all.length - 1 && all[index] === ""));
+  if (!lines.length) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">No diff content.</div>;
+  return <div className="font-mono text-[11px] leading-[1.65] overflow-x-auto py-2">{lines.map((line, index) => <DiffLine key={index} line={line} />)}</div>;
+}
+
+function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpanded }: {
+  file: WorkspaceFileChange;
+  viewed: boolean;
+  expanded: boolean;
+  onToggleViewed: () => void;
+  onToggleExpanded: () => void;
+}) {
+  const badge = IMPORTANCE_BADGE[file.importance];
+  return <div className="u-glass-soft rounded-lg overflow-hidden">
+    <div className="flex items-center gap-2.5 pl-2 pr-3 py-2">
+      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex-1 min-w-0 flex items-center gap-2 text-left px-1.5 py-1 rounded-md hover:bg-white/[0.04]">
+        <ChevronDown size={13} className={`shrink-0 text-muted-foreground/60 transition-transform ${expanded ? "" : "-rotate-90"}`} aria-hidden="true" />
+        <span className="font-mono text-[12px] text-foreground truncate">{file.path}</span>
+      </button>
+      <Badge variant={badge.variant} size="sm" className="shrink-0">{badge.label}</Badge>
+      <span className="shrink-0 font-mono text-[10.5px] tabular-nums"><b className="text-success font-medium">+{file.additions}</b> <b className="text-destructive font-medium">−{file.deletions}</b></span>
+      <button
+        type="button"
+        onClick={onToggleViewed}
+        aria-pressed={viewed}
+        className={`shrink-0 flex items-center gap-1 h-6 px-2 rounded-full border text-[10.5px] transition-colors ${viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:bg-white/[0.05]"}`}
+      >
+        {viewed ? <Check size={11} aria-hidden="true" /> : <span className="w-2.5 h-2.5 rounded-[3px] border border-current" aria-hidden="true" />}
+        Viewed
+      </button>
+    </div>
+    {expanded && <div className="border-t border-border"><FileDiffView patch={file.patch} binary={file.binary} /></div>}
+  </div>;
+}
+
+function ChangesPanel({ workspace }: { workspace: Workspace }) {
+  const [changes, setChanges] = useState<WorkspaceChangesResult>();
+  const [loadError, setLoadError] = useState<string>();
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [viewedPaths, setViewedPaths] = useState<Set<string>>(new Set());
+  const [showLowSignal, setShowLowSignal] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setShowLowSignal(false);
+    bridgeApi.workspaceChanges(workspace.id)
+      .then(result => { if (!cancelled) setChanges(result); })
+      .catch(value => { if (!cancelled) setLoadError(errorMessage(value)); });
+    return () => { cancelled = true; };
+  }, [workspace.id]);
+
+  const sortedFiles = useMemo(() => [...(changes?.files ?? [])].sort((a, b) =>
+    IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance] || a.path.localeCompare(b.path)
+  ), [changes]);
+  const visibleFiles = sortedFiles.filter(file => showLowSignal || !file.lowSignal);
+  const lowSignalCount = sortedFiles.length - sortedFiles.filter(file => !file.lowSignal).length;
+
+  const toggle = (setter: typeof setExpandedPaths, path: string) => setter(previous => {
+    const next = new Set(previous);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    return next;
+  });
+
+  if (loadError) return <div className="p-[38px_44px] max-w-[780px]">
+    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
+    <p className="mt-2.5 text-destructive text-[13px]">{loadError}</p>
+  </div>;
+
+  if (!changes) return <div className="p-[38px_44px] max-w-[780px]">
+    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
+    <p className="mt-2.5 text-muted-foreground text-[13px]">Loading changes…</p>
+  </div>;
+
+  const totalAdditions = changes.files.reduce((sum, file) => sum + file.additions, 0);
+  const totalDeletions = changes.files.reduce((sum, file) => sum + file.deletions, 0);
+  const viewedCount = sortedFiles.filter(file => viewedPaths.has(file.path)).length;
+
+  return <div className="p-[38px_44px] max-w-[780px] h-full overflow-y-auto">
+    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
+    <h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{changes.files.length ? `${changes.files.length} file${changes.files.length === 1 ? "" : "s"} changed` : "Workspace is clean"}</h2>
+    {changes.files.length === 0
+      ? <p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">No uncommitted changes against HEAD.</p>
+      : <>
+        <div className="h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]">
+          <b className="text-success font-medium">+{totalAdditions}</b>
+          <b className="text-destructive font-medium">−{totalDeletions}</b>
+          <span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/>
+          <small className="text-muted-foreground">{viewedCount}/{sortedFiles.length} viewed</small>
+        </div>
+        <div className="mt-5 flex flex-col gap-2">
+          {visibleFiles.map(file => <ChangeFileRow
+            key={file.path}
+            file={file}
+            viewed={viewedPaths.has(file.path)}
+            expanded={expandedPaths.has(file.path)}
+            onToggleViewed={() => toggle(setViewedPaths, file.path)}
+            onToggleExpanded={() => toggle(setExpandedPaths, file.path)}
+          />)}
+          {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="text-left px-1.5 py-2 text-[11.5px] text-muted-foreground hover:text-foreground">
+            {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
+          </button>}
+        </div>
+      </>}
+  </div>;
+}
 function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="max-w-[720px] px-8 py-[22px]">{events.length ? events.map(e => <article key={e.id} className="flex gap-3 py-[13px] border-b border-border text-muted-foreground"><CircleDot size={14} aria-hidden="true" /><div><b className="text-foreground text-[11px] font-medium tracking-[0.02em] capitalize">{e.kind.replaceAll(".", " ")}</b><p className="text-[12.5px] my-1 text-foreground">{e.body}</p><small className="font-mono text-[10.5px] text-muted-foreground/65">{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="text-muted-foreground text-[12.5px] p-7">No events for this workspace yet.</div>}</div>; }
 function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState }) {
   const profile = resolveProfileOption("standard_orchestrator", modelSetup, adapters);

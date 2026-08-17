@@ -15,6 +15,7 @@ export type BridgeMethod =
   | "workspaces/list_workspace_files"
   | "workspaces/refresh_workspace"
   | "workspaces/archive_workspace"
+  | "workspaces/workspace_changes"
   | "sessions/get_session_forest"
   | "sessions/replay_session_events"
   | "sessions/activate_session_entry"
@@ -103,6 +104,7 @@ export const BRIDGE_METHODS = [
   { method: "workspaces/list_workspace_files", domain: "workspaces", command: "list_workspace_files" },
   { method: "workspaces/refresh_workspace", domain: "workspaces", command: "refresh_workspace" },
   { method: "workspaces/archive_workspace", domain: "workspaces", command: "archive_workspace" },
+  { method: "workspaces/workspace_changes", domain: "workspaces", command: "workspace_changes" },
   { method: "sessions/get_session_forest", domain: "sessions", command: "get_session_forest" },
   { method: "sessions/replay_session_events", domain: "sessions", command: "replay_session_events" },
   { method: "sessions/activate_session_entry", domain: "sessions", command: "activate_session_entry" },
@@ -241,6 +243,7 @@ export interface BridgeMethodParams {
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
   "workspaces/refresh_workspace": RefreshWorkspaceParams;
   "workspaces/archive_workspace": ArchiveWorkspaceParams;
+  "workspaces/workspace_changes": WorkspaceChangesParams;
   "sessions/get_session_forest": GetSessionForestParams;
   "sessions/replay_session_events": ReplaySessionEventsParams;
   "sessions/activate_session_entry": ActivateSessionEntryParams;
@@ -331,6 +334,7 @@ export interface BridgeMethodResults {
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
   "workspaces/refresh_workspace": BridgeState;
   "workspaces/archive_workspace": BridgeState;
+  "workspaces/workspace_changes": WorkspaceChangesResult;
   "sessions/get_session_forest": SessionForestSnapshot;
   "sessions/replay_session_events": ReplaySessionEventsResult;
   "sessions/activate_session_entry": SessionForestSnapshot;
@@ -701,6 +705,8 @@ export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh"
 
 export type ResumeEligibility = "native" | "checkpoint_restored" | "fresh";
 
+export type RiskTier = "low" | "medium" | "high";
+
 export type RouterMode = "disabled" | "shadow" | "autonomous";
 
 export interface RouterPreferences {
@@ -924,6 +930,17 @@ export interface Workspace {
   title: string;
 }
 
+export interface WorkspaceFileChange {
+  additions: number;
+  binary: boolean;
+  deletions: number;
+  importance: RiskTier;
+  labels: string[];
+  lowSignal: boolean;
+  patch: string;
+  path: string;
+}
+
 export interface RpcRequest {
   id: RequestId;
   jsonrpc: JsonRpcVersion;
@@ -997,6 +1014,15 @@ export interface RefreshWorkspaceParams {
 
 export interface ArchiveWorkspaceParams {
   workspaceId: string;
+}
+
+export interface WorkspaceChangesParams {
+  workspaceId: string;
+}
+
+export interface WorkspaceChangesResult {
+  baseCommit?: string | null;
+  files: WorkspaceFileChange[];
 }
 
 export interface GetSessionForestParams {

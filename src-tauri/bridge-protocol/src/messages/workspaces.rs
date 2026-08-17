@@ -41,6 +41,50 @@ pub struct ArchiveWorkspaceParams {
     pub workspace_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceChangesParams {
+    pub workspace_id: String,
+}
+
+/// A file's importance for review triage. Mirrors
+/// `bridge_core::completion::RiskTier`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskTier {
+    Low,
+    Medium,
+    High,
+}
+
+/// One file's working-tree diff against `HEAD`. Mirrors
+/// `bridge_core::git::WorkspaceFileChange`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileChange {
+    pub path: String,
+    pub additions: i64,
+    pub deletions: i64,
+    /// Unified diff text; empty for files detected as binary.
+    pub patch: String,
+    pub binary: bool,
+    pub importance: RiskTier,
+    pub labels: Vec<String>,
+    /// Lockfiles, generated output, vendored trees: real changes, low review
+    /// signal. A UI may collapse these by default, but never omit them.
+    pub low_signal: bool,
+}
+
+/// `workspaces/workspace_changes`' result: every path that differs from
+/// `HEAD` in the workspace's working tree, tracked or not. Mirrors
+/// `bridge_core::git::WorkspaceChangeset`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChangesResult {
+    pub base_commit: Option<String>,
+    pub files: Vec<WorkspaceFileChange>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +111,40 @@ mod tests {
         assert_eq!(round_trip(&refresh), refresh);
         let archive = ArchiveWorkspaceParams { workspace_id: "w-1".into() };
         assert_eq!(round_trip(&archive), archive);
+        let changes = WorkspaceChangesParams { workspace_id: "w-1".into() };
+        assert_eq!(round_trip(&changes), changes);
+    }
+
+    #[test]
+    fn workspace_change_serializes_with_snake_case_importance() {
+        let change = WorkspaceFileChange {
+            path: "src/App.tsx".into(),
+            additions: 4,
+            deletions: 1,
+            patch: "@@ -1 +1,4 @@".into(),
+            binary: false,
+            importance: RiskTier::Medium,
+            labels: vec!["frontend".into()],
+            low_signal: false,
+        };
+        let wire = serde_json::to_value(&change).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "path": "src/App.tsx",
+                "additions": 4,
+                "deletions": 1,
+                "patch": "@@ -1 +1,4 @@",
+                "binary": false,
+                "importance": "medium",
+                "labels": ["frontend"],
+                "lowSignal": false,
+            })
+        );
+        assert_eq!(round_trip(&change), change);
+
+        let result = WorkspaceChangesResult { base_commit: Some("abc123".into()), files: vec![change] };
+        assert_eq!(round_trip(&result), result);
     }
 
     #[test]
@@ -93,5 +171,10 @@ mod tests {
         // Wire names are camelCase; snake_case spellings are not accepted.
         assert!(serde_json::from_value::<ArchiveWorkspaceParams>(json!({"workspace_id": "w-1"}))
             .is_err());
+        assert!(serde_json::from_value::<WorkspaceChangesParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<WorkspaceChangesParams>(
+            json!({"workspaceId": "w-1", "unexpected": true})
+        )
+        .is_err());
     }
 }

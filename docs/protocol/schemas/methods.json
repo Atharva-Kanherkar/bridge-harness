@@ -58,6 +58,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "workspace_changes",
+      "domain": "workspaces",
+      "method": "workspaces/workspace_changes",
+      "paramsSchema": "workspace-changes-params.json",
+      "resultSchema": "workspace-changes-result.json"
+    },
+    {
       "command": "get_session_forest",
       "domain": "sessions",
       "method": "sessions/get_session_forest",

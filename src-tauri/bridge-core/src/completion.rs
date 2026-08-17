@@ -40,6 +40,78 @@ impl RiskTier {
     }
 }
 
+/// Path/content tokens that mark a change `RiskTier::High` regardless of
+/// anything else. Shared between the deterministic-check planner (aggregate
+/// risk over a whole change) and per-file importance scoring.
+const HIGH_RISK_TOKENS: &[&str] = &[
+    "auth",
+    "secret",
+    "credential",
+    "migration",
+    "migrations",
+    "policy",
+    "adapter",
+    "adapters",
+];
+const HIGH_RISK_FILENAMES: &[&str] = &[
+    "store.rs",
+    "worker_lifecycle.rs",
+    "session_supervisor.rs",
+    "learning_router.rs",
+];
+/// Extensions/paths whose presence marks a change user-facing (`RiskTier::Medium`
+/// absent a High signal).
+const USER_FACING_PATH_NEEDLES: &[&str] = &[".tsx", ".jsx", "src/components", "src/app"];
+
+fn path_is_high_risk(lower_path: &str) -> bool {
+    HIGH_RISK_FILENAMES.iter().any(|name| lower_path.ends_with(name))
+        || lower_path
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| HIGH_RISK_TOKENS.contains(&token))
+}
+
+fn path_is_user_facing(lower_path: &str) -> bool {
+    USER_FACING_PATH_NEEDLES
+        .iter()
+        .any(|needle| lower_path.contains(needle))
+}
+
+/// A single file's importance, using the same signals `plan()` weighs in
+/// aggregate: known high-risk tokens/filenames, then user-facing surface.
+/// Unlike `plan()`, a lone file is never promoted to `Medium` just for being
+/// one of many changed paths.
+pub fn risk_tier_for_path(path: &str) -> RiskTier {
+    let lower = path.to_ascii_lowercase();
+    if path_is_high_risk(&lower) {
+        RiskTier::High
+    } else if path_is_user_facing(&lower) {
+        RiskTier::Medium
+    } else {
+        RiskTier::Low
+    }
+}
+
+/// Lockfiles, generated output, and vendored trees carry little review signal
+/// even when they change substantially — they should be visible, never hidden
+/// silently, but collapsed out of the way by default.
+pub fn is_low_signal_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    const SUFFIXES: &[&str] = &[".lock", "lock.json", "lock.yaml"];
+    const DIRECTORIES: &[&str] = &[
+        "generated",
+        "vendor",
+        "vendored",
+        "node_modules",
+        "dist",
+        "build",
+    ];
+    SUFFIXES.iter().any(|suffix| lower.ends_with(suffix))
+        || lower
+            .rsplit('/')
+            .skip(1)
+            .any(|directory| DIRECTORIES.contains(&directory))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalKind {
@@ -332,33 +404,8 @@ pub fn plan(input: PlanInput) -> EvalPlan {
             .iter()
             .any(|path| needles.iter().any(|needle| path.contains(needle)))
     };
-    let risk_tokens = lower_paths
-        .iter()
-        .flat_map(|path| path.split(|character: char| !character.is_ascii_alphanumeric()))
-        .collect::<HashSet<_>>();
-    let high_risk = [
-        "auth",
-        "secret",
-        "credential",
-        "migration",
-        "migrations",
-        "policy",
-        "adapter",
-        "adapters",
-    ]
-    .iter()
-    .any(|token| risk_tokens.contains(token))
-        || lower_paths.iter().any(|path| {
-            [
-                "store.rs",
-                "worker_lifecycle.rs",
-                "session_supervisor.rs",
-                "learning_router.rs",
-            ]
-            .iter()
-            .any(|name| path.ends_with(name))
-        });
-    let user_facing = touches(&[".tsx", ".jsx", "src/components", "src/app"])
+    let high_risk = lower_paths.iter().any(|path| path_is_high_risk(path));
+    let user_facing = lower_paths.iter().any(|path| path_is_user_facing(path))
         || ["browser", "screen", "dialog", "button", "user journey"]
             .iter()
             .any(|needle| joined_criteria.contains(needle));
@@ -1708,6 +1755,31 @@ mod tests {
             == Some("cargo test --manifest-path src-tauri/Cargo.toml --workspace")));
         assert!(result.checks.iter().any(|check| check.command.as_deref()
             == Some("cargo check --manifest-path src-tauri/Cargo.toml --workspace")));
+    }
+
+    #[test]
+    fn per_file_risk_tier_matches_the_planner_signals() {
+        assert_eq!(risk_tier_for_path("src-tauri/src/policy.rs"), RiskTier::High);
+        assert_eq!(
+            risk_tier_for_path("src-tauri/bridge-core/src/store.rs"),
+            RiskTier::High
+        );
+        assert_eq!(
+            risk_tier_for_path("src/components/Dialog.tsx"),
+            RiskTier::Medium
+        );
+        assert_eq!(risk_tier_for_path("README.md"), RiskTier::Low);
+    }
+
+    #[test]
+    fn low_signal_paths_cover_lockfiles_generated_and_vendored_trees() {
+        assert!(is_low_signal_path("bun.lock"));
+        assert!(is_low_signal_path("src-tauri/Cargo.lock"));
+        assert!(is_low_signal_path("package-lock.json"));
+        assert!(is_low_signal_path("src/protocol/generated/protocol.ts"));
+        assert!(is_low_signal_path("vendor/some-lib/index.js"));
+        assert!(!is_low_signal_path("src/App.tsx"));
+        assert!(!is_low_signal_path("src-tauri/bridge-core/src/git.rs"));
     }
 
     #[test]

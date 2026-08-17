@@ -144,6 +144,7 @@ typed_methods![
     (ListWorkspaceFiles, ListWorkspaceFilesParams, ListWorkspaceFilesResult),
     (RefreshWorkspace, RefreshWorkspaceParams, BridgeState),
     (ArchiveWorkspace, ArchiveWorkspaceParams, BridgeState),
+    (WorkspaceChanges, WorkspaceChangesParams, WorkspaceChangesResult),
     // sessions
     (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
