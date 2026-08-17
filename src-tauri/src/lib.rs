@@ -831,6 +831,21 @@ async fn archive_workspace(
     api::archive_workspace(state.inner(), &workspace_id)
 }
 
+#[tauri::command]
+async fn workspace_changes(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::WorkspaceChangeset, BridgeError> {
+    // Diffing runs entirely off the async runtime, same as refresh_workspace:
+    // a slow scan on a large repository must not delay message submission or
+    // streaming writes.
+    let core = state.inner().clone();
+    blocking("Workspace changes", move || {
+        api::workspace_changes(&core, &workspace_id)
+    })
+    .await
+}
+
 /// Which runtime host this app process runs behind, decided once in setup.
 /// The invoke handler reads it on every command: embedded commands run the
 /// `bridge_core::api` bodies in-process; daemon mode proxies the same wire
@@ -1096,7 +1111,8 @@ pub fn run() {
             resolve_approval,
             stop_session,
             refresh_workspace,
-            archive_workspace
+            archive_workspace,
+            workspace_changes
         ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

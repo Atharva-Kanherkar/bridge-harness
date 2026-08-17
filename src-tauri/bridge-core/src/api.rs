@@ -174,6 +174,18 @@ pub fn refresh_workspace(
     core.record_workspace_git_stats(workspace_id, stats)
 }
 
+/// The workspace's uncommitted changeset for the importance-first review UI:
+/// every path that differs from `HEAD`, tracked or not, each with a unified
+/// diff and an importance badge. Resolves the path under the lock, then runs
+/// Git entirely outside it, same as [`refresh_workspace`].
+pub fn workspace_changes(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<git::WorkspaceChangeset, BridgeError> {
+    let path = core.workspace_path(workspace_id)?;
+    git::workspace_changeset(Path::new(&path))
+}
+
 pub fn archive_workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,

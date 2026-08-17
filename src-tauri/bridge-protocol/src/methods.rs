@@ -49,6 +49,7 @@ methods![
     (ListWorkspaceFiles, "workspaces", "list_workspace_files"),
     (RefreshWorkspace, "workspaces", "refresh_workspace"),
     (ArchiveWorkspace, "workspaces", "archive_workspace"),
+    (WorkspaceChanges, "workspaces", "workspace_changes"),
     // sessions
     (GetSessionForest, "sessions", "get_session_forest"),
     (ReplaySessionEvents, "sessions", "replay_session_events"),

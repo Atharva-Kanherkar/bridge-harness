@@ -1,7 +1,8 @@
-use crate::{policy, BridgeError};
+use crate::{completion, completion::RiskTier, policy, BridgeError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -115,6 +116,32 @@ pub struct WorkerChangeSet {
     pub commits: Vec<String>,
     pub changed_paths: Vec<String>,
     pub patch: String,
+}
+
+/// One file's working-tree diff against `HEAD`, with the importance signal an
+/// importance-first review UI needs to triage it without opening every file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileChange {
+    pub path: String,
+    pub additions: i64,
+    pub deletions: i64,
+    pub patch: String,
+    pub binary: bool,
+    pub importance: RiskTier,
+    pub labels: Vec<String>,
+    /// Lockfiles, generated output, vendored trees: real changes, low review
+    /// signal. A UI may collapse these by default, but never omit them.
+    pub low_signal: bool,
+}
+
+/// The workspace's uncommitted changeset: every path that differs from
+/// `HEAD`, tracked or not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceChangeset {
+    pub base_commit: Option<String>,
+    pub files: Vec<WorkspaceFileChange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -785,6 +812,144 @@ fn nonempty_lines(value: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+/// The workspace's uncommitted changeset — every path that differs from
+/// `HEAD`, tracked or not — with per-file importance for an importance-first
+/// review UI. Working-tree diff vs `HEAD`, the same scope [`stats`] covers.
+pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeError> {
+    let base_commit = run(path, ["rev-parse", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned());
+    let mut files = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let numstat = run(
+        path,
+        [
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-renames",
+            "--numstat",
+            "HEAD",
+        ],
+    )?;
+    for line in numstat.lines().filter(|line| !line.trim().is_empty()) {
+        let columns: Vec<&str> = line.split('\t').collect();
+        if columns.len() < 3 {
+            continue;
+        }
+        let file_path = columns[2].trim().to_owned();
+        let binary = columns[0] == "-" || columns[1] == "-";
+        let additions = columns[0].parse::<i64>().unwrap_or(0);
+        let deletions = columns[1].parse::<i64>().unwrap_or(0);
+        let patch = if binary {
+            String::new()
+        } else {
+            run(
+                path,
+                [
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "--no-renames",
+                    "HEAD",
+                    "--",
+                    file_path.as_str(),
+                ],
+            )
+            .unwrap_or_default()
+        };
+        seen.insert(file_path.clone());
+        files.push(workspace_file_change(
+            file_path, additions, deletions, patch, binary,
+        ));
+    }
+
+    let porcelain = run(
+        path,
+        [
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+    )?;
+    for line in porcelain.lines() {
+        if line.len() <= 3 || &line[0..2] != "??" {
+            continue;
+        }
+        let file_path = line[3..].trim().trim_matches('"').to_owned();
+        if file_path.is_empty() || seen.contains(&file_path) {
+            continue;
+        }
+        let (patch, additions, binary) = untracked_file_patch(path, &file_path);
+        files.push(workspace_file_change(
+            file_path, additions, 0, patch, binary,
+        ));
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(WorkspaceChangeset { base_commit, files })
+}
+
+fn workspace_file_change(
+    path: String,
+    additions: i64,
+    deletions: i64,
+    patch: String,
+    binary: bool,
+) -> WorkspaceFileChange {
+    let importance = completion::risk_tier_for_path(&path);
+    let labels = completion::labels_for_paths(std::slice::from_ref(&path));
+    let low_signal = completion::is_low_signal_path(&path);
+    WorkspaceFileChange {
+        path,
+        additions,
+        deletions,
+        patch,
+        binary,
+        importance,
+        labels,
+        low_signal,
+    }
+}
+
+/// A new, untracked file has nothing in `HEAD` to diff against; synthesize an
+/// "entirely added" patch via `git diff --no-index` instead of touching the
+/// index (`--intent-to-add` would mutate state this read-only view must not).
+fn untracked_file_patch(worktree: &Path, relative_path: &str) -> (String, i64, bool) {
+    let full_path = worktree.join(relative_path);
+    let bytes = match std::fs::read(&full_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return (String::new(), 0, true),
+    };
+    if bytes.contains(&0) {
+        return (String::new(), 0, true);
+    }
+    let additions = String::from_utf8_lossy(&bytes).lines().count() as i64;
+    let output = Command::new("git")
+        .args([
+            "diff",
+            "--no-index",
+            "--no-renames",
+            "--",
+            "/dev/null",
+            relative_path,
+        ])
+        .current_dir(worktree)
+        .output();
+    let patch = match output {
+        // `--no-index` exits 1 when it finds differences, which is the normal
+        // case here; only a genuinely failed invocation has no usable status.
+        Ok(result) if matches!(result.status.code(), Some(0) | Some(1)) => {
+            String::from_utf8_lossy(&result.stdout).into_owned()
+        }
+        _ => String::new(),
+    };
+    (patch, additions, false)
+}
+
 pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
     let porcelain = run(path, ["status", "--porcelain"])?;
     let dirty = porcelain.lines().count() as i64;
@@ -1291,5 +1456,52 @@ mod tests {
         );
         assert!(git(&repo, &["status", "--porcelain"]).is_empty());
         assert!(!repo.join(".git/MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn workspace_changeset_covers_tracked_and_untracked_files_with_importance() {
+        let (_fixture, repo) = repository();
+        std::fs::write(repo.join("shared.txt"), "base\nedited\n").unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/policy.rs"), "fn guard() {}\n").unwrap();
+        std::fs::write(repo.join("bun.lock"), "{}\n").unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+        assert!(changeset.base_commit.is_some());
+        let by_path = |path: &str| changeset.files.iter().find(|file| file.path == path).unwrap();
+
+        let shared = by_path("shared.txt");
+        assert_eq!(shared.additions, 1);
+        assert!(shared.patch.contains("edited"));
+        assert!(!shared.binary);
+
+        let policy = by_path("src/policy.rs");
+        assert_eq!(policy.importance, crate::completion::RiskTier::High);
+        assert!(policy.patch.contains("fn guard"));
+        assert!(!policy.low_signal);
+
+        let lock = by_path("bun.lock");
+        assert!(lock.low_signal);
+
+        let mut sorted_paths: Vec<_> = changeset.files.iter().map(|file| file.path.clone()).collect();
+        let mut expected = sorted_paths.clone();
+        expected.sort();
+        assert_eq!(sorted_paths, expected, "files are sorted by path");
+        sorted_paths.dedup();
+        assert_eq!(sorted_paths.len(), changeset.files.len(), "no duplicate paths");
+    }
+
+    #[test]
+    fn workspace_changeset_reports_deletions_against_head() {
+        let (_fixture, repo) = repository();
+        std::fs::remove_file(repo.join("shared.txt")).unwrap();
+        let changeset = workspace_changeset(&repo).unwrap();
+        let shared = changeset
+            .files
+            .iter()
+            .find(|file| file.path == "shared.txt")
+            .unwrap();
+        assert_eq!(shared.deletions, 1);
+        assert_eq!(shared.additions, 0);
     }
 }

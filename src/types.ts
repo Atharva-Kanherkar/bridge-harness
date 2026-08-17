@@ -80,6 +80,9 @@ export type {
   VerifierManifest,
   WorkerRepositoryBinding,
   Workspace,
+  WorkspaceChangesResult,
+  WorkspaceFileChange,
+  RiskTier,
   MarketplaceAction,
   MarketplaceProvider,
 } from "./protocol/generated/protocol";

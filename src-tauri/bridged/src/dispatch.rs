@@ -60,6 +60,10 @@ pub fn dispatch(
             let p: wire::ArchiveWorkspaceParams = decode(method, params)?;
             reply(api::archive_workspace(core, &p.workspace_id))
         }
+        MethodName::WorkspaceChanges => {
+            let p: wire::WorkspaceChangesParams = decode(method, params)?;
+            reply(api::workspace_changes(core, &p.workspace_id))
+        }
 
         MethodName::GetSessionForest => {
             let p: wire::GetSessionForestParams = decode(method, params)?;

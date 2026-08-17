@@ -8,6 +8,7 @@ import type {
   ManagedAgentOperationKind,
   ManagedAgentOperationResult,
   ManagedAgentStatus,
+  WorkspaceChangesResult,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
@@ -635,6 +636,8 @@ export const bridgeApi = {
     if (isTauri()) return call("workspaces/archive_workspace", { workspaceId });
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();
   },
+  workspaceChanges: (workspaceId: string): Promise<WorkspaceChangesResult> =>
+    isTauri() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);
@@ -652,6 +655,57 @@ export const bridgeApi = {
     return () => undefined;
   }
 };
+
+/** Browser-mode fixture for the Changes tab: one file per importance tier,
+ * plus a lockfile, so the collapse-by-default affordance has something to
+ * hide even without a daemon. */
+function mockWorkspaceChanges(): WorkspaceChangesResult {
+  return {
+    baseCommit: "a1b2c3d4",
+    files: [
+      {
+        path: "src-tauri/bridge-core/src/policy.rs",
+        additions: 18,
+        deletions: 4,
+        patch: "@@ -10,7 +10,21 @@\n-fn allow(path: &str) -> bool {\n+fn allow(path: &str, owner: &str) -> bool {\n     true\n }\n",
+        binary: false,
+        importance: "high",
+        labels: ["rust"],
+        lowSignal: false,
+      },
+      {
+        path: "src/components/ChangesPanel.tsx",
+        additions: 42,
+        deletions: 6,
+        patch: "@@ -1,3 +1,5 @@\n+import { useState } from \"react\";\n export function ChangesPanel() {\n   return null;\n }\n",
+        binary: false,
+        importance: "medium",
+        labels: ["frontend"],
+        lowSignal: false,
+      },
+      {
+        path: "src/utils.ts",
+        additions: 3,
+        deletions: 1,
+        patch: "@@ -4,5 +4,7 @@\n export function slug(value: string) {\n-  return value;\n+  return value.toLowerCase();\n }\n",
+        binary: false,
+        importance: "low",
+        labels: ["frontend"],
+        lowSignal: false,
+      },
+      {
+        path: "bun.lock",
+        additions: 240,
+        deletions: 12,
+        patch: "",
+        binary: false,
+        importance: "low",
+        labels: [],
+        lowSignal: true,
+      },
+    ],
+  };
+}
 
 /// Browser-mode fixtures: one managed, one user-managed, one absent, so the
 /// three interesting cards are all reachable without a daemon.
