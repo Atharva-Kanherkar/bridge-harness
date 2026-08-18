@@ -80,6 +80,25 @@ function recentLines(events: AgentEvent[], sessionId: string): { id: number; tex
   return out.slice(-4);
 }
 
+// Workers get the lifecycle/result-driven resolver. A top-level session's own
+// status is authoritative and its "ready"/"warm" states are live — resolving both
+// the same way would mislabel a ready orchestrator or chat as DONE.
+function agentStatus(session: Session, runtime?: WorkerRuntimeRecord): { tone: WorkerTone; label: string; detail?: string } {
+  if (session.parentSessionId) return workerStatus(session, runtime);
+  switch (session.status) {
+    case "failed": return { tone: "failed", label: "FAILED" };
+    case "cancelled": return { tone: "failed", label: "CANCELLED" };
+    case "working": return { tone: "working", label: "WORKING" };
+    case "waiting": return { tone: "waiting", label: "NEEDS YOU" };
+    case "ready": return { tone: "warm", label: "READY" };
+    case "warm": return { tone: "warm", label: "WARM" };
+    case "checkpointing": return { tone: "warm", label: "CHECKPOINTING" };
+    case "starting": case "resuming": case "restored": return { tone: "working", label: session.status.toUpperCase() };
+    case "completed": case "stopped": return { tone: "done", label: "DONE" };
+    default: return { tone: "idle", label: (session.status ?? "idle").toUpperCase() };
+  }
+}
+
 function relativeUpdate(value: string | undefined, now: number): string | undefined {
   if (!value) return undefined;
   const elapsed = Math.max(0, now - Date.parse(value));
@@ -193,10 +212,16 @@ export function MissionControl({
     for (const session of sessions) {
       if (session.harness === "shell") continue;
       const runtime = runtimes.find(item => item.sessionId === session.id);
-      const status = workerStatus(session, runtime);
-      // An idle chat with nothing running is noise here; keep it only when it is
-      // the one the user just came from, so returning to the grid never blanks.
-      if (status.tone === "idle" && session.id !== activeSessionId) continue;
+      const isActive = session.id === activeSessionId;
+      // Runtimes and reasons are scoped to the loaded forest. A worker we have no
+      // runtime for belongs to a forest we did not load, so its status cannot be
+      // trusted (a failed one would read as DONE); leave it out rather than lie.
+      if (session.parentSessionId && !runtime && !isActive) continue;
+      const status = agentStatus(session, runtime);
+      // Only live agents belong on the grid. Idle chats and finished sessions are
+      // dropped (keeping the active one so returning to the grid never blanks),
+      // which also stops completed history from growing the grid without bound.
+      if ((status.tone === "idle" || status.tone === "done") && !isActive) continue;
       const activity = reasons
         .filter(reason => reason.entityId === session.id)
         .sort((a, b) => b.id - a.id)[0]?.body;

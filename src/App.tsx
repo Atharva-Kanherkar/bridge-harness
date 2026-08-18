@@ -181,6 +181,9 @@ export function App() {
   const hasRepo = !!workspace?.path;
   const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
   const isDirectChat = session?.kind === "direct";
+  // A focused worker is watchable and its approvals are resolvable, but the
+  // backend rejects worker turns, so it gets no composer.
+  const isWorkerView = !!session?.parentSessionId;
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const childWorkers = useMemo(() => session ? state.sessions.filter(worker => {
@@ -339,7 +342,10 @@ export function App() {
   // Load available slash commands + skills from signed-in providers.
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
 
-  function openSession(id: string) { setView("workspace"); setParadigm("single"); setSelectedSessionId(id); }
+  // Always land on the Agent tab: focusing a session (especially a blocked
+  // worker from Mission Control) must reveal its conversation and approval card,
+  // not whatever tab — Changes/Terminal — happened to be open before.
+  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); }
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
@@ -634,7 +640,7 @@ export function App() {
                     <em className="not-italic font-mono text-[11px]"><b className="text-emerald-400">+{workspace.additions}</b> <b className="text-red-400">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
-                <div className="relative mx-auto max-w-2xl">
+                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-neutral-400"><Bot size={14} className="shrink-0 text-neutral-500" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
                   {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
@@ -680,7 +686,7 @@ export function App() {
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                   />
-                </div>
+                </div>}
               </div>
             </>}
             {hasRepo && workspace && activeTab === "changes" && <ChangesPanel workspace={workspace}/>}

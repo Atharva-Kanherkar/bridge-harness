@@ -110,6 +110,52 @@ describe("MissionControl", () => {
     expect(html).toContain("waiting on write-scope approval");
   });
 
+  it("keeps a ready top-level session live instead of marking it DONE", () => {
+    const html = renderToStaticMarkup(
+      <MissionControl
+        sessions={[session("orchestrator-1", { kind: "orchestrator", label: "Ready orchestrator", status: "ready", parentSessionId: null })]}
+        runtimes={[]}
+        reasons={[]}
+        events={[]}
+        now={NOW}
+        onFocusSession={() => undefined}
+      />,
+    );
+    expect(html).toContain("Ready orchestrator");
+    expect(html).toContain("READY");
+    expect(html).not.toContain("DONE");
+  });
+
+  it("hides a worker whose runtime was not loaded so its status is never guessed", () => {
+    const html = renderToStaticMarkup(
+      <MissionControl
+        sessions={[session("worker-elsewhere", { label: "Foreign worker", status: "working", parentSessionId: "other-orchestrator" })]}
+        runtimes={[]}
+        reasons={[]}
+        events={[]}
+        now={NOW}
+        onFocusSession={() => undefined}
+      />,
+    );
+    expect(html).toContain("No agents running yet");
+    expect(html).not.toContain("Foreign worker");
+  });
+
+  it("drops finished sessions so completed history does not grow the grid", () => {
+    const html = renderToStaticMarkup(
+      <MissionControl
+        sessions={[session("worker-done", { label: "Finished worker", status: "completed" })]}
+        runtimes={[runtime("worker-done", { lifecycleState: "completed" })]}
+        reasons={[]}
+        events={[]}
+        now={NOW}
+        onFocusSession={() => undefined}
+      />,
+    );
+    expect(html).toContain("No agents running yet");
+    expect(html).not.toContain("Finished worker");
+  });
+
   it("shows an empty state when no agents are live", () => {
     const html = renderToStaticMarkup(
       <MissionControl sessions={[]} runtimes={[]} reasons={[]} events={[]} now={NOW} onFocusSession={() => undefined} />,
