@@ -363,12 +363,15 @@ describe("ManagedAgentsPanel styling", () => {
     // Nothing may reach for a raw variable: the theme utilities are the contract.
     expect(source).not.toMatch(/var\(--/);
 
-    // A declared token is not automatically a *text* colour. `--destructive` and
-    // `--warning` are surface tokens paired with `*-foreground`, and used as text
-    // they resolve near-black on a dark card — visually invisible, which the
-    // declared-token check above cannot see. Found by actually looking at it.
-    expect(source).not.toMatch(/\btext-destructive\b/);
-    expect(source).not.toMatch(/\btext-warning\b/);
+    // A declared token is still not automatically a *text* colour, but Graphite
+    // & Paper swapped which half of each pair is safe: `--destructive` and
+    // `--warning` are now status ink, legible on any resting surface, while
+    // `*-foreground` is the paper laid on top of that ink. Used as text on a
+    // card a `*-foreground` token resolves to near-paper and disappears — the
+    // mirror image of the bug this originally caught, and just as invisible to
+    // the declared-token check below.
+    expect(source).not.toMatch(/\btext-destructive-foreground\b/);
+    expect(source).not.toMatch(/\btext-warning-foreground\b/);
 
     // Tailwind's own palette (text-red-400) is built in; a bare name
     // (text-foreground) has to be a project token.

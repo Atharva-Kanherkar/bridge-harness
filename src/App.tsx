@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
@@ -11,7 +11,6 @@ import { MissionControl } from "./components/MissionControl";
 import { isVisibleWorker } from "./components/workerStatus";
 import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
-import { SpaceBackground } from "./components/SpaceBackground";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
@@ -21,6 +20,7 @@ import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
+import { useThemePreference } from "./theme";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
 import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
@@ -71,6 +71,7 @@ export function App() {
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
+  const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
@@ -162,7 +163,8 @@ export function App() {
       agentEventQueueRef.current = [];
     };
   }, [reload]);
-  useEffect(() => { document.documentElement.classList.add("dark"); }, []);
+  useThemePreference();
+  useEffect(() => { setNavOpen(false); }, [view, selectedSessionId]);
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -542,17 +544,34 @@ export function App() {
   const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
-  if (!health || !modelSetup) return <div className="space-dark relative grid h-[100dvh] place-items-center overflow-hidden text-neutral-500"><SpaceBackground paused /><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
-  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="space-dark relative h-[100dvh] overflow-hidden"><SpaceBackground paused /><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  return <div className="space-dark relative flex h-[100dvh] overflow-hidden text-neutral-200">
-    <SpaceBackground paused={turnActive} />
+  if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
+  return <div className="relative flex h-[100dvh] overflow-hidden bg-background text-foreground">
 
-    <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
-      {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> {paradigm === "grid" ? "Focus" : "Mission Control"}</Button>}
+    <div className="fixed right-2 top-1.5 z-40 flex items-center gap-1.5 sm:right-5 sm:top-5">
+      {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
       <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>
 
+    <div
+      className="fixed inset-x-0 top-0 z-20 flex h-11 items-center gap-2 border-b border-border bg-sidebar pl-[84px] pr-[148px] sm:hidden"
+      data-tauri-drag-region
+    >
+      <button
+        type="button"
+        onClick={() => setNavOpen(true)}
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        aria-label="Open navigation"
+        aria-expanded={navOpen}
+      >
+        <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
+      </button>
+      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
+    </div>
+
     <BridgeSidebar
+      mobileOpen={navOpen}
+      onCloseMobile={() => setNavOpen(false)}
       standaloneChats={standaloneChats}
       workspaces={state.workspaces}
       workspaceChats={workspaceId => topSessions.filter(s => s.workspaceId === workspaceId)}
@@ -573,7 +592,7 @@ export function App() {
       onNewWorkspaceSession={requestWorkspaceSession}
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />
-    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
+    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount pt-11 sm:pt-0">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={state.sessions}
@@ -583,10 +602,10 @@ export function App() {
         activeSessionId={session?.id}
         onFocusSession={openSession}
       /> : session ? <>
-        <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
+        <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-border ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
-            <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
-            {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-neutral-500 font-mono text-[10px]">
+            <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-foreground font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
+            {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-muted-foreground font-mono text-[10px]">
               <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}<span>·</span>{harnessLabel(session.harness)}<span>·</span>{modelDisplayName(adapters, session.harness, session.model)}
               {hasRepo && workspace && (usesIsolatedWorktree
                 ? <><span>·</span><GitBranch size={12} aria-hidden="true" />isolated worktree</>
@@ -631,39 +650,39 @@ export function App() {
                   onResolve={resolveApproval}
                 />
               </div>
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#050507]/90 to-transparent sm:h-20" />
+              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
               <div className="relative z-10 flex-none safe-bottom">
                 {hasRepo && workspace && workspace.dirtyFiles > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
-                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-neutral-400 text-xs">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs">
                     <FileDiff size={12} aria-hidden="true" />
                     <span>{`${workspace.dirtyFiles} file${workspace.dirtyFiles === 1 ? "" : "s"}`}</span>
-                    <em className="not-italic font-mono text-[11px]"><b className="text-emerald-400">+{workspace.additions}</b> <b className="text-red-400">−{workspace.deletions}</b></em>
+                    <em className="not-italic font-mono text-[11px]"><b className="text-success">+{workspace.additions}</b> <b className="text-destructive">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
-                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-neutral-400"><Bot size={14} className="shrink-0 text-neutral-500" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
-                  {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
+                  {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Reference a file</span>
-                      <span className="normal-case tracking-normal text-neutral-700">{fileMatches.length}</span>
+                      <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
                     </div>
                     <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/30 ${index === mentionIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
-                        <FileText size={13} className="shrink-0 text-neutral-500" aria-hidden="true" />
-                        <span className="flex-1 min-w-0 text-[12px] whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-neutral-500">{dir}</span><span className="text-neutral-100">{base}</span></span>
+                      {fileMatches.map((file, index) => { const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : ""; const base = file.slice(dir.length); return <button id={`file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyFileMention(file); }} className={`min-h-11 w-full flex items-center gap-2 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                        <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <span className="flex-1 min-w-0 text-[12px] whitespace-nowrap overflow-hidden text-ellipsis"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
                       </button>; })}
                     </div>
                   </div>}
                   {slashOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
-                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Commands & skills</span>
-                      <span className="normal-case tracking-normal text-neutral-700">{slashMatches.length}</span>
+                      <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
                     </div>
                     <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"}`}>
-                        <span className="font-mono text-[12px] text-neutral-100 whitespace-nowrap">/{command.name}</span>
-                        <span className="flex-1 min-w-0 text-[11px] text-neutral-500 whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-neutral-500 border border-white/[0.08] rounded px-1 py-[1px]">{harnessLabel(command.harness)}</span>
+                      {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                        <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
+                        <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
+                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{harnessLabel(command.harness)}</span>
                       </button>)}
                     </div>
                   </div>}
@@ -709,7 +728,7 @@ export function App() {
         snapshot: session ? usageByProvider[session.harness as UsageProvider] : undefined,
       });
       return (
-        <Alert variant={described.kind === "usage-limit" ? "warning" : "error"} className="fixed right-[18px] bottom-[18px] z-40 max-w-[520px] bg-card/70 backdrop-blur-2xl backdrop-saturate-150 border-foreground/10 shadow-[0_24px_70px_-20px_rgba(0,0,0,0.65)]">
+        <Alert variant={described.kind === "usage-limit" ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
           <AlertTitle>{described.title}</AlertTitle>
           <AlertDescription>{described.message}</AlertDescription>
           <AlertAction>
@@ -758,7 +777,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const modelLabel = currentModel?.label ?? model ?? "Default";
   const compactLabel = `${harnessLabel(harness)} · ${modelLabel}`;
   return <div className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex max-w-[220px] items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-neutral-400 hover:bg-white/[0.08]" : "h-[28px] px-2 text-[11.5px] text-neutral-300 hover:bg-white/[0.06]"}`} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : `Choose ${roleLabel.toLowerCase()} model`} aria-label={`${roleLabel} model: ${harnessLabel(harness)} ${modelLabel}`}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex max-w-[220px] items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-muted-foreground hover:bg-accent" : "h-[28px] px-2 text-[11.5px] text-foreground/90 hover:bg-accent"}`} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : `Choose ${roleLabel.toLowerCase()} model`} aria-label={`${roleLabel} model: ${harnessLabel(harness)} ${modelLabel}`}>
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
       <ChevronDown size={compact ? 14 : 12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
     </button>
@@ -835,7 +854,7 @@ function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpande
   const badge = IMPORTANCE_BADGE[file.importance];
   return <div className="u-glass-soft rounded-lg overflow-hidden">
     <div className="flex items-center gap-2.5 pl-2 pr-3 py-2">
-      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex-1 min-w-0 flex items-center gap-2 text-left px-1.5 py-1 rounded-md hover:bg-white/[0.04]">
+      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex-1 min-w-0 flex items-center gap-2 text-left px-1.5 py-1 rounded-md hover:bg-accent">
         <ChevronDown size={13} className={`shrink-0 text-muted-foreground/60 transition-transform ${expanded ? "" : "-rotate-90"}`} aria-hidden="true" />
         <span className="font-mono text-[12px] text-foreground truncate">{file.path}</span>
       </button>
@@ -845,7 +864,7 @@ function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpande
         type="button"
         onClick={onToggleViewed}
         aria-pressed={viewed}
-        className={`shrink-0 flex items-center gap-1 h-6 px-2 rounded-full border text-[10.5px] transition-colors ${viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:bg-white/[0.05]"}`}
+        className={`shrink-0 flex items-center gap-1 h-6 px-2 rounded-full border text-[10.5px] transition-colors ${viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:bg-accent"}`}
       >
         {viewed ? <Check size={11} aria-hidden="true" /> : <span className="w-2.5 h-2.5 rounded-[3px] border border-current" aria-hidden="true" />}
         Viewed
@@ -931,7 +950,7 @@ function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types
   const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
   const model = profile?.model ?? preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
   const tierLabel = model?.tier === "strong" ? "High" : model?.tier === "standard" ? "Balanced" : "Fast";
-  return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-neutral-400">{tierLabel}<ChevronDown size={14} className="text-neutral-600" aria-hidden="true" /></span>;
+  return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-muted-foreground">{tierLabel}<ChevronDown size={14} className="text-muted-foreground/70" aria-hidden="true" /></span>;
 }
 
 function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; canStartChat: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
@@ -944,7 +963,7 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
     setDraft("");
   };
   return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
-    <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-white sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
+    <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
     <ComposerPill
       layout="hero"
       value={draft}
@@ -956,7 +975,7 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       onPlusClick={onNewWorkspace}
       trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />
-    <p className="mt-6 max-w-md text-[13px] leading-relaxed text-neutral-500">{greeting.hint}</p>
+    <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>
   </div>;
 }
 function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-[10px] font-semibold tracking-[0.09em]">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-[12.5px] font-medium">{w.title}</b><small className="text-[10.5px] text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-[10px]">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-[10.5px]"><span>↑↓ navigate</span><span>esc close</span></div></>; }

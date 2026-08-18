@@ -106,8 +106,8 @@ export function ManagedAgentsPanel({ initialAgents }: { initialAgents?: ManagedA
   if (listError) {
     return (
       <div className="flex items-center gap-3">
-        <p role="alert" className="text-sm text-red-400">{listError}</p>
-        <button type="button" className="u-glass rounded-lg px-3 py-1.5 text-xs" onClick={() => void load()}>
+        <p role="alert" className="text-sm text-destructive">{listError}</p>
+        <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent" onClick={() => void load()}>
           Retry
         </button>
       </div>
@@ -164,7 +164,7 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
 
   return (
     <article
-      className="u-glass-soft flex flex-col gap-2 rounded-xl p-4"
+      className="u-surface flex flex-col gap-2 rounded-xl p-4"
       aria-labelledby={`${agent.agentId}-title`}
       data-testid={`agent-card-${agent.agentId}`}
     >
@@ -195,14 +195,14 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
       {/* Verbatim vendor guidance. Bridge surfaces it and owns none of it: there
           is no field to type a credential into anywhere in this panel. */}
       {agent.vendorMessage && (
-        <p className="text-xs text-amber-300" data-testid={`agent-vendor-${agent.agentId}`}>
+        <p className="text-xs text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
         </p>
       )}
 
-      {error && <p id={errorId} role="alert" className="text-xs text-red-400">{error}</p>}
+      {error && <p id={errorId} role="alert" className="text-xs text-destructive">{error}</p>}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {busy ? (
           // Indeterminate on purpose: the RPC reports completion, not progress.
           <span
@@ -216,13 +216,13 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
         ) : (
           <>
             {absent && (
-              <button type="button" className="u-glass rounded-lg px-3 py-1.5 text-xs"
+              <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent"
                 onClick={onInstall} aria-describedby={describedBy}>
                 Install
               </button>
             )}
             {needsRepair && (
-              <button type="button" className="u-glass rounded-lg px-3 py-1.5 text-xs"
+              <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent"
                 onClick={onRepair} aria-describedby={describedBy}>
                 Repair
               </button>
@@ -253,7 +253,7 @@ function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
             {agent.removable && (
               <button
                 type="button"
-                className="rounded-lg px-3 py-1.5 text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+                className="rounded-lg px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
                 onClick={onRemove}
                 disabled={running}
                 aria-describedby={[running ? reasonId : null, error ? errorId : null]
@@ -321,13 +321,13 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 pt-[10vh] backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md sm:pt-[10vh]"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       data-testid="remove-confirmation"
     >
-      <div ref={dialog} className="u-glass-popover flex w-full max-w-md flex-col gap-2 rounded-xl p-4">
+      <div ref={dialog} className="u-overlay-strong flex max-h-[90dvh] w-full max-w-md flex-col gap-2 overflow-y-auto rounded-xl p-4">
         <h4 id={titleId} className="text-sm font-medium text-foreground">
           Remove the Bridge-managed {agent.label}
           {agent.version ? ` ${agent.version}` : ""}?
@@ -341,18 +341,18 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
           Your conversation history, vendor configuration, sign-in, and any copy you
           installed yourself are left untouched. You can reinstall at any time.
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             data-autofocus
-            className="u-glass rounded-lg px-3 py-1.5 text-xs"
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent"
             onClick={onCancel}
           >
             Keep it
           </button>
           <button
             type="button"
-            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-red-300"
+            className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/20"
             onClick={onConfirm}
           >
             Remove
