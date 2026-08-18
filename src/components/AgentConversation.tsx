@@ -254,7 +254,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onWaiveCompletion, onRefreshBase, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onOpenSession, onWaiveCompletion, onRefreshBase, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [] }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[] }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -286,7 +286,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {renderedItems.map(entry => entry.kind === "group"
         ? <ActivityGroup key={entry.key} items={entry.items}/>
         : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
-        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} onRefreshBase={onRefreshBase} errorContext={errorContext}/>)}
+        : <ItemView key={entry.item.key} item={entry.item} onResolve={onResolve} onOpenSession={onOpenSession} onRefreshBase={onRefreshBase} errorContext={errorContext}/>)}
       {optimistic.map((text, index) => <div key={`pending-${index}`} className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{text}</div></div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start pl-4"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
     </div>
@@ -395,7 +395,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, onResolve, onRefreshBase, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; onRefreshBase?: () => Promise<void>; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, onResolve, onOpenSession, onRefreshBase, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className="chat-message-enter flex w-full justify-end"><div className="max-w-[min(100%,44rem)] rounded-[1.35rem] rounded-tr-md border border-white/[0.07] bg-white/[0.055] px-5 py-3 text-[15px] leading-[1.7] tracking-[-0.006em] text-neutral-100 shadow-[0_10px_30px_-14px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl whitespace-pre-wrap">{item.text}</div></div>;
     return <div className="chat-message-enter flex w-full justify-start"><div className="relative max-w-[min(100%,44rem)] py-1 pl-1 text-neutral-300">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div></div>;
@@ -404,7 +404,7 @@ function ItemView({ item, onResolve, onRefreshBase, errorContext }: { item: Conv
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
-  if (item.type === "delegation") return <DelegationRow item={item}/>;
+  if (item.type === "delegation") return <DelegationRow item={item} onOpenSession={onOpenSession}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") {
@@ -563,13 +563,17 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item }: { item: ConversationItem }) {
+function DelegationRow({ item, onOpenSession }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void }) {
   // A background worker's own approval card renders on the worker's conversation,
   // which is normally not the selected one. This mirrored row is what makes the
   // block visible where the user is actually working.
   if ("childBlocked" in item.data) {
     const blocked = item.data.childBlocked === true;
     const paths = Array.isArray(item.data.ownedPaths) ? item.data.ownedPaths.map(String) : [];
+    // The child session id travels on the event, so the mirror can hand the user
+    // straight to the worker's conversation where the real approval lives —
+    // otherwise the block is a dead end and the card is effectively lost.
+    const childSessionId = typeof item.data.childSessionId === "string" ? item.data.childSessionId : undefined;
     if (!blocked) {
       return <div className="my-3 flex items-center gap-[9px] px-2 -ml-2 text-muted-foreground text-[12.5px]">
         <Check size={13} aria-hidden="true" />
@@ -583,7 +587,12 @@ function DelegationRow({ item }: { item: ConversationItem }) {
       {item.data.command ? <code className="mt-1.5 block rounded-md border border-warning/25 bg-background/40 px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-warning/90">{String(item.data.command)}</code> : null}
       {item.data.cwd ? <small className="mt-1 block font-mono text-[10.5px] text-warning/60">{String(item.data.cwd)}</small> : null}
       {paths.length > 0 && <small className="mt-1 block font-mono text-[10.5px] text-warning/60">write scope: {paths.join(", ")}</small>}
-      <p className="mt-1 text-warning/70">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>
+      {childSessionId && onOpenSession
+        ? <div className="mt-2 flex items-center gap-2">
+            <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/15 px-2.5 py-1 text-[11px] font-medium text-warning transition-colors hover:bg-warning/25"><CornerDownRight size={12} aria-hidden="true" /> Open worker to approve</button>
+            <span className="text-warning/60">The worker is idle until you do.</span>
+          </div>
+        : <p className="mt-1 text-warning/70">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
     </div>;
   }
   const isRejected = "willRetry" in item.data;

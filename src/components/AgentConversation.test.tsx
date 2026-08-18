@@ -165,6 +165,19 @@ describe("AgentConversation", () => {
     expect(resolved).toContain("approval accept");
     expect(resolved).not.toContain('role="alert"');
   });
+  it("gives the mirrored block a way to reach the worker's own approval", () => {
+    const data = { childBlocked: true, childSessionId: "child-77", label: "Implementation · strong", command: "bun install", ownedPaths: ["src/**"] };
+    const actionable = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} onOpenSession={() => undefined} events={[
+      event(1, "delegation.blocked", { role: "system", status: "waiting", title: "worker needs your approval", data })
+    ]}/>);
+    expect(actionable).toContain("Open worker to approve");
+    // Without a navigation handler the block stays a plain instruction, never a dead button.
+    const inert = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "delegation.blocked", { role: "system", status: "waiting", title: "worker needs your approval", data })
+    ]}/>);
+    expect(inert).not.toContain("Open worker to approve");
+    expect(inert).toContain("Open the worker");
+  });
   it("surfaces conversation and file-state divergence", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);
     expect(html).toContain("This branch&#x27;s context predates the current file state.");

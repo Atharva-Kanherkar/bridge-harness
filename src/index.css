@@ -351,6 +351,16 @@
   animation: page-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* The live accent bar on a working Mission Control tile. */
+@keyframes mission-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.9; }
+}
+
+.mission-live-accent {
+  animation: mission-pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 @supports (padding: max(0px)) {
   .safe-bottom {
     padding-bottom: max(1rem, env(safe-area-inset-bottom));

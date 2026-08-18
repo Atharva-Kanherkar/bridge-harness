@@ -7,6 +7,7 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { MissionControl } from "./components/MissionControl";
 import { isVisibleWorker } from "./components/workerStatus";
 import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
@@ -70,6 +71,9 @@ export function App() {
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
+  // Two ways to look at the workspace: the classic single-session view, or the
+  // Mission Control grid where every live agent is its own window at once.
+  const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
   const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | null>(null);
@@ -169,7 +173,10 @@ export function App() {
   const adaptersReady = adapters.some(adapter => adapter.available);
   const topSessions = useMemo(() => state.sessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [state.sessions]);
   const standaloneChats = useMemo(() => topSessions.filter(s => !s.workspaceId), [topSessions]);
-  const session = topSessions.find(s => s.id === selectedSessionId);
+  // Resolve across every session, not just top-level ones: a worker can be
+  // opened directly (from Mission Control or a blocked-approval link) so its own
+  // conversation — and the approval card that lives on it — is reachable.
+  const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell");
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
@@ -332,7 +339,7 @@ export function App() {
   // Load available slash commands + skills from signed-in providers.
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
 
-  function openSession(id: string) { setView("workspace"); setSelectedSessionId(id); }
+  function openSession(id: string) { setView("workspace"); setParadigm("single"); setSelectedSessionId(id); }
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
@@ -535,6 +542,7 @@ export function App() {
     <SpaceBackground paused={turnActive} />
 
     <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
+      {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> {paradigm === "grid" ? "Focus" : "Mission Control"}</Button>}
       <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>
 
@@ -561,7 +569,14 @@ export function App() {
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : session ? <>
+      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+        sessions={state.sessions}
+        runtimes={forest?.workerRuntimes ?? []}
+        reasons={forest?.reasons ?? []}
+        events={agentEvents}
+        activeSessionId={session?.id}
+        onFocusSession={openSession}
+      /> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
@@ -593,6 +608,7 @@ export function App() {
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
+                  onOpenSession={openSession}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
