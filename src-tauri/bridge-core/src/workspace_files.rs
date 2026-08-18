@@ -262,9 +262,11 @@ pub struct FileContents {
     pub content: String,
     /// SHA-256 of the bytes on disk, the token a later write must present.
     pub sha256: String,
-    /// Set for files we will not hand to the editor: binary, or over the
-    /// ceiling. `content` is empty and no write will be accepted.
+    /// Over the editor's ceiling. `content` is empty and `sha256` is empty
+    /// too — there is no write token, so no write can be aimed at this file.
     pub too_large: bool,
+    /// Binary, or text in an encoding a write would rewrite. `content` is
+    /// empty; `sha256` is real, and [`write_file`] refuses it anyway.
     pub binary: bool,
     pub size_bytes: u64,
 }
@@ -318,19 +320,29 @@ pub fn read_file(root: &Path, path: &str) -> Result<FileContents, BridgeError> {
     if !metadata.is_file() {
         return Err(BridgeError::Invalid(format!("{path} is not a file")));
     }
+    let too_large = |size_bytes: u64| FileContents {
+        path: path.to_owned(),
+        content: String::new(),
+        sha256: String::new(),
+        too_large: true,
+        binary: false,
+        size_bytes,
+    };
     let size_bytes = metadata.len();
     if size_bytes > MAX_EDIT_BYTES {
-        return Ok(FileContents {
-            path: path.to_owned(),
-            content: String::new(),
-            sha256: String::new(),
-            too_large: true,
-            binary: false,
-            size_bytes,
-        });
+        return Ok(too_large(size_bytes));
     }
+    // The metadata length only describes the file as it was a syscall ago. An
+    // agent appending during the read would sail past the ceiling, so read one
+    // byte more than the cap and let the byte count be the thing that decides.
     let mut bytes = Vec::with_capacity(size_bytes as usize);
-    file.read_to_end(&mut bytes)?;
+    (&mut file)
+        .take(MAX_EDIT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_EDIT_BYTES {
+        return Ok(too_large(bytes.len() as u64));
+    }
+    let size_bytes = bytes.len() as u64;
     let sha256 = hash_bytes(&bytes);
     // A NUL in the first 8k is the same heuristic Git uses to call a file
     // binary, and it is the one the diff view already reports against.
@@ -367,6 +379,38 @@ pub fn read_file(root: &Path, path: &str) -> Result<FileContents, BridgeError> {
     }
 }
 
+/// What is at `path` right now, or `None` if nothing is.
+struct OnDisk {
+    sha256: String,
+    binary: bool,
+}
+
+fn inspect(dir: &Dir, path: &str) -> Result<Option<OnDisk>, BridgeError> {
+    match dir.open(path) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Some(OnDisk {
+                sha256: hash_bytes(&bytes),
+                binary: bytes.iter().take(8000).any(|byte| *byte == 0),
+            }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// A temp name nobody else is using. Two concurrent writes to one path, or a
+/// user's own `notes.md.bridge-tmp`, must not collide with the scratch file.
+fn temp_name(path: &str) -> String {
+    let parent = Path::new(path).parent().filter(|p| !p.as_os_str().is_empty());
+    let name = format!(".bridge-{}.tmp", uuid::Uuid::new_v4());
+    match parent {
+        Some(parent) => parent.join(name).to_string_lossy().into_owned(),
+        None => name,
+    }
+}
+
 /// Write a workspace file, refusing the write if the bytes on disk are no
 /// longer the ones the editor read.
 ///
@@ -374,6 +418,14 @@ pub fn read_file(root: &Path, path: &str) -> Result<FileContents, BridgeError> {
 /// blind write is a lost update waiting to happen. `base_sha256` is the hash
 /// the editor got from [`read_file`]; `None` means "create, must not exist".
 /// The new hash comes back so the caller can keep editing without re-reading.
+///
+/// On atomicity, precisely: **create is atomic** — `O_EXCL` decides it in the
+/// kernel, so a file that appears first is never replaced. **Replace is not.**
+/// The hash is verified, the temp file is written, and the hash is verified
+/// again immediately before the rename; that shrinks the window from the
+/// length of a whole write down to the gap between two syscalls, but it cannot
+/// close it. No portable API can, against writers that do not take a lock —
+/// and the agents sharing this worktree are ordinary processes that do not.
 pub fn write_file(
     root: &Path,
     path: &str,
@@ -382,44 +434,80 @@ pub fn write_file(
 ) -> Result<WriteOutcome, BridgeError> {
     check_relative(path)?;
     let dir = Dir::open_ambient_dir(root, ambient_authority())?;
-    let on_disk = match dir.open(path) {
-        Ok(mut file) => {
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            Some(hash_bytes(&bytes))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    match (base_sha256, on_disk.as_deref()) {
-        (Some(expected), Some(actual)) if expected == actual => {}
-        (None, None) => {}
-        (_, None) => {
-            return Err(BridgeError::Invalid(format!(
-                "{path} no longer exists on disk"
-            )))
-        }
-        (None, Some(_)) => {
-            return Err(BridgeError::Invalid(format!("{path} already exists")))
-        }
-        (Some(_), Some(_)) => {
-            return Err(BridgeError::Invalid(format!(
-                "{path} changed on disk since it was opened"
-            )))
-        }
-    }
     if let Some(parent) = Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {
             dir.create_dir_all(parent)?;
         }
     }
-    // Write through a sibling temp file and rename, so a crash mid-write
-    // leaves the original intact rather than a half-file.
-    let temp = format!("{path}.bridge-tmp");
-    {
-        let mut file = dir.create(&temp)?;
+
+    let Some(expected) = base_sha256 else {
+        let mut file = dir
+            .open_with(
+                path,
+                cap_std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true),
+            )
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    BridgeError::Invalid(format!("{path} already exists"))
+                }
+                _ => BridgeError::Io(error),
+            })?;
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
+        return Ok(WriteOutcome {
+            sha256: hash_bytes(content.as_bytes()),
+        });
+    };
+    // An empty token is what `read_file` returns for a file it refused to open.
+    if expected.is_empty() {
+        return Err(BridgeError::Invalid(format!(
+            "{path} was never opened for editing"
+        )));
+    }
+
+    let before = inspect(&dir, path)?.ok_or_else(|| {
+        BridgeError::Invalid(format!("{path} no longer exists on disk"))
+    })?;
+    if before.binary {
+        return Err(BridgeError::Invalid(format!(
+            "{path} is binary; writing text over it would corrupt it"
+        )));
+    }
+    if before.sha256 != expected {
+        return Err(BridgeError::Invalid(format!(
+            "{path} changed on disk since it was opened"
+        )));
+    }
+
+    // Write through a scratch file and rename, so a crash mid-write leaves the
+    // original intact rather than a half-file.
+    let temp = temp_name(path);
+    {
+        let mut file = dir.open_with(
+            &temp,
+            cap_std::fs::OpenOptions::new().write(true).create_new(true),
+        )?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+    // Last look before the swap. See the note above: this narrows the race, it
+    // does not remove it.
+    match inspect(&dir, path) {
+        Ok(Some(now)) if now.sha256 == expected => {}
+        other => {
+            let _ = dir.remove_file(&temp);
+            return match other {
+                Ok(Some(_)) => Err(BridgeError::Invalid(format!(
+                    "{path} changed on disk since it was opened"
+                ))),
+                Ok(None) => Err(BridgeError::Invalid(format!(
+                    "{path} no longer exists on disk"
+                ))),
+                Err(error) => Err(error),
+            };
+        }
     }
     if let Err(error) = dir.rename(&temp, &dir, path) {
         let _ = dir.remove_file(&temp);
@@ -542,9 +630,83 @@ mod tests {
     }
 
     #[test]
+    fn refuses_to_write_text_over_a_binary_file() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("logo.png"), [0x89, 0x50, 0x00, 0x01]).unwrap();
+        let opened = read_file(dir.path(), "logo.png").unwrap();
+        assert!(opened.binary);
+        let error = write_file(dir.path(), "logo.png", "text", Some(&opened.sha256))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("binary"), "{error}");
+        assert_eq!(
+            std::fs::read(dir.path().join("logo.png")).unwrap(),
+            [0x89, 0x50, 0x00, 0x01]
+        );
+    }
+
+    #[test]
+    fn refuses_a_write_carrying_the_empty_token_of_an_unopened_file() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("huge.txt"),
+            vec![b'a'; MAX_EDIT_BYTES as usize + 1],
+        )
+        .unwrap();
+        let opened = read_file(dir.path(), "huge.txt").unwrap();
+        assert!(opened.too_large && opened.sha256.is_empty());
+        let error = write_file(dir.path(), "huge.txt", "small", Some(&opened.sha256))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("never opened"), "{error}");
+    }
+
+    #[test]
+    fn caps_a_file_that_grew_past_the_ceiling_after_its_metadata_was_read() {
+        // The ceiling has to be decided by the bytes actually read, not by a
+        // length that was true one syscall ago.
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("growing.txt"),
+            vec![b'a'; MAX_EDIT_BYTES as usize + 4096],
+        )
+        .unwrap();
+        let opened = read_file(dir.path(), "growing.txt").unwrap();
+        assert!(opened.too_large);
+        assert!(opened.content.is_empty());
+    }
+
+    #[test]
+    fn leaves_a_users_own_bridge_tmp_sibling_alone() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("notes.md"), "one").unwrap();
+        std::fs::write(dir.path().join("notes.md.bridge-tmp"), "precious").unwrap();
+        let opened = read_file(dir.path(), "notes.md").unwrap();
+        write_file(dir.path(), "notes.md", "two", Some(&opened.sha256)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes.md.bridge-tmp")).unwrap(),
+            "precious"
+        );
+    }
+
+    #[test]
+    fn creating_a_file_that_appears_first_does_not_replace_it() {
+        // `O_EXCL` decides this in the kernel, so there is no window between
+        // the existence check and the write.
+        let dir = workspace();
+        std::fs::write(dir.path().join("race.txt"), "theirs").unwrap();
+        assert!(write_file(dir.path(), "race.txt", "ours", None).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("race.txt")).unwrap(),
+            "theirs"
+        );
+    }
+
+    #[test]
     fn leaves_no_temp_file_behind_after_a_write() {
         let dir = workspace();
-        write_file(dir.path(), "a.txt", "hello", None).unwrap();
+        let created = write_file(dir.path(), "a.txt", "hello", None).unwrap();
+        write_file(dir.path(), "a.txt", "again", Some(&created.sha256)).unwrap();
         let names: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

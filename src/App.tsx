@@ -757,8 +757,11 @@ export function App() {
                 </div>}
               </div>
             </>}
-            {hasRepo && workspace && visitedTabs.has("changes") && <div className={cn("absolute inset-0", activeTab !== "changes" && "hidden")}><ChangesPanel workspace={workspace}/></div>}
-            {hasRepo && workspace && visitedTabs.has("code") && <div className={cn("absolute inset-0", activeTab !== "code" && "hidden")}><Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel workspaceId={workspace.id} visible={activeTab === "code"} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense></div>}
+            {hasRepo && workspace && visitedTabs.has("changes") && <div className={cn("absolute inset-0", activeTab !== "changes" && "hidden")}><ChangesPanel key={workspace.id} workspace={workspace}/></div>}
+            {hasRepo && workspace && visitedTabs.has("code") && <div className={cn("absolute inset-0", activeTab !== "code" && "hidden")}>{/* Keyed on the workspace: these panels hold open buffers and relative
+                  paths, and neither survives a change of tree. Without it a save
+                  would aim the old path at the new workspace. */}
+              <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={activeTab === "code"} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense></div>}
             {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
           </div>
           {browserOpen && <BrowserSurface onClose={() => setBrowserOpen(false)} onError={setError} />}
@@ -901,6 +904,11 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
   // Reading the diff and fixing what you just read are the same motion, so
   // the row carries both. Diff stays the default: review first.
   const [mode, setMode] = useState<"diff" | "edit">("diff");
+  // Once a file has been edited the editor stays mounted — hidden behind the
+  // diff, and kept alive through a collapse while it still holds unsaved text.
+  // Unmounting it was the same data loss the tab switch used to cause.
+  const [everEdited, setEverEdited] = useState(false);
+  const [dirty, setDirty] = useState(false);
   // "Low" is the default state, so labelling it adds noise to every row. Only
   // a file that actually wants attention gets a badge.
   const badge = file.importance === "low" ? undefined : IMPORTANCE_BADGE[file.importance];
@@ -914,6 +922,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
           <span className="text-foreground">{file.path.slice(cut)}</span>
         </span>
       </button>
+      {dirty && <span className="shrink-0 text-[10.5px] text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
       {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
       <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums sm:flex">
         <span className="text-success">+{file.additions}</span>
@@ -934,12 +943,12 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         <Check size={12} aria-hidden="true" />
       </button>
     </div>
-    {expanded && <div className="border-t border-border bg-code">
+    {(expanded || dirty) && <div className={cn("border-t border-border bg-code", !expanded && "hidden")}>
       {!file.binary && <div className="flex items-center gap-1 border-b border-border px-2 py-1">
         {(["diff", "edit"] as const).map(option => <button
           key={option}
           type="button"
-          onClick={() => setMode(option)}
+          onClick={() => { setMode(option); if (option === "edit") setEverEdited(true); }}
           aria-pressed={mode === option}
           className={cn(
             "h-[20px] rounded-[5px] px-2 text-[10.5px] capitalize transition-colors",
@@ -947,9 +956,14 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
           )}
         >{option}</button>)}
       </div>}
-      {mode === "edit" && !file.binary
-        ? <Suspense fallback={<div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Opening editor…</div>}><InlineFileEditor workspaceId={workspaceId} path={file.path} onSaved={onSaved} /></Suspense>
-        : <FileDiffView patch={file.patch} binary={file.binary} path={file.path} />}
+      <div className={cn(mode === "edit" && !file.binary && "hidden")}>
+        <FileDiffView patch={file.patch} binary={file.binary} path={file.path} />
+      </div>
+      {everEdited && !file.binary && <div className={cn(mode !== "edit" && "hidden")}>
+        <Suspense fallback={<div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Opening editor…</div>}>
+          <InlineFileEditor workspaceId={workspaceId} path={file.path} onDirtyChange={setDirty} onSaved={onSaved} />
+        </Suspense>
+      </div>}
     </div>}
   </div>;
 }

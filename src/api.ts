@@ -642,10 +642,13 @@ export const bridgeApi = {
     isTauri() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
   listWorkspaceTree: (workspaceId: string): Promise<string[]> =>
     isTauri() ? call("workspaces/list_workspace_tree", { workspaceId }) : Promise.resolve(mockTreePaths()),
-  readWorkspaceFile: (workspaceId: string, path: string): Promise<ReadWorkspaceFileResult> =>
-    isTauri() ? call("workspaces/read_workspace_file", { workspaceId, path }) : Promise.resolve(mockReadFile(path)),
-  writeWorkspaceFile: (workspaceId: string, path: string, content: string, baseSha256: string | null): Promise<WriteWorkspaceFileResult> =>
-    isTauri() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : Promise.resolve(mockWriteFile(path, content, baseSha256)),
+  // `async` rather than `Promise.resolve(mock…())`: the mocks throw on the
+  // refusal paths, and wrapping the *call* would throw synchronously instead
+  // of rejecting — the one way a mock can behave unlike the daemon.
+  readWorkspaceFile: async (workspaceId: string, path: string): Promise<ReadWorkspaceFileResult> =>
+    isTauri() ? call("workspaces/read_workspace_file", { workspaceId, path }) : mockReadFile(path),
+  writeWorkspaceFile: async (workspaceId: string, path: string, content: string, baseSha256: string | null): Promise<WriteWorkspaceFileResult> =>
+    isTauri() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : mockWriteFile(path, content, baseSha256),
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);

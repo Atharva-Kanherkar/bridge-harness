@@ -38,7 +38,9 @@ const LOADERS: Record<string, Loader> = {
   java: async () => (await import("@codemirror/lang-java")).java(),
   php: async () => (await import("@codemirror/lang-php")).php(),
   // Stream grammars: less precise than a Lezer parser, but they are the
-  // difference between coloured code and a wall of grey.
+  // difference between coloured code and a wall of grey. Only where the
+  // dialects are genuinely close — there is no Make grammar here, and CMake is
+  // a different language, not a near miss, so Makefiles render plain.
   bash: () => stream(shell, "shell"),
   ruby: () => stream(ruby, "ruby"),
   swift: () => stream(() => import("@codemirror/legacy-modes/mode/swift"), "swift"),
@@ -46,7 +48,6 @@ const LOADERS: Record<string, Loader> = {
   perl: () => stream(() => import("@codemirror/legacy-modes/mode/perl"), "perl"),
   ini: () => stream(() => import("@codemirror/legacy-modes/mode/toml"), "toml"),
   dockerfile: () => stream(() => import("@codemirror/legacy-modes/mode/dockerfile"), "dockerFile"),
-  makefile: () => stream(() => import("@codemirror/legacy-modes/mode/cmake"), "cmake"),
   csharp: () => stream(clike, "csharp"),
   kotlin: () => stream(clike, "kotlin"),
   scala: () => stream(clike, "scala"),

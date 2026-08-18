@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "properties": {
     "baseSha256": {
-      "description": "The hash the editor last read. `null` means \"create; must not exist\". A mismatch fails the write rather than clobbering an agent's edit.",
+      "description": "The hash the editor last read. `null` means \"create; must not exist\", which is decided atomically by `O_EXCL`. A mismatch fails the write rather than clobbering an agent's edit.",
       "type": [
         "string",
         "null"

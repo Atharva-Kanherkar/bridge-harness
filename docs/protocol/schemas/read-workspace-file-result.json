@@ -4,7 +4,7 @@
   "description": "One workspace file opened in the editor.",
   "properties": {
     "binary": {
-      "description": "Binary, or text in an encoding editing would rewrite. Read-only.",
+      "description": "Binary, or text in an encoding editing would rewrite. Read-only: a write over a file whose bytes are binary is refused server-side.",
       "type": "boolean"
     },
     "content": {
@@ -15,7 +15,7 @@
       "type": "string"
     },
     "sha256": {
-      "description": "SHA-256 of the bytes on disk. A later write must present this hash, or it is rejected as a lost update.",
+      "description": "SHA-256 of the bytes on disk. A later write must present this hash, or it is rejected as a lost update. Empty when `tooLarge` — a file we declined to read has no write token, and a write carrying an empty token is refused.",
       "type": "string"
     },
     "sizeBytes": {

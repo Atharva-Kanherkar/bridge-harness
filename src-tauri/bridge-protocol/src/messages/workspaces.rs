@@ -56,11 +56,14 @@ pub struct ReadWorkspaceFileResult {
     /// Empty when `binary` or `tooLarge` is set.
     pub content: String,
     /// SHA-256 of the bytes on disk. A later write must present this hash, or
-    /// it is rejected as a lost update.
+    /// it is rejected as a lost update. Empty when `tooLarge` — a file we
+    /// declined to read has no write token, and a write carrying an empty
+    /// token is refused.
     pub sha256: String,
     /// Over the editor's size ceiling; shown as a notice, not opened.
     pub too_large: bool,
-    /// Binary, or text in an encoding editing would rewrite. Read-only.
+    /// Binary, or text in an encoding editing would rewrite. Read-only: a
+    /// write over a file whose bytes are binary is refused server-side.
     pub binary: bool,
     pub size_bytes: u64,
 }
@@ -71,8 +74,9 @@ pub struct WriteWorkspaceFileParams {
     pub workspace_id: String,
     pub path: String,
     pub content: String,
-    /// The hash the editor last read. `null` means "create; must not exist".
-    /// A mismatch fails the write rather than clobbering an agent's edit.
+    /// The hash the editor last read. `null` means "create; must not exist",
+    /// which is decided atomically by `O_EXCL`. A mismatch fails the write
+    /// rather than clobbering an agent's edit.
     pub base_sha256: Option<String>,
 }
 

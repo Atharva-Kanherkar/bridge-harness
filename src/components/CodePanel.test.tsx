@@ -145,6 +145,50 @@ describe("CodePanel", () => {
     expect(text()).toContain("Workspace has no folder connected");
   });
 
+  it("does not let a second open of one path reset what you already typed", async () => {
+    // Two opens in flight for the same path: tree click, then ⌘P. The slower
+    // load must not put the on-disk text back over the live buffer.
+    let release: (value: unknown) => void = () => undefined;
+    const slow = new Promise(resolve => { release = resolve; });
+    read.mockImplementation(async () => {
+      await slow;
+      return { path: "src/App.tsx", content: "const a = 1;", sha256: "sha1", tooLarge: false, binary: false, sizeBytes: 12 };
+    });
+    await render();
+    await click(rowNamed("src"));
+    await act(async () => { (rowNamed("App.tsx") as HTMLElement).click(); });
+    await act(async () => { (rowNamed("App.tsx") as HTMLElement).click(); });
+    await act(async () => { release(undefined); await slow; });
+    expect(read).toHaveBeenCalledTimes(1);
+
+    await typeInto(container.querySelector<HTMLTextAreaElement>("[data-testid=editor]")!, "typed by hand");
+    await click([...container.querySelectorAll("button")].find(node => node.textContent?.includes("Save")));
+    expect(write).toHaveBeenCalledWith("w", "src/App.tsx", "typed by hand", "sha1");
+  });
+
+  it("drops a reload that finishes after its tab was closed", async () => {
+    // The reachable version of the stale-load race: the tab exists, a conflict
+    // reload is in flight, and the tab is closed before it lands.
+    write.mockRejectedValue(new Error("src/App.tsx changed on disk since it was opened"));
+    await render();
+    await click(rowNamed("src"));
+    await click(rowNamed("App.tsx"));
+    await typeInto(container.querySelector<HTMLTextAreaElement>("[data-testid=editor]")!, "mine");
+    await click([...container.querySelectorAll("button")].find(node => node.textContent?.includes("Save")));
+
+    let release: (value: unknown) => void = () => undefined;
+    const slow = new Promise(resolve => { release = resolve; });
+    read.mockImplementation(async () => {
+      await slow;
+      return { path: "src/App.tsx", content: "theirs", sha256: "sha9", tooLarge: false, binary: false, sizeBytes: 6 };
+    });
+    await click([...container.querySelectorAll("button")].find(node => node.textContent === "Reload"));
+    await click([...container.querySelectorAll("button")].find(node => node.getAttribute("aria-label")?.startsWith("Close")));
+    await act(async () => { release(undefined); await slow; });
+    expect(container.querySelector("[data-testid=editor]")).toBeNull();
+    expect(text()).not.toContain("theirs");
+  });
+
   it("does not claim ⌘P while another tab is showing", async () => {
     await render({ visible: false });
     await act(async () => {

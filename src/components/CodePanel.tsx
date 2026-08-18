@@ -138,6 +138,11 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Live buffers live outside React: a keystroke must not re-render the tree.
   const buffers = useRef(new Map<string, string>());
+  // One counter per path, bumped on close. A load that finishes after its tab
+  // was closed — or after a second load for the same path started — is stale,
+  // and applying it would resurrect the tab or reset what you just typed.
+  const opens = useRef(new Map<string, number>());
+  const loading = useRef(new Set<string>());
 
   const loadTree = useCallback(async () => {
     setLoadingTree(true);
@@ -166,13 +171,24 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
       for (const ancestor of ancestorPaths(path)) next.add(ancestor);
       return next;
     });
-    if (open.some(file => file.path === path)) return;
-    const buffer = await loadBuffer(workspaceId, path);
-    buffers.current.set(path, buffer.saved);
-    setOpen(files => files.some(entry => entry.path === path) ? files : [...files, buffer]);
+    // `open` is a closed-over snapshot, so two quick opens of one path can both
+    // pass this guard; `loading` is the ref that actually serialises them.
+    if (open.some(file => file.path === path) || loading.current.has(path)) return;
+    loading.current.add(path);
+    const generation = opens.current.get(path) ?? 0;
+    try {
+      const buffer = await loadBuffer(workspaceId, path);
+      if ((opens.current.get(path) ?? 0) !== generation) return;
+      buffers.current.set(path, buffer.saved);
+      setOpen(files => files.some(entry => entry.path === path) ? files : [...files, buffer]);
+    } finally {
+      loading.current.delete(path);
+    }
   }, [open, workspaceId]);
 
   const closeFile = useCallback((path: string) => {
+    // Retire any load still in flight for this path along with the tab.
+    opens.current.set(path, (opens.current.get(path) ?? 0) + 1);
     buffers.current.delete(path);
     setOpen(files => {
       const remaining = files.filter(file => file.path !== path);
@@ -211,7 +227,9 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
   /** Discard the local buffer and take what is on disk now. */
   const reload = useCallback(async (path: string) => {
     const seed = (open.find(entry => entry.path === path)?.seed ?? 0) + 1;
+    const generation = opens.current.get(path) ?? 0;
     const buffer = await loadBuffer(workspaceId, path, seed);
+    if ((opens.current.get(path) ?? 0) !== generation) return;
     buffers.current.set(path, buffer.saved);
     setOpen(files => files.map(entry => entry.path === path ? buffer : entry));
   }, [open, workspaceId]);

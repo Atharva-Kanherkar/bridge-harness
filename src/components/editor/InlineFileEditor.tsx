@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./CodeEditor";
-import { isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
+import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
 
 /**
  * One file from the Changes tab, opened for editing in place.
@@ -12,14 +12,20 @@ import { isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type F
  * through the same hash guard as the editor: an agent's concurrent edit turns
  * into a choice, never a silent overwrite.
  */
-export function InlineFileEditor({ workspaceId, path, onSaved }: {
+export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: {
   workspaceId: string;
   path: string;
+  /** Lifted so the row can keep this editor mounted while it holds unsaved
+   *  text, and say so on the collapsed row. */
+  onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
 }) {
   const [buffer, setBuffer] = useState<FileBuffer>();
   // The live document lives outside React so typing re-renders nothing.
   const content = useRef("");
+  const dirty = buffer ? isDirty(buffer) : false;
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   useEffect(() => {
     let live = true;
