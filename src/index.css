@@ -616,24 +616,3 @@
   background: color-mix(in srgb, var(--color-destructive) 11%, transparent);
 }
 
-/* Unified-diff rendering for tool outputs and file patches. The diff is the
-   one place the interface is allowed to be loudly colored. */
-.diff-view {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.diff-view .hljs-addition,
-.diff-view .hljs-deletion {
-  display: block;
-  margin: 0 -0.85rem;
-  padding: 0 0.85rem;
-}
-.diff-view .hljs-addition {
-  border-left: 2px solid color-mix(in srgb, var(--color-success) 62%, transparent);
-}
-.diff-view .hljs-deletion {
-  border-left: 2px solid color-mix(in srgb, var(--color-destructive) 62%, transparent);
-}
