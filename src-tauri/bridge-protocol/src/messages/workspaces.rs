@@ -30,6 +30,65 @@ pub struct ListWorkspaceFilesParams {
 pub struct ListWorkspaceFilesResult(pub Vec<String>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListWorkspaceTreeParams {
+    pub workspace_id: String,
+}
+
+/// Repository-relative file paths for the editor's tree and file palette.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ListWorkspaceTreeResult(pub Vec<String>);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadWorkspaceFileParams {
+    pub workspace_id: String,
+    /// Path relative to the workspace root. Absolute paths and `..` are refused.
+    pub path: String,
+}
+
+/// One workspace file opened in the editor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadWorkspaceFileResult {
+    pub path: String,
+    /// Empty when `binary` or `tooLarge` is set.
+    pub content: String,
+    /// SHA-256 of the bytes on disk. A later write must present this hash, or
+    /// it is rejected as a lost update. Empty when `tooLarge` — a file we
+    /// declined to read has no write token, and a write carrying an empty
+    /// token is refused.
+    pub sha256: String,
+    /// Over the editor's size ceiling; shown as a notice, not opened.
+    pub too_large: bool,
+    /// Binary, or text in an encoding editing would rewrite. Read-only: a
+    /// write over a file whose bytes are binary is refused server-side.
+    pub binary: bool,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteWorkspaceFileParams {
+    pub workspace_id: String,
+    pub path: String,
+    pub content: String,
+    /// The hash the editor last read. `null` means "create; must not exist",
+    /// which is decided atomically by `O_EXCL`. A mismatch fails the write
+    /// rather than clobbering an agent's edit.
+    pub base_sha256: Option<String>,
+}
+
+/// The hash of the bytes just written, so the editor can keep going without
+/// a re-read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteWorkspaceFileResult {
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshWorkspaceParams {
     pub workspace_id: String,

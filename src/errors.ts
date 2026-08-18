@@ -19,6 +19,11 @@ const USAGE_LIMIT = /(rate[\s_-]?limit|usage[\s_-]?limit|\bquota\b|out of (?:usa
 const AUTH = /(unauthorized|\b401\b|\b403\b|not (?:logged|signed) in|authentication failed|invalid api key|expired (?:token|credentials)|please (?:log|sign) ?in|logged out|re-?authenticate)/i;
 const NETWORK = /(econnrefused|etimedout|timed out|network error|dns|offline|failed to fetch|connection (?:refused|reset|closed)|unreachable|socket hang up)/i;
 
+/** The human-readable text of anything thrown across the Tauri boundary. */
+export function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
+}
+
 export function classifyErrorKind(raw: string | undefined | null): ErrorKind {
   const text = raw ?? "";
   if (USAGE_LIMIT.test(text)) return "usage-limit";

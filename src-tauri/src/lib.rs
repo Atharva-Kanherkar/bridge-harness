@@ -739,6 +739,50 @@ async fn list_workspace_files(
         .await
 }
 
+/// List a workspace's files for the editor's tree and file palette.
+#[tauri::command]
+async fn list_workspace_tree(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<String>, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace tree listing", move || {
+        api::list_workspace_tree(&core, &workspace_id)
+    })
+    .await
+}
+
+/// Read one workspace file for the editor.
+#[tauri::command]
+async fn read_workspace_file(
+    workspace_id: String,
+    path: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::workspace_files::FileContents, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace file read", move || {
+        api::read_workspace_file(&core, &workspace_id, &path)
+    })
+    .await
+}
+
+/// Write one workspace file. Fails rather than clobbering when the bytes on
+/// disk are no longer the ones the editor read — an agent may share this tree.
+#[tauri::command]
+async fn write_workspace_file(
+    workspace_id: String,
+    path: String,
+    content: String,
+    base_sha256: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::workspace_files::WriteOutcome, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace file write", move || {
+        api::write_workspace_file(&core, &workspace_id, &path, &content, base_sha256.as_deref())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn compact_session(
     session_id: String,
@@ -1105,6 +1149,9 @@ pub fn run() {
             prepare_turn,
             send_turn,
             list_workspace_files,
+            list_workspace_tree,
+            read_workspace_file,
+            write_workspace_file,
             compact_session,
             interrupt_turn,
             refresh_account_usage,

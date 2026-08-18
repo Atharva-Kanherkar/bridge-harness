@@ -445,6 +445,17 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
 
 #[test]
 fn base_branch_divergence_mirrors_core() {
+    assert_mirrors::<wire::ReadWorkspaceFileResult>(&crate::workspace_files::FileContents {
+        path: "src/main.rs".into(),
+        content: "fn main() {}\n".into(),
+        sha256: "e3b0c442".into(),
+        too_large: false,
+        binary: false,
+        size_bytes: 13,
+    });
+    assert_mirrors::<wire::WriteWorkspaceFileResult>(&crate::workspace_files::WriteOutcome {
+        sha256: "e3b0c442".into(),
+    });
     assert_mirrors::<wire::BaseBranchDivergence>(&crate::git::BaseBranchDivergence {
         base_ref: Some("origin/main".into()),
         base_commit: Some("90ce51c".into()),

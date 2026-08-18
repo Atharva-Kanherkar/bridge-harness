@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, Maximize2, MessageSquareText, Minimize2, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
@@ -24,7 +24,7 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
-import { describeError } from "./errors";
+import { describeError, errorMessage } from "./errors";
 import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { startSerialPoll } from "./polling";
@@ -38,6 +38,11 @@ import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
+const CodePanel = lazy(() => import("./components/CodePanel").then(module => ({ default: module.CodePanel })));
+// Lazy for the same reason as CodePanel: CodeMirror is a large dependency, and
+// a static import here would drag it into the startup bundle for everyone,
+// including sessions that never open a diff.
+const InlineFileEditor = lazy(() => import("./components/editor/InlineFileEditor").then(module => ({ default: module.InlineFileEditor })));
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
@@ -62,10 +67,6 @@ function StatusDot({ status }: { status: SessionStatus }) {
   return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />;
 }
 
-function errorMessage(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
-}
-
 export function App() {
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
@@ -78,7 +79,16 @@ export function App() {
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
+  const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
+  // Fullscreen is a property of the workspace surface, not of one tab: it
+  // drops the sidebar and the session header so the active tab gets the whole
+  // window. The tab strip stays, because it is also the way back out.
+  const [fullscreen, setFullscreen] = useState(false);
+  // Tabs mount on first visit and then stay mounted. Unmounting the Changes
+  // and Code panels on every tab switch would throw away open files, expanded
+  // diffs, and — now that both tabs can edit — unsaved text.
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(["agent"]));
+  useEffect(() => { setVisitedTabs(previous => previous.has(activeTab) ? previous : new Set(previous).add(activeTab)); }, [activeTab]);
   const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const [title, setTitle] = useState("");
@@ -325,6 +335,13 @@ export function App() {
     return () => { active = false; stop(); };
   }, [workspace?.id, hasRepo]);
 
+  /** Pull the workspace's Git stats now, rather than waiting out the poll —
+   *  a save should move the Changes badge immediately. */
+  const refreshWorkspaceStats = useCallback(async (workspaceId: string) => {
+    const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
+    if (next) setState(next);
+  }, []);
+
   // Poll real subscription usage for every provider, independent of the chat on screen.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -543,6 +560,21 @@ export function App() {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void sendPrompt(); }
   }
 
+  // ⌥⌘F rather than ⌃⌘F: the latter is macOS's own native-fullscreen binding,
+  // and this is an in-window layout change, not a window state change.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setFullscreen(value => !value);
+      } else if (event.key === "Escape") {
+        setFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
@@ -550,12 +582,12 @@ export function App() {
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   return <div className="relative flex h-[100dvh] overflow-hidden bg-background text-foreground">
 
-    <div className="fixed right-2 top-1.5 z-40 flex items-center gap-1.5 sm:right-5 sm:top-5">
+    {!fullscreen && <div className="fixed right-2 top-1.5 z-40 flex items-center gap-1.5 sm:right-5 sm:top-5">
       {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
       <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
-    </div>
+    </div>}
 
-    <div
+    {!fullscreen && <div
       className="fixed inset-x-0 top-0 z-20 flex h-11 items-center gap-2 border-b border-border bg-sidebar pl-[84px] pr-[148px] sm:hidden"
       data-tauri-drag-region
     >
@@ -569,9 +601,9 @@ export function App() {
         <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
       </button>
       <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
-    </div>
+    </div>}
 
-    <BridgeSidebar
+    {!fullscreen && <BridgeSidebar
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       standaloneChats={standaloneChats}
@@ -593,8 +625,8 @@ export function App() {
       onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       onNewWorkspaceSession={requestWorkspaceSession}
       onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-    />
-    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount pt-11 sm:pt-0">
+    />}
+    <main className={cn("relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount", fullscreen ? "pt-0" : "pt-11 sm:pt-0")}>
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={state.sessions}
@@ -604,7 +636,7 @@ export function App() {
         activeSessionId={session?.id}
         onFocusSession={openSession}
       /> : session ? <>
-        <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-border ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
+        {!fullscreen && <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-border ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-foreground font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
             {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-muted-foreground font-mono text-[10px]">
@@ -619,14 +651,29 @@ export function App() {
             {!isDirectChat && workspace && <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setModal("router")} aria-label="Learning router settings"><Settings2 size={14} aria-hidden="true" /></Button>}
             {sessionConnected && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => void endChat()}>{busy ? <LoaderCircle className="animate-spin" size={14} aria-hidden="true" /> : <Square size={13} aria-hidden="true" />} End</Button>}
           </div>
-        </div>
+        </div>}
         {hasRepo && <Tabs value={activeTab} onValueChange={v => setActiveTab(v as typeof activeTab)} className="shrink-0">
-          <div className="border-b-0 px-[14px] pt-1">
-            <TabsList variant="underline" className="w-full justify-start gap-[2px] bg-transparent p-0">
+          {/* In fullscreen this strip is the topmost row, so it has to leave
+              the traffic lights their corner. */}
+          <div className={cn("flex items-center gap-2 border-b-0 pr-1.5 pt-1", fullscreen ? "pl-[84px]" : "px-[14px]")} data-tauri-drag-region={fullscreen ? "" : undefined}>
+            <TabsList variant="underline" className="min-w-0 flex-1 justify-start gap-[2px] bg-transparent p-0">
               <TabsTab value="agent" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><MessageSquareText size={14} aria-hidden="true" /> Agent</TabsTab>
               <TabsTab value="changes" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><FileCode2 size={14} aria-hidden="true" /> Changes {workspace && workspace.dirtyFiles > 0 && <Badge variant="secondary" size="sm">{workspace.dirtyFiles}</Badge>}</TabsTab>
+              <TabsTab value="code" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><Code2 size={14} aria-hidden="true" /> Code</TabsTab>
               <TabsTab value="terminal" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><TerminalSquare size={14} aria-hidden="true" /> Terminal</TabsTab>
             </TabsList>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0 text-muted-foreground"
+              onClick={() => setFullscreen(value => !value)}
+              aria-pressed={fullscreen}
+              aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+              title={fullscreen ? "Exit fullscreen (⌥⌘F or Esc)" : "Fullscreen (⌥⌘F)"}
+            >
+              {fullscreen ? <Minimize2 size={13} aria-hidden="true" /> : <Maximize2 size={13} aria-hidden="true" />}
+            </Button>
           </div>
         </Tabs>}
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
@@ -710,7 +757,11 @@ export function App() {
                 </div>}
               </div>
             </>}
-            {hasRepo && workspace && activeTab === "changes" && <ChangesPanel workspace={workspace}/>}
+            {hasRepo && workspace && visitedTabs.has("changes") && <div className={cn("absolute inset-0", activeTab !== "changes" && "hidden")}><ChangesPanel key={workspace.id} workspace={workspace}/></div>}
+            {hasRepo && workspace && visitedTabs.has("code") && <div className={cn("absolute inset-0", activeTab !== "code" && "hidden")}>{/* Keyed on the workspace: these panels hold open buffers and relative
+                  paths, and neither survives a change of tree. Without it a save
+                  would aim the old path at the new workspace. */}
+              <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={activeTab === "code"} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense></div>}
             {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
           </div>
           {browserOpen && <BrowserSurface onClose={() => setBrowserOpen(false)} onError={setError} />}
@@ -841,13 +892,23 @@ function DiffStatBar({ additions, deletions, className }: { additions: number; d
   </span>;
 }
 
-function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpanded }: {
+function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, onToggleExpanded, onSaved }: {
   file: WorkspaceFileChange;
   viewed: boolean;
   expanded: boolean;
+  workspaceId: string;
   onToggleViewed: () => void;
   onToggleExpanded: () => void;
+  onSaved: () => void;
 }) {
+  // Reading the diff and fixing what you just read are the same motion, so
+  // the row carries both. Diff stays the default: review first.
+  const [mode, setMode] = useState<"diff" | "edit">("diff");
+  // Once a file has been edited the editor stays mounted — hidden behind the
+  // diff, and kept alive through a collapse while it still holds unsaved text.
+  // Unmounting it was the same data loss the tab switch used to cause.
+  const [everEdited, setEverEdited] = useState(false);
+  const [dirty, setDirty] = useState(false);
   // "Low" is the default state, so labelling it adds noise to every row. Only
   // a file that actually wants attention gets a badge.
   const badge = file.importance === "low" ? undefined : IMPORTANCE_BADGE[file.importance];
@@ -861,6 +922,7 @@ function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpande
           <span className="text-foreground">{file.path.slice(cut)}</span>
         </span>
       </button>
+      {dirty && <span className="shrink-0 text-[10.5px] text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
       {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
       <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums sm:flex">
         <span className="text-success">+{file.additions}</span>
@@ -881,7 +943,28 @@ function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpande
         <Check size={12} aria-hidden="true" />
       </button>
     </div>
-    {expanded && <div className="border-t border-border bg-code"><FileDiffView patch={file.patch} binary={file.binary} path={file.path} /></div>}
+    {(expanded || dirty) && <div className={cn("border-t border-border bg-code", !expanded && "hidden")}>
+      {!file.binary && <div className="flex items-center gap-1 border-b border-border px-2 py-1">
+        {(["diff", "edit"] as const).map(option => <button
+          key={option}
+          type="button"
+          onClick={() => { setMode(option); if (option === "edit") setEverEdited(true); }}
+          aria-pressed={mode === option}
+          className={cn(
+            "h-[20px] rounded-[5px] px-2 text-[10.5px] capitalize transition-colors",
+            mode === option ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+        >{option}</button>)}
+      </div>}
+      <div className={cn(mode === "edit" && !file.binary && "hidden")}>
+        <FileDiffView patch={file.patch} binary={file.binary} path={file.path} />
+      </div>
+      {everEdited && !file.binary && <div className={cn(mode !== "edit" && "hidden")}>
+        <Suspense fallback={<div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Opening editor…</div>}>
+          <InlineFileEditor workspaceId={workspaceId} path={file.path} onDirtyChange={setDirty} onSaved={onSaved} />
+        </Suspense>
+      </div>}
+    </div>}
   </div>;
 }
 
@@ -892,14 +975,21 @@ function ChangesPanel({ workspace }: { workspace: Workspace }) {
   const [viewedPaths, setViewedPaths] = useState<Set<string>>(new Set());
   const [showLowSignal, setShowLowSignal] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setShowLowSignal(false);
-    bridgeApi.workspaceChanges(workspace.id)
-      .then(result => { if (!cancelled) setChanges(result); })
-      .catch(value => { if (!cancelled) setLoadError(errorMessage(value)); });
-    return () => { cancelled = true; };
+  /** Re-read the changeset in place. Saving from an expanded row calls this,
+   *  so the diff under the editor catches up without collapsing the review. */
+  const reloadChanges = useCallback(async () => {
+    try {
+      setChanges(await bridgeApi.workspaceChanges(workspace.id));
+      setLoadError(undefined);
+    } catch (error) {
+      setLoadError(errorMessage(error));
+    }
   }, [workspace.id]);
+
+  useEffect(() => {
+    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setShowLowSignal(false);
+    void reloadChanges();
+  }, [reloadChanges]);
 
   const sortedFiles = useMemo(() => [...(changes?.files ?? [])].sort((a, b) =>
     IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance] || a.path.localeCompare(b.path)
@@ -945,6 +1035,8 @@ function ChangesPanel({ workspace }: { workspace: Workspace }) {
           {visibleFiles.map(file => <ChangeFileRow
             key={file.path}
             file={file}
+            workspaceId={workspace.id}
+            onSaved={() => void reloadChanges()}
             viewed={viewedPaths.has(file.path)}
             expanded={expandedPaths.has(file.path)}
             onToggleViewed={() => toggle(setViewedPaths, file.path)}

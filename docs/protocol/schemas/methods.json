@@ -44,6 +44,27 @@
       "resultSchema": "list-workspace-files-result.json"
     },
     {
+      "command": "list_workspace_tree",
+      "domain": "workspaces",
+      "method": "workspaces/list_workspace_tree",
+      "paramsSchema": "list-workspace-tree-params.json",
+      "resultSchema": "list-workspace-tree-result.json"
+    },
+    {
+      "command": "read_workspace_file",
+      "domain": "workspaces",
+      "method": "workspaces/read_workspace_file",
+      "paramsSchema": "read-workspace-file-params.json",
+      "resultSchema": "read-workspace-file-result.json"
+    },
+    {
+      "command": "write_workspace_file",
+      "domain": "workspaces",
+      "method": "workspaces/write_workspace_file",
+      "paramsSchema": "write-workspace-file-params.json",
+      "resultSchema": "write-workspace-file-result.json"
+    },
+    {
       "command": "refresh_workspace",
       "domain": "workspaces",
       "method": "workspaces/refresh_workspace",
