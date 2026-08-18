@@ -113,10 +113,27 @@ function InlineMath({ tex }: { tex: string }) {
   return <span dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+/**
+ * The `dark` class on <html> is the single source of truth for the theme.
+ * Mermaid and the sandboxed iframe render outside our token scope, so they
+ * have to follow it explicitly instead of inheriting CSS variables.
+ */
+function useDarkTheme(): boolean {
+  const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
+  useEffect(() => {
+    const sync = () => setDark(document.documentElement.classList.contains("dark"));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  return dark;
+}
+
 function MathBlock({ tex }: { tex: string }) {
   const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
   if (html == null) {
-    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-red-400/35 bg-red-950/20 px-[0.85em] py-[0.6em] text-red-300"><code>{tex}</code></pre>;
+    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-destructive/30 bg-destructive/10 px-[0.85em] py-[0.6em] text-destructive"><code>{tex}</code></pre>;
   }
   return <div className="my-[0.9em] overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />;
 }
@@ -160,6 +177,7 @@ let mermaidSeq = 0;
 function MermaidBlock({ code }: { code: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const dark = useDarkTheme();
   const idRef = useRef("");
   if (!idRef.current) { mermaidSeq += 1; idRef.current = `bridge-mermaid-${mermaidSeq}`; }
 
@@ -170,7 +188,9 @@ function MermaidBlock({ code }: { code: string }) {
     (async () => {
       try {
         const mermaid = (await import("mermaid")).default;
-        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+        // Mermaid bakes colors into the SVG it emits, so the diagram is
+        // re-initialized and re-rendered whenever the theme flips.
+        mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
         await mermaid.parse(code); // throws on malformed diagrams
         const rendered = await mermaid.render(idRef.current, code);
         if (!cancelled) setSvg(rendered.svg);
@@ -179,12 +199,12 @@ function MermaidBlock({ code }: { code: string }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [code]);
+  }, [code, dark]);
 
   if (failed) {
     return (
       <div className="my-[0.8em]">
-        <div className="mb-[0.35em] text-xs text-amber-300">Could not render this Mermaid diagram — showing its source.</div>
+        <div className="mb-[0.35em] text-xs text-warning">Could not render this Mermaid diagram — showing its source.</div>
         <CodeBlock lang="mermaid" body={code} />
       </div>
     );
@@ -198,10 +218,14 @@ function MermaidBlock({ code }: { code: string }) {
 // Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
 // iframe: sandbox="" grants no capabilities (no scripts, no same-origin), which
 // is the sole isolation boundary because the Tauri webview sets no CSP.
+// The sandboxed document has no stylesheet of its own, so its `color-scheme`
+// is pinned to the active theme — that is what makes the UA's default text
+// legible on the token background in both modes.
 function HtmlBlock({ html }: { html: string }) {
+  const dark = useDarkTheme();
   return (
     <iframe
-      className="my-[0.9em] min-h-30 w-full rounded-[0.9rem] border border-border bg-white [color-scheme:light]"
+      className={`my-[0.9em] min-h-30 w-full rounded-[0.9rem] border border-border bg-background ${dark ? "[color-scheme:dark]" : "[color-scheme:light]"}`}
       title="Rendered HTML"
       sandbox=""
       referrerPolicy="no-referrer"

@@ -15,17 +15,13 @@
       "title": "Bridge",
       "width": 1380,
       "height": 860,
-      "minWidth": 760,
-      "minHeight": 560,
+      "minWidth": 420,
+      "minHeight": 480,
       "decorations": true,
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
       "trafficLightPosition": { "x": 18, "y": 15 },
-      "acceptFirstMouse": true,
-      "windowEffects": {
-        "effects": ["hudWindow"],
-        "state": "active"
-      }
+      "acceptFirstMouse": true
     }],
     "security": { "csp": null }
   },

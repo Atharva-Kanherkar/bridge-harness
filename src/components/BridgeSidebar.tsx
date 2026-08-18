@@ -20,7 +20,7 @@ function readWidth(): number {
 }
 
 function StatusDot({ status }: { status: SessionStatus }) {
-  const color = status === "working" ? "bg-emerald-400" : status === "waiting" ? "bg-amber-400" : status === "ready" ? "bg-sky-400" : status === "failed" ? "bg-red-400" : "bg-neutral-500";
+  const color = status === "working" ? "bg-success" : status === "waiting" ? "bg-warning" : status === "ready" ? "bg-info" : status === "failed" ? "bg-destructive" : "bg-muted-foreground/60";
   return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color)} />;
 }
 
@@ -34,15 +34,15 @@ function SidebarChatRow({ chat, active, collapsed, onClick }: { chat: Session; a
         "group my-0.5 flex w-full items-center text-left font-sans transition-all duration-200 active:scale-[0.98]",
         collapsed ? "h-10 justify-center rounded-xl px-0" : "min-h-[36px] gap-2.5 rounded-xl border border-transparent px-2.5 py-1.5",
         active
-          ? "border-white/[0.07] bg-white/[0.07] text-neutral-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-          : "text-neutral-400 hover:bg-white/[0.045] hover:text-neutral-200",
+          ? "border-border bg-card text-foreground shadow-[inset_2px_0_0_var(--color-ring)]"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
       <StatusDot status={chat.status} />
       {!collapsed && (
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-medium leading-tight tracking-[-0.006em]">{chat.title || chat.label}</span>
-          <span className="mt-px block truncate text-[10px] font-normal text-neutral-600">{harnessLabel(chat.harness)}{chat.model ? ` · ${chat.model}` : ""}</span>
+          <span className="mt-px block truncate text-[10px] font-normal text-muted-foreground/70">{harnessLabel(chat.harness)}{chat.model ? ` · ${chat.model}` : ""}</span>
         </span>
       )}
     </button>
@@ -52,8 +52,8 @@ function SidebarChatRow({ chat, active, collapsed, onClick }: { chat: Session; a
 function SectionLabel({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div className="mb-1 flex items-center gap-2 px-2.5 pb-1.5 pt-1">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-600">{children}</span>
-      <span className="h-px flex-1 bg-gradient-to-r from-white/[0.06] to-transparent" />
+      <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">{children}</span>
+      <span className="h-px flex-1 bg-gradient-to-r from-border to-transparent" />
       {action}
     </div>
   );
@@ -71,6 +71,9 @@ export type BridgeSidebarProps = {
   workers: Session[];
   workerRuntimes: WorkerRuntimeRecord[];
   workerReasons: BridgeEvent[];
+  /** Drawer state below the sm breakpoint, where the rail is off-canvas. */
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
   onOpenNewChat: () => void;
   onOpenMarketplace: () => void;
   onOpenSettings: () => void;
@@ -93,6 +96,8 @@ export function BridgeSidebar({
   workers,
   workerRuntimes,
   workerReasons,
+  mobileOpen = false,
+  onCloseMobile,
   onOpenNewChat,
   onOpenMarketplace,
   onOpenSettings,
@@ -177,16 +182,28 @@ export function BridgeSidebar({
   const animateWidth = !resizing && !skipWidthTransition;
 
   return (
-    <aside
-      className={cn(
-        "relative z-20 hidden shrink-0 flex-col overflow-hidden font-sans antialiased sm:flex",
-        "border-r border-white/[0.055] bg-[#0a0a0d]/55 backdrop-blur-2xl backdrop-saturate-[1.8]",
-        animateWidth ? "transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]" : "transition-none",
+    <>
+      {/* Below sm the rail is an off-canvas drawer, so narrow windows keep
+          their navigation instead of losing it entirely. */}
+      {mobileOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-scrim sm:hidden"
+          onClick={onCloseMobile}
+          aria-label="Close navigation"
+        />
       )}
-      style={{ width: sidebarWidth }}
-    >
-      {/* Top light — the frosted-glass light source. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.045] to-transparent" />
+      <aside
+        className={cn(
+          "z-40 flex shrink-0 flex-col overflow-hidden font-sans antialiased",
+          "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+          "sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
+          "border-r border-sidebar-border bg-sidebar",
+          animateWidth ? "sm:transition-[width] sm:duration-300 sm:ease-[cubic-bezier(0.22,1,0.36,1)]" : "sm:transition-none",
+        )}
+        style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
+      >
 
       <div className={cn("flex min-h-0 h-full flex-col", collapsed ? "px-2 py-4" : "px-3 py-4")}>
         <div
@@ -200,13 +217,13 @@ export function BridgeSidebar({
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200 active:scale-95"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             <PanelLeft className={cn("h-4 w-4 transition-transform duration-200", collapsed && "rotate-180")} strokeWidth={1.75} />
           </button>
           {!collapsed && (
-            <p className="min-w-0 truncate font-display text-[15px] font-semibold tracking-[-0.01em] text-neutral-100">
+            <p className="min-w-0 truncate font-display text-[15px] font-semibold tracking-[-0.01em] text-foreground">
               bridge
             </p>
           )}
@@ -220,8 +237,8 @@ export function BridgeSidebar({
             className={cn(
               "flex items-center justify-center font-medium transition-all active:scale-[0.98]",
               collapsed
-                ? "mx-auto h-10 w-10 rounded-xl bg-neutral-100 text-neutral-900 hover:bg-white"
-                : "w-full gap-2 rounded-xl bg-neutral-100 px-3 py-2 text-[13px] tracking-[-0.006em] text-neutral-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_10px_28px_-14px_rgba(0,0,0,0.6)] hover:bg-white",
+                ? "mx-auto h-10 w-10 rounded-xl bg-primary text-primary-foreground hover:opacity-90"
+                : "w-full gap-2 rounded-xl bg-primary px-3 py-2 text-[13px] tracking-[-0.006em] text-primary-foreground hover:opacity-90",
             )}
           >
             <MessageSquarePlus size={15} strokeWidth={1.75} aria-hidden="true" />
@@ -236,13 +253,13 @@ export function BridgeSidebar({
           {standaloneChats.map(chat => (
             <SidebarChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={collapsed} onClick={() => onOpenSession(chat.id)} />
           ))}
-          {!standaloneChats.length && !collapsed && <div className="px-2.5 py-2 text-[11px] text-neutral-600">No chats yet.</div>}
+          {!standaloneChats.length && !collapsed && <div className="px-2.5 py-2 text-[11px] text-muted-foreground/70">No chats yet.</div>}
 
           {!collapsed && (
             <div className="mt-5">
               <SectionLabel
                 action={
-                  <button type="button" className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-white/[0.06] hover:text-neutral-200" onClick={onNewWorkspace} title="New workspace" aria-label="New workspace">
+                  <button type="button" className="rounded-md p-1 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground" onClick={onNewWorkspace} title="New workspace" aria-label="New workspace">
                     <Plus size={12} strokeWidth={1.75} aria-hidden="true" />
                   </button>
                 }
@@ -262,7 +279,7 @@ export function BridgeSidebar({
                   type="button"
                   title={ws.title}
                   onClick={() => onToggleWorkspace(ws.id)}
-                  className="mx-auto my-1 flex h-10 w-10 items-center justify-center rounded-xl text-neutral-500 transition-all hover:bg-white/[0.06] hover:text-neutral-200"
+                  className="mx-auto my-1 flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-all hover:bg-accent hover:text-foreground"
                 >
                   <FolderGit2 size={16} strokeWidth={1.5} aria-hidden="true" />
                 </button>
@@ -270,24 +287,24 @@ export function BridgeSidebar({
             }
             return (
               <section key={ws.id} className="mb-0.5">
-                <div className="group/ws flex h-[34px] items-center gap-1 rounded-xl px-2 transition-colors hover:bg-white/[0.045]">
+                <div className="group/ws flex h-[34px] items-center gap-1 rounded-xl px-2 transition-colors hover:bg-accent">
                   <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => onToggleWorkspace(ws.id)}>
-                    <ChevronRight size={12} strokeWidth={1.75} className={cn("text-neutral-600 transition-transform", open && "rotate-90")} aria-hidden="true" />
-                    <FolderGit2 size={13} strokeWidth={1.5} className="shrink-0 text-neutral-500" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.006em] text-neutral-200">{ws.title}</span>
+                    <ChevronRight size={12} strokeWidth={1.75} className={cn("text-muted-foreground/70 transition-transform", open && "rotate-90")} aria-hidden="true" />
+                    <FolderGit2 size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.006em] text-foreground">{ws.title}</span>
                   </button>
-                  <span className="font-mono text-[10px] text-neutral-600 group-hover/ws:hidden">{chats.length || ""}</span>
-                  <button type="button" className="hidden rounded-md p-1 text-neutral-500 transition-colors hover:bg-white/[0.08] hover:text-neutral-200 group-hover/ws:flex" title="New agent" aria-label="New agent" disabled={busy} onClick={() => onNewWorkspaceSession(ws.id)}>
+                  <span className="font-mono text-[10px] text-muted-foreground/70 group-hover/ws:hidden">{chats.length || ""}</span>
+                  <button type="button" className="hidden rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground group-hover/ws:flex" title="New agent" aria-label="New agent" disabled={busy} onClick={() => onNewWorkspaceSession(ws.id)}>
                     <Plus size={13} strokeWidth={1.75} aria-hidden="true" />
                   </button>
                 </div>
                 {open && (
-                  <div className="ml-[17px] border-l border-white/[0.06] pl-1.5">
+                  <div className="ml-[17px] border-l border-border pl-1.5">
                     {chats.map(chat => <SidebarChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={false} onClick={() => onOpenSession(chat.id)} />)}
                     <div className="flex items-center gap-1.5 py-1.5 pl-1">
                       <button
                         type="button"
-                        className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 text-[11px] font-medium text-neutral-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all hover:border-white/[0.1] hover:bg-white/[0.06] hover:text-neutral-100 active:scale-[0.97] disabled:opacity-40"
+                        className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] font-medium text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-[0.97] disabled:opacity-40"
                         disabled={busy}
                         onClick={() => onNewWorkspaceSession(ws.id)}
                       >
@@ -296,7 +313,7 @@ export function BridgeSidebar({
                       {!ws.path && (
                         <button
                           type="button"
-                          className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 text-[11px] font-medium text-neutral-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all hover:border-white/[0.1] hover:bg-white/[0.06] hover:text-neutral-100 active:scale-[0.97]"
+                          className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] font-medium text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-[0.97]"
                           onClick={() => onConnectFolder(ws.id)}
                         >
                           <FolderOpen size={11} strokeWidth={1.75} aria-hidden="true" /> Connect folder
@@ -304,7 +321,7 @@ export function BridgeSidebar({
                       )}
                     </div>
                     {ws.path && (
-                      <div className="flex items-center gap-1.5 truncate px-2.5 pb-1.5 font-mono text-[10px] text-neutral-600">
+                      <div className="flex items-center gap-1.5 truncate px-2.5 pb-1.5 font-mono text-[10px] text-muted-foreground/70">
                         <GitBranch size={10} strokeWidth={1.5} aria-hidden="true" />
                         {ws.branch ?? "folder"} · {ws.dirtyFiles ? `${ws.dirtyFiles} changed` : "clean"}
                       </div>
@@ -314,7 +331,7 @@ export function BridgeSidebar({
               </section>
             );
           })}
-          {!workspaces.length && !collapsed && <div className="px-2.5 py-2 text-[11px] leading-relaxed text-neutral-600">Group chats and connect a repo with a workspace.</div>}
+          {!workspaces.length && !collapsed && <div className="px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground/70">Group chats and connect a repo with a workspace.</div>}
         </div>
 
         <button
@@ -325,8 +342,8 @@ export function BridgeSidebar({
             "mt-3 flex shrink-0 items-center rounded-xl transition-all",
             collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 border border-transparent px-2.5 text-[12px] font-medium",
             marketplaceActive
-              ? "border-white/[0.07] bg-white/[0.07] text-neutral-100"
-              : "text-neutral-500 hover:bg-white/[0.045] hover:text-neutral-200",
+              ? "border-border bg-card text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
           <Package size={15} strokeWidth={1.6} aria-hidden="true" />
@@ -340,8 +357,8 @@ export function BridgeSidebar({
             "mt-1 flex shrink-0 items-center rounded-xl transition-all",
             collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 border border-transparent px-2.5 text-[12px] font-medium",
             settingsActive
-              ? "border-white/[0.07] bg-white/[0.07] text-neutral-100"
-              : "text-neutral-500 hover:bg-white/[0.045] hover:text-neutral-200",
+              ? "border-border bg-card text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
           <Settings2 size={15} strokeWidth={1.6} aria-hidden="true" />
@@ -357,12 +374,13 @@ export function BridgeSidebar({
           aria-label="Resize sidebar"
           onPointerDown={startResize}
           className={cn(
-            "absolute inset-y-0 right-0 z-30 w-3 cursor-col-resize touch-none select-none",
+            "absolute inset-y-0 right-0 z-30 hidden w-3 cursor-col-resize touch-none select-none sm:block",
             "after:absolute after:inset-y-4 after:right-0 after:w-px after:transition-colors",
-            resizing ? "after:bg-white/[0.25]" : "after:bg-transparent hover:after:bg-white/[0.15]",
+            resizing ? "after:bg-ring/60" : "after:bg-transparent hover:after:bg-border",
           )}
         />
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
