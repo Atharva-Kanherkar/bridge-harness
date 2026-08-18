@@ -541,6 +541,55 @@
   color: var(--color-foreground);
 }
 
+/* ── Math / Mermaid copy affordance ────────────────────────────────────────
+   These blocks have no header like code does, so the copy button floats in
+   the corner and only asserts itself on hover/focus. */
+
+.rich-block {
+  position: relative;
+}
+
+.rich-block-copy {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
+  background: var(--color-code-highlight);
+  border: 1px solid var(--color-border);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.rich-block:hover .rich-block-copy,
+.rich-block-copy:focus-visible {
+  opacity: 1;
+}
+
+.rich-block-copy:hover {
+  color: var(--color-foreground);
+  background: var(--color-accent);
+}
+
+/* ── HTML block ─────────────────────────────────────────────────────────── */
+
+.html-block {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-code);
+}
+
+.html-block iframe {
+  display: block;
+  height: 22rem;
+}
+
 /* ── Syntax highlighting ────────────────────────────────────────────────── */
 .hljs {
   color: var(--code-foreground);

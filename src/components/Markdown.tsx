@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { highlightCode, normalizeLang } from "./highlight";
 
@@ -12,7 +12,21 @@ type Block =
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "quote"; text: string }
   | { kind: "rule" }
+  | { kind: "table"; header: string[]; rows: string[][] }
   | { kind: "para"; text: string };
+
+/** Split a `| a | b |` row into trimmed cells, dropping the leading/trailing pipe. */
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map(cell => cell.trim());
+}
+
+// A GFM header-separator row: cells of only dashes, with optional `:` alignment markers.
+const TABLE_SEPARATOR = /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/;
+
+function isTableRow(line: string): boolean {
+  return line.includes("|");
+}
 
 /** Classify a fenced block by its info string into a rich-content block kind. */
 function fencedBlock(lang: string, body: string): Block {
@@ -65,6 +79,14 @@ export function splitBlocks(source: string): Block[] {
       blocks.push({ kind: "quote", text: quote.join("\n") });
       continue;
     }
+    if (isTableRow(trimmed) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1].trim()) && isTableRow(lines[index + 1].trim())) {
+      const header = splitTableRow(trimmed);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && isTableRow(lines[index].trim())) { rows.push(splitTableRow(lines[index])); index += 1; }
+      blocks.push({ kind: "table", header, rows });
+      continue;
+    }
     const bullet = /^[-*+]\s+/; const numbered = /^\d+[.)]\s+/;
     if (bullet.test(trimmed) || numbered.test(trimmed)) {
       const ordered = numbered.test(trimmed);
@@ -85,7 +107,8 @@ export function splitBlocks(source: string): Block[] {
     index += 1;
     while (index < lines.length) {
       const current = lines[index].trim();
-      if (!current || current.startsWith("```") || current.startsWith("$$") || /^(#{1,6})\s+/.test(current) || bullet.test(current) || numbered.test(current) || /^>\s?/.test(current)) break;
+      const startsTable = isTableRow(current) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1].trim()) && isTableRow(lines[index + 1].trim());
+      if (!current || current.startsWith("```") || current.startsWith("$$") || /^(#{1,6})\s+/.test(current) || bullet.test(current) || numbered.test(current) || /^>\s?/.test(current) || startsTable) break;
       para.push(current); index += 1;
     }
     blocks.push({ kind: "para", text: para.join("\n") });
@@ -96,7 +119,7 @@ export function splitBlocks(source: string): Block[] {
 // Inline tokens, in priority order: code span, \(math\), $math$, bold, italic, link.
 // The $…$ pattern requires non-space just inside both delimiters and forbids a
 // trailing digit, so ordinary prose ("costs $5 and $10") is not misread as math.
-const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|~~[^~\n]+~~|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
 
 /** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
 export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
@@ -130,12 +153,36 @@ function useDarkTheme(): boolean {
   return dark;
 }
 
+/** Shared copy-to-clipboard state for the code/math/mermaid copy affordances. */
+function useCopy(text: string) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
+  };
+  return { copied, copy };
+}
+
+function CopyButton({ text, className }: { text: string; className: string }) {
+  const { copied, copy } = useCopy(text);
+  return (
+    <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
+      {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 function MathBlock({ tex }: { tex: string }) {
   const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
   if (html == null) {
     return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-destructive/30 bg-destructive/10 px-[0.85em] py-[0.6em] text-destructive"><code>{tex}</code></pre>;
   }
-  return <div className="my-[0.9em] overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div className="rich-block my-[0.9em]">
+      <CopyButton text={tex} className="rich-block-copy" />
+      <div className="overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  );
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -143,6 +190,7 @@ function renderInline(text: string): React.ReactNode[] {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <code key={index}>{part.slice(1, -1)}</code>;
     if (part.startsWith("\\(") && part.endsWith("\\)") && part.length > 4) return <InlineMath key={index} tex={part.slice(2, -2)} />;
     if (part.startsWith("$") && part.endsWith("$") && part.length > 2) return <InlineMath key={index} tex={part.slice(1, -1)} />;
+    if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2))}</del>;
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2))}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
@@ -152,20 +200,13 @@ function renderInline(text: string): React.ReactNode[] {
 }
 
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
-  const [copied, setCopied] = useState(false);
   const highlighted = useMemo(() => highlightCode(body, lang), [body, lang]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
-  const copy = () => {
-    void navigator.clipboard?.writeText(body).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
-  };
   return (
     <div className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
-        <button type="button" className="code-block-copy" onClick={copy}>
-          {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CopyButton text={body} className="code-block-copy" />
       </div>
       <pre><code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} /></pre>
     </div>
@@ -212,7 +253,12 @@ function MermaidBlock({ code }: { code: string }) {
   if (svg == null) {
     return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
   }
-  return <div className="my-[0.9em] flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return (
+    <div className="rich-block my-[0.9em]">
+      <CopyButton text={code} className="rich-block-copy" />
+      <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
+  );
 }
 
 // Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
@@ -223,14 +269,53 @@ function MermaidBlock({ code }: { code: string }) {
 // legible on the token background in both modes.
 function HtmlBlock({ html }: { html: string }) {
   const dark = useDarkTheme();
-  return (
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  const frame = (
     <iframe
-      className={`my-[0.9em] min-h-30 w-full rounded-[0.9rem] border border-border bg-background ${dark ? "[color-scheme:dark]" : "[color-scheme:light]"}`}
+      className={`w-full flex-1 border-0 bg-background ${dark ? "[color-scheme:dark]" : "[color-scheme:light]"}`}
       title="Rendered HTML"
       sandbox=""
       referrerPolicy="no-referrer"
       srcDoc={html}
     />
+  );
+
+  if (fullscreen) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-scrim p-4 backdrop-blur-md sm:p-8">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[0.9rem] border border-border bg-background">
+          <div className="code-block-header">
+            <span className="code-block-lang">html</span>
+            <button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen" title="Exit fullscreen (Esc)">
+              <Minimize2 size={12} aria-hidden="true" />
+              Close
+            </button>
+          </div>
+          {frame}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="html-block my-[0.9em]">
+      <div className="code-block-header">
+        <span className="code-block-lang">html</span>
+        <button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen" title="Fullscreen">
+          <Maximize2 size={12} aria-hidden="true" />
+          Expand
+        </button>
+      </div>
+      {frame}
+    </div>
   );
 }
 
@@ -248,6 +333,18 @@ export const Markdown = memo(function Markdown({ text, dim }: { text: string; di
         }
         if (block.kind === "rule") return <hr key={index} />;
         if (block.kind === "quote") return <blockquote key={index}>{renderInline(block.text)}</blockquote>;
+        if (block.kind === "table") {
+          return (
+            <table key={index}>
+              <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell)}</th>)}</tr></thead>
+              <tbody>
+                {block.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }
         if (block.kind === "list") {
           const List = block.ordered ? "ol" : "ul";
           return <List key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</List>;
