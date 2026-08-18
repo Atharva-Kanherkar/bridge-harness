@@ -5,7 +5,8 @@ import { pickGreeting } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
-import { highlightDiff, looksLikeDiff } from "./highlight";
+import { looksLikeDiff } from "./highlight";
+import { PatchView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { harnessLabel } from "../utils";
 
@@ -190,9 +191,8 @@ function toolOutput(item: ConversationItem): string {
   return text;
 }
 
-function DiffPatch({ patch }: { patch: string }) {
-  const html = useMemo(() => highlightDiff(patch.slice(-8000)), [patch]);
-  return <div className="diff-view max-h-[320px] overflow-auto p-3" dangerouslySetInnerHTML={{ __html: html }} />;
+function DiffPatch({ patch, path }: { patch: string; path?: string }) {
+  return <PatchView patch={patch.slice(-8000)} path={path ?? ""} className="max-h-[320px] px-1" />;
 }
 
 /// One tool call, one collapsed monospace row: what ran on the left, what it
@@ -235,7 +235,7 @@ function ActionRow({ item }: { item: ConversationItem }) {
       {open && output && (
         <div className="mb-2 mt-0.5 overflow-hidden rounded-lg border border-border bg-code">
           {looksLikeDiff(output)
-            ? <DiffPatch patch={output}/>
+            ? <DiffPatch patch={output} path={info.verb === "edit" || info.verb === "read" ? info.detail : undefined}/>
             : <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground">{output.slice(-6000)}</pre>}
         </div>
       )}

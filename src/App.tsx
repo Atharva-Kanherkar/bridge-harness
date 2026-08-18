@@ -11,6 +11,7 @@ import { MissionControl } from "./components/MissionControl";
 import { isVisibleWorker } from "./components/workerStatus";
 import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
+import { PatchView } from "./components/DiffView";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
@@ -21,6 +22,7 @@ import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
+import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError } from "./errors";
 import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
@@ -823,25 +825,20 @@ const IMPORTANCE_BADGE: Record<RiskTier, { label: string; variant: "error" | "wa
   low: { label: "Low", variant: "outline" },
 };
 
-function DiffLine({ line }: { line: string }) {
-  const kind = line.startsWith("+++") || line.startsWith("---") ? "meta"
-    : line.startsWith("+") ? "add"
-    : line.startsWith("-") ? "del"
-    : line.startsWith("@@") ? "hunk"
-    : "context";
-  const color = kind === "add" ? "text-success bg-success/8"
-    : kind === "del" ? "text-destructive bg-destructive/8"
-    : kind === "hunk" ? "text-info"
-    : kind === "meta" ? "text-muted-foreground/60"
-    : "text-muted-foreground";
-  return <div className={`whitespace-pre px-3 ${color}`}>{line.length ? line : " "}</div>;
+function FileDiffView({ patch, binary, path }: { patch: string; binary: boolean; path: string }) {
+  if (binary) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Binary file — no diff to show.</div>;
+  if (!patch.trim()) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">No diff content.</div>;
+  return <PatchView patch={patch} path={path} />;
 }
 
-function FileDiffView({ patch, binary }: { patch: string; binary: boolean }) {
-  if (binary) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Binary file — no diff to show.</div>;
-  const lines = patch.split("\n").filter((_, index, all) => !(index === all.length - 1 && all[index] === ""));
-  if (!lines.length) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">No diff content.</div>;
-  return <div className="font-mono text-[11px] leading-[1.65] overflow-x-auto py-2">{lines.map((line, index) => <DiffLine key={index} line={line} />)}</div>;
+/** Proportional add/delete bar. Silent when a file has no line changes. */
+function DiffStatBar({ additions, deletions, className }: { additions: number; deletions: number; className?: string }) {
+  const total = additions + deletions;
+  if (!total) return null;
+  return <span className={cn("flex h-1 w-10 shrink-0 overflow-hidden rounded-full bg-muted", className)} aria-hidden="true">
+    <span className="bg-success" style={{ width: `${(additions / total) * 100}%` }} />
+    <span className="bg-destructive" style={{ width: `${(deletions / total) * 100}%` }} />
+  </span>;
 }
 
 function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpanded }: {
@@ -851,26 +848,40 @@ function ChangeFileRow({ file, viewed, expanded, onToggleViewed, onToggleExpande
   onToggleViewed: () => void;
   onToggleExpanded: () => void;
 }) {
-  const badge = IMPORTANCE_BADGE[file.importance];
-  return <div className="u-glass-soft rounded-lg overflow-hidden">
-    <div className="flex items-center gap-2.5 pl-2 pr-3 py-2">
-      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex-1 min-w-0 flex items-center gap-2 text-left px-1.5 py-1 rounded-md hover:bg-accent">
-        <ChevronDown size={13} className={`shrink-0 text-muted-foreground/60 transition-transform ${expanded ? "" : "-rotate-90"}`} aria-hidden="true" />
-        <span className="font-mono text-[12px] text-foreground truncate">{file.path}</span>
+  // "Low" is the default state, so labelling it adds noise to every row. Only
+  // a file that actually wants attention gets a badge.
+  const badge = file.importance === "low" ? undefined : IMPORTANCE_BADGE[file.importance];
+  const cut = file.path.lastIndexOf("/") + 1;
+  return <div className={cn("transition-opacity", viewed && !expanded && "opacity-55")}>
+    <div className="flex items-center gap-2 px-2 py-1">
+      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent">
+        <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/60 transition-transform", !expanded && "-rotate-90")} aria-hidden="true" />
+        <span className="truncate font-mono text-[12px]">
+          {cut > 0 && <span className="text-muted-foreground/70">{file.path.slice(0, cut)}</span>}
+          <span className="text-foreground">{file.path.slice(cut)}</span>
+        </span>
       </button>
-      <Badge variant={badge.variant} size="sm" className="shrink-0">{badge.label}</Badge>
-      <span className="shrink-0 font-mono text-[10.5px] tabular-nums"><b className="text-success font-medium">+{file.additions}</b> <b className="text-destructive font-medium">−{file.deletions}</b></span>
+      {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
+      <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums sm:flex">
+        <span className="text-success">+{file.additions}</span>
+        <span className="text-destructive">−{file.deletions}</span>
+        <DiffStatBar additions={file.additions} deletions={file.deletions} />
+      </span>
       <button
         type="button"
         onClick={onToggleViewed}
         aria-pressed={viewed}
-        className={`shrink-0 flex items-center gap-1 h-6 px-2 rounded-full border text-[10.5px] transition-colors ${viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:bg-accent"}`}
+        title={viewed ? "Mark as not viewed" : "Mark as viewed"}
+        aria-label={viewed ? `Mark ${file.path} as not viewed` : `Mark ${file.path} as viewed`}
+        className={cn(
+          "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors",
+          viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground/60 hover:bg-accent hover:text-foreground",
+        )}
       >
-        {viewed ? <Check size={11} aria-hidden="true" /> : <span className="w-2.5 h-2.5 rounded-[3px] border border-current" aria-hidden="true" />}
-        Viewed
+        <Check size={12} aria-hidden="true" />
       </button>
     </div>
-    {expanded && <div className="border-t border-border"><FileDiffView patch={file.patch} binary={file.binary} /></div>}
+    {expanded && <div className="border-t border-border bg-code"><FileDiffView patch={file.patch} binary={file.binary} path={file.path} /></div>}
   </div>;
 }
 
@@ -916,19 +927,21 @@ function ChangesPanel({ workspace }: { workspace: Workspace }) {
   const totalDeletions = changes.files.reduce((sum, file) => sum + file.deletions, 0);
   const viewedCount = sortedFiles.filter(file => viewedPaths.has(file.path)).length;
 
-  return <div className="p-[38px_44px] max-w-[780px] h-full overflow-y-auto">
-    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
-    <h2 className="font-heading text-foreground text-[20px] my-2.5 tracking-[-0.015em]">{changes.files.length ? `${changes.files.length} file${changes.files.length === 1 ? "" : "s"} changed` : "Workspace is clean"}</h2>
+  return <div className="mx-auto h-full max-w-3xl overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
+    <div className="text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">CHANGES</div>
+    <h2 className="my-2 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${changes.files.length} file${changes.files.length === 1 ? "" : "s"} changed` : "Workspace is clean"}</h2>
     {changes.files.length === 0
-      ? <p className="text-muted-foreground text-[13px] leading-relaxed max-w-[560px]">No uncommitted changes against HEAD.</p>
+      ? <p className="max-w-[560px] text-[13px] leading-relaxed text-muted-foreground">No uncommitted changes against HEAD.</p>
       : <>
-        <div className="h-[44px] border border-border flex items-center gap-3 px-3.5 rounded-lg font-mono text-[11.5px]">
-          <b className="text-success font-medium">+{totalAdditions}</b>
-          <b className="text-destructive font-medium">−{totalDeletions}</b>
-          <span className="h-[3px] flex-1 rounded-[2px] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-success)_55%,transparent)_0_72%,color-mix(in_srgb,var(--color-destructive)_55%,transparent)_72%)]"/>
-          <small className="text-muted-foreground">{viewedCount}/{sortedFiles.length} viewed</small>
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-[11.5px]">
+          <span className="text-success">+{totalAdditions}</span>
+          <span className="text-destructive">−{totalDeletions}</span>
+          <DiffStatBar additions={totalAdditions} deletions={totalDeletions} className="w-24" />
+          <span className="ml-auto text-muted-foreground">{viewedCount}/{sortedFiles.length} viewed</span>
         </div>
-        <div className="mt-5 flex flex-col gap-2">
+        {/* One list with dividers, not a stack of floating cards — a review
+            reads down a column of paths, and cards fight that. */}
+        <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
           {visibleFiles.map(file => <ChangeFileRow
             key={file.path}
             file={file}
@@ -937,10 +950,10 @@ function ChangesPanel({ workspace }: { workspace: Workspace }) {
             onToggleViewed={() => toggle(setViewedPaths, file.path)}
             onToggleExpanded={() => toggle(setExpandedPaths, file.path)}
           />)}
-          {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="text-left px-1.5 py-2 text-[11.5px] text-muted-foreground hover:text-foreground">
-            {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
-          </button>}
         </div>
+        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-[11.5px] text-muted-foreground transition-colors hover:text-foreground">
+          {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
+        </button>}
       </>}
   </div>;
 }
