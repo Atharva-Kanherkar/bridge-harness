@@ -7,6 +7,7 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { MissionControl } from "./components/MissionControl";
 import { isVisibleWorker } from "./components/workerStatus";
 import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
@@ -70,6 +71,9 @@ export function App() {
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
+  // Two ways to look at the workspace: the classic single-session view, or the
+  // Mission Control grid where every live agent is its own window at once.
+  const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "events" | "terminal">("agent");
   const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | null>(null);
@@ -169,11 +173,17 @@ export function App() {
   const adaptersReady = adapters.some(adapter => adapter.available);
   const topSessions = useMemo(() => state.sessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [state.sessions]);
   const standaloneChats = useMemo(() => topSessions.filter(s => !s.workspaceId), [topSessions]);
-  const session = topSessions.find(s => s.id === selectedSessionId);
+  // Resolve across every session, not just top-level ones: a worker can be
+  // opened directly (from Mission Control or a blocked-approval link) so its own
+  // conversation — and the approval card that lives on it — is reachable.
+  const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell");
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
   const isDirectChat = session?.kind === "direct";
+  // A focused worker is watchable and its approvals are resolvable, but the
+  // backend rejects worker turns, so it gets no composer.
+  const isWorkerView = !!session?.parentSessionId;
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const childWorkers = useMemo(() => session ? state.sessions.filter(worker => {
@@ -332,7 +342,10 @@ export function App() {
   // Load available slash commands + skills from signed-in providers.
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
 
-  function openSession(id: string) { setView("workspace"); setSelectedSessionId(id); }
+  // Always land on the Agent tab: focusing a session (especially a blocked
+  // worker from Mission Control) must reveal its conversation and approval card,
+  // not whatever tab — Changes/Terminal — happened to be open before.
+  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); }
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
@@ -535,6 +548,7 @@ export function App() {
     <SpaceBackground paused={turnActive} />
 
     <div className="fixed right-3 top-3 z-30 flex items-center gap-1.5 sm:right-5 sm:top-5">
+      {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> {paradigm === "grid" ? "Focus" : "Mission Control"}</Button>}
       <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>
 
@@ -561,7 +575,14 @@ export function App() {
     />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : session ? <>
+      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+        sessions={state.sessions}
+        runtimes={forest?.workerRuntimes ?? []}
+        reasons={forest?.reasons ?? []}
+        events={agentEvents}
+        activeSessionId={session?.id}
+        onFocusSession={openSession}
+      /> : session ? <>
         <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-white/[0.04] ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-white font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
@@ -593,6 +614,7 @@ export function App() {
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
+                  onOpenSession={openSession}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
@@ -618,7 +640,7 @@ export function App() {
                     <em className="not-italic font-mono text-[11px]"><b className="text-emerald-400">+{workspace.additions}</b> <b className="text-red-400">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
-                <div className="relative mx-auto max-w-2xl">
+                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-neutral-400"><Bot size={14} className="shrink-0 text-neutral-500" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
                   {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-white/[0.06] px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-white/[0.045] px-3 py-2 text-left last:border-0 hover:bg-white/[0.05]"><span className="mt-0.5 rounded border border-emerald-400/15 bg-emerald-400/[0.05] px-1.5 py-0.5 text-[8.5px] uppercase text-emerald-300">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-neutral-200">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-neutral-500">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-neutral-600 border-b border-white/[0.06] flex items-center gap-2">
@@ -664,7 +686,7 @@ export function App() {
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                   />
-                </div>
+                </div>}
               </div>
             </>}
             {hasRepo && workspace && activeTab === "changes" && <ChangesPanel workspace={workspace}/>}
