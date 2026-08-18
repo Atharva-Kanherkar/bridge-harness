@@ -8,7 +8,9 @@ import type {
   ManagedAgentOperationKind,
   ManagedAgentOperationResult,
   ManagedAgentStatus,
+  ReadWorkspaceFileResult,
   WorkspaceChangesResult,
+  WriteWorkspaceFileResult,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
@@ -638,6 +640,12 @@ export const bridgeApi = {
   },
   workspaceChanges: (workspaceId: string): Promise<WorkspaceChangesResult> =>
     isTauri() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
+  listWorkspaceTree: (workspaceId: string): Promise<string[]> =>
+    isTauri() ? call("workspaces/list_workspace_tree", { workspaceId }) : Promise.resolve(mockTreePaths()),
+  readWorkspaceFile: (workspaceId: string, path: string): Promise<ReadWorkspaceFileResult> =>
+    isTauri() ? call("workspaces/read_workspace_file", { workspaceId, path }) : Promise.resolve(mockReadFile(path)),
+  writeWorkspaceFile: (workspaceId: string, path: string, content: string, baseSha256: string | null): Promise<WriteWorkspaceFileResult> =>
+    isTauri() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : Promise.resolve(mockWriteFile(path, content, baseSha256)),
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);
@@ -655,6 +663,50 @@ export const bridgeApi = {
     return () => undefined;
   }
 };
+
+/* ── Browser-mode file system ──────────────────────────────────────────────
+   An in-memory tree so the editor is fully usable — open, edit, save, reopen —
+   in `bun run dev` without a daemon. Writes are checked against the same
+   hash-conflict rule the Rust side enforces, so the conflict path is
+   reachable in the browser too. */
+
+const mockFiles = new Map<string, string>([
+  ["README.md", "# Bridge\n\nLocal control room for supervised coding-agent workspaces.\n"],
+  ["package.json", "{\n  \"name\": \"bridge-deck\",\n  \"private\": true\n}\n"],
+  ["src/main.tsx", "import { createRoot } from \"react-dom/client\";\nimport App from \"./App\";\n\ncreateRoot(document.getElementById(\"root\")!).render(<App />);\n"],
+  ["src/App.tsx", "export default function App() {\n  return <main>Bridge</main>;\n}\n"],
+  ["src/theme.ts", "export type Theme = \"system\" | \"light\" | \"dark\";\n\nexport function systemTheme(): Theme {\n  return matchMedia(\"(prefers-color-scheme: dark)\").matches ? \"dark\" : \"light\";\n}\n"],
+  ["src/components/Markdown.tsx", "export function Markdown({ text }: { text: string }) {\n  return <div>{text}</div>;\n}\n"],
+  ["src-tauri/src/lib.rs", "pub fn run() {\n    tauri::Builder::default().run(tauri::generate_context!()).unwrap();\n}\n"],
+  ["src-tauri/bridge-core/src/policy.rs", "pub fn allow(path: &str, owner: &str) -> bool {\n    !path.is_empty() && !owner.is_empty()\n}\n"],
+  ["scripts/prepare-daemon.sh", "#!/bin/sh\nset -eu\ncargo build --release --bin bridged\n"],
+]);
+
+/** Not SHA-256 — just a stable content token with the same conflict semantics. */
+function mockHash(content: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < content.length; index += 1) {
+    hash = Math.imul(hash ^ content.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+const mockTreePaths = (): string[] => [...mockFiles.keys()].sort();
+
+function mockReadFile(path: string): ReadWorkspaceFileResult {
+  const content = mockFiles.get(path);
+  if (content === undefined) throw new Error(`${path} does not exist`);
+  return { path, content, sha256: mockHash(content), tooLarge: false, binary: false, sizeBytes: content.length };
+}
+
+function mockWriteFile(path: string, content: string, baseSha256: string | null): WriteWorkspaceFileResult {
+  const existing = mockFiles.get(path);
+  if (baseSha256 === null && existing !== undefined) throw new Error(`${path} already exists`);
+  if (baseSha256 !== null && existing === undefined) throw new Error(`${path} no longer exists on disk`);
+  if (baseSha256 !== null && mockHash(existing!) !== baseSha256) throw new Error(`${path} changed on disk since it was opened`);
+  mockFiles.set(path, content);
+  return { sha256: mockHash(content) };
+}
 
 /** Browser-mode fixture for the Changes tab: one file per importance tier,
  * plus a lockfile, so the collapse-by-default affordance has something to

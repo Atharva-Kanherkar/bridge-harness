@@ -11,7 +11,9 @@
 
 use crate::BridgeError;
 use cap_std::{ambient_authority, fs::Dir};
-use std::io::{BufRead, BufReader, Read};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -19,6 +21,9 @@ use std::process::{Command, Stdio};
 const MAX_FILES: usize = 5000;
 /// Per-file byte ceiling for injected context (larger files are truncated).
 const MAX_FILE_BYTES: usize = 256 * 1024;
+/// Byte ceiling for a file opened in the editor. Past this the editor shows a
+/// read-only notice rather than loading a file no one edits by hand.
+const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 /// Aggregate byte ceiling across all referenced files in a single turn.
 const MAX_TOTAL_CONTEXT_BYTES: usize = 512 * 1024;
 
@@ -248,6 +253,183 @@ pub fn mention_context(root: &Path, text: &str) -> Option<String> {
     ))
 }
 
+/// A workspace file opened for editing. Mirrored by
+/// `bridge_protocol::messages::ReadWorkspaceFileResult`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContents {
+    pub path: String,
+    pub content: String,
+    /// SHA-256 of the bytes on disk, the token a later write must present.
+    pub sha256: String,
+    /// Set for files we will not hand to the editor: binary, or over the
+    /// ceiling. `content` is empty and no write will be accepted.
+    pub too_large: bool,
+    pub binary: bool,
+    pub size_bytes: u64,
+}
+
+/// The outcome of a write. Mirrored by
+/// `bridge_protocol::messages::WriteWorkspaceFileResult`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteOutcome {
+    pub sha256: String,
+}
+
+pub fn hash_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Reject the paths a workspace-relative request should never carry. The
+/// `cap_std` directory capability already blocks escapes at open time; this
+/// turns them into a clear error instead of a bare I/O failure, and keeps
+/// absolute paths from being silently reinterpreted.
+fn check_relative(path: &str) -> Result<(), BridgeError> {
+    if path.is_empty() {
+        return Err(BridgeError::Invalid("Empty file path".into()));
+    }
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return Err(BridgeError::Invalid(format!(
+            "{path} is absolute; workspace paths are relative to the workspace root"
+        )));
+    }
+    if candidate
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(BridgeError::Invalid(format!("{path} escapes the workspace")));
+    }
+    Ok(())
+}
+
+/// Read a workspace file for the editor.
+///
+/// Binary files and anything over [`MAX_EDIT_BYTES`] come back flagged and
+/// empty rather than as mangled text — the caller renders a notice.
+pub fn read_file(root: &Path, path: &str) -> Result<FileContents, BridgeError> {
+    check_relative(path)?;
+    let dir = Dir::open_ambient_dir(root, ambient_authority())?;
+    let mut file = dir.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(BridgeError::Invalid(format!("{path} is not a file")));
+    }
+    let size_bytes = metadata.len();
+    if size_bytes > MAX_EDIT_BYTES {
+        return Ok(FileContents {
+            path: path.to_owned(),
+            content: String::new(),
+            sha256: String::new(),
+            too_large: true,
+            binary: false,
+            size_bytes,
+        });
+    }
+    let mut bytes = Vec::with_capacity(size_bytes as usize);
+    file.read_to_end(&mut bytes)?;
+    let sha256 = hash_bytes(&bytes);
+    // A NUL in the first 8k is the same heuristic Git uses to call a file
+    // binary, and it is the one the diff view already reports against.
+    let binary = bytes.iter().take(8000).any(|byte| *byte == 0);
+    if binary {
+        return Ok(FileContents {
+            path: path.to_owned(),
+            content: String::new(),
+            sha256,
+            too_large: false,
+            binary: true,
+            size_bytes,
+        });
+    }
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(FileContents {
+            path: path.to_owned(),
+            content,
+            sha256,
+            too_large: false,
+            binary: false,
+            size_bytes,
+        }),
+        // Valid non-UTF-8 text (latin-1 and friends). Editing it would rewrite
+        // the encoding, so treat it as binary rather than corrupt it.
+        Err(error) => Ok(FileContents {
+            path: path.to_owned(),
+            content: String::new(),
+            sha256: hash_bytes(error.as_bytes()),
+            too_large: false,
+            binary: true,
+            size_bytes,
+        }),
+    }
+}
+
+/// Write a workspace file, refusing the write if the bytes on disk are no
+/// longer the ones the editor read.
+///
+/// Agents write these worktrees while a human has the same file open, so a
+/// blind write is a lost update waiting to happen. `base_sha256` is the hash
+/// the editor got from [`read_file`]; `None` means "create, must not exist".
+/// The new hash comes back so the caller can keep editing without re-reading.
+pub fn write_file(
+    root: &Path,
+    path: &str,
+    content: &str,
+    base_sha256: Option<&str>,
+) -> Result<WriteOutcome, BridgeError> {
+    check_relative(path)?;
+    let dir = Dir::open_ambient_dir(root, ambient_authority())?;
+    let on_disk = match dir.open(path) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Some(hash_bytes(&bytes))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    match (base_sha256, on_disk.as_deref()) {
+        (Some(expected), Some(actual)) if expected == actual => {}
+        (None, None) => {}
+        (_, None) => {
+            return Err(BridgeError::Invalid(format!(
+                "{path} no longer exists on disk"
+            )))
+        }
+        (None, Some(_)) => {
+            return Err(BridgeError::Invalid(format!("{path} already exists")))
+        }
+        (Some(_), Some(_)) => {
+            return Err(BridgeError::Invalid(format!(
+                "{path} changed on disk since it was opened"
+            )))
+        }
+    }
+    if let Some(parent) = Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            dir.create_dir_all(parent)?;
+        }
+    }
+    // Write through a sibling temp file and rename, so a crash mid-write
+    // leaves the original intact rather than a half-file.
+    let temp = format!("{path}.bridge-tmp");
+    {
+        let mut file = dir.create(&temp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+    if let Err(error) = dir.rename(&temp, &dir, path) {
+        let _ = dir.remove_file(&temp);
+        return Err(error.into());
+    }
+    Ok(WriteOutcome {
+        sha256: hash_bytes(content.as_bytes()),
+    })
+}
+
 /// Append referenced file data to the provider's user-role input. This keeps
 /// repository text separate from privileged application/credential context.
 pub fn append_to_user_text(text: &str, files: Option<&str>) -> String {
@@ -260,6 +442,115 @@ pub fn append_to_user_text(text: &str, files: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workspace() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn reads_a_file_with_its_hash() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let file = read_file(dir.path(), "main.rs").unwrap();
+        assert_eq!(file.path, "main.rs");
+        assert_eq!(file.content, "fn main() {}\n");
+        assert_eq!(file.sha256, hash_bytes(b"fn main() {}\n"));
+        assert!(!file.binary && !file.too_large);
+        assert_eq!(file.size_bytes, 13);
+    }
+
+    #[test]
+    fn round_trips_a_write_through_its_own_hash() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("a.txt"), "one").unwrap();
+        let opened = read_file(dir.path(), "a.txt").unwrap();
+        let written = write_file(dir.path(), "a.txt", "two", Some(&opened.sha256)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "two");
+        // The returned hash is the one a second write must present.
+        assert_eq!(written.sha256, read_file(dir.path(), "a.txt").unwrap().sha256);
+        assert!(write_file(dir.path(), "a.txt", "three", Some(&written.sha256)).is_ok());
+    }
+
+    #[test]
+    fn refuses_a_write_over_a_file_that_changed_on_disk() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("a.txt"), "one").unwrap();
+        let opened = read_file(dir.path(), "a.txt").unwrap();
+        // An agent edits the same file while the editor holds it open.
+        std::fs::write(dir.path().join("a.txt"), "agent wrote this").unwrap();
+        let error = write_file(dir.path(), "a.txt", "human wrote this", Some(&opened.sha256))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed on disk"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "agent wrote this"
+        );
+    }
+
+    #[test]
+    fn creates_a_new_file_only_when_none_exists() {
+        let dir = workspace();
+        write_file(dir.path(), "nested/new.txt", "hello", None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("nested/new.txt")).unwrap(),
+            "hello"
+        );
+        let error = write_file(dir.path(), "nested/new.txt", "again", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("already exists"), "{error}");
+    }
+
+    #[test]
+    fn refuses_a_write_to_a_file_that_vanished() {
+        let dir = workspace();
+        let error = write_file(dir.path(), "gone.txt", "x", Some("deadbeef"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no longer exists"), "{error}");
+    }
+
+    #[test]
+    fn refuses_paths_that_leave_the_workspace() {
+        let dir = workspace();
+        for path in ["../escape.txt", "/etc/passwd", "nested/../../escape.txt", ""] {
+            assert!(read_file(dir.path(), path).is_err(), "read allowed {path}");
+            assert!(
+                write_file(dir.path(), path, "x", None).is_err(),
+                "write allowed {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn flags_binary_and_oversized_files_instead_of_opening_them() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("logo.png"), [0x89, 0x50, 0x00, 0x01]).unwrap();
+        let binary = read_file(dir.path(), "logo.png").unwrap();
+        assert!(binary.binary);
+        assert!(binary.content.is_empty());
+
+        std::fs::write(
+            dir.path().join("huge.txt"),
+            vec![b'a'; MAX_EDIT_BYTES as usize + 1],
+        )
+        .unwrap();
+        let huge = read_file(dir.path(), "huge.txt").unwrap();
+        assert!(huge.too_large);
+        assert!(huge.content.is_empty());
+    }
+
+    #[test]
+    fn leaves_no_temp_file_behind_after_a_write() {
+        let dir = workspace();
+        write_file(dir.path(), "a.txt", "hello", None).unwrap();
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["a.txt".to_string()]);
+    }
 
     #[test]
     fn extracts_mentions_after_whitespace_only() {

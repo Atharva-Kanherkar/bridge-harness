@@ -13,6 +13,9 @@ export type BridgeMethod =
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
   | "workspaces/list_workspace_files"
+  | "workspaces/list_workspace_tree"
+  | "workspaces/read_workspace_file"
+  | "workspaces/write_workspace_file"
   | "workspaces/refresh_workspace"
   | "workspaces/archive_workspace"
   | "workspaces/workspace_changes"
@@ -102,6 +105,9 @@ export const BRIDGE_METHODS = [
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
   { method: "workspaces/list_workspace_files", domain: "workspaces", command: "list_workspace_files" },
+  { method: "workspaces/list_workspace_tree", domain: "workspaces", command: "list_workspace_tree" },
+  { method: "workspaces/read_workspace_file", domain: "workspaces", command: "read_workspace_file" },
+  { method: "workspaces/write_workspace_file", domain: "workspaces", command: "write_workspace_file" },
   { method: "workspaces/refresh_workspace", domain: "workspaces", command: "refresh_workspace" },
   { method: "workspaces/archive_workspace", domain: "workspaces", command: "archive_workspace" },
   { method: "workspaces/workspace_changes", domain: "workspaces", command: "workspace_changes" },
@@ -241,6 +247,9 @@ export interface BridgeMethodParams {
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
+  "workspaces/list_workspace_tree": ListWorkspaceTreeParams;
+  "workspaces/read_workspace_file": ReadWorkspaceFileParams;
+  "workspaces/write_workspace_file": WriteWorkspaceFileParams;
   "workspaces/refresh_workspace": RefreshWorkspaceParams;
   "workspaces/archive_workspace": ArchiveWorkspaceParams;
   "workspaces/workspace_changes": WorkspaceChangesParams;
@@ -332,6 +341,9 @@ export interface BridgeMethodResults {
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
+  "workspaces/list_workspace_tree": ListWorkspaceTreeResult;
+  "workspaces/read_workspace_file": ReadWorkspaceFileResult;
+  "workspaces/write_workspace_file": WriteWorkspaceFileResult;
   "workspaces/refresh_workspace": BridgeState;
   "workspaces/archive_workspace": BridgeState;
   "workspaces/workspace_changes": WorkspaceChangesResult;
@@ -1007,6 +1019,37 @@ export interface ListWorkspaceFilesParams {
 }
 
 export type ListWorkspaceFilesResult = string[];
+
+export interface ListWorkspaceTreeParams {
+  workspaceId: string;
+}
+
+export type ListWorkspaceTreeResult = string[];
+
+export interface ReadWorkspaceFileParams {
+  path: string;
+  workspaceId: string;
+}
+
+export interface ReadWorkspaceFileResult {
+  binary: boolean;
+  content: string;
+  path: string;
+  sha256: string;
+  sizeBytes: number;
+  tooLarge: boolean;
+}
+
+export interface WriteWorkspaceFileParams {
+  baseSha256?: string | null;
+  content: string;
+  path: string;
+  workspaceId: string;
+}
+
+export interface WriteWorkspaceFileResult {
+  sha256: string;
+}
 
 export interface RefreshWorkspaceParams {
   workspaceId: string;

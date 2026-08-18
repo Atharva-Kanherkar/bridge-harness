@@ -616,3 +616,167 @@
   background: color-mix(in srgb, var(--color-destructive) 11%, transparent);
 }
 
+
+/* ── Code editor ─────────────────────────────────────────────────────────────
+   CodeMirror ships its own class names, so it is one of the few things
+   utilities cannot express. It is themed here from the same `--syn-*` tokens
+   the diff viewer and markdown code blocks use, via `classHighlighter`'s
+   `tok-*` classes — one palette for every piece of code in the app. */
+.cm-editor {
+  height: 100%;
+  background: var(--color-code);
+  color: var(--code-foreground);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-editor .cm-scroller {
+  font-family: inherit;
+  line-height: inherit;
+  /* Momentum scrolling over a repaint-heavy surface; without this the gutter
+     visibly lags the text on a trackpad flick. */
+  overscroll-behavior: contain;
+}
+.cm-editor .cm-content {
+  padding: 8px 0 12px;
+  caret-color: var(--color-foreground);
+}
+/* The full-tab editor keeps a screenful of slack below the last line, so the
+   line you are working on can sit mid-screen. Inline editors size to their
+   content instead, and would just render a hole. */
+.cm-roomy .cm-content {
+  padding-bottom: 40vh;
+}
+/* An editor embedded in a scrolling page: as tall as the file, then it
+   scrolls internally rather than swallowing the page. */
+.cm-fit .cm-editor {
+  height: auto;
+}
+.cm-fit .cm-scroller {
+  max-height: 60vh;
+}
+.cm-editor .cm-line {
+  padding: 0 10px 0 6px;
+}
+.cm-editor .cm-gutters {
+  background: var(--color-code);
+  border-right: 1px solid var(--color-border);
+  color: color-mix(in srgb, var(--color-muted-foreground) 55%, transparent);
+  font-size: 11px;
+}
+.cm-editor .cm-lineNumbers .cm-gutterElement {
+  padding: 0 10px 0 14px;
+  font-variant-numeric: tabular-nums;
+}
+.cm-editor .cm-foldGutter .cm-gutterElement {
+  padding: 0 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.cm-editor:hover .cm-foldGutter .cm-gutterElement {
+  opacity: 1;
+}
+.cm-editor .cm-activeLine {
+  background: var(--color-code-highlight);
+}
+.cm-editor .cm-activeLineGutter {
+  background: var(--color-code-highlight);
+  color: var(--color-foreground);
+}
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--color-foreground);
+  border-left-width: 2px;
+}
+.cm-editor .cm-selectionBackground,
+.cm-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--color-info) 26%, transparent);
+}
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--color-info) 34%, transparent);
+}
+.cm-editor .cm-selectionMatch {
+  background: color-mix(in srgb, var(--color-info) 16%, transparent);
+}
+.cm-editor .cm-matchingBracket,
+.cm-editor.cm-focused .cm-matchingBracket {
+  background: color-mix(in srgb, var(--color-info) 22%, transparent);
+  outline: none;
+}
+.cm-editor .cm-nonmatchingBracket {
+  background: color-mix(in srgb, var(--color-destructive) 22%, transparent);
+}
+.cm-editor .cm-specialChar {
+  color: var(--color-destructive);
+}
+.cm-editor .cm-foldPlaceholder {
+  background: var(--color-code-highlight);
+  border: 1px solid var(--color-border);
+  border-radius: 0.3rem;
+  color: var(--color-muted-foreground);
+  padding: 0 0.35em;
+}
+/* Find/replace panel: CodeMirror's own markup, dressed in app tokens. */
+.cm-editor .cm-panels {
+  background: var(--color-popover);
+  color: var(--color-foreground);
+  border-bottom: 1px solid var(--color-border);
+}
+.cm-editor .cm-panel.cm-search {
+  padding: 6px 8px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+.cm-editor .cm-panel.cm-search input,
+.cm-editor .cm-panel.cm-search button {
+  background: var(--color-code);
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  color: var(--color-foreground);
+  font-family: inherit;
+  font-size: inherit;
+  padding: 2px 6px;
+  margin-right: 4px;
+}
+.cm-editor .cm-panel.cm-search button:hover {
+  background: var(--color-accent);
+}
+.cm-editor .cm-panel.cm-search label {
+  color: var(--color-muted-foreground);
+}
+.cm-editor .cm-panel.cm-search [name="close"] {
+  border: none;
+  background: transparent;
+  color: var(--color-muted-foreground);
+}
+.cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--color-warning) 30%, transparent);
+}
+.cm-editor .cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--color-warning) 55%, transparent);
+}
+
+/* Syntax tokens — the same ramp as `.hljs-*` above, keyed to
+   `@lezer/highlight`'s standard class names. */
+.tok-comment { color: var(--syn-comment); font-style: italic; }
+.tok-keyword, .tok-modifier, .tok-controlKeyword, .tok-operatorKeyword,
+.tok-definitionKeyword, .tok-moduleKeyword { color: var(--syn-keyword); }
+.tok-string, .tok-string2, .tok-regexp, .tok-character, .tok-special { color: var(--syn-string); }
+.tok-number, .tok-bool, .tok-null, .tok-atom, .tok-unit { color: var(--syn-number); }
+.tok-function, .tok-macroName { color: var(--syn-function); }
+.tok-typeName, .tok-className, .tok-namespace, .tok-standard { color: var(--syn-type); }
+.tok-tagName, .tok-angleBracket { color: var(--syn-tag); }
+.tok-attributeName, .tok-propertyName, .tok-labelName { color: var(--code-foreground); }
+.tok-variableName, .tok-definition { color: var(--code-foreground); }
+.tok-operator, .tok-punctuation, .tok-separator, .tok-derefOperator,
+.tok-squareBracket, .tok-brace, .tok-paren { color: var(--syn-punct); }
+.tok-meta, .tok-processingInstruction, .tok-documentMeta { color: var(--color-muted-foreground); }
+.tok-link, .tok-url { color: var(--syn-type); text-decoration: underline; }
+.tok-heading { color: var(--syn-function); font-weight: 600; }
+.tok-emphasis { font-style: italic; }
+.tok-strong { font-weight: 600; }
+.tok-strikethrough { text-decoration: line-through; }
+.tok-invalid { color: var(--color-destructive); }

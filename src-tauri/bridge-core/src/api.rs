@@ -163,6 +163,41 @@ pub fn list_workspace_files(
     }
 }
 
+/// List a workspace's files for the editor's tree and file palette. Same
+/// `git ls-files` view as the composer's `@file` autocomplete, so the two
+/// surfaces never disagree about what "the project" is.
+pub fn list_workspace_tree(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<Vec<String>, BridgeError> {
+    let path = core.workspace_path(workspace_id)?;
+    workspace_files::list_files(Path::new(&path))
+}
+
+/// Read one workspace file for the editor. Resolves the path under the lock,
+/// then reads outside it, same as [`workspace_changes`].
+pub fn read_workspace_file(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    path: &str,
+) -> Result<workspace_files::FileContents, BridgeError> {
+    let root = core.workspace_path(workspace_id)?;
+    workspace_files::read_file(Path::new(&root), path)
+}
+
+/// Write one workspace file, refusing the write if it changed on disk since
+/// the editor read it. Returns the new content hash.
+pub fn write_workspace_file(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    path: &str,
+    content: &str,
+    base_sha256: Option<&str>,
+) -> Result<workspace_files::WriteOutcome, BridgeError> {
+    let root = core.workspace_path(workspace_id)?;
+    workspace_files::write_file(Path::new(&root), path, content, base_sha256)
+}
+
 pub fn refresh_workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,

@@ -1,0 +1,119 @@
+import { useEffect, useRef } from "react";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection, crosshairCursor, highlightSpecialChars } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { classHighlighter } from "@lezer/highlight";
+import { languageFromPath } from "../highlight";
+import { loadLanguage } from "./language";
+
+/**
+ * The editor's fixed extension set.
+ *
+ * `classHighlighter` is the load-bearing choice: it emits `tok-*` class names
+ * instead of inline styles, so the whole editor is themed from `index.css`
+ * with the same `--syn-*` tokens as the diff viewer and markdown code blocks.
+ * No second palette, and no CSS-in-JS.
+ */
+function baseExtensions(onSave: () => void): Extension[] {
+  return [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history(),
+    foldGutter(),
+    drawSelection(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    indentUnit.of("  "),
+    syntaxHighlighting(classHighlighter),
+    bracketMatching(),
+    closeBrackets(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    search({ top: true }),
+    EditorView.lineWrapping,
+    keymap.of([
+      // Save comes first so ⌘S never falls through to the browser.
+      { key: "Mod-s", preventDefault: true, run: () => (onSave(), true) },
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      indentWithTab,
+    ]),
+  ];
+}
+
+/**
+ * A CodeMirror 6 document bound to one file.
+ *
+ * Deliberately not a controlled component: re-creating the state on every
+ * keystroke would throw away the cursor, the undo history, and the fold state.
+ * `doc` seeds the document, and later changes flow out through `onChange`.
+ * Changing `docKey` (the file being edited) is what re-seeds it.
+ */
+export function CodeEditor({ docKey, doc, path, readOnly = false, visible = true, onChange, onSave, className }: {
+  docKey: string;
+  doc: string;
+  path: string;
+  readOnly?: boolean;
+  /** False while the editor is display:none — it must re-measure on return. */
+  visible?: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  className?: string;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const view = useRef<EditorView>();
+  // Callbacks live in refs so a re-render never rebuilds the editor.
+  const handlers = useRef({ onChange, onSave });
+  handlers.current = { onChange, onSave };
+
+  useEffect(() => {
+    if (!host.current) return;
+    const language = new Compartment();
+    const editor = new EditorView({
+      parent: host.current,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          ...baseExtensions(() => handlers.current.onSave()),
+          language.of([]),
+          EditorState.readOnly.of(readOnly),
+          EditorView.editable.of(!readOnly),
+          EditorView.updateListener.of(update => {
+            if (update.docChanged) handlers.current.onChange(update.state.doc.toString());
+          }),
+        ],
+      }),
+    });
+    view.current = editor;
+    let live = true;
+    // Grammars load after first paint: the file is on screen and typeable
+    // immediately, and colour arrives a frame or two later.
+    void loadLanguage(languageFromPath(path)).then(support => {
+      if (live && support) editor.dispatch({ effects: language.reconfigure(support) });
+    });
+    return () => {
+      live = false;
+      editor.destroy();
+      view.current = undefined;
+    };
+    // docKey identifies the file; doc/path/readOnly are seeds read at creation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docKey]);
+
+  // A hidden editor measures as zero-height; ask for a fresh measurement when
+  // its tab comes back, or the first scroll lands in the wrong place.
+  useEffect(() => {
+    if (visible) view.current?.requestMeasure();
+  }, [visible]);
+
+  return <div ref={host} className={className} />;
+}

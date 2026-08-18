@@ -52,6 +52,24 @@ pub fn dispatch(
             let p: wire::ListWorkspaceFilesParams = decode(method, params)?;
             reply(api::list_workspace_files(core, &p.session_id))
         }
+        MethodName::ListWorkspaceTree => {
+            let p: wire::ListWorkspaceTreeParams = decode(method, params)?;
+            reply(api::list_workspace_tree(core, &p.workspace_id))
+        }
+        MethodName::ReadWorkspaceFile => {
+            let p: wire::ReadWorkspaceFileParams = decode(method, params)?;
+            reply(api::read_workspace_file(core, &p.workspace_id, &p.path))
+        }
+        MethodName::WriteWorkspaceFile => {
+            let p: wire::WriteWorkspaceFileParams = decode(method, params)?;
+            reply(api::write_workspace_file(
+                core,
+                &p.workspace_id,
+                &p.path,
+                &p.content,
+                p.base_sha256.as_deref(),
+            ))
+        }
         MethodName::RefreshWorkspace => {
             let p: wire::RefreshWorkspaceParams = decode(method, params)?;
             reply(api::refresh_workspace(core, &p.workspace_id))
