@@ -85,14 +85,17 @@ const FILENAME_LANGS: Record<string, string> = {
   makefile: "makefile", gnumakefile: "makefile", justfile: "makefile",
   gemfile: "ruby", rakefile: "ruby", podfile: "ruby", brewfile: "ruby",
   ".bashrc": "bash", ".zshrc": "bash", ".bash_profile": "bash", ".profile": "bash",
-  ".gitignore": "bash", ".dockerignore": "bash", ".npmignore": "bash",
   ".env": "ini", ".editorconfig": "ini",
 };
 
 /**
- * Best-guess language for a file path. Extension first, then whole-filename
- * conventions (Dockerfile, Makefile, dotfiles) — returns "" when we have no
- * grammar for it, which the callers read as "render it plain".
+ * Best-guess language for a file path.
+ *
+ * Whole-filename conventions first (Dockerfile, Makefile, dotfiles), then the
+ * extension: the order matters, because a dotfile's only "extension" is its
+ * whole name, so an extension-first pass would return "" for `.env` and never
+ * reach the map. Returns "" when we have no grammar, which callers read as
+ * "render it plain".
  */
 export function languageFromPath(path: string): string {
   const name = path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
@@ -164,7 +167,11 @@ export interface DiffRow {
 
 /** Header lines git emits around a patch — never code, so never highlighted. */
 const PATCH_HEADER = /^(diff --git |index |--- |\+\+\+ |old mode |new mode |new file |deleted file |similarity index |dissimilarity index |rename |copy |Binary files |GIT binary patch)/;
-const HUNK_HEADER = /^@@+ (?:-(\d+)(?:,\d+)? )?\+(\d+)(?:,\d+)? @@/;
+/** A `diff --git` at column 0 is unambiguous: a line of code carrying it would
+ *  be prefixed by a marker. It is the one header that can also rescue a patch
+ *  whose hunk counts lied. */
+const FILE_HEADER = /^diff --git /;
+const HUNK_HEADER = /^@@+ (?:-(\d+)(?:,(\d+))? )?\+(\d+)(?:,(\d+))? @@/;
 
 /** Beyond this, highlighting a patch costs more than it's worth; render plain. */
 const MAX_HIGHLIGHT_CHARS = 400_000;
@@ -228,7 +235,9 @@ export function highlightPatch(patch: string, path = ""): DiffRow[] {
   while (raw.length && raw[raw.length - 1] === "") raw.pop();
   if (!raw.length) return [];
 
-  const language = languageFromPath(path);
+  // Measured on the whole patch, not per side: two 250k sides are still half a
+  // megabyte of parsing.
+  const language = patch.length > MAX_HIGHLIGHT_CHARS ? "" : languageFromPath(path);
   const rows: DiffRow[] = [];
   const oldSide: string[] = [];
   const newSide: string[] = [];
@@ -236,39 +245,65 @@ export function highlightPatch(patch: string, path = ""): DiffRow[] {
   const source: Array<{ side: "old" | "new"; index: number } | null> = [];
   let oldNo = 0;
   let newNo = 0;
-  let inHunk = false;
+  // Lines still owed to the current hunk, taken from its own header. Counting
+  // them is what ends a hunk — without it, every later file's headers are read
+  // as code and lose their first character to the marker slice.
+  let oldLeft = 0;
+  let newLeft = 0;
 
   const push = (row: DiffRow, from: { side: "old" | "new"; index: number } | null) => {
     rows.push(row);
     source.push(from);
   };
+  const meta = (line: string) =>
+    push({ kind: "meta", html: escapeHtml(line), oldLine: null, newLine: null }, null);
 
   for (const line of raw) {
     const hunk = HUNK_HEADER.exec(line);
     if (hunk) {
       oldNo = Number(hunk[1] ?? 0);
-      newNo = Number(hunk[2]);
-      inHunk = true;
+      newNo = Number(hunk[3]);
+      // A hunk header with no count covers exactly one line.
+      oldLeft = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      newLeft = hunk[4] === undefined ? 1 : Number(hunk[4]);
       push({ kind: "hunk", html: escapeHtml(line), oldLine: null, newLine: null }, null);
       continue;
     }
-    // "--- a/x" is a header; "--- foo" inside a hunk is a deleted line of code.
-    if ((!inHunk && PATCH_HEADER.test(line)) || line.startsWith("\\")) {
-      push({ kind: "meta", html: escapeHtml(line), oldLine: null, newLine: null }, null);
+    if (FILE_HEADER.test(line)) {
+      // Trust the header over a hunk count that has run long.
+      oldLeft = 0;
+      newLeft = 0;
+      meta(line);
+      continue;
+    }
+    const inside = oldLeft > 0 || newLeft > 0;
+    // "--- a/x" is a header between hunks and a deleted line of code inside
+    // one; "\ No newline at end of file" is neither, and owes no hunk line.
+    if (line.startsWith("\\") || (!inside && PATCH_HEADER.test(line))) {
+      meta(line);
       continue;
     }
     const marker = line[0] ?? " ";
+    if (!inside && marker !== "+" && marker !== "-" && marker !== " ") {
+      // Prose wrapped around a fragment ("Success updating foo.ts"). It is not
+      // a marker plus a body, so slicing it would eat its first character.
+      meta(line);
+      continue;
+    }
     const body = line.slice(1);
     if (marker === "+") {
-      push({ kind: "add", html: "", oldLine: null, newLine: inHunk ? newNo++ : null }, { side: "new", index: newSide.length });
+      push({ kind: "add", html: "", oldLine: null, newLine: inside ? newNo++ : null }, { side: "new", index: newSide.length });
       newSide.push(body);
+      if (inside) newLeft -= 1;
     } else if (marker === "-") {
-      push({ kind: "del", html: "", oldLine: inHunk ? oldNo++ : null, newLine: null }, { side: "old", index: oldSide.length });
+      push({ kind: "del", html: "", oldLine: inside ? oldNo++ : null, newLine: null }, { side: "old", index: oldSide.length });
       oldSide.push(body);
+      if (inside) oldLeft -= 1;
     } else {
-      push({ kind: "context", html: "", oldLine: inHunk ? oldNo++ : null, newLine: inHunk ? newNo++ : null }, { side: "new", index: newSide.length });
+      push({ kind: "context", html: "", oldLine: inside ? oldNo++ : null, newLine: inside ? newNo++ : null }, { side: "new", index: newSide.length });
       oldSide.push(body);
       newSide.push(body);
+      if (inside) { oldLeft -= 1; newLeft -= 1; }
     }
   }
 

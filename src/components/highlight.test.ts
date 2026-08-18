@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import hljs from "highlight.js/lib/core";
 import { highlightPatch, languageFromPath, splitHighlightedLines } from "./highlight";
 
 describe("languageFromPath", () => {
@@ -98,5 +99,72 @@ describe("highlightPatch", () => {
 
   it("returns nothing for an empty patch", () => {
     expect(highlightPatch("", "a.ts")).toEqual([]);
+  });
+
+  const TWO_FILES = [
+    "diff --git a/a.ts b/a.ts", "index 1..2 100644", "--- a/a.ts", "+++ b/a.ts",
+    "@@ -1,2 +1,2 @@", " const x = 1;", "-const y = 2;", "+const y = 3;",
+    "diff --git a/b.ts b/b.ts", "--- a/b.ts", "+++ b/b.ts",
+    "@@ -1 +1 @@", "-old", "+new",
+  ].join("\n");
+
+  it("keeps every file's headers intact in a multi-file patch", () => {
+    const rows = highlightPatch(TWO_FILES, "a.ts");
+    // The hunk's own line counts are what end it; without them the second
+    // file's headers are read as code and lose their first character.
+    expect(rows.map(row => row.kind)).toEqual([
+      "meta", "meta", "meta", "meta", "hunk", "context", "del", "add",
+      "meta", "meta", "meta", "hunk", "del", "add",
+    ]);
+    expect(rows[8].html).toBe("diff --git a/b.ts b/b.ts");
+    expect(rows[9].html).toBe("--- a/b.ts");
+    expect(rows[10].html).toBe("+++ b/b.ts");
+  });
+
+  it("numbers the second file from its own hunk header", () => {
+    const rows = highlightPatch(TWO_FILES, "a.ts");
+    expect([rows[12].oldLine, rows[12].newLine]).toEqual([1, null]);
+    expect([rows[13].oldLine, rows[13].newLine]).toEqual([null, 1]);
+  });
+
+  it("recovers when a hunk header undercounts its own lines", () => {
+    const rows = highlightPatch("@@ -1 +1 @@\n-a\n-b\n-c\ndiff --git a/z.ts b/z.ts", "a.ts");
+    expect(rows[rows.length - 1]).toMatchObject({ kind: "meta", html: "diff --git a/z.ts b/z.ts" });
+  });
+
+  it("leaves prose around a fragment whole rather than eating its first character", () => {
+    const rows = highlightPatch("Success updating foo.ts\n-old\n+new", "foo.ts");
+    expect(rows[0]).toMatchObject({ kind: "meta", html: "Success updating foo.ts" });
+    expect(rows.map(row => row.kind)).toEqual(["meta", "del", "add"]);
+  });
+
+  it("does not count the no-newline marker against the hunk", () => {
+    const rows = highlightPatch("@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new", "a.ts");
+    expect(rows.map(row => row.kind)).toEqual(["hunk", "del", "meta", "add"]);
+  });
+
+  it("skips highlighting a patch past the size cap", () => {
+    const filler = "+const value = 1;".repeat(30_000);
+    const rows = highlightPatch(`@@ -1 +1 @@\n${filler}\n+const a = 1;`, "a.ts");
+    expect(rows.at(-1)!.html).toBe("const a = 1;");
+  });
+
+  it("falls back to escaped text when the grammar throws", () => {
+    const spy = vi.spyOn(hljs, "highlight").mockImplementation(() => { throw new Error("grammar exploded"); });
+    try {
+      expect(highlightPatch("@@ -1 +1 @@\n+const a = 1;", "a.ts").at(-1)!.html).toBe("const a = 1;");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("falls back when highlighting returns the wrong number of lines", () => {
+    const spy = vi.spyOn(hljs, "highlight").mockReturnValue({ value: "only one line" } as never);
+    try {
+      const rows = highlightPatch("@@ -1,2 +1,2 @@\n+const a = 1;\n+const b = 2;", "a.ts");
+      expect(rows.slice(1).map(row => row.html)).toEqual(["const a = 1;", "const b = 2;"]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
