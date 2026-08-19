@@ -227,6 +227,13 @@ pub fn archive_workspace_records(
         "DELETE FROM sessions WHERE workspace_id=?1",
         params![workspace_id],
     )?;
+    // The Work fact cache is keyed by workspace id but carries no foreign key,
+    // because its key is kind-defined. Clean it up here so an archived
+    // workspace's last observation does not linger.
+    transaction.execute(
+        "DELETE FROM work_fact_cache WHERE kind=?1 AND cache_key=?2",
+        params![crate::work::FACT_CACHE_BASE_DIVERGENCE, workspace_id],
+    )?;
     transaction.execute("DELETE FROM workspaces WHERE id=?1", params![workspace_id])?;
     store::event(
         &transaction,

@@ -213,6 +213,7 @@ impl Daemon {
         // Maintenance loops are part of ownership, not of any client.
         bridge_core::live_turn::start_worker_maintenance(core.clone());
         bridge_core::live_turn::start_completion_check_maintenance(core.clone());
+        bridge_core::work_observation::start_work_fact_maintenance(core.clone());
         bridge_core::live_turn::start_learning_maintenance(core.clone());
         bridge_core::live_turn::start_history_snapshot_maintenance(core.clone());
 

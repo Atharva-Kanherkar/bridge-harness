@@ -16,9 +16,10 @@ use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    verification_pipeline, verified_catalog, worker_adoption, worker_lifecycle, workspace_files,
-    BridgeCore, BridgeError, RuntimeSession,
+    verification_pipeline, verified_catalog, work, work_observation, worker_adoption,
+    worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
+use bridge_protocol::messages as wire;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -936,7 +937,46 @@ pub fn verifier_candidates(
     )
 }
 
+// --- work ---------------------------------------------------------------------
+
+/// The Work board. Store-only: it takes the connection and nothing else, so no
+/// git command, provider start, connector call, or network request can happen on
+/// the way to a rendered board.
+pub fn get_work_board(core: &Arc<BridgeCore>) -> Result<wire::WorkBoard, BridgeError> {
+    work::board(&core.db.lock().unwrap())
+}
+
 // --- base-branch divergence ----------------------------------------------------
+
+/// Cache a divergence reading the user just paid for.
+///
+/// The Work board reads observations, never git, so a measurement taken on a
+/// user's behalf should update the board instead of being thrown away. Failure
+/// to cache is not failure to answer: the caller still gets its reading.
+fn cache_base_divergence(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    divergence: &git::BaseBranchDivergence,
+) {
+    let db = core.db.lock().unwrap();
+    let workspace_id: Option<String> = db
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    if let Some(workspace_id) = workspace_id {
+        let _ = work_observation::record_base_divergence(
+            &db,
+            &workspace_id,
+            Ok(divergence),
+            chrono::Utc::now(),
+        );
+    }
+}
 
 /// How far this session's workspace has drifted from the branch it builds on.
 /// Read-only; `fetch` controls whether the network is consulted.
@@ -948,7 +988,9 @@ pub fn workspace_base_divergence(
     // Resolve under the lock, run Git outside it: a fetch can be slow.
     let path = store::repository_path_for_session(&core.db.lock().unwrap(), session_id)?
         .ok_or_else(|| BridgeError::Invalid("this session has no connected repository".into()))?;
-    Ok(git::base_branch_divergence(&path, fetch))
+    let divergence = git::base_branch_divergence(&path, fetch);
+    cache_base_divergence(core, session_id, &divergence);
+    Ok(divergence)
 }
 
 /// The "refresh" choice offered by a stale-base warning: fast-forward the
@@ -973,6 +1015,7 @@ pub fn refresh_workspace_base(
         (path, active)
     };
     let divergence = git::fast_forward_to_base(&path, active)?;
+    cache_base_divergence(core, session_id, &divergence);
     {
         let db = core.db.lock().unwrap();
         let _ = store::event(

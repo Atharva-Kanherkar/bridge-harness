@@ -389,6 +389,8 @@ pub fn dispatch(
             ))
         }
 
+        MethodName::GetWorkBoard => reply(api::get_work_board(core)),
+
         MethodName::SkillCatalog => reply(api::skill_catalog(core)),
         MethodName::SkillSuggestions => {
             let p: wire::SkillSuggestionsParams = decode(method, params)?;
@@ -484,4 +486,39 @@ fn encode<T: Serialize>(value: T) -> Result<Value, RpcError> {
     serde_json::to_value(value).map_err(|error| {
         RpcError::new(ErrorCode::InternalError, format!("result failed to serialize: {error}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn core(data_dir: &std::path::Path) -> Arc<BridgeCore> {
+        Arc::new(
+            BridgeCore::boot(bridge_core::BootConfig {
+                data_dir: data_dir.to_path_buf(),
+                browser_extension_path: data_dir.join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_work_board_is_served_and_takes_no_parameters() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+
+        let board = dispatch(&core, MethodName::GetWorkBoard, None).expect("a board");
+        assert!(board["facts"].is_array(), "an empty install still gets a board");
+        assert_eq!(board["tasks"], json!([]));
+        assert_eq!(board["latestRun"], Value::Null);
+        assert_eq!(board["suggestions"]["state"], json!("not_configured"));
+
+        // The absence of params is contract, so a payload is a client error
+        // rather than something quietly ignored.
+        let error = dispatch(&core, MethodName::GetWorkBoard, Some(json!({})))
+            .expect_err("params must be refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
 }

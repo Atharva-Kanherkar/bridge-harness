@@ -6,11 +6,10 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    process::Command,
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 23;
+const LATEST_SCHEMA_VERSION: i64 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -249,6 +248,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             21 => migration_21_approval_deadlines_and_worktree_adoption(&transaction)?,
             22 => migration_22_session_backend_binding(&transaction)?,
             23 => migration_23_session_title_source(&transaction)?,
+            24 => migration_24_work_board(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -628,6 +628,135 @@ fn backup_database(path: &Path) -> Result<PathBuf, BridgeError> {
     let backup = path.with_file_name(format!("{file_name}.backup-{suffix}"));
     std::fs::copy(path, &backup)?;
     Ok(backup)
+}
+
+/// The Work board's storage. Five tables, no changes to existing ones: a
+/// database this migration has touched stays readable by the previous binary
+/// apart from tables it never looks at.
+///
+/// `work_fact_cache` is the only one the offline board reads. The other four
+/// exist so the briefing slices have somewhere to land without a second
+/// migration, and so the constraints that keep a board idempotent
+/// (`(run_id, evidence_ref)`, `(run_id, connector_instance_id)`, the task
+/// fingerprint) are declared once, by the schema, rather than by whichever
+/// writer remembers.
+///
+/// Nothing here holds a raw connector payload or a credential: provenance is
+/// kept as digests and Bridge-derived identity, and the hidden briefing session
+/// remains the diagnostic transcript.
+fn migration_24_work_board(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        // `trigger_kind`, not `trigger`: TRIGGER is a SQLite keyword and a
+        // column that needs quoting to be read is a column that will one day be
+        // read unquoted.
+        "CREATE TABLE IF NOT EXISTS work_brief_runs (
+            id TEXT PRIMARY KEY,
+            trigger_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            profile_reference TEXT,
+            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            max_wall_seconds INTEGER NOT NULL,
+            max_turns INTEGER NOT NULL,
+            max_tool_calls INTEGER NOT NULL,
+            max_output_tokens INTEGER,
+            cost_ceiling_microusd INTEGER,
+            output_digest TEXT,
+            failure_code TEXT,
+            failure_detail TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_microusd INTEGER,
+            tool_calls INTEGER NOT NULL DEFAULT 0,
+            turns INTEGER NOT NULL DEFAULT 0,
+            idempotency_key TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_brief_runs_status ON work_brief_runs(status,started_at);
+        -- Collapses a focus/cadence/manual race before a provider starts. Partial
+        -- so runs that predate an idempotency key do not all collide on NULL.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_brief_runs_idempotency
+            ON work_brief_runs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS work_brief_sources (
+            run_id TEXT NOT NULL REFERENCES work_brief_runs(id) ON DELETE CASCADE,
+            connector_instance_id TEXT NOT NULL,
+            connector_family TEXT NOT NULL,
+            status TEXT NOT NULL,
+            detail TEXT,
+            observed_at TEXT,
+            UNIQUE(run_id,connector_instance_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_brief_sources_run ON work_brief_sources(run_id,status);
+        CREATE TABLE IF NOT EXISTS work_evidence (
+            run_id TEXT NOT NULL REFERENCES work_brief_runs(id) ON DELETE CASCADE,
+            evidence_ref TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            connector_instance_id TEXT NOT NULL,
+            canonical_resource_id TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            -- A serialized Bridge-derived target, never a model-authored URL.
+            target TEXT,
+            tool_definition_digest TEXT NOT NULL,
+            result_digest TEXT NOT NULL,
+            succeeded INTEGER NOT NULL DEFAULT 0,
+            observed_at TEXT NOT NULL,
+            UNIQUE(run_id,evidence_ref)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_evidence_resource
+            ON work_evidence(connector_instance_id,canonical_resource_id);
+        CREATE TABLE IF NOT EXISTS work_tasks (
+            id TEXT PRIMARY KEY,
+            -- NULL for an ephemeral task: one Bridge could not give a canonical
+            -- identity. SQLite counts NULLs as distinct in a unique index, so
+            -- several ephemeral tasks coexist while two identified tasks can
+            -- never share a fingerprint.
+            fingerprint TEXT,
+            connector_instance_id TEXT NOT NULL,
+            canonical_resource_id TEXT,
+            source_kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            why TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            confidence_bps INTEGER NOT NULL,
+            state TEXT NOT NULL DEFAULT 'active',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            snoozed_until TEXT,
+            evidence_digest TEXT,
+            evidence_target TEXT,
+            evidence_observed_at TEXT,
+            -- Consecutive *successful* source-scoped misses. A connector failure
+            -- never increments it, which is why it is stored rather than derived.
+            miss_count INTEGER NOT NULL DEFAULT 0,
+            ephemeral INTEGER NOT NULL DEFAULT 0,
+            workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+            first_run_id TEXT REFERENCES work_brief_runs(id) ON DELETE SET NULL,
+            last_run_id TEXT REFERENCES work_brief_runs(id) ON DELETE SET NULL,
+            resolution TEXT,
+            resolved_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_tasks_board ON work_tasks(state,pinned,rank);
+        CREATE INDEX IF NOT EXISTS idx_work_tasks_source
+            ON work_tasks(connector_instance_id,canonical_resource_id);
+        -- Snapshots of facts that cannot be observed on a store-only read path.
+        -- `cache_key` is kind-defined (a workspace id for base divergence), so it
+        -- carries no foreign key; every projection joins the entity it names, and
+        -- a row whose entity is gone simply stops projecting.
+        CREATE TABLE IF NOT EXISTS work_fact_cache (
+            kind TEXT NOT NULL,
+            cache_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload TEXT,
+            detail TEXT,
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY(kind,cache_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_fact_cache_observed ON work_fact_cache(kind,observed_at);",
+    )?;
+    Ok(())
 }
 
 fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -1722,13 +1851,11 @@ pub fn repository_path_for_session(
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
-    let head = Command::new("git")
+    let head = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
-        .current_dir(path)
         .output();
-    let status = Command::new("git")
+    let status = crate::git::git_command(path)
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .current_dir(path)
         .output();
     let (Ok(head), Ok(status)) = (head, status) else {
         return serde_json::json!({"status":"unavailable"});
@@ -3276,6 +3403,188 @@ mod tests {
         assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
         assert_eq!(head.restoration_mode, RestorationMode::Native);
         assert_eq!(head.resume_eligibility, ResumeEligibility::Fresh);
+    }
+
+    /// Inserts one run and returns its id, satisfying every NOT NULL column.
+    fn insert_work_run(db: &Connection, id: &str) {
+        db.execute(
+            "INSERT INTO work_brief_runs(id,trigger_kind,status,max_wall_seconds,max_turns,
+                 max_tool_calls,started_at)
+             VALUES(?1,'manual','running',600,12,24,'2026-08-19T09:00:00+00:00')",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migration_24_adds_the_work_tables_to_an_existing_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        create_legacy_fixture(&path);
+        let db = open(&path).unwrap();
+        for table in [
+            "work_brief_runs",
+            "work_brief_sources",
+            "work_evidence",
+            "work_tasks",
+            "work_fact_cache",
+        ] {
+            assert!(
+                db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    params![table],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap(),
+                "missing migration-24 table {table}"
+            );
+        }
+        // The upgrade is additive: the fixture's own rows are still there, which
+        // is what "readable by the previous binary" rests on.
+        let sessions: i64 = db
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sessions, 1);
+        let entries: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(entries, 2, "backfilled entries survive the Work migration");
+    }
+
+    #[test]
+    fn work_tables_declare_their_unique_constraints() {
+        let db = open(Path::new(":memory:")).unwrap();
+        insert_work_run(&db, "run-1");
+        insert_work_run(&db, "run-2");
+
+        db.execute(
+            "INSERT INTO work_brief_sources(run_id,connector_instance_id,connector_family,status)
+             VALUES('run-1','github:acme','github','eligible')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO work_brief_sources(run_id,connector_instance_id,connector_family,status)
+                 VALUES('run-1','github:acme','github','failed')",
+                [],
+            )
+            .is_err(),
+            "one row per run and connector instance, or coverage can say two things at once"
+        );
+        db.execute(
+            "INSERT INTO work_brief_sources(run_id,connector_instance_id,connector_family,status)
+             VALUES('run-2','github:acme','github','eligible')",
+            [],
+        )
+        .expect("the same connector in a different run is a different row");
+
+        db.execute(
+            "INSERT INTO work_evidence(run_id,evidence_ref,tool_call_id,connector_instance_id,
+                 canonical_resource_id,source_kind,tool_definition_digest,result_digest,succeeded,observed_at)
+             VALUES('run-1','ev-1','call-1','github:acme','acme/bridge#204','github_issue',
+                    'sha256:tool','sha256:result',1,'2026-08-19T09:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO work_evidence(run_id,evidence_ref,tool_call_id,connector_instance_id,
+                     canonical_resource_id,source_kind,tool_definition_digest,result_digest,succeeded,observed_at)
+                 VALUES('run-1','ev-1','call-2','github:acme','acme/bridge#9','github_issue',
+                        'sha256:tool','sha256:other',1,'2026-08-19T09:00:00+00:00')",
+                [],
+            )
+            .is_err(),
+            "an evidence reference must mean one thing inside a run"
+        );
+
+        let insert_task = |id: &str, fingerprint: Option<&str>| {
+            db.execute(
+                "INSERT INTO work_tasks(id,fingerprint,connector_instance_id,canonical_resource_id,
+                     source_kind,title,why,rank,confidence_bps,created_at,updated_at)
+                 VALUES(?1,?2,'github:acme','acme/bridge#204','github_issue','Review','because',
+                        1,8200,'now','now')",
+                params![id, fingerprint],
+            )
+        };
+        insert_task("t-1", Some("fp-1")).unwrap();
+        assert!(
+            insert_task("t-2", Some("fp-1")).is_err(),
+            "two tasks cannot share a fingerprint"
+        );
+        insert_task("t-3", None).unwrap();
+        insert_task("t-4", None).expect(
+            "ephemeral tasks have no fingerprint, and SQLite counts NULLs as distinct",
+        );
+
+        db.execute(
+            "INSERT INTO work_fact_cache(kind,cache_key,status,observed_at)
+             VALUES('workspace_behind_base','w','ok','2026-08-19T09:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO work_fact_cache(kind,cache_key,status,observed_at)
+                 VALUES('workspace_behind_base','w','failed','2026-08-19T09:05:00+00:00')",
+                [],
+            )
+            .is_err(),
+            "one observation per kind and key; a second row would make freshness ambiguous"
+        );
+    }
+
+    #[test]
+    fn work_tables_cascade_from_their_run() {
+        let db = open(Path::new(":memory:")).unwrap();
+        insert_work_run(&db, "run-1");
+        db.execute(
+            "INSERT INTO work_brief_sources(run_id,connector_instance_id,connector_family,status)
+             VALUES('run-1','github:acme','github','succeeded')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO work_evidence(run_id,evidence_ref,tool_call_id,connector_instance_id,
+                 canonical_resource_id,source_kind,tool_definition_digest,result_digest,succeeded,observed_at)
+             VALUES('run-1','ev-1','call-1','github:acme','acme/bridge#204','github_issue',
+                    'sha256:tool','sha256:result',1,'2026-08-19T09:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        db.execute("DELETE FROM work_brief_runs WHERE id='run-1'", []).unwrap();
+        for table in ["work_brief_sources", "work_evidence"] {
+            let remaining: i64 = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(remaining, 0, "{table} must not outlive its run");
+        }
+    }
+
+    #[test]
+    fn migration_24_rolls_back_every_object_when_one_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let mut db = Connection::open(&path).unwrap();
+        // A view cannot be indexed, and `CREATE TABLE IF NOT EXISTS` over a view
+        // is a silent no-op — so this fails partway through the batch, after
+        // `work_brief_runs` has already been created.
+        db.execute_batch("CREATE VIEW work_brief_sources AS SELECT 1 AS run_id;")
+            .unwrap();
+        let transaction = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(migration_24_work_board(&transaction).is_err());
+        drop(transaction);
+        let created: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'work_%' AND type='table'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(created, 0, "a half-applied Work schema must not survive the failure");
     }
 
     #[test]
