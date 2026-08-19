@@ -345,6 +345,64 @@ mod tests {
     }
 
     #[test]
+    fn a_divergence_reading_the_user_asked_for_is_written_through() {
+        // The board reads observations, so a measurement someone already paid for
+        // should land in the cache rather than being computed and dropped.
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let repository = data_dir.join("repo");
+        std::fs::create_dir_all(&repository).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "test@bridge.invalid"],
+            vec!["config", "user.name", "Bridge Test"],
+            vec!["commit", "--allow-empty", "-q", "-m", "root"],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&repository)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        {
+            let db = store::open(&data_dir.join("bridge.db")).unwrap();
+            db.execute_batch(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Bridge','/tmp/p','now');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+                     VALUES('s',NULL,'codex','Codex','idle','reported');",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','Task','main',?1,'idle','now')",
+                params![repository.to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("UPDATE sessions SET workspace_id='w' WHERE id='s'", []).unwrap();
+        }
+
+        let core = Arc::new(
+            crate::BridgeCore::boot(crate::BootConfig {
+                data_dir: data_dir.to_path_buf(),
+                browser_extension_path: data_dir.join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+        let divergence = crate::api::workspace_base_divergence(&core, "s", false).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let (status, payload, _, observed_at) = cached(&db);
+        assert_eq!(status, "ok");
+        assert!(!observed_at.is_empty());
+        let stored: git::BaseBranchDivergence =
+            serde_json::from_str(&payload.expect("the reading was cached")).unwrap();
+        assert_eq!(stored, divergence, "the cache holds exactly what the caller was told");
+    }
+
+    #[test]
     fn a_workspace_is_due_when_it_has_never_been_observed_or_its_reading_has_aged() {
         let db = memory_db();
         seed(&db, "/tmp/w");
