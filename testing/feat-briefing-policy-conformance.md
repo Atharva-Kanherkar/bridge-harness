@@ -123,16 +123,30 @@ an allowlist of exact tool identities punched through it.
   Codex, the answer is a refusal naming Codex, not a silent switch to Claude.
 - `a_briefing_start_on_an_unsupported_adapter_is_refused_at_the_boundary`
 
-`sidecar/claude-agent` (node:test):
+`sidecar/claude-agent` (node:test). Named as prose, matching the sidecar's
+existing tests — `node:test` takes a description, not an identifier:
 
-- `briefing_options_deny_every_builtin_tool`
-- `briefing_options_pin_strict_mcp_and_only_allowlisted_servers`
-- `can_use_tool_permits_exactly_one_reviewed_identity`
-- `can_use_tool_denies_an_unknown_tool`
-- `can_use_tool_denies_a_read_named_mutation`
-- `can_use_tool_refuses_oversized_arguments`
-- `a_permission_request_resolves_to_deny_without_awaiting_input`
-- `absent_briefing_config_leaves_write_mode_options_untouched`
+- "briefing options deny every built-in tool handed down from Bridge"
+- "nothing is pre-approved, so no call can bypass the gate" — an `allowedTools`
+  entry would skip `canUseTool` and its argument check.
+- "briefing options pin strict MCP config and only allowlisted servers"
+- "a briefing run inherits no settings, plugins, or dialog capability" — the
+  withheld `supportedDialogKinds` is what makes an elicitation unable to park a
+  run, since the SDK emits no dialog kind a consumer has not declared.
+- "the gate permits exactly one reviewed identity"
+- "the gate denies an unknown tool"
+- "the gate denies a read-named mutation"
+- "the gate denies every built-in family even without the deny-list"
+- "the gate refuses oversized arguments"
+- "the gate refuses arguments it cannot measure"
+- "a decision resolves without awaiting anything outside itself" — the pin that a
+  permission decision cannot become a wait for input.
+- "a denial carries the tool use id so the call reaches a terminal status"
+- "an empty allowlist denies everything"
+- "absent briefing config leaves write-mode options untouched"
+- "briefing options do not carry a write mode's permissions"
+- "a prompt-injected result cannot widen the gate"
+- "briefingOptions is usable directly and matches what buildOptions applies"
 
 ## Integration / Functional Tests
 
