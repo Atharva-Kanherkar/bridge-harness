@@ -376,6 +376,7 @@ pub fn start_session(
                 instructions: Some(instructions),
                 write_mode: None,
                 read_only_sandbox: None,
+                briefing: None,
             },
         )
     };
@@ -401,6 +402,7 @@ pub fn start_session(
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: None,
                     read_only_sandbox: None,
+                    briefing: None,
                 },
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
@@ -763,6 +765,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 instructions: Some(&runtime_instructions),
                 write_mode: None,
                 read_only_sandbox: None,
+                briefing: None,
             },
         ) {
             Ok(started) => Ok((started, RestorationMode::Native, ResumeEligibility::Native)),
@@ -776,6 +779,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                         instructions: Some(&runtime_instructions),
                         write_mode: None,
                         read_only_sandbox: None,
+                        briefing: None,
                     },
                 )
                 .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
@@ -790,6 +794,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     instructions: Some(&runtime_instructions),
                     write_mode: None,
                     read_only_sandbox: None,
+                    briefing: None,
                 },
             )
             .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
@@ -2824,6 +2829,7 @@ pub fn launch_worker_outcome(
                         instructions: Some(instructions.as_str()),
                         write_mode: Some(directive.write_mode),
                         read_only_sandbox: read_only_sandbox.as_ref(),
+                        briefing: None,
                     },
                 )
             })
@@ -2847,6 +2853,7 @@ pub fn launch_worker_outcome(
                                 instructions: Some(restored_instructions.as_str()),
                                 write_mode: Some(directive.write_mode),
                                 read_only_sandbox: read_only_sandbox.as_ref(),
+                                briefing: None,
                             },
                         )
                     })
@@ -2863,6 +2870,7 @@ pub fn launch_worker_outcome(
                             instructions: Some(restored_instructions.as_str()),
                             write_mode: Some(directive.write_mode),
                             read_only_sandbox: read_only_sandbox.as_ref(),
+                            briefing: None,
                         },
                     )
                 })
@@ -2880,6 +2888,7 @@ pub fn launch_worker_outcome(
                     instructions: Some(instructions.as_str()),
                     write_mode: Some(directive.write_mode),
                     read_only_sandbox: read_only_sandbox.as_ref(),
+                    briefing: None,
                 },
             )
             .map(|started| (started, WorkerActivation::Fresh))

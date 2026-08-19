@@ -477,10 +477,13 @@ pub fn briefing_capability(adapter: &str) -> Option<&'static BriefingCapability>
 ///
 /// Every path out of here that is not `Ok` names what was wrong. An adapter that
 /// says nothing about itself is unsupported: absence is not consent.
-pub fn certify_briefing(
-    adapter: &str,
-    reported_provider_version: Option<&str>,
-) -> Result<&'static BriefingCapability, BriefingUnsupported> {
+/// The boundary check every adapter performs before accepting a briefing policy:
+/// may this adapter hold this authority at all?
+///
+/// Deliberately version-free, so an adapter can refuse at its own boundary
+/// without knowing what version anything reports. [`certify_briefing`] adds the
+/// version question for the caller configuring a run.
+pub fn adapter_may_brief(adapter: &str) -> Result<&'static BriefingCapability, BriefingUnsupported> {
     let Some(capability) = briefing_capability(adapter) else {
         return Err(BriefingUnsupported::UnknownAdapter {
             adapter: adapter.to_owned(),
@@ -509,17 +512,29 @@ pub fn certify_briefing(
         };
     }
 
+    match capability.support {
+        BriefingSupport::Supported { .. } => Ok(capability),
+        BriefingSupport::Unsupported { reason } => Err(BriefingUnsupported::AdapterCannotEnforce {
+            adapter: adapter.to_owned(),
+            reason: reason.to_owned(),
+        }),
+    }
+}
+
+/// May this adapter, at this reported version, run a briefing?
+///
+/// Every path out of here that is not `Ok` names what was wrong. An adapter that
+/// says nothing about itself is unsupported: absence is not consent.
+pub fn certify_briefing(
+    adapter: &str,
+    reported_provider_version: Option<&str>,
+) -> Result<&'static BriefingCapability, BriefingUnsupported> {
+    let capability = adapter_may_brief(adapter)?;
     let BriefingSupport::Supported {
         certified_provider_version,
     } = capability.support
     else {
-        let BriefingSupport::Unsupported { reason } = capability.support else {
-            unreachable!("support is one of two variants")
-        };
-        return Err(BriefingUnsupported::AdapterCannotEnforce {
-            adapter: adapter.to_owned(),
-            reason: reason.to_owned(),
-        });
+        unreachable!("adapter_may_brief refuses every unsupported adapter")
     };
 
     // A version nobody ran the suite against is not certified, including no
@@ -957,6 +972,42 @@ mod tests {
                     capability.adapter
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The adapter boundary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_briefing_start_on_an_unsupported_adapter_is_refused_at_the_boundary() {
+        // The boundary check is version-free on purpose: an adapter refuses on its
+        // own account, without needing to know what anything reports.
+        for adapter in ["codex", "opencode"] {
+            let error = adapter_may_brief(adapter).unwrap_err();
+            assert!(
+                matches!(error, BriefingUnsupported::AdapterCannotEnforce { .. }),
+                "{adapter}: {error:?}"
+            );
+        }
+        assert!(adapter_may_brief("claude").is_ok());
+        assert!(matches!(
+            adapter_may_brief("gemini").unwrap_err(),
+            BriefingUnsupported::UnknownAdapter { .. }
+        ));
+    }
+
+    #[test]
+    fn the_boundary_check_and_the_version_check_agree_on_who_may_brief() {
+        // Two entry points, one answer about the adapter itself. If these ever
+        // disagree, one of them is a way in.
+        for adapter in ["claude", "codex", "opencode", "gemini"] {
+            let boundary = adapter_may_brief(adapter).is_ok();
+            let certified = certify_briefing(adapter, Some("0.3.209")).is_ok();
+            assert_eq!(
+                boundary, certified,
+                "{adapter}: the boundary and the certified answer must not diverge"
+            );
         }
     }
 
