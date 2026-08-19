@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
-import { ProjectsScreen, type ProjectsScreenProps } from "./ProjectsScreen";
+import { ProjectsScreen, shortPath, type ProjectsScreenProps } from "./ProjectsScreen";
 
 const workspace = (id: string, overrides: Partial<Workspace> = {}): Workspace => ({
   id,
@@ -118,6 +118,21 @@ describe("ProjectsScreen", () => {
     const titles = [...container.querySelectorAll("section button span:last-child")].map(node => node.textContent);
     expect(titles).toEqual(["Chat 7", "Chat 6", "Chat 5", "Chat 4", "Chat 3", "Chat 2"]);
     expect(text()).toContain("+2 more");
+  });
+
+  it("keeps the identifying tail of a long path and the whole path in the tooltip", () => {
+    mount({ workspaces: [workspace("harness", { path: "/Users/atharva/Documents/harness" })] });
+    const line = [...container.querySelectorAll("p")].find(node => node.textContent?.includes("harness"))!;
+    expect(line.textContent).toBe("…/atharva/Documents/harness");
+    expect(line.getAttribute("title")).toBe("/Users/atharva/Documents/harness");
+    // A leading slash must not end up on the end, which is what clipping with
+    // `direction: rtl` did.
+    expect(line.textContent!.endsWith("/")).toBe(false);
+  });
+
+  it("leaves a short path alone", () => {
+    expect(shortPath("/srv/app")).toBe("/srv/app");
+    expect(shortPath("/Users/atharva/Documents/harness")).toBe("…/atharva/Documents/harness");
   });
 
   it("says so when a project has no agents yet", () => {

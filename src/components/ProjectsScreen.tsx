@@ -9,6 +9,14 @@ import { chatName, chatTimestamp } from "./sidebarChats";
 
 const CHATS_PER_CARD = 6;
 
+/** The leaf directory identifies a repo; its ancestors rarely do. Shortening in
+ * JS rather than clipping with `direction: rtl`, which reorders a leading slash
+ * onto the end and renders `/Users/x/harness` as `Users/x/harness/`. */
+export function shortPath(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
+}
+
 function StatusDot({ status }: { status: SessionStatus }) {
   const color = status === "working" ? "bg-success"
     : status === "waiting" ? "bg-warning"
@@ -85,10 +93,11 @@ export function ProjectsScreen({
                     </span>
                   </div>
 
-                  {/* The leaf directory is the identifying part, so long paths lose
-                      their head rather than their tail. */}
-                  <p className="mt-1.5 truncate text-[11px] text-muted-foreground/80 [direction:rtl] [text-align:left]">
-                    {workspace.path ?? "No folder connected"}
+                  <p
+                    className="mt-1.5 truncate text-[11px] text-muted-foreground/80"
+                    title={workspace.path ?? undefined}
+                  >
+                    {workspace.path ? shortPath(workspace.path) : "No folder connected"}
                   </p>
 
                   <p className="mt-2 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
