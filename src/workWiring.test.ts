@@ -131,3 +131,18 @@ describe("overlapping reads", () => {
     expect(APP).toContain("error={workError}");
   });
 });
+
+describe("briefing runs are hidden", () => {
+  it("is filtered where sessions enter the UI, not in each surface", () => {
+    // One filter, so the rail, Mission Control, and default selection cannot disagree
+    // about what is visible.
+    expect(APP).toContain("!isHiddenSession(s)");
+    const topSessions = APP.slice(APP.indexOf("const topSessions"));
+    expect(topSessions.slice(0, 220)).toContain("isHiddenSession");
+  });
+
+  it("cannot be reached by selecting one directly either", () => {
+    const resolved = APP.slice(APP.indexOf("const session = state.sessions.find"));
+    expect(resolved.slice(0, 160)).toContain("!isHiddenSession(s)");
+  });
+});

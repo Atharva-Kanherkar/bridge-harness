@@ -22,6 +22,24 @@ export function writeChatScope(scope: ChatScope): void {
   localStorage.setItem(CHAT_SCOPE_KEY, scope);
 }
 
+/** The session kind a briefing run uses. Mirrors
+ * `bridge_core::work_briefing_config::BRIEFING_SESSION_KIND`. */
+export const BRIEFING_SESSION_KIND = "briefing";
+
+/** Is this a session Bridge runs for itself, that a human should never meet in a list?
+ *
+ * A predicate rather than an ordering rule: a briefing session that merely sorted last
+ * would still be one keystroke from being opened, resumed, or sent a turn. Its
+ * transcript exists to be inspected after a run, not joined during one. */
+export function isHiddenSession(chat: Pick<Session, "kind">): boolean {
+  return chat.kind === BRIEFING_SESSION_KIND;
+}
+
+/** Everything a human may see, from everything Bridge is running. */
+export function visibleChats(chats: Session[]): Session[] {
+  return chats.filter(chat => !isHiddenSession(chat));
+}
+
 /** A chat belongs to Code when it runs inside a project, Work when it does not. */
 export function chatScope(chat: Session): ChatScope {
   return chat.workspaceId ? "code" : "work";

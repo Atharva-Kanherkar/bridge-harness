@@ -13,6 +13,7 @@ import { ProjectsScreen } from "./components/ProjectsScreen";
 import type { WorkBoard, WorkFactAction } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { needsYouCount } from "./components/workFacts";
+import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
@@ -206,11 +207,13 @@ export function App() {
 
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
-  const topSessions = useMemo(() => state.sessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [state.sessions]);
+  // Briefing runs are excluded here rather than in each surface, so the rail, Mission
+  // Control, and default selection cannot disagree about what is visible.
+  const topSessions = useMemo(() => state.sessions.filter(s => s.harness !== "shell" && !s.parentSessionId && !isHiddenSession(s)), [state.sessions]);
   // Resolve across every session, not just top-level ones: a worker can be
   // opened directly (from Mission Control or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
-  const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell");
+  const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
