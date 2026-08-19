@@ -308,3 +308,77 @@ describe("keyboard", () => {
     expect(onAction).toHaveBeenCalledOnce();
   });
 });
+
+describe("accessibility", () => {
+  it("is a named region, so it can be jumped to", () => {
+    render();
+    expect(host.querySelector("section[aria-label='Work']")).toBeTruthy();
+  });
+
+  it("names each band's list, so a row is heard in context", () => {
+    render({
+      board: board([
+        fact({ dedupeKey: "b", severity: "blocking" }),
+        fact({ dedupeKey: "a", severity: "attention", title: "second" }),
+      ]),
+    });
+    expect(host.querySelector("ul[aria-label='Blocking work']")).toBeTruthy();
+    expect(host.querySelector("ul[aria-label='Attention work']")).toBeTruthy();
+  });
+
+  it("announces the count politely rather than interrupting", () => {
+    render();
+    const live = host.querySelector("[aria-live='polite']");
+    expect(live).toBeTruthy();
+    expect(live?.textContent).toContain("needs you");
+  });
+
+  it("points a failed action's button at the reason", async () => {
+    const onAction = vi.fn(async (): Promise<WorkActionOutcome> => ({ ok: false, reason: "locked" }));
+    render({ board: board([fact()]), onAction });
+    await act(async () => { buttonNamed("Review check")?.click(); });
+    const button = buttonNamed("Try again")!;
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    // getElementById rather than a selector: a dedupe key contains colons, which a
+    // CSS id selector would need escaped, and CSS.escape is absent in this jsdom.
+    expect(document.getElementById(describedBy!)?.textContent).toContain("locked");
+  });
+
+  it("does not point at a reason when there is none", () => {
+    render();
+    expect(buttonNamed("Review check")?.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("hides every decorative mark from the accessible tree", () => {
+    render();
+    // The severity edge, the source tile and the freshness dot all carry meaning that
+    // is stated in words elsewhere, so none of them should be announced twice.
+    const decorative = host.querySelectorAll("[aria-hidden='true']");
+    expect(decorative.length).toBeGreaterThanOrEqual(3);
+    for (const node of Array.from(host.querySelectorAll("svg"))) {
+      const hidden = node.getAttribute("aria-hidden") === "true" || node.closest("[aria-hidden='true']");
+      expect(hidden).toBeTruthy();
+    }
+  });
+});
+
+describe("narrow widths", () => {
+  it("gives the action its own row under a hairline below the sm breakpoint", () => {
+    // At 420px a button beside a wrapping title leaves neither enough room, so the
+    // action drops. Asserted on the classes because jsdom has no layout.
+    render();
+    const action = buttonNamed("Review check")!.parentElement!;
+    expect(action.className).toContain("w-full");
+    expect(action.className).toContain("border-t");
+    expect(action.className).toContain("sm:w-auto");
+    expect(action.className).toContain("sm:border-0");
+  });
+
+  it("lets the row wrap below sm and not above it", () => {
+    render();
+    const row = host.querySelector("li")!;
+    expect(row.className).toContain("flex-wrap");
+    expect(row.className).toContain("sm:flex-nowrap");
+  });
+});

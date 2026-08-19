@@ -109,12 +109,12 @@ function FactRow({
   }, [fact.action, onAction]);
 
   return (
-    <li className="flex gap-3 rounded-xl border border-border bg-card py-2.5 pr-3">
+    <li className="flex flex-wrap gap-3 rounded-xl border border-border bg-card pr-3 sm:flex-nowrap sm:py-2.5">
       <span aria-hidden="true" className={cn("w-[3px] shrink-0 self-stretch rounded-r-sm", SEVERITY_EDGE[fact.severity])} />
-      <span aria-hidden="true" className="mt-0.5 flex size-6.5 shrink-0 items-center justify-center rounded-md bg-muted">
+      <span aria-hidden="true" className="mt-2.5 flex size-6.5 shrink-0 items-center justify-center rounded-md bg-muted sm:mt-0.5">
         <Icon size={14} strokeWidth={1.7} className="text-muted-foreground" />
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className={cn("text-[10px] font-semibold uppercase tracking-wide", SEVERITY_INK[fact.severity])}>
             {SEVERITY_LABEL[fact.severity]}
@@ -134,7 +134,7 @@ function FactRow({
         )}
         {stale && <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">{stale}</p>}
         {failure && (
-          <div className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
+          <div id={`${fact.dedupeKey}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
             <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
             <p className="text-[11.5px] leading-relaxed text-muted-foreground">{failure}</p>
           </div>
@@ -149,11 +149,14 @@ function FactRow({
           </span>
         </div>
       </div>
-      <div className="shrink-0 pt-0.5">
+      {/* Below sm the action gets its own row under a hairline, because at 420px a
+          button beside a wrapping title leaves neither enough room. */}
+      <div className="mt-2.5 flex w-full shrink-0 justify-end border-t border-border pb-2.5 pt-2.5 sm:mt-0 sm:w-auto sm:border-0 sm:pb-0 sm:pt-0.5">
         <button
           type="button"
           onClick={() => void run()}
           disabled={busy}
+          aria-describedby={failure ? `${fact.dedupeKey}-failure` : undefined}
           className={cn(
             "h-7 shrink-0 rounded-md px-2.5 text-[11.5px] font-medium transition-colors disabled:opacity-60",
             actionIsPrimary(fact) && !failure
@@ -223,11 +226,11 @@ export function WorkView({ board, error, onRefresh, onAction, now = new Date() }
   const showNotice = !noticeDismissed && board?.suggestions.state === "not_configured";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    <section aria-label="Work" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <header className="flex items-start gap-3 px-5 pb-3 pt-5">
         <div className="min-w-0">
           <h2 className="text-[17px] font-semibold tracking-tight">Needs you</h2>
-          <p className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
+          <p aria-live="polite" className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
             {error
               ? "The board could not be read."
               : board === undefined
@@ -287,7 +290,7 @@ export function WorkView({ board, error, onRefresh, onAction, now = new Date() }
                 {SEVERITY_LABEL[band.severity]}
                 <span className="font-normal normal-case tracking-normal opacity-65">— {SEVERITY_CAPTION[band.severity]}</span>
               </h3>
-              <ul className="flex flex-col gap-1.5">
+              <ul aria-label={`${SEVERITY_LABEL[band.severity]} work`} className="flex flex-col gap-1.5">
                 {band.facts.map(fact => (
                   <FactRow key={fact.dedupeKey} fact={fact} now={now} onAction={onAction} />
                 ))}
@@ -296,7 +299,7 @@ export function WorkView({ board, error, onRefresh, onAction, now = new Date() }
           ))
         )}
       </div>
-    </div>
+    </section>
   );
 }
 
