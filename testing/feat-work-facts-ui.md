@@ -56,7 +56,11 @@ by Bridge, so opening it starts nothing.
 
 Three tells, so no single one carries it alone:
 
-- **Tense** — `live` says "has drifted", `stale` says "had drifted".
+- **Tense** — a stale row states it: "As of 24 min ago. These numbers describe the
+  past." Added as a clause rather than by rewriting the backend's title, which says
+  "has drifted" regardless of freshness. Surgery on a verb inside a sentence composed
+  in Rust would break the first time that sentence is reworded, and a stated claim is
+  harder to miss than a changed letter.
 - **Dimmed numbers** — a stale detail renders at reduced opacity; `unknown` renders
   no numbers at all.
 - **The action changes** — `live` offers the fast-forward, `stale` and `unknown`
