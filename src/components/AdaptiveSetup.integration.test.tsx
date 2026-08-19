@@ -86,6 +86,84 @@ describe("adaptive setup journeys", () => {
     expect(container.textContent).toContain("insufficient evidence");
     expect(container.textContent).toContain("Cost comparison is unknown");
     expect(container.textContent).toContain("Policy");
+    expect(container.textContent).toContain("not_run — no executor");
+  });
+
+  it("refetches learning state when a learning job changes", async () => {
+    let notify: (() => void) | undefined;
+    vi.spyOn(bridgeApi, "onLearningJobChanged").mockImplementation(async handler => {
+      notify = handler;
+      return () => undefined;
+    });
+    const learningState = vi.spyOn(bridgeApi, "learningState");
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    expect(learningState).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      notify?.();
+      await flush();
+    });
+    expect(learningState).toHaveBeenCalledTimes(2);
+  });
+
+  it("a slower learning-state read cannot win", async () => {
+    let notify: (() => void) | undefined;
+    vi.spyOn(bridgeApi, "onLearningJobChanged").mockImplementation(async handler => {
+      notify = handler;
+      return () => undefined;
+    });
+    const initial = await bridgeApi.learningState("demo-1");
+    let resolveSlow!: (state: typeof initial) => void;
+    let resolveFast!: (state: typeof initial) => void;
+    vi.spyOn(bridgeApi, "learningState")
+      .mockImplementationOnce(() => Promise.resolve(initial))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSlow = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFast = resolve; }));
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => {
+      notify?.();
+      notify?.();
+      await flush();
+    });
+    await act(async () => {
+      resolveFast({ ...initial, activePolicyVersion: 7 });
+      await flush();
+    });
+    await act(async () => {
+      resolveSlow({ ...initial, activePolicyVersion: 3 });
+      await flush();
+    });
+    expect(container.textContent).toContain("Active policy v7");
+    expect(container.textContent).not.toContain("Active policy v3");
+  });
+
+  it("does not rewrite the learning schedule when save has no schedule edits", async () => {
+    const update = vi.spyOn(bridgeApi, "updateLearningSchedule");
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => {
+      button(container, "Save").click();
+      await flush();
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("disables evaluator spend and token ceilings", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const disabledCeilings = [...container.querySelectorAll("input[type=number]")].filter(input => (input as HTMLInputElement).disabled);
+    expect(disabledCeilings).toHaveLength(2);
+    expect(container.textContent).toContain("No executor yet");
+    expect(container.textContent).toContain("not Bridge's memory engine");
   });
 
   it("does not create a profile version when settings save without profile edits", async () => {

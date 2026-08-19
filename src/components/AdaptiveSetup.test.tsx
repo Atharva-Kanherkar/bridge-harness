@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ModelSetupWizard } from "./ModelSetupWizard";
-import { LearningRunSummary, RouterSettingsDialog } from "./RouterSettingsDialog";
-import type { AdapterDescriptor, LearningRun, LearningState } from "../types";
+import { evaluatorExecutionLabel, LearningRunSummary, RouterSettingsDialog, scheduleUserFieldsChanged } from "./RouterSettingsDialog";
+import type { AdapterDescriptor, LearningRun, LearningSchedule, LearningState } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { recommendedProfileDrafts } from "../modelProfiles";
 
@@ -36,6 +36,7 @@ function learningState(run: Partial<LearningRun> = {}): LearningState {
     latestRun,
     activePolicyVersion: 1,
     canaryPolicyVersion: null,
+    rollbackTargetVersion: null,
   };
 }
 
@@ -62,6 +63,10 @@ describe("adaptive setup surfaces", () => {
     expect(html).toContain("Cloud Routines remain experimental");
     expect(html).toContain("Open Codex Scheduled setup");
     expect(html).toContain("Role model profiles");
+    expect(html).toContain("helper picker");
+    expect(html).toContain("memory engine");
+    expect(html).toContain("/memory");
+    expect(html).toContain("/memories");
   });
 
   it("renders duplicate and failed learning jobs as explicit states", () => {
@@ -80,12 +85,46 @@ describe("adaptive setup surfaces", () => {
     const ask = renderToStaticMarkup(<LearningRunSummary learning={learningState()} />);
     expect(ask).toContain("Approve replayed policy");
     expect(ask).toContain("Cancel candidate");
+    expect(ask).toContain("deterministic only — no model evaluation requested");
+    expect(ask).not.toContain("Evaluator usage:");
 
     const canary = learningState({ promotionStatus: "canary" });
     canary.activePolicyVersion = 2;
     canary.canaryPolicyVersion = 2;
+    canary.rollbackTargetVersion = 1;
     const canaryHtml = renderToStaticMarkup(<LearningRunSummary learning={canary} />);
     expect(canaryHtml).toContain("canary");
     expect(canaryHtml).toContain("Roll back to v1");
+  });
+
+  it("rolls back to the live predecessor, not the latest run base", () => {
+    const later = learningState({ basePolicyVersion: 2, promotionStatus: "noop" });
+    later.activePolicyVersion = 2;
+    later.rollbackTargetVersion = 1;
+    if (later.latestRun?.report) later.latestRun.report.basePolicyVersion = 2;
+    const html = renderToStaticMarkup(<LearningRunSummary learning={later} />);
+    expect(html).toContain("Roll back to v1");
+    expect(html).not.toContain("Roll back to v2");
+
+    const noTarget = learningState();
+    noTarget.activePolicyVersion = 2;
+    noTarget.rollbackTargetVersion = null;
+    expect(renderToStaticMarkup(<LearningRunSummary learning={noTarget} />)).not.toContain("Roll back");
+  });
+
+  it("labels each evaluator execution state truthfully", () => {
+    expect(evaluatorExecutionLabel("not_run")).toBe("not_run — no executor");
+    expect(evaluatorExecutionLabel("deferred")).toBe("not_run — no executor");
+    expect(evaluatorExecutionLabel("deterministic_only")).toBe("deterministic only — no model evaluation requested");
+    expect(evaluatorExecutionLabel("reused_existing_evidence")).toBe("reused existing evidence");
+  });
+
+  it("treats schedule nextRunAt and evaluator ceilings as not user-editable", () => {
+    const schedule: LearningSchedule = { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "ask" };
+    expect(scheduleUserFieldsChanged(schedule, { ...schedule, nextRunAt: "stale" })).toBe(false);
+    expect(scheduleUserFieldsChanged(schedule, { ...schedule, runBudgetMicrousd: 0, runBudgetTokens: 0 })).toBe(false);
+    expect(scheduleUserFieldsChanged(schedule, { ...schedule, mode: "automatic" })).toBe(true);
+    expect(scheduleUserFieldsChanged(schedule, { ...schedule, enabled: true })).toBe(true);
+    expect(scheduleUserFieldsChanged(schedule, { ...schedule, cadenceMinutes: 60 })).toBe(true);
   });
 });

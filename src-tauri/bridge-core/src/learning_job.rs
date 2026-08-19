@@ -141,6 +141,10 @@ pub struct LearningState {
     pub latest_run: Option<LearningRun>,
     pub active_policy_version: i64,
     pub canary_policy_version: Option<i64>,
+    /// Predecessor of the live (canary, else active) policy in this workspace.
+    /// None when there is no live policy or the live policy has no predecessor.
+    #[serde(default)]
+    pub rollback_target_version: Option<i64>,
 }
 
 fn active_policy_version(db: &Connection, scope: &str) -> Result<i64, BridgeError> {
@@ -154,6 +158,19 @@ fn active_policy_version(db: &Connection, scope: &str) -> Result<i64, BridgeErro
         )
         .optional()?
         .unwrap_or(0))
+}
+
+fn rollback_target_version(db: &Connection, scope: &str) -> Result<Option<i64>, BridgeError> {
+    let predecessor: Option<Option<i64>> = db
+        .query_row(
+            "SELECT predecessor FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(predecessor.flatten().filter(|version| *version > 0))
 }
 
 fn scope_cursor(db: &Connection, scope: &str) -> Result<i64, BridgeError> {
@@ -761,13 +778,8 @@ fn process_run(
             format!("insufficient new evidence: {new_evidence_count}/{MIN_EVIDENCE_SAMPLES} outcomes since boundary {previous_boundary}"),
         )
     } else {
-        let evaluation_summary = record_deferred_model_evaluations(
-            db,
-            id,
-            &workspace_id,
-            previous_boundary,
-            boundary,
-        )?;
+        let evaluation_summary =
+            record_deferred_model_evaluations(db, id, &workspace_id, previous_boundary, boundary)?;
         evaluation_execution = evaluation_summary.execution_status().into();
         consumed_evidence = true;
         let base_weights = active_policy_weights(db, base_version)?;
@@ -1287,13 +1299,26 @@ pub fn update_schedule(
             "learning mode must be manual, ask, or automatic".into(),
         ));
     }
-    if let Some(next) = &schedule.next_run_at {
-        DateTime::parse_from_rfc3339(next)
-            .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
-    }
+    let current = load_schedule(db)?;
+    // While the job is already enabled the runner owns next_run_at. A dialog
+    // that loaded hours ago must not write a stale timestamp back over a
+    // cadence the scheduler already advanced. Accept a client next_run_at
+    // only on the disabled → enabled transition.
+    let next_run_at = if schedule.enabled && !current.enabled {
+        match &schedule.next_run_at {
+            Some(next) => {
+                DateTime::parse_from_rfc3339(next)
+                    .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
+                Some(next.clone())
+            }
+            None => Some((Utc::now() + Duration::minutes(schedule.cadence_minutes)).to_rfc3339()),
+        }
+    } else {
+        current.next_run_at.clone()
+    };
     db.execute(
         "UPDATE learning_jobs SET enabled=?2,cadence_minutes=?3,next_run_at=?4,run_budget_microusd=?5,run_budget_tokens=?6,mode=?7,updated_at=?8 WHERE id=?1",
-        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, schedule.next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
+        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
     )?;
     load_schedule(db)
 }
@@ -1316,6 +1341,7 @@ pub fn learning_state(db: &Connection, workspace_id: &str) -> Result<LearningSta
                 |row| row.get(0),
             )
             .optional()?,
+        rollback_target_version: rollback_target_version(db, &scope)?,
     })
 }
 
@@ -1732,7 +1758,16 @@ mod tests {
         cost: Option<i64>,
         policy_version: i64,
     ) {
-        add_outcome_in(db, "w", "parent", index, model, success, cost, policy_version);
+        add_outcome_in(
+            db,
+            "w",
+            "parent",
+            index,
+            model,
+            success,
+            cost,
+            policy_version,
+        );
     }
 
     fn add_outcome_in(
@@ -1964,6 +1999,50 @@ mod tests {
         )
         .unwrap();
         assert!(next > now);
+    }
+
+    #[test]
+    fn update_schedule_does_not_rewind_next_run_at_while_enabled() {
+        let db = database();
+        let now = Utc::now();
+        let future = now + Duration::hours(12);
+        update_schedule(
+            &db,
+            &LearningSchedule {
+                job_id: DEFAULT_JOB_ID.into(),
+                enabled: true,
+                cadence_minutes: 60,
+                next_run_at: Some(future.to_rfc3339()),
+                run_budget_microusd: 10_000,
+                run_budget_tokens: 10_000,
+                mode: "manual".into(),
+            },
+        )
+        .unwrap();
+        let mut stale = load_schedule(&db).unwrap();
+        stale.next_run_at = Some((now - Duration::days(1)).to_rfc3339());
+        stale.mode = "ask".into();
+        update_schedule(&db, &stale).unwrap();
+        let stored = load_schedule(&db).unwrap();
+        assert_eq!(stored.mode, "ask");
+        let expected = future.to_rfc3339();
+        assert_eq!(stored.next_run_at.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn enabling_schedule_accepts_client_next_run_at() {
+        let db = database();
+        let future = Utc::now() + Duration::days(1);
+        let expected = future.to_rfc3339();
+        let mut schedule = load_schedule(&db).unwrap();
+        assert!(!schedule.enabled);
+        schedule.enabled = true;
+        schedule.next_run_at = Some(expected.clone());
+        update_schedule(&db, &schedule).unwrap();
+        assert_eq!(
+            load_schedule(&db).unwrap().next_run_at.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[test]
@@ -2657,6 +2736,37 @@ mod tests {
     }
 
     #[test]
+    fn rollback_target_is_live_predecessor_not_latest_run_base() {
+        let db = database();
+        let empty = learning_state(&db, "w").unwrap();
+        assert_eq!(empty.active_policy_version, 0);
+        assert_eq!(empty.rollback_target_version, None);
+
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(4,'archived','workspace:w','{}','{}','prior','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(5,'active',4,'workspace:w','{}','{}','live','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,learning_scope,snapshot_frozen_at,created_at)
+             VALUES('later','default','manual','default:workspace:w:0:5',0,5,'noop','workspace:w','now','now')",
+            [],
+        )
+        .unwrap();
+        let state = learning_state(&db, "w").unwrap();
+        assert_eq!(state.active_policy_version, 5);
+        assert_eq!(state.latest_run.as_ref().unwrap().base_policy_version, 5);
+        assert_eq!(state.rollback_target_version, Some(4));
+    }
+
+    #[test]
     fn scheduled_run_does_not_mix_workspace_evidence() {
         let db = database();
         add_workspace(&db, "other");
@@ -2680,7 +2790,9 @@ mod tests {
         .unwrap();
         assert!(run_due(&db, now).unwrap().is_some());
         let scopes: Vec<String> = db
-            .prepare("SELECT DISTINCT learning_scope FROM learning_job_runs ORDER BY learning_scope")
+            .prepare(
+                "SELECT DISTINCT learning_scope FROM learning_job_runs ORDER BY learning_scope",
+            )
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
