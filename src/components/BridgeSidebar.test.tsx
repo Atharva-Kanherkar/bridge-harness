@@ -162,6 +162,17 @@ describe("BridgeSidebar history", () => {
     expect(html).not.toContain("Chat 0");
   });
 
+  it("does not cap the collapsed rail, which has nowhere to put the reveal control", () => {
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "none", sortBy: "recency" }));
+    const chats = Array.from({ length: 15 }, (_, index) =>
+      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index), workspaceId: null }));
+    const html = render({ chats });
+    expect(html).not.toContain("Show 3 more");
+    // Every chat keeps a row; a cap with no control would strand the last three.
+    expect(html.match(/rounded-md px-0/g) ?? []).toHaveLength(15);
+  });
+
   it("honours a persisted grouping choice", () => {
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "status", sortBy: "recency" }));
     const html = render({ chats: [session("w", { status: "waiting" }), session("f", { status: "failed" })] });
@@ -192,6 +203,19 @@ describe("BridgeSidebar projects", () => {
     expect(html).toContain("Inside harness");
     expect(html).not.toContain("feat/router");
     expect(html).not.toContain("3 changed");
+  });
+
+  it("hides a project whose chats a filter excluded, instead of an empty shell", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "failed", agent: "all", groupBy: "date", sortBy: "recency" }));
+    const html = render({ chats: [session("a", { title: "Inside harness", status: "working" })] });
+    // The history says nothing matched, so the tree must not disagree with it.
+    expect(html).toContain("No chat matches this filter");
+    expect(html).not.toContain("harness");
+  });
+
+  it("keeps a project with no chats when nothing is narrowing the list", () => {
+    // This is the project you need to reach in order to start a chat in it.
+    expect(render({ chats: [] })).toContain("harness");
   });
 
   it("still offers new agent and connect folder inside an expanded project", () => {

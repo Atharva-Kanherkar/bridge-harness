@@ -254,11 +254,22 @@ export function BridgeSidebar({
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
     [visible, view.groupBy, view.sortBy, workspaces, now],
   );
+  // One filtered set of chats, viewed two ways: anything that narrows the history
+  // narrows the tree, so a project cannot survive as an empty shell beside a
+  // history that says nothing matched. With nothing narrowing, every project shows
+  // — a project with no chats yet is the one you need to reach to start one.
+  const filtering = view.status !== "all" || view.agent !== "all";
   const projects = useMemo(
     () => workspaces
       .map(workspace => ({ workspace, chats: visible.filter(chat => chat.workspaceId === workspace.id) }))
-      .filter(entry => !searching || entry.chats.length > 0 || entry.workspace.title.toLowerCase().includes(needle)),
-    [workspaces, visible, searching, needle],
+      .filter(entry => {
+        if (!searching && !filtering) return true;
+        if (entry.chats.length) return true;
+        // A search naming a project keeps it reachable even with no chats at all,
+        // but only while no filter is also excluding everything under it.
+        return searching && !filtering && entry.workspace.title.toLowerCase().includes(needle);
+      }),
+    [workspaces, visible, searching, filtering, needle],
   );
 
   const sidebarWidth = collapsed ? COLLAPSED_WIDTH : width;
@@ -442,7 +453,9 @@ export function BridgeSidebar({
           )}
 
           {groups.map(group => {
-            const capped = !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            // The icon rail has nowhere to put the reveal control, so it must not
+            // cap either — a cap without its control puts chats out of reach.
+            const capped = !collapsed && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
             const rows = capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
             return (
               <div key={group.key}>
@@ -450,7 +463,7 @@ export function BridgeSidebar({
                 {rows.map(chat => (
                   <ChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={collapsed} onClick={() => onOpenSession(chat.id)} />
                 ))}
-                {capped && !collapsed && (
+                {capped && (
                   <button
                     type="button"
                     onClick={() => setShownInFull(current => new Set(current).add(group.key))}
