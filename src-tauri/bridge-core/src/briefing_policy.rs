@@ -570,6 +570,281 @@ fn version_line_matches(reported: &str, certified: &str) -> bool {
         .all(|component| reported.next() == Some(component))
 }
 
+// ---------------------------------------------------------------------------
+// The run: limits Bridge enforces, and prompts it answers
+// ---------------------------------------------------------------------------
+
+/// How a briefing run ended.
+///
+/// A limit breach, a cancellation, and a provider crash are three different
+/// things, and a caller deciding whether to retry needs to tell them apart. A run
+/// that stopped because it hit a ceiling should not look like one that died.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum BriefingTermination {
+    /// The run finished on its own.
+    Completed,
+    WallTimeExceeded { limit_seconds: i64, elapsed_seconds: i64 },
+    TurnLimitExceeded { limit: i64 },
+    ToolCallLimitExceeded { limit: i64 },
+    OutputLimitExceeded { limit_bytes: usize, bytes: usize },
+    /// Bridge stopped it. Not a failure of the run.
+    Cancelled,
+    /// The provider died. Distinct from every limit above.
+    ProviderCrashed { detail: String },
+    /// A call was refused and the policy says that ends the run.
+    PolicyViolation { denial: BriefingDenial },
+}
+
+impl BriefingTermination {
+    /// Did the run stop because Bridge stopped it, rather than finishing or dying?
+    pub fn is_limit_breach(&self) -> bool {
+        matches!(
+            self,
+            Self::WallTimeExceeded { .. }
+                | Self::TurnLimitExceeded { .. }
+                | Self::ToolCallLimitExceeded { .. }
+                | Self::OutputLimitExceeded { .. }
+        )
+    }
+
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Completed => "the briefing finished".into(),
+            Self::WallTimeExceeded { limit_seconds, elapsed_seconds } => format!(
+                "the briefing ran for {elapsed_seconds}s, past its {limit_seconds}s ceiling"
+            ),
+            Self::TurnLimitExceeded { limit } => {
+                format!("the briefing used all {limit} of its turns")
+            }
+            Self::ToolCallLimitExceeded { limit } => {
+                format!("the briefing used all {limit} of its tool calls")
+            }
+            Self::OutputLimitExceeded { limit_bytes, bytes } => format!(
+                "the briefing produced {bytes} bytes of output, past its {limit_bytes}-byte ceiling"
+            ),
+            Self::Cancelled => "the briefing was cancelled".into(),
+            Self::ProviderCrashed { detail } => format!("the provider stopped: {detail}"),
+            Self::PolicyViolation { denial } => denial.reason(),
+        }
+    }
+}
+
+/// How a prompt a briefing run cannot answer was disposed of.
+///
+/// Bridge answers these itself, immediately. A run with no human attached that
+/// waits for one is a hung background job, so there is no waiting path here at
+/// all — the type has no variant for "asked someone".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDisposition {
+    /// An approval request for a tool or a file change.
+    ApprovalDenied,
+    /// A request for more authority than the run holds.
+    EscalationDenied,
+    /// An MCP server asking the user for input.
+    ElicitationDenied,
+}
+
+impl PromptDisposition {
+    /// Which normalized `approval.requested` titles map to which disposition.
+    ///
+    /// Driven off the titles [`crate::agent`] already assigns, so a prompt shape
+    /// Bridge normalizes is a prompt shape briefing can answer.
+    pub fn for_request(title: Option<&str>, method: Option<&str>) -> Self {
+        let haystack = format!(
+            "{} {}",
+            title.unwrap_or_default().to_lowercase(),
+            method.unwrap_or_default().to_lowercase()
+        );
+        if haystack.contains("elicitation") || haystack.contains("input") {
+            Self::ElicitationDenied
+        } else if haystack.contains("permission") || haystack.contains("escalat") {
+            Self::EscalationDenied
+        } else {
+            Self::ApprovalDenied
+        }
+    }
+
+    /// The decision string handed back to a provider. One word, always the same
+    /// one: there is no branch here that approves anything.
+    pub fn decision(self) -> &'static str {
+        "denied"
+    }
+
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::ApprovalDenied => {
+                "a briefing run cannot approve anything: no human is attached to ask"
+            }
+            Self::EscalationDenied => {
+                "a briefing run holds the authority it was given and cannot be granted more"
+            }
+            Self::ElicitationDenied => {
+                "a briefing run has nobody to answer an input request, so it is refused rather than parked"
+            }
+        }
+    }
+}
+
+/// Counters for one briefing run, enforced by Bridge rather than trusted to a
+/// number in a prompt.
+///
+/// Time is passed in rather than read, so a test can exercise a ceiling without
+/// waiting for it — the same reason the Work board's projections take `now`.
+#[derive(Debug, Clone)]
+pub struct BriefingGuard {
+    limits: wire::WorkBriefLimits,
+    max_output_bytes: usize,
+    turns: i64,
+    tool_calls: i64,
+    output_bytes: usize,
+    prompts_denied: Vec<PromptDisposition>,
+}
+
+/// Output ceiling when the limits name none. A briefing produces a short list of
+/// suggestions; anything approaching this is a run that has lost its way.
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// Bytes assumed per output token when limits are expressed in tokens. Deliberately
+/// conservative: the ceiling is a safety limit, and erring small stops a runaway
+/// sooner rather than later.
+const BYTES_PER_OUTPUT_TOKEN: usize = 4;
+
+impl BriefingGuard {
+    pub fn new(policy: &BriefingRuntimePolicy) -> Self {
+        let limits = policy.limits().clone();
+        let max_output_bytes = limits
+            .max_output_tokens
+            .filter(|tokens| *tokens > 0)
+            .map(|tokens| (tokens as usize).saturating_mul(BYTES_PER_OUTPUT_TOKEN))
+            .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
+        Self {
+            limits,
+            max_output_bytes,
+            turns: 0,
+            tool_calls: 0,
+            output_bytes: 0,
+            prompts_denied: Vec::new(),
+        }
+    }
+
+    /// Record a turn. `Err` means this turn must not start.
+    pub fn begin_turn(&mut self) -> Result<(), BriefingTermination> {
+        if self.turns >= self.limits.max_turns {
+            return Err(BriefingTermination::TurnLimitExceeded {
+                limit: self.limits.max_turns,
+            });
+        }
+        self.turns += 1;
+        Ok(())
+    }
+
+    /// Record a tool call. `Err` means it must not be dispatched.
+    pub fn begin_tool_call(&mut self) -> Result<(), BriefingTermination> {
+        if self.tool_calls >= self.limits.max_tool_calls {
+            return Err(BriefingTermination::ToolCallLimitExceeded {
+                limit: self.limits.max_tool_calls,
+            });
+        }
+        self.tool_calls += 1;
+        Ok(())
+    }
+
+    /// Record output as it streams. `Err` means the run stops now, mid-stream:
+    /// checking only at the end would mean the bytes were already accepted.
+    pub fn record_output(&mut self, bytes: usize) -> Result<(), BriefingTermination> {
+        self.output_bytes = self.output_bytes.saturating_add(bytes);
+        if self.output_bytes > self.max_output_bytes {
+            return Err(BriefingTermination::OutputLimitExceeded {
+                limit_bytes: self.max_output_bytes,
+                bytes: self.output_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// Has the run outlived its wall-time ceiling?
+    pub fn check_wall_time(&self, elapsed_seconds: i64) -> Result<(), BriefingTermination> {
+        if elapsed_seconds >= self.limits.max_wall_seconds {
+            return Err(BriefingTermination::WallTimeExceeded {
+                limit_seconds: self.limits.max_wall_seconds,
+                elapsed_seconds,
+            });
+        }
+        Ok(())
+    }
+
+    /// Answer a prompt the run cannot answer, and remember that it was answered.
+    pub fn deny_prompt(&mut self, title: Option<&str>, method: Option<&str>) -> PromptDisposition {
+        let disposition = PromptDisposition::for_request(title, method);
+        self.prompts_denied.push(disposition);
+        disposition
+    }
+
+    pub fn prompts_denied(&self) -> &[PromptDisposition] {
+        &self.prompts_denied
+    }
+
+    pub fn turns(&self) -> i64 {
+        self.turns
+    }
+
+    pub fn tool_calls(&self) -> i64 {
+        self.tool_calls
+    }
+
+    pub fn output_bytes(&self) -> usize {
+        self.output_bytes
+    }
+
+    pub fn max_output_bytes(&self) -> usize {
+        self.max_output_bytes
+    }
+}
+
+/// One tool call's outcome, as the transcript records it.
+///
+/// A refused call is a failure carrying its reason, not an absence. A call that
+/// simply vanished from the transcript would leave a reader unable to tell a
+/// denial from a provider that never tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BriefingToolEvent {
+    /// Stable across the call's whole life, so its start and its end can be tied
+    /// together by a reader.
+    pub call_id: String,
+    pub tool: String,
+    /// `success` or `failure`. Terminal either way — there is no pending state a
+    /// transcript can be left holding.
+    pub status: &'static str,
+    pub detail: Option<String>,
+}
+
+impl BriefingToolEvent {
+    pub fn succeeded(call_id: impl Into<String>, tool: impl Into<String>) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool: tool.into(),
+            status: "success",
+            detail: None,
+        }
+    }
+
+    pub fn denied(call_id: impl Into<String>, tool: impl Into<String>, denial: &BriefingDenial) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool: tool.into(),
+            status: "failure",
+            detail: Some(denial.reason()),
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status, "success" | "failure")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1009,6 +1284,234 @@ mod tests {
                 "{adapter}: the boundary and the certified answer must not diverge"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Limits at the runtime boundary
+    // -----------------------------------------------------------------------
+
+    fn guard() -> BriefingGuard {
+        BriefingGuard::new(&policy())
+    }
+
+    #[test]
+    fn each_limit_breach_has_its_own_terminal_reason() {
+        // A caller deciding whether to retry has to tell these apart, so no two
+        // breaches may collapse into one shape.
+        let wall = guard();
+        let wall_error = wall.check_wall_time(600).unwrap_err();
+        assert!(matches!(wall_error, BriefingTermination::WallTimeExceeded { .. }));
+
+        let mut turns = guard();
+        for _ in 0..12 {
+            turns.begin_turn().unwrap();
+        }
+        let turn_error = turns.begin_turn().unwrap_err();
+        assert!(matches!(turn_error, BriefingTermination::TurnLimitExceeded { limit: 12 }));
+
+        let mut calls = guard();
+        for _ in 0..24 {
+            calls.begin_tool_call().unwrap();
+        }
+        let call_error = calls.begin_tool_call().unwrap_err();
+        assert!(matches!(
+            call_error,
+            BriefingTermination::ToolCallLimitExceeded { limit: 24 }
+        ));
+
+        let mut output = guard();
+        let output_error = output.record_output(DEFAULT_MAX_OUTPUT_BYTES + 1).unwrap_err();
+        assert!(matches!(output_error, BriefingTermination::OutputLimitExceeded { .. }));
+
+        // All four are limit breaches; the other three terminations are not.
+        for breach in [&wall_error, &turn_error, &call_error, &output_error] {
+            assert!(breach.is_limit_breach(), "{breach:?}");
+            assert!(!breach.reason().is_empty());
+        }
+        let reasons: std::collections::HashSet<String> =
+            [&wall_error, &turn_error, &call_error, &output_error]
+                .iter()
+                .map(|breach| breach.reason())
+                .collect();
+        assert_eq!(reasons.len(), 4, "each breach must read differently");
+    }
+
+    #[test]
+    fn a_crash_a_cancellation_and_a_breach_are_distinguishable() {
+        // The fixture that matters for retry logic: a provider that died is not a
+        // run that was stopped, and neither is a run that finished.
+        let crash = BriefingTermination::ProviderCrashed {
+            detail: "exit status 1".into(),
+        };
+        let cancelled = BriefingTermination::Cancelled;
+        let completed = BriefingTermination::Completed;
+        for termination in [&crash, &cancelled, &completed] {
+            assert!(!termination.is_limit_breach(), "{termination:?}");
+        }
+        assert_ne!(crash, cancelled);
+        assert!(crash.reason().contains("exit status 1"));
+        assert!(cancelled.reason().contains("cancelled"));
+    }
+
+    #[test]
+    fn a_turn_that_would_exceed_the_limit_does_not_start() {
+        // Off-by-one matters here: the limit is how many turns may run, so the
+        // twelfth is allowed and the thirteenth never begins.
+        let mut guard = guard();
+        for turn in 1..=12 {
+            guard.begin_turn().unwrap_or_else(|_| panic!("turn {turn} must be allowed"));
+            assert_eq!(guard.turns(), turn);
+        }
+        assert!(guard.begin_turn().is_err());
+        assert_eq!(guard.turns(), 12, "a refused turn is not counted");
+    }
+
+    #[test]
+    fn a_tool_call_that_would_exceed_the_limit_is_not_dispatched() {
+        let mut guard = guard();
+        for call in 1..=24 {
+            guard.begin_tool_call().unwrap();
+            assert_eq!(guard.tool_calls(), call);
+        }
+        assert!(guard.begin_tool_call().is_err());
+        assert_eq!(guard.tool_calls(), 24, "a refused call is not counted");
+    }
+
+    #[test]
+    fn oversized_output_stops_the_run_while_streaming() {
+        // Checked as it arrives. Waiting for the end would mean the bytes were
+        // already accepted, which is the thing the ceiling exists to prevent.
+        let mut guard = guard();
+        let chunk = DEFAULT_MAX_OUTPUT_BYTES / 4;
+        for _ in 0..4 {
+            guard.record_output(chunk).unwrap();
+        }
+        assert_eq!(guard.output_bytes(), DEFAULT_MAX_OUTPUT_BYTES);
+        let error = guard.record_output(1).unwrap_err();
+        assert!(matches!(error, BriefingTermination::OutputLimitExceeded { bytes, .. } if bytes == DEFAULT_MAX_OUTPUT_BYTES + 1));
+    }
+
+    #[test]
+    fn an_output_ceiling_in_tokens_is_honoured_conservatively() {
+        let reviewed = identity("notion", "search");
+        let limited = BriefingRuntimePolicy::compile(
+            vec![reviewed.clone()],
+            wire::WorkBriefLimits {
+                max_wall_seconds: 600,
+                max_turns: 12,
+                max_tool_calls: 24,
+                max_output_tokens: Some(1_000),
+                cost_ceiling_microusd: None,
+            },
+            &[reviewed.wire_name()],
+        )
+        .unwrap();
+        let guard = BriefingGuard::new(&limited);
+        assert_eq!(guard.max_output_bytes(), 4_000);
+        assert!(
+            guard.max_output_bytes() < DEFAULT_MAX_OUTPUT_BYTES,
+            "a stated token ceiling must bind tighter than the default"
+        );
+    }
+
+    #[test]
+    fn wall_time_is_measured_by_bridge_not_asked_of_the_provider() {
+        // Elapsed time is passed in, so this is exercised without waiting for it —
+        // and, more to the point, the provider is never the one consulted.
+        let guard = guard();
+        assert!(guard.check_wall_time(0).is_ok());
+        assert!(guard.check_wall_time(599).is_ok());
+        assert!(guard.check_wall_time(600).is_err());
+        assert!(guard.check_wall_time(6_000).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Nothing waits for a human
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn an_approval_request_is_auto_denied_without_waiting() {
+        let mut guard = guard();
+        let disposition = guard.deny_prompt(Some("Approve command"), Some("item/requestApproval"));
+        assert_eq!(disposition, PromptDisposition::ApprovalDenied);
+        assert_eq!(disposition.decision(), "denied");
+        assert_eq!(guard.prompts_denied(), &[PromptDisposition::ApprovalDenied]);
+    }
+
+    #[test]
+    fn a_permission_escalation_is_auto_denied_without_waiting() {
+        let mut guard = guard();
+        let disposition = guard.deny_prompt(Some("Permission required"), None);
+        assert_eq!(disposition, PromptDisposition::EscalationDenied);
+        assert_eq!(disposition.decision(), "denied");
+    }
+
+    #[test]
+    fn an_mcp_elicitation_is_auto_denied_without_waiting() {
+        let mut guard = guard();
+        // The titles agent.rs already assigns to these requests.
+        for title in ["Tool input required", "Input required"] {
+            let disposition = guard.deny_prompt(Some(title), Some("mcpServer/elicitation/request"));
+            assert_eq!(
+                disposition,
+                PromptDisposition::ElicitationDenied,
+                "{title} must be refused rather than parked"
+            );
+        }
+        assert_eq!(guard.prompts_denied().len(), 2);
+    }
+
+    #[test]
+    fn every_prompt_disposition_denies_and_none_of_them_asks() {
+        // Structural: there is no variant meaning "asked a human", and every
+        // disposition answers with the same word. A briefing run cannot consent.
+        for disposition in [
+            PromptDisposition::ApprovalDenied,
+            PromptDisposition::EscalationDenied,
+            PromptDisposition::ElicitationDenied,
+        ] {
+            assert_eq!(disposition.decision(), "denied");
+            assert!(disposition.reason().len() > 20);
+        }
+        // An unrecognized prompt is still denied, as an approval.
+        let mut guard = guard();
+        assert_eq!(
+            guard.deny_prompt(None, None),
+            PromptDisposition::ApprovalDenied,
+            "a prompt shape nobody anticipated is still refused"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The transcript
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_denied_call_reaches_a_terminal_failure_status_with_its_reason() {
+        let denial = BriefingDenial::NotReviewed {
+            tool: "mcp__github__list_issues".into(),
+        };
+        let event = BriefingToolEvent::denied("call_7", "mcp__github__list_issues", &denial);
+        assert_eq!(event.status, "failure");
+        assert!(event.is_terminal(), "a refused call is not left pending");
+        assert_eq!(event.detail.as_deref(), Some(denial.reason().as_str()));
+    }
+
+    #[test]
+    fn a_denied_call_keeps_its_stable_call_id() {
+        // A reader ties a call's start to its end by this id, so a denial that
+        // invented a new one would read as a different call entirely.
+        let denial = BriefingDenial::ArgumentsTooLarge {
+            tool: "mcp__notion__search".into(),
+            bytes: 9_000,
+            limit: 8_192,
+        };
+        let denied = BriefingToolEvent::denied("call_7", "mcp__notion__search", &denial);
+        let succeeded = BriefingToolEvent::succeeded("call_7", "mcp__notion__search");
+        assert_eq!(denied.call_id, succeeded.call_id);
+        assert!(denied.is_terminal() && succeeded.is_terminal());
+        assert_eq!(succeeded.status, "success");
+        assert!(succeeded.detail.is_none());
     }
 
     // -----------------------------------------------------------------------
