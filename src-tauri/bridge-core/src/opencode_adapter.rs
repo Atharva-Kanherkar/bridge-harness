@@ -124,6 +124,7 @@ pub fn resume_with_settings(
             instructions: request.instructions,
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
+            briefing: request.briefing,
         },
         Some(request.provider_session_id),
         settings,
@@ -136,6 +137,17 @@ fn launch(
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
     ensure_read_only_transport_supported(request.read_only_sandbox.is_some())?;
+    // OpenCode's permission rules are coarse families, so admitting one reviewed
+    // connector read would admit its neighbours. Refused at the boundary with the
+    // reason, never accepted-and-ignored.
+    if request.briefing.is_some() {
+        return Err(BridgeError::Invalid(
+            crate::briefing_policy::adapter_may_brief("opencode")
+                .err()
+                .map(|error| error.reason())
+                .unwrap_or_else(|| "OpenCode cannot enforce briefing authority".into()),
+        ));
+    }
     if let Some(session_id) = resume_session_id {
         validate_path_id("session id", session_id)?;
     }
@@ -1421,6 +1433,7 @@ mod tests {
                 instructions: None,
                 write_mode: None,
                 read_only_sandbox: None,
+                briefing: None,
             },
             &OpenCodeSettings {
                 executable_path: Some(executable),

@@ -45,6 +45,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             instructions: request.instructions,
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
+            briefing: request.briefing,
         },
         Some(request.provider_session_id),
     )
@@ -61,7 +62,19 @@ fn launch(
         instructions,
         write_mode,
         read_only_sandbox,
+        briefing,
     } = request;
+    // Codex cannot express one connector tool's exact identity, so a briefing
+    // policy here would be decoration. Refused at the boundary with the reason,
+    // never accepted-and-ignored.
+    if briefing.is_some() {
+        return Err(BridgeError::Invalid(
+            crate::briefing_policy::adapter_may_brief("codex")
+                .err()
+                .map(|error| error.reason())
+                .unwrap_or_else(|| "Codex cannot enforce briefing authority".into()),
+        ));
+    }
     let binary = resolve_runtime()
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
     let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
@@ -618,6 +631,7 @@ mod tests {
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
+            briefing: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -686,6 +700,7 @@ mod tests {
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
+            briefing: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CODEX_RESUME_8F31. Reply only SAVED.");
@@ -699,6 +714,7 @@ mod tests {
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
+            briefing: None,
             provider_session_id: &thread_id,
         })
         .unwrap();

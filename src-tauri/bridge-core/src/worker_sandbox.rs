@@ -385,6 +385,7 @@ mod tests {
             instructions: Some("Complete only the requested read-only verification."),
             write_mode: Some(crate::delegation::WriteMode::ReadOnly),
             read_only_sandbox: Some(&codex_sandbox),
+            briefing: None,
         })
         .unwrap();
         codex.runtime.start_turn(prompt, None).unwrap();
@@ -440,6 +441,7 @@ mod tests {
             instructions: Some("Complete only the requested read-only verification."),
             write_mode: Some(crate::delegation::WriteMode::ReadOnly),
             read_only_sandbox: Some(&claude_sandbox),
+            briefing: None,
         })
         .unwrap();
         claude.runtime.start_turn(prompt).unwrap();

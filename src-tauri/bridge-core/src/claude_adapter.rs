@@ -45,6 +45,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
             instructions: request.instructions,
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
+            briefing: request.briefing,
         },
         Some(request.provider_session_id),
     )
@@ -61,6 +62,7 @@ fn launch(
         instructions,
         write_mode,
         read_only_sandbox,
+        briefing,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
     // long-lived streaming query serves every turn on a single session (fixing
@@ -81,6 +83,25 @@ fn launch(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("sonnet");
+    // A briefing run's authority, if this is one. The boundary refuses rather than
+    // ignoring: an adapter that dropped this on the floor would run a briefing
+    // with a coding agent's full toolset, which is the one outcome the policy
+    // exists to prevent.
+    let briefing_config = match briefing {
+        Some(policy) => {
+            crate::briefing_policy::adapter_may_brief("claude")
+                .map_err(|error| BridgeError::Invalid(error.reason()))?;
+            crate::briefing_policy::BriefingRuntimePolicy::check_write_mode(write_mode)
+                .map_err(|error| BridgeError::Invalid(error.reason()))?;
+            Some(json!({
+                "allowedTools": policy.allowed_wire_names(),
+                "allowedServers": policy.allowed_servers(),
+                "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
+                "maxArgumentBytes": policy.max_argument_bytes(),
+            }))
+        }
+        None => None,
+    };
     let sdk_configuration = crate::marketplace::claude_sdk_configuration();
     let config = json!({
         "sessionId": session_id,
@@ -93,6 +114,9 @@ fn launch(
         "writeMode": write_mode.map(write_mode_label),
         "plugins": sdk_configuration.plugins,
         "mcpServers": sdk_configuration.mcp_servers,
+        // Absent for every non-briefing session, so the sidecar's existing
+        // write-mode handling is reached by exactly the same path as before.
+        "briefing": briefing_config,
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
     command
@@ -649,6 +673,7 @@ mod tests {
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
+            briefing: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -717,6 +742,7 @@ mod tests {
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
+            briefing: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CLAUDE_RESUME_5A72. Reply only SAVED.");
@@ -730,6 +756,7 @@ mod tests {
             instructions: None,
             write_mode: None,
             read_only_sandbox: None,
+            briefing: None,
             provider_session_id: &session_id,
         })
         .unwrap();
@@ -739,5 +766,60 @@ mod tests {
         );
         resumed.runtime.stop(ShutdownReason::Completed);
         assert!(transcript.contains("BRIDGE_CLAUDE_RESUME_5A72"));
+    }
+}
+
+#[cfg(test)]
+mod briefing_boundary_tests {
+    use crate::briefing_policy::{BriefingRuntimePolicy, BriefingToolIdentity};
+    use crate::delegation::WriteMode;
+    use bridge_protocol::messages as wire;
+
+    fn policy() -> BriefingRuntimePolicy {
+        let reviewed = BriefingToolIdentity {
+            server: "notion".into(),
+            tool: "search".into(),
+        };
+        BriefingRuntimePolicy::compile(
+            vec![reviewed.clone()],
+            wire::WorkBriefLimits {
+                max_wall_seconds: 600,
+                max_turns: 12,
+                max_tool_calls: 24,
+                max_output_tokens: None,
+                cost_ceiling_microusd: None,
+            },
+            &[reviewed.wire_name()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_briefing_run_may_not_also_hold_a_writable_tree() {
+        // The check the adapter performs before it will start one, pinned here so
+        // the refusal cannot be lost from the boundary without a test noticing.
+        for mode in [WriteMode::Shared, WriteMode::Isolated, WriteMode::Full] {
+            assert!(
+                BriefingRuntimePolicy::check_write_mode(Some(mode)).is_err(),
+                "{mode:?} must not accompany a briefing policy"
+            );
+        }
+        assert!(BriefingRuntimePolicy::check_write_mode(Some(WriteMode::ReadOnly)).is_ok());
+    }
+
+    #[test]
+    fn the_sidecar_is_handed_the_allowlist_the_denylist_and_the_argument_ceiling() {
+        // What the adapter serializes, asserted on the policy's own accessors so a
+        // change to either side has to change this test too.
+        let policy = policy();
+        assert_eq!(policy.allowed_wire_names(), vec!["mcp__notion__search"]);
+        assert_eq!(policy.allowed_servers(), vec!["notion"]);
+        assert!(policy.max_argument_bytes() > 0);
+        // The exact identities the provider uses. Lowercase would match nothing in
+        // an SDK deny-list, which is how this went wrong the first time.
+        let denied = BriefingRuntimePolicy::denied_builtin_names();
+        for expected in ["Bash", "Read", "Write", "WebFetch", "Task", "Skill"] {
+            assert!(denied.contains(&expected), "{expected} must be denied explicitly");
+        }
     }
 }

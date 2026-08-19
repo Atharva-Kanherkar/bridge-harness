@@ -41,6 +41,14 @@ run_exact "$prefix::built_in_contract_preserves_transport_runtime_and_vendor_aut
 run_exact "$prefix::built_in_contract_matches_adapter_descriptors"
 run_exact "$prefix::compatibility_report_is_deterministic_and_schema_versioned"
 run_exact "$prefix::representative_provider_streams_match_normalized_snapshots"
+
+# Briefing standing is certified separately from the compatibility report above,
+# by the shared adversarial suite. An adapter cannot advertise support without it.
+briefing_prefix=briefing_conformance::tests
+run_exact "$briefing_prefix::the_conformance_suite_gates_the_capability"
+run_exact "$briefing_prefix::the_suite_runs_every_required_fixture_in_order"
+run_exact "$briefing_prefix::an_adapter_that_may_not_brief_fails_the_suite_rather_than_skipping_it"
+
 cargo run --quiet --manifest-path "$manifest" -p bridge-core \
   --example builtin-compatibility-report >"$temporary"
 python3 -m json.tool "$temporary" >/dev/null

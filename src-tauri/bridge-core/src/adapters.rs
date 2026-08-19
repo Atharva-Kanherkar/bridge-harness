@@ -1,4 +1,5 @@
 use crate::{
+    briefing_policy::BriefingRuntimePolicy,
     agent, claude_adapter, codex_adapter,
     delegation::WriteMode,
     model::{AdapterDescriptor, CapabilityTier, ModelOption, SandboxMode},
@@ -234,6 +235,13 @@ pub struct StartRequest<'a> {
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
+    /// Briefing authority, when this session is a briefing run.
+    ///
+    /// A separate axis from `write_mode`, not a rung of it: see
+    /// [`crate::briefing_policy`]. Stated at every start site rather than
+    /// defaulted, because an adapter that silently ignores it would run a
+    /// briefing with a coding agent's tools.
+    pub briefing: Option<&'a BriefingRuntimePolicy>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -245,6 +253,8 @@ pub struct ResumeRequest<'a> {
     pub instructions: Option<&'a str>,
     pub write_mode: Option<WriteMode>,
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
+    /// See [`StartRequest::briefing`].
+    pub briefing: Option<&'a BriefingRuntimePolicy>,
 }
 
 pub struct StartedAdapter {
