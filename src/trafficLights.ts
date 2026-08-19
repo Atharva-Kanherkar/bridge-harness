@@ -21,14 +21,16 @@ export function watchTrafficLights(): () => void {
   if (!isTauri()) return () => {};
 
   let visible: boolean | undefined;
+  // A build without the command is a permanent condition, not a transient one.
+  // Retrying on every pointer move would be a request per frame, so the first
+  // rejection stops the watcher for this session.
+  let unsupported = false;
 
   const apply = (next: boolean) => {
-    if (next === visible) return;
+    if (unsupported || next === visible) return;
     visible = next;
     void invoke("set_traffic_lights_visible", { visible: next }).catch(() => {
-      // An older daemon-hosted build has no such command; leaving the buttons
-      // as they are beats spamming the console on every pointer move.
-      visible = undefined;
+      unsupported = true;
     });
   };
 

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 22;
+const LATEST_SCHEMA_VERSION: i64 = 23;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -248,6 +248,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             20 => migration_20_repair_legacy_learning_constraints(&transaction)?,
             21 => migration_21_approval_deadlines_and_worktree_adoption(&transaction)?,
             22 => migration_22_session_backend_binding(&transaction)?,
+            23 => migration_23_session_title_source(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -560,6 +561,21 @@ fn migration_21_approval_deadlines_and_worktree_adoption(
 /// genuinely unbound rather than bound to a guess: inferring a backend for it
 /// would be inventing history, and the read path treats null as "not recorded"
 /// and binds it on its next successful start.
+/// Records where a session's title came from, so a heading Bridge derived from the
+/// first message can later be replaced by the one the harness writes, while a
+/// title the user or the provider chose is never overwritten.
+fn migration_23_session_title_source(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    let has_column = transaction
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='title_source'")?
+        .exists([])?;
+    if !has_column {
+        transaction.execute_batch("ALTER TABLE sessions ADD COLUMN title_source TEXT;")?;
+    }
+    // Titles that predate this column were set by the user at creation, so they
+    // stay untouched: an absent source is read as "not ours to replace".
+    Ok(())
+}
+
 fn migration_22_session_backend_binding(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(transaction, "sessions", "backend_id", "TEXT")?;
     add_column_if_missing(transaction, "sessions", "backend_version", "TEXT")?;
@@ -2758,7 +2774,8 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+            (1..=LATEST_SCHEMA_VERSION).collect::<Vec<_>>(),
+            "a legacy fixture must land on the current schema"
         );
         for table in [
             "model_profiles",
@@ -2868,7 +2885,8 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             migration_versions(&db),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+            (1..=LATEST_SCHEMA_VERSION).collect::<Vec<_>>(),
+            "a legacy fixture must land on the current schema"
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
     }

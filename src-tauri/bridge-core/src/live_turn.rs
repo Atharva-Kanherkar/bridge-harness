@@ -1416,9 +1416,23 @@ fn handle_agent_value(
     if turn_completed {
         // Name the chat now rather than at creation: a session has nothing to be
         // named after until it has said something, and Claude writes its own title
-        // a turn or two in. Skips itself once a session has a real title.
-        if let Ok(db) = state.db.lock() {
-            let _ = crate::session_titles::refresh(&db, session_id);
+        // a turn or two in.
+        //
+        // Three phases on purpose. Reading Claude's title walks its project
+        // directories and reads a transcript, and the database lock is
+        // process-wide, so the lock is dropped for the duration of that read and
+        // taken again only to write the result.
+        let plan = state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| crate::session_titles::plan(&db, session_id).ok().flatten());
+        if let Some(plan) = plan {
+            if let Some((title, source)) = crate::session_titles::resolve(&plan) {
+                if let Ok(db) = state.db.lock() {
+                    let _ = crate::session_titles::commit(&db, session_id, &title, source);
+                }
+            }
         }
     }
 

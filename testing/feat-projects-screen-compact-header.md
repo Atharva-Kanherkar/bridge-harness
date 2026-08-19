@@ -151,8 +151,21 @@ pleasantry opener in a message of fewer than four words (`hey man`), a redacted
 its placeholder, because a rail full of `Hello` is no better than one full of
 `Orchestrator`. Terse instructions (`fix migration`) are kept.
 
+Provenance decides what may be replaced. `sessions.title_source` (migration 23)
+records whether a title was `derived` by Bridge or read from the `provider`; an
+absent source means it predates the column and belongs to the user. Only a
+`derived` title is ever replaced, and only by a provider title — so the heading cut
+from the first message is a stand-in that Claude's own title supersedes when it
+appears, and a title the user or the harness chose is final.
+
+The provider read never runs under the database lock. `plan` reads what is needed in
+one cheap pass, `resolve` does the directory walk and transcript read with no
+database handle at all (enforced by its signature), and `commit` writes the result.
+The live-turn caller runs the three phases so the process-wide lock is free while
+the filesystem is read.
+
 Timing:
-- **On each completed turn**, until the session has a real title. Claude needs a
+- **On each completed turn**, until the session has a provider or user title. Claude needs a
   turn or two to write its own, and a session has nothing to be named after until
   it has said something.
 - **Once at database open**, as a catch-up for chats that predate titles. This pass

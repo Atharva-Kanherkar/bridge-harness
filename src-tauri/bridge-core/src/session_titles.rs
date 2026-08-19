@@ -229,14 +229,53 @@ pub fn naming_message(db: &Connection, session_id: &str) -> Result<Option<String
     Ok(None)
 }
 
-/// Gives a session a real title if it still wears a placeholder. Returns the title
-/// it settled on, or None when there is nothing to go on yet.
+/// Where a stored title came from. Only a title Bridge derived is ever replaced:
+/// the harness's own, and one the user chose, are final.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleSource {
+    /// Cut from the conversation by [`heading_from_message`].
+    Derived,
+    /// Read back from the harness.
+    Provider,
+}
+
+impl TitleSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TitleSource::Derived => "derived",
+            TitleSource::Provider => "provider",
+        }
+    }
+
+    fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("derived") => Some(TitleSource::Derived),
+            Some("provider") => Some(TitleSource::Provider),
+            _ => None,
+        }
+    }
+}
+
+/// Everything a title decision needs, read in one cheap pass so the caller can let
+/// go of the database before doing any provider I/O.
+#[derive(Debug, Clone)]
+pub struct TitlePlan {
+    pub harness: String,
+    pub provider_session_id: Option<String>,
+    /// The message a heading would be cut from, when the session is still unnamed.
+    pub naming_message: Option<String>,
+    /// True when the only thing stored is a heading Bridge derived itself.
+    pub replaceable: bool,
+}
+
+/// Reads what is needed to decide a title. Returns None when there is nothing to
+/// do: the session is gone, or its title is the provider's or the user's.
 ///
-/// Called when a turn completes: Claude needs a turn or two before it names a
-/// conversation, and a session with no messages has nothing to name it after.
-pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
+/// Cheap by construction — one row plus at most eight entries — because callers
+/// hold a process-wide lock while they run it.
+pub fn plan(db: &Connection, session_id: &str) -> Result<Option<TitlePlan>, BridgeError> {
     let row = db.query_row(
-        "SELECT title,label,harness,provider_session_id FROM sessions WHERE id=?1",
+        "SELECT title,label,harness,provider_session_id,title_source FROM sessions WHERE id=?1",
         params![session_id],
         |row| {
             Ok((
@@ -244,41 +283,91 @@ pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, Brid
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         },
     );
-    let Ok((title, label, harness, provider_session_id)) = row else {
+    let Ok((title, label, harness, provider_session_id, source)) = row else {
         return Ok(None);
     };
-    // A title the user or the provider already set is not ours to overwrite.
-    if !needs_title(title.as_deref().or(Some(label.as_str()))) {
-        return Ok(None);
+
+    let unnamed = needs_title(title.as_deref().or(Some(label.as_str())));
+    let source = TitleSource::parse(source.as_deref());
+    match (unnamed, source) {
+        // Named by the harness, or by the user before this column existed.
+        (false, Some(TitleSource::Provider) | None) => return Ok(None),
+        // A heading we cut ourselves; the harness may have named it since.
+        (false, Some(TitleSource::Derived)) => {
+            return Ok(Some(TitlePlan {
+                harness,
+                provider_session_id,
+                naming_message: None,
+                replaceable: true,
+            }))
+        }
+        _ => {}
     }
 
-    let provider = match (harness.as_str(), provider_session_id.as_deref()) {
+    Ok(Some(TitlePlan {
+        harness,
+        provider_session_id,
+        naming_message: naming_message(db, session_id)?,
+        replaceable: false,
+    }))
+}
+
+/// Settles on a title. Takes no database handle on purpose: this is the half that
+/// walks Claude's project directories and reads a transcript, and it must not run
+/// while the caller holds the database.
+pub fn resolve(plan: &TitlePlan) -> Option<(String, TitleSource)> {
+    let provider = match (plan.harness.as_str(), plan.provider_session_id.as_deref()) {
         ("claude", Some(id)) => claude_projects_dir()
             .as_deref()
             .and_then(|dir| claude_transcript_title(dir, id)),
         // Codex keeps no title, and OpenCode's lives behind its HTTP API rather
-        // than on disk, so both fall through to the first message.
+        // than on disk, so both fall through to the conversation.
         _ => None,
     };
+    if let Some(provider) = provider {
+        return Some((provider, TitleSource::Provider));
+    }
+    // A heading already cut from this conversation is as good as it will get; only
+    // the harness can improve on it.
+    if plan.replaceable {
+        return None;
+    }
+    plan.naming_message
+        .as_deref()
+        .and_then(heading_from_message)
+        .map(|heading| (heading, TitleSource::Derived))
+}
 
-    let resolved = match provider {
-        Some(title) => Some(title),
-        None => naming_message(db, session_id)?
-            .as_deref()
-            .and_then(heading_from_message),
-    };
+/// Writes a settled title. Cheap, so it is safe to hold the database across it.
+pub fn commit(
+    db: &Connection,
+    session_id: &str,
+    title: &str,
+    source: TitleSource,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE sessions SET title=?2,title_source=?3 WHERE id=?1",
+        params![session_id, title, source.as_str()],
+    )?;
+    Ok(())
+}
 
-    let Some(resolved) = resolved else {
+/// Plan, resolve and commit against one connection. Convenient for tests and for
+/// callers that are not holding a shared lock; the live turn path runs the three
+/// phases itself so the database is free during the provider read.
+pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
+    let Some(plan) = plan(db, session_id)? else {
         return Ok(None);
     };
-    db.execute(
-        "UPDATE sessions SET title=?2 WHERE id=?1",
-        params![session_id, resolved],
-    )?;
-    Ok(Some(resolved))
+    let Some((title, source)) = resolve(&plan) else {
+        return Ok(None);
+    };
+    commit(db, session_id, &title, source)?;
+    Ok(Some(title))
 }
 
 /// One-time catch-up for chats that predate titles: gives every placeholder
@@ -310,10 +399,7 @@ pub fn backfill_from_messages(db: &Connection) -> Result<usize, BridgeError> {
         else {
             continue;
         };
-        db.execute(
-            "UPDATE sessions SET title=?2 WHERE id=?1",
-            params![id, heading],
-        )?;
+        commit(db, &id, &heading, TitleSource::Derived)?;
         named += 1;
     }
     Ok(named)
@@ -326,7 +412,7 @@ mod tests {
     fn seeded() -> Connection {
         let db = Connection::open_in_memory().expect("db");
         db.execute_batch(
-            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT, label TEXT, harness TEXT, provider_session_id TEXT);
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT, label TEXT, harness TEXT, provider_session_id TEXT, title_source TEXT);
              CREATE TABLE session_entries(rowid INTEGER PRIMARY KEY, session_id TEXT, kind TEXT, payload TEXT);",
         )
         .expect("schema");
@@ -424,6 +510,67 @@ mod tests {
         .expect("heading");
         assert!(long.starts_with("https://"), "{long}");
         assert!(long.ends_with('…'), "{long}");
+    }
+
+    #[test]
+    fn claudes_own_title_replaces_a_heading_bridge_derived() {
+        // The provider names a conversation a turn or two in; a heading cut from
+        // the first message is a stand-in until then, not the final answer.
+        let db = seeded();
+        db.execute(
+            "INSERT INTO sessions(id,title,label,harness,provider_session_id,title_source) VALUES('s1','Can you fix the rail grouping','Orchestrator','claude','prov-1','derived')",
+            [],
+        )
+        .expect("session");
+        let pending = plan(&db, "s1").expect("plan").expect("still replaceable");
+        assert!(pending.replaceable);
+        assert_eq!(pending.provider_session_id.as_deref(), Some("prov-1"));
+
+        // With a provider title available, it wins.
+        let named = resolve(&TitlePlan { harness: "claude".into(), provider_session_id: None, naming_message: None, replaceable: true });
+        assert_eq!(named, None, "no provider title and nothing new to derive");
+        commit(&db, "s1", "Sidebar redesign", TitleSource::Provider).expect("commit");
+
+        // And once it is the provider's, it is final.
+        assert!(plan(&db, "s1").expect("plan").is_none());
+    }
+
+    #[test]
+    fn a_title_from_before_this_column_is_treated_as_the_users() {
+        let db = seeded();
+        db.execute(
+            "INSERT INTO sessions(id,title,label,harness,provider_session_id,title_source) VALUES('s1','Chosen by hand','Orchestrator','claude','prov-1',NULL)",
+            [],
+        )
+        .expect("session");
+        assert!(plan(&db, "s1").expect("plan").is_none());
+    }
+
+    #[test]
+    fn resolving_a_derived_title_again_changes_nothing() {
+        // Without a provider title there is nothing better than the heading that is
+        // already stored, so the row is left alone rather than rewritten.
+        let pending = TitlePlan {
+            harness: "codex".into(),
+            provider_session_id: Some("prov-1".into()),
+            naming_message: Some("fix the rail grouping".into()),
+            replaceable: true,
+        };
+        assert_eq!(resolve(&pending), None);
+    }
+
+    #[test]
+    fn the_backfill_stamps_what_it_derived() {
+        let db = seeded();
+        session(&db, "s1", None, "codex");
+        said(&db, "s1", "freeze AxonHub output_format drop");
+        assert_eq!(backfill_from_messages(&db).expect("backfill"), 1);
+        let source: Option<String> = db
+            .query_row("SELECT title_source FROM sessions WHERE id='s1'", [], |row| row.get(0))
+            .expect("source");
+        assert_eq!(source.as_deref(), Some("derived"));
+        // Stamped derived, so the harness can still improve on it.
+        assert!(plan(&db, "s1").expect("plan").expect("replaceable").replaceable);
     }
 
     #[test]
