@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, FolderGit2, FolderOpen, Package, PanelLeft, Plus, Search, Settings2, Sparkles, X } from "lucide-react";
+import { FolderGit2, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
@@ -105,43 +105,37 @@ export type BridgeSidebarProps = {
    * history from this one list, so a chat cannot be visible in one and missing
    * from the other. */
   chats: Session[];
+  /** Only for `Group by → Project` labels; the tree itself lives on the projects
+   * screen now. */
   workspaces: Workspace[];
   activeSessionId?: string;
+  projectsActive: boolean;
   marketplaceActive: boolean;
   settingsActive: boolean;
-  expanded: Set<string>;
-  busy: boolean;
   /** Drawer state below the sm breakpoint, where the rail is off-canvas. */
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
+  onOpenProjects: () => void;
   onOpenMarketplace: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
-  onToggleWorkspace: (id: string) => void;
-  onNewWorkspace: () => void;
-  onNewWorkspaceSession: (workspaceId: string) => void;
-  onConnectFolder: (workspaceId: string) => void;
 };
 
 export function BridgeSidebar({
   chats,
   workspaces,
   activeSessionId,
+  projectsActive,
   marketplaceActive,
   settingsActive,
-  expanded,
-  busy,
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
+  onOpenProjects,
   onOpenMarketplace,
   onOpenSettings,
   onOpenSession,
-  onToggleWorkspace,
-  onNewWorkspace,
-  onNewWorkspaceSession,
-  onConnectFolder,
 }: BridgeSidebarProps) {
   const [width, setWidth] = useState(readWidth);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1");
@@ -254,23 +248,6 @@ export function BridgeSidebar({
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
     [visible, view.groupBy, view.sortBy, workspaces, now],
   );
-  // One filtered set of chats, viewed two ways: anything that narrows the history
-  // narrows the tree, so a project cannot survive as an empty shell beside a
-  // history that says nothing matched. With nothing narrowing, every project shows
-  // — a project with no chats yet is the one you need to reach to start one.
-  const filtering = view.status !== "all" || view.agent !== "all";
-  const projects = useMemo(
-    () => workspaces
-      .map(workspace => ({ workspace, chats: visible.filter(chat => chat.workspaceId === workspace.id) }))
-      .filter(entry => {
-        if (!searching && !filtering) return true;
-        if (entry.chats.length) return true;
-        // A search naming a project keeps it reachable even with no chats at all,
-        // but only while no filter is also excluding everything under it.
-        return searching && !filtering && entry.workspace.title.toLowerCase().includes(needle);
-      }),
-    [workspaces, visible, searching, filtering, needle],
-  );
 
   const sidebarWidth = collapsed ? COLLAPSED_WIDTH : width;
   const animateWidth = !resizing && !skipWidthTransition;
@@ -368,88 +345,9 @@ export function BridgeSidebar({
 
         <div className="flex-1 overflow-y-auto">
           {!collapsed && (
-            <SectionLabel
-              action={
-                <RailIconButton label="New project" onClick={onNewWorkspace}>
-                  <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
-                </RailIconButton>
-              }
-            >
-              Projects
+            <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} onChange={changeView} />}>
+              Chats
             </SectionLabel>
-          )}
-
-          {projects.map(({ workspace, chats: projectChats }) => {
-            // A search is a temporary view of the tree, so it opens what it
-            // matches without touching the caller's expansion state.
-            const open = searching || expanded.has(workspace.id);
-            if (collapsed) {
-              return (
-                <button
-                  key={workspace.id}
-                  type="button"
-                  title={workspace.title}
-                  onClick={() => onToggleWorkspace(workspace.id)}
-                  className="mx-auto my-0.5 flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <FolderGit2 size={16} strokeWidth={1.5} aria-hidden="true" />
-                </button>
-              );
-            }
-            return (
-              <section key={workspace.id}>
-                <div className="group/ws flex h-7 items-center gap-1 rounded-md px-2 transition-colors hover:bg-accent">
-                  <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 text-left" onClick={() => onToggleWorkspace(workspace.id)}>
-                    <ChevronRight size={12} strokeWidth={1.75} className={cn("shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-90")} aria-hidden="true" />
-                    <FolderGit2 size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate text-[13px] tracking-[-0.006em] text-foreground">{workspace.title}</span>
-                  </button>
-                  <span className="font-mono text-[10px] text-muted-foreground/60 group-hover/ws:hidden">{projectChats.length || ""}</span>
-                  <button type="button" className="hidden rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground group-hover/ws:flex" title="New agent" aria-label="New agent" disabled={busy} onClick={() => onNewWorkspaceSession(workspace.id)}>
-                    <Plus size={13} strokeWidth={1.9} aria-hidden="true" />
-                  </button>
-                </div>
-                {open && (
-                  <div className="ml-[15px] border-l border-border pl-1">
-                    {projectChats.map(chat => (
-                      <ChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={false} onClick={() => onOpenSession(chat.id)} />
-                    ))}
-                    <div className="flex items-center gap-1.5 py-1 pl-1">
-                      <button
-                        type="button"
-                        className="inline-flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-                        disabled={busy}
-                        onClick={() => onNewWorkspaceSession(workspace.id)}
-                      >
-                        <Sparkles size={11} strokeWidth={1.75} aria-hidden="true" /> New agent
-                      </button>
-                      {!workspace.path && (
-                        <button
-                          type="button"
-                          className="inline-flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                          onClick={() => onConnectFolder(workspace.id)}
-                        >
-                          <FolderOpen size={11} strokeWidth={1.75} aria-hidden="true" /> Connect folder
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </section>
-            );
-          })}
-          {!projects.length && !collapsed && (
-            <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
-              {searching ? "No project matches." : "Group chats and connect a repo with a workspace."}
-            </p>
-          )}
-
-          {!collapsed && (
-            <div className="mt-1">
-              <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} onChange={changeView} />}>
-                Chats
-              </SectionLabel>
-            </div>
           )}
 
           {groups.map(group => {
@@ -485,10 +383,23 @@ export function BridgeSidebar({
         <div className={cn("mt-2 shrink-0 border-t border-sidebar-border pt-2", collapsed && "flex flex-col items-center")}>
           <button
             type="button"
+            onClick={onOpenProjects}
+            title={collapsed ? "Projects" : undefined}
+            className={cn(
+              "flex shrink-0 items-center rounded-md transition-colors",
+              collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
+              projectsActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <FolderGit2 size={14} strokeWidth={1.6} aria-hidden="true" />
+            {!collapsed && "Projects"}
+          </button>
+          <button
+            type="button"
             onClick={onOpenMarketplace}
             title={collapsed ? "Marketplace" : undefined}
             className={cn(
-              "flex shrink-0 items-center rounded-md transition-colors",
+              "mt-0.5 flex shrink-0 items-center rounded-md transition-colors",
               collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
               marketplaceActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}

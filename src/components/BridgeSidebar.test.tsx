@@ -34,18 +34,14 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   chats: [session("chat-1", { title: "Policy engine budget", workspaceId: null })],
   workspaces: [workspace],
   activeSessionId: undefined,
+  projectsActive: false,
   marketplaceActive: false,
   settingsActive: false,
-  expanded: new Set<string>(),
-  busy: false,
   onOpenNewChat: noop,
+  onOpenProjects: noop,
   onOpenMarketplace: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
-  onToggleWorkspace: noop,
-  onNewWorkspace: noop,
-  onNewWorkspaceSession: noop,
-  onConnectFolder: noop,
   ...overrides,
 });
 
@@ -187,41 +183,32 @@ describe("BridgeSidebar history", () => {
   });
 });
 
-describe("BridgeSidebar projects", () => {
-  it("renders the projects section above the chat history", () => {
-    const html = render();
-    expect(html.indexOf("Projects")).toBeGreaterThan(-1);
-    expect(html.indexOf("Projects")).toBeLessThan(html.indexOf("Chats"));
-  });
-
-  it("drops the branch and dirty-file line from an expanded project", () => {
+describe("BridgeSidebar without the projects tree", () => {
+  it("carries no project rows and no new-project control", () => {
     const html = render({
-      workspaces: [{ ...workspace, branch: "feat/router", dirtyFiles: 3 } as Workspace],
-      expanded: new Set(["workspace-1"]),
-      chats: [session("a", { title: "Inside harness" })],
+      workspaces: [workspace],
+      chats: [session("a", { title: "Inside harness", workspaceId: "workspace-1" })],
     });
+    // The chat itself still appears in the history; only the tree is gone.
     expect(html).toContain("Inside harness");
-    expect(html).not.toContain("feat/router");
-    expect(html).not.toContain("3 changed");
+    expect(html).not.toContain("New project");
+    expect(html).not.toContain("New agent");
+    expect(html).not.toContain("Connect folder");
   });
 
-  it("hides a project whose chats a filter excluded, instead of an empty shell", () => {
-    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "failed", agent: "all", groupBy: "date", sortBy: "recency" }));
-    const html = render({ chats: [session("a", { title: "Inside harness", status: "working" })] });
-    // The history says nothing matched, so the tree must not disagree with it.
-    expect(html).toContain("No chat matches this filter");
-    expect(html).not.toContain("harness");
+  it("offers Projects in the footer and marks it active when that screen is open", () => {
+    // Read the Projects button out of the markup rather than matching across it.
+    const projectsButton = (html: string) => html.split("<button").find(chunk => chunk.includes("Projects")) ?? "";
+    expect(projectsButton(render())).toBeTruthy();
+    expect(projectsButton(render())).not.toContain("bg-accent text-foreground");
+    // Same active treatment Marketplace and Settings get.
+    expect(projectsButton(render({ projectsActive: true }))).toContain("bg-accent text-foreground");
   });
 
-  it("keeps a project with no chats when nothing is narrowing the list", () => {
-    // This is the project you need to reach in order to start a chat in it.
-    expect(render({ chats: [] })).toContain("harness");
-  });
-
-  it("still offers new agent and connect folder inside an expanded project", () => {
-    const html = render({ expanded: new Set(["workspace-1"]), workspaces: [{ ...workspace, path: null } as Workspace] });
-    expect(html).toContain("New agent");
-    expect(html).toContain("Connect folder");
+  it("still labels project groups, which is why it keeps the workspaces prop", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
+    const html = render({ chats: [session("a", { workspaceId: "workspace-1" })] });
+    expect(html).toContain("harness");
   });
 });
 
