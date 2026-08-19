@@ -70,6 +70,7 @@ pub mod worker_lifecycle;
 pub mod worker_pool;
 pub mod worker_sandbox;
 pub mod work;
+pub mod work_actions;
 pub mod work_brief_parser;
 pub mod work_briefing_config;
 pub mod work_brief_runner;
