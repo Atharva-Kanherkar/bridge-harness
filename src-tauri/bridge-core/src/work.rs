@@ -25,6 +25,16 @@ pub const DEFAULT_MAX_TURNS: i64 = 12;
 pub const DEFAULT_MAX_TOOL_CALLS: i64 = 24;
 pub const DEFAULT_COOLDOWN_MINUTES: i64 = 15;
 
+/// The `work_fact_cache` kind holding base-branch divergence, keyed by
+/// workspace id. Divergence needs a git subprocess to measure, which a
+/// store-only read path cannot do, so it is observed elsewhere and read here.
+pub const FACT_CACHE_BASE_DIVERGENCE: &str = "workspace_behind_base";
+
+/// How long an observation counts as current. Past this the numbers still
+/// describe something real, but they describe the past, and the board says so
+/// rather than quietly presenting them as now.
+pub const WORK_FACT_STALE_AFTER_SECONDS: i64 = 900;
+
 /// Where Work's configuration lives in `configuration_entries`.
 const SETTINGS_KIND: &str = "work";
 const SETTINGS_ID: &str = "settings";
@@ -334,11 +344,119 @@ fn actionable_approvals(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Proje
     Ok(facts)
 }
 
+/// Workspaces that have drifted behind their base branch, read from
+/// `work_fact_cache`.
+///
+/// This never calls git. A row's `observed_at` is the whole truth about how
+/// current it is: inside the staleness window it is `live`, outside it is
+/// `stale`, and a failed observation is `unknown`. A workspace with **no** row
+/// projects nothing at all — Bridge has not looked, and rendering "up to date"
+/// for something never measured is the failure this cache exists to prevent.
+fn workspaces_behind_base(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Projected>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT c.cache_key,c.status,c.payload,c.detail,c.observed_at,w.title,
+                (SELECT s.id FROM sessions s WHERE s.workspace_id=c.cache_key
+                  ORDER BY CASE WHEN s.status IN ('stopped','failed','completed','cancelled')
+                                THEN 1 ELSE 0 END,
+                           s.started_at DESC,s.id
+                  LIMIT 1)
+           FROM work_fact_cache c
+           JOIN workspaces w ON w.id=c.cache_key
+          WHERE c.kind=?1",
+    )?;
+    let rows = statement.query_map([FACT_CACHE_BASE_DIVERGENCE], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+        ))
+    })?;
+    let mut facts = Vec::new();
+    for row in rows {
+        let (workspace_id, status, payload, detail, observed_at, title, session_id) = row?;
+        // The only local action on divergence resolves a session's repository, so
+        // a workspace with no session has nothing to offer and is not surfaced.
+        let Some(session_id) = session_id else { continue };
+
+        let measured = (status == "ok")
+            .then_some(payload.as_deref())
+            .flatten()
+            .and_then(|payload| {
+                serde_json::from_str::<crate::git::BaseBranchDivergence>(payload).ok()
+            });
+        let (freshness, summary) = match measured {
+            Some(divergence) => {
+                if !divergence.should_warn() {
+                    // Close enough to its base to be nobody's problem.
+                    continue;
+                }
+                let stale = instant(&observed_at).is_none_or(|seen| {
+                    now.signed_duration_since(seen).num_seconds() >= WORK_FACT_STALE_AFTER_SECONDS
+                });
+                (
+                    if stale {
+                        wire::WorkFactFreshness::Stale
+                    } else {
+                        wire::WorkFactFreshness::Live
+                    },
+                    divergence.summary(),
+                )
+            }
+            // Either the observation failed, or it succeeded and stored something
+            // this binary cannot read. Both mean the same thing to a reader:
+            // nothing is known, so nothing is claimed.
+            None => (
+                wire::WorkFactFreshness::Unknown,
+                detail.unwrap_or_else(|| "the last measurement did not complete".to_owned()),
+            ),
+        };
+
+        facts.push(projected(wire::WorkFact {
+            kind: wire::WorkFactKind::WorkspaceBehindBase,
+            dedupe_key: format!("workspace-base:{workspace_id}"),
+            severity: wire::WorkFactSeverity::Attention,
+            title: match freshness {
+                wire::WorkFactFreshness::Unknown => {
+                    format!("{title} could not be measured against its base branch")
+                }
+                _ => format!("{title} has drifted behind its base branch"),
+            },
+            detail: Some(summary),
+            target: wire::WorkFactTarget::Workspace {
+                workspace_id: workspace_id.clone(),
+                session_id: Some(session_id.clone()),
+            },
+            actionable_at: observed_at.clone(),
+            observed_at,
+            freshness,
+            // A stale or unreadable observation is not something to act on. Offer
+            // to measure again; do not offer to fast-forward onto a number
+            // nobody has checked recently.
+            action: match freshness {
+                wire::WorkFactFreshness::Live => wire::WorkFactAction::RefreshWorkspaceBase {
+                    session_id,
+                    workspace_id,
+                },
+                _ => wire::WorkFactAction::RefreshBaseObservation {
+                    session_id,
+                    workspace_id,
+                },
+            },
+        }));
+    }
+    Ok(facts)
+}
+
 /// Every fact, ordered and deduplicated. Store-only.
 pub fn facts(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::WorkFact>, BridgeError> {
     let mut projections = failed_completion_checks(db)?;
     projections.extend(blocked_queue_items(db)?);
     projections.extend(actionable_approvals(db, now)?);
+    projections.extend(workspaces_behind_base(db, now)?);
     Ok(finalize(projections))
 }
 

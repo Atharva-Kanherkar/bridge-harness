@@ -9,6 +9,7 @@ pub mod window_chrome;
 use bridge_core::api;
 use bridge_core::managed_agents;
 use bridge_core::live_turn;
+use bridge_core::work_observation;
 use bridge_core::model::*;
 use bridge_core::{
     agent_config, browser_bridge, marketplace, opencode_adapter, secret_interception,
@@ -1072,6 +1073,7 @@ fn setup_embedded(
     app.manage(core.clone());
     live_turn::start_worker_maintenance(core.clone());
     live_turn::start_completion_check_maintenance(core.clone());
+    work_observation::start_work_fact_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
