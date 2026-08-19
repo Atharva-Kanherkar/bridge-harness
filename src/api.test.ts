@@ -89,3 +89,44 @@ describe("SQLite-shaped mock observability", () => {
     expect(compacted.head?.latestCheckpointEntryId).toMatch(/^checkpoint-/);
   });
 });
+
+describe("the Work board", () => {
+  it("returns a board the screen can actually render without the desktop app", async () => {
+    // vitest and a `bun run dev` preview both take this path, so a fallback that
+    // returned an empty board would make every state below the empty one
+    // undevelopable.
+    const board = await bridgeApi.workBoard();
+    expect(board.facts.length).toBeGreaterThan(0);
+    expect(board.tasks).toEqual([]);
+    expect(board.latestRun).toBeNull();
+    expect(board.suggestions.state).toBe("not_configured");
+  });
+
+  it("covers every fact kind and every freshness, so no state is only reachable in production", async () => {
+    const board = await bridgeApi.workBoard();
+    expect(new Set(board.facts.map(fact => fact.kind))).toEqual(
+      new Set(["failed_completion_check", "actionable_approval", "blocked_worker_queue_item", "workspace_behind_base"]),
+    );
+    expect(new Set(board.facts.map(fact => fact.freshness))).toContain("stale");
+    // Every fact carries the action its kind implies, and no action is missing.
+    for (const fact of board.facts) {
+      expect(fact.action.kind).toBeTruthy();
+      expect(fact.observedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
+  });
+
+  it("hands back a fresh copy, so a caller cannot mutate the next read", async () => {
+    const first = await bridgeApi.workBoard();
+    first.facts.length = 0;
+    const second = await bridgeApi.workBoard();
+    expect(second.facts.length).toBeGreaterThan(0);
+  });
+
+  it("orders facts the way the backend does, blocking before attention", async () => {
+    const board = await bridgeApi.workBoard();
+    const severities = board.facts.map(fact => fact.severity);
+    const firstAttention = severities.indexOf("attention");
+    expect(firstAttention).toBeGreaterThan(0);
+    expect(severities.slice(0, firstAttention).every(value => value === "blocking")).toBe(true);
+  });
+});
