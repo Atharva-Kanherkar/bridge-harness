@@ -389,6 +389,12 @@ fn workspaces_behind_base(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Pro
                 serde_json::from_str::<crate::git::BaseBranchDivergence>(payload).ok()
             });
         let (freshness, summary) = match measured {
+            // Written as `ok` by a binary from before an unavailable comparison
+            // was recorded as a failure. It means the same thing: no comparison
+            // was obtained, so nothing is claimed.
+            Some(divergence) if divergence.unavailable_reason.is_some() => {
+                (wire::WorkFactFreshness::Unknown, divergence.summary())
+            }
             Some(divergence) => {
                 if !divergence.should_warn() {
                     // Close enough to its base to be nobody's problem.

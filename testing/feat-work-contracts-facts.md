@@ -121,18 +121,37 @@ same session matches it by `requestEventId` (adapter shape, nested under
 
 ### Divergence observation refresh
 
-- `work::refresh_base_divergence(core)` measures every non-archived workspace
-  that has a session and writes one `work_fact_cache` row per workspace.
+- `work_observation::refresh_base_divergence(core)` measures every workspace
+  that has a session and whose reading is missing or older than
+  `REFRESH_INTERVAL_SECONDS` (300s), and writes one `work_fact_cache` row per
+  workspace. It resolves what to look at under the database lock and runs git
+  outside it.
 - A successful measurement stores `status='ok'` with the serialized
-  `BaseBranchDivergence` and `observed_at = now`.
-- A failed measurement (path gone, not a repository) stores `status='failed'`
-  with the reason in `detail` and no payload. It does **not** delete or
-  overwrite a previous good payload's numbers with zeros.
-- It is called from the existing worker-maintenance tick, off the read path,
-  and write-through from `api::workspace_base_divergence` /
-  `api::refresh_workspace_base` so a user-triggered measurement is not thrown
-  away.
-- Staleness window: `WORK_FACT_STALE_AFTER_SECONDS` (900s).
+  `BaseBranchDivergence` and the instant it was observed.
+- A measurement that obtained **no comparison** stores `status='failed'` with
+  the reason in `detail` and no payload. That covers both a git-level failure
+  (the workspace directory is gone) and a reading that came back with
+  `unavailable_reason` set (no resolvable HEAD, no upstream or default branch to
+  compare against). Storing the latter as `ok` would have `should_warn()` drop
+  it and a workspace Bridge can no longer measure would read as up to date.
+- A failure keeps **no** numbers: the payload is cleared rather than left in
+  place. Nothing is known, and the board says so as `unknown` — a previous
+  reading left behind would be a number nobody measured being shown as if
+  somebody had.
+- Writes are newest-wins. Because git runs outside the lock, a slow observation
+  can finish after a newer write-through; `record_base_divergence` compares the
+  stored `observed_at` against its own and declines to go backwards. Without
+  that, an in-flight observer would replace a fresher reading — possibly one
+  measured against a freshly fetched ref — and stamp its older numbers with a
+  newer time, so they would read as `live`.
+- It runs on its own 60-second thread (`work_observation::start_work_fact_maintenance`),
+  not the worker-pool tick, so a git subprocess cannot make the one-second
+  worker loop wait. It is also write-through from
+  `api::workspace_base_divergence` / `api::refresh_workspace_base`, so a
+  user-triggered measurement is not thrown away.
+- Staleness window: `WORK_FACT_STALE_AFTER_SECONDS` (900s), deliberately longer
+  than the refresh interval — a board being observed normally reads `live`, so
+  `stale` means the observer itself has stopped.
 
 ### Storage
 
@@ -223,6 +242,10 @@ copy of model output; the columns that could are digests and bounded text.
   paths point at directories that are not repositories.
 - `the_board_read_starts_no_provider` — the adapter map and runtime session
   map are untouched.
+- `no_production_git_spawn_bypasses_the_counted_constructor` — walks the crate
+  source and fails if any production module spawns git outside
+  `git::git_command`, so the counter above cannot be quietly bypassed by a new
+  helper.
 - `the_board_read_path_names_no_io_module` — source-level gate over
   `work.rs`: the projection module references no `git::`, `marketplace::`,
   `Command::new`, or HTTP client symbol.

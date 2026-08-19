@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{git, work, BridgeCore, BridgeError};
 use std::sync::Arc;
@@ -41,7 +41,38 @@ pub fn record_base_divergence(
     observation: Result<&git::BaseBranchDivergence, &str>,
     observed_at: DateTime<Utc>,
 ) -> Result<(), BridgeError> {
+    // Git runs outside the database lock, so a slow observation that started
+    // first can finish after a reading the user asked for. Whoever measured most
+    // recently wins: otherwise an in-flight observer silently replaces a fresher
+    // write-through — including one measured against a freshly fetched ref — and
+    // stamps its own older numbers with a newer time, so they read as `live`.
+    //
+    // Compared in Rust for the same reason `due_workspaces` compares ages there:
+    // it must not depend on SQLite agreeing with chrono about timestamp formats.
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT observed_at FROM work_fact_cache WHERE kind=?1 AND cache_key=?2",
+            params![work::FACT_CACHE_BASE_DIVERGENCE, workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if stored
+        .as_deref()
+        .and_then(|seen| DateTime::parse_from_rfc3339(seen).ok())
+        .is_some_and(|seen| seen.with_timezone(&Utc) > observed_at)
+    {
+        return Ok(());
+    }
+
     let (status, payload, detail) = match observation {
+        // A reading that could compare nothing is not a successful observation
+        // of "no drift". `should_warn` is false without a base ref, so storing
+        // this as `ok` would have the projection drop it silently and a
+        // workspace Bridge can no longer measure would look fine. No comparison
+        // means nothing is known, which is what `failed` says.
+        Ok(divergence) if divergence.unavailable_reason.is_some() => {
+            ("failed", None, divergence.unavailable_reason.clone())
+        }
         Ok(divergence) => (
             "ok",
             Some(serde_json::to_string(divergence).map_err(|error| {
@@ -323,6 +354,72 @@ mod tests {
         .unwrap();
         let facts = work::facts(&db, at("2026-08-19T09:01:00+00:00")).unwrap();
         assert_eq!(facts[0].freshness, wire::WorkFactFreshness::Unknown);
+    }
+
+    #[test]
+    fn a_slower_observation_never_clobbers_a_newer_reading() {
+        let db = memory_db();
+        seed(&db, "/tmp/w");
+        // What the user asked for, measured at 09:05.
+        record_base_divergence(&db, "w", Ok(&divergence(44)), at("2026-08-19T09:05:00+00:00"))
+            .unwrap();
+        // An observer that started earlier finishing later. Its git ran outside
+        // the lock, so it arrives second with older numbers.
+        record_base_divergence(&db, "w", Ok(&divergence(31)), at("2026-08-19T09:04:00+00:00"))
+            .unwrap();
+
+        let (status, payload, _, observed_at) = cached(&db);
+        assert_eq!(status, "ok");
+        assert_eq!(
+            observed_at, "2026-08-19T09:05:00+00:00",
+            "the newer reading keeps its own timestamp, so it cannot read as fresher than it is"
+        );
+        let stored: git::BaseBranchDivergence =
+            serde_json::from_str(&payload.expect("the newer payload survives")).unwrap();
+        assert_eq!(stored.behind, 44, "and its numbers");
+
+        // A late failure must not discard a newer good reading either.
+        record_base_divergence(&db, "w", Err("git went away"), at("2026-08-19T09:04:30+00:00"))
+            .unwrap();
+        let (status, _, _, observed_at) = cached(&db);
+        assert_eq!(status, "ok");
+        assert_eq!(observed_at, "2026-08-19T09:05:00+00:00");
+    }
+
+    #[test]
+    fn a_reading_that_compared_nothing_is_a_failure_not_an_absence_of_drift() {
+        let db = memory_db();
+        seed(&db, "/tmp/w");
+        let mut unavailable = divergence(0);
+        unavailable.base_ref = None;
+        unavailable.base_commit = None;
+        unavailable.unavailable_reason =
+            Some("no upstream or default branch ref is available".to_owned());
+
+        record_base_divergence(&db, "w", Ok(&unavailable), at("2026-08-19T09:00:00+00:00"))
+            .unwrap();
+
+        let (status, payload, detail, _) = cached(&db);
+        assert_eq!(
+            status, "failed",
+            "git ran but compared nothing, which is not a successful reading of zero drift"
+        );
+        assert!(payload.is_none(), "there are no numbers to keep");
+        assert_eq!(
+            detail.as_deref(),
+            Some("no upstream or default branch ref is available"),
+            "and the reason reaches the reader"
+        );
+
+        // The board must say it does not know, rather than silently omitting a
+        // workspace it can no longer measure.
+        let facts = work::facts(&db, at("2026-08-19T09:01:00+00:00")).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].freshness, wire::WorkFactFreshness::Unknown);
+        assert!(matches!(
+            facts[0].action,
+            wire::WorkFactAction::RefreshBaseObservation { .. }
+        ));
     }
 
     #[test]
