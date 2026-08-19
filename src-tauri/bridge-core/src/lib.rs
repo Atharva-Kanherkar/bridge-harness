@@ -72,6 +72,7 @@ pub mod worker_sandbox;
 pub mod work;
 pub mod work_brief_parser;
 pub mod work_connectors;
+pub mod work_evidence;
 pub mod work_observation;
 pub mod workspace_files;
 pub mod workspaces;
