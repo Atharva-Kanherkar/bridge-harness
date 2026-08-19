@@ -1414,6 +1414,15 @@ fn handle_agent_value(
     }
 
     if turn_completed {
+        // Name the chat now rather than at creation: a session has nothing to be
+        // named after until it has said something, and Claude writes its own title
+        // a turn or two in. Skips itself once a session has a real title.
+        if let Ok(db) = state.db.lock() {
+            let _ = crate::session_titles::refresh(&db, session_id);
+        }
+    }
+
+    if turn_completed {
         if let Some(prompt) = checkpoint_prompt_after_turn {
             if let Err(error) = send_internal_checkpoint_turn(core, session_id, &prompt) {
                 let db = state.db.lock().unwrap();

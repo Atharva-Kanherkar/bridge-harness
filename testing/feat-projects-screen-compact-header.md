@@ -129,6 +129,42 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 - Non-macOS builds compile to a no-op; no other platform draws its controls over
   the client area.
 
+### Chat titles
+Every session read `Orchestrator`, because that is the label an orchestrator is
+created with and nothing replaced it. A title now resolves in preference order:
+
+1. **the harness's own**, where it keeps one. Claude Code writes
+   `{"type":"custom-title","customTitle":…}` into
+   `~/.claude/projects/<project>/<provider-session-id>.jsonl` once it has seen
+   enough to name the conversation; the last such entry wins, since a chat can be
+   renamed. Codex keeps no title — a full rollout file carries `session_meta`,
+   `event_msg`, `response_item`, `world_state` and `turn_context`, none of which
+   names the conversation. OpenCode keeps one behind its HTTP API, which this change
+   does **not** read yet (see below).
+2. **a heading cut from the first substantive user message** — first meaningful
+   line, markdown furniture stripped, whitespace collapsed, shortened on a sentence
+   or word boundary at 60 characters, first letter capitalised unless it is a URL.
+
+Low-signal openers never name a chat: greetings, a message under six characters, a
+pleasantry opener in a message of fewer than four words (`hey man`), a redacted
+`[secret:…]` placeholder, or a bare `@mention`. A chat that only ever greets keeps
+its placeholder, because a rail full of `Hello` is no better than one full of
+`Orchestrator`. Terse instructions (`fix migration`) are kept.
+
+Timing:
+- **On each completed turn**, until the session has a real title. Claude needs a
+  turn or two to write its own, and a session has nothing to be named after until
+  it has said something.
+- **Once at database open**, as a catch-up for chats that predate titles. This pass
+  is local-only — no file or network I/O — so opening the database stays cheap; a
+  provider title is picked up on that session's next completed turn.
+
+Deliberately out of scope, and why: OpenCode's own title is not read back. The
+adapter pins `"title": "Bridge session"` at creation, so reading it back today would
+return that constant, and changing the create call is a live protocol change this
+branch cannot exercise. OpenCode sessions are titled from their first message like
+Codex ones, and the read-back is a follow-up.
+
 ## Unit Tests
 
 `src/components/ProjectsScreen.test.tsx` — new:
@@ -179,6 +215,27 @@ static suite cannot reach:
 - Names the project on the confirm button.
 - Preselects `initialWorkspaceId`, and forgets the previous answer between visits.
 - Closes on Escape; holds the confirm while busy.
+
+`src-tauri/bridge-core/src/session_titles.rs` — new, 21 unit tests:
+- `needs_title` treats every creation label and blank as unnamed.
+- A heading is the first meaningful line, capitalised, with markdown furniture and
+  quoting stripped and whitespace collapsed.
+- A long message is cut on a sentence boundary when there is one, else on a word
+  boundary, never mid-word; a URL keeps its lowercase scheme.
+- Greetings, sub-six-character fragments, `hey man`-shaped pleasantries, redacted
+  secrets and bare `@mentions` are low signal; terse instructions are not.
+- A chat opening with a greeting is named by its next message; a chat that only ever
+  greets stays unnamed.
+- Claude's title is read from a transcript, the last entry wins, a `summary` entry
+  serves an older transcript, a transcript with no title yields none, and a
+  transcript is found by session id under any project directory.
+- `refresh` titles a Codex session from its first message, leaves a real title
+  alone, no-ops for a silent or unknown session.
+- The backfill names old chats, skips named and silent ones, and renames nothing on
+  a second run.
+- `real_claude_transcripts_yield_titles` (`#[ignore]`) parses the developer's actual
+  `~/.claude` directory. It is what proves the parser matches what Claude writes
+  rather than what this file assumes: 101 titles across 7850 transcripts.
 
 `src/trafficLights.test.ts` — new:
 - The reveal region covers the buttons and stops short of the rail's own controls.

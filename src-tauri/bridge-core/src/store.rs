@@ -43,6 +43,9 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
+    // Chats created before titles existed still read "Orchestrator"; name them
+    // from what they already contain. Local-only, so opening stays cheap.
+    let _ = crate::session_titles::backfill_from_messages(&connection);
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
