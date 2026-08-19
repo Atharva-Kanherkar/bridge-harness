@@ -184,6 +184,15 @@ pub fn finish_run(db: &Connection, run_id: &str, outcome: &RunOutcome) -> Result
 /// report nobody could act on, and a partial write is exactly how that happens.
 pub fn record_ledger(db: &mut Connection, ledger: &RunLedger) -> Result<(), BridgeError> {
     let transaction = db.transaction()?;
+    record_ledger_in(&transaction, ledger)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn record_ledger_in(
+    transaction: &rusqlite::Transaction<'_>,
+    ledger: &RunLedger,
+) -> Result<(), BridgeError> {
     for source in ledger.coverage() {
         transaction.execute(
             "INSERT INTO work_brief_sources(run_id,connector_instance_id,connector_family,status,detail,observed_at)
@@ -221,7 +230,6 @@ pub fn record_ledger(db: &mut Connection, ledger: &RunLedger) -> Result<(), Brid
             ],
         )?;
     }
-    transaction.commit()?;
     Ok(())
 }
 
@@ -549,7 +557,7 @@ mod tests {
         let evidence = read_evidence(&db, "run-1").unwrap();
         assert_eq!(evidence.len(), 1);
         let entry = &evidence[0];
-        assert_eq!(entry.canonical_resource_id, "slack:slack-1:1723459200.123");
+        assert_eq!(entry.canonical_resource_id.as_deref(), Some("slack:slack-1:1723459200.123"));
         assert_eq!(entry.tool_definition_digest, "tool-digest");
         assert_eq!(entry.result_digest.len(), 64);
         assert_eq!(

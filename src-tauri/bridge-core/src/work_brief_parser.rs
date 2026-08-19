@@ -63,6 +63,8 @@ pub enum BriefRejection {
     EvidenceDuplicated,
     /// A task with no evidence at all.
     EvidenceMissing,
+    /// A multi-source task did not declare which citation owns its durable identity.
+    PrimaryEvidenceMissing,
 }
 
 impl BriefRejection {
@@ -77,7 +79,10 @@ impl BriefRejection {
             Self::TooManyTasks { .. } => "task_limit_exceeded",
             Self::TextTooLong { .. } => "text_limit_exceeded",
             Self::ConfidenceOutOfRange => "confidence_invalid",
-            Self::EvidenceUnknown | Self::EvidenceMissing | Self::EvidenceDuplicated => {
+            Self::EvidenceUnknown
+            | Self::EvidenceMissing
+            | Self::EvidenceDuplicated
+            | Self::PrimaryEvidenceMissing => {
                 "evidence_invalid"
             }
         }
@@ -101,6 +106,9 @@ impl BriefRejection {
             Self::EvidenceUnknown => "a task cited evidence this run did not earn".into(),
             Self::EvidenceDuplicated => "a task cited the same evidence twice".into(),
             Self::EvidenceMissing => "a task cited no evidence".into(),
+            Self::PrimaryEvidenceMissing => {
+                "a task with multiple citations must name one primaryEvidence reference".into()
+            }
         }
     }
 }
@@ -118,6 +126,10 @@ pub struct BriefTask {
     pub title: String,
     pub why: String,
     pub confidence_bps: i64,
+    /// The one citation that owns durable task identity. Optional only when there is
+    /// exactly one evidence reference and therefore no ambiguity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_evidence: Option<String>,
     /// References into this run's evidence ledger. At least one.
     pub evidence: Vec<String>,
 }
@@ -253,6 +265,12 @@ pub fn validate(brief: WorkBrief, ledger: &dyn EvidenceLedger) -> Result<WorkBri
             if !ledger.contains(evidence_ref) {
                 return Err(BriefRejection::EvidenceUnknown);
             }
+        }
+        if task.evidence.len() > 1 && task.primary_evidence.is_none() {
+            return Err(BriefRejection::PrimaryEvidenceMissing);
+        }
+        if task.primary_evidence.as_ref().is_some_and(|primary| !seen.contains(primary.as_str())) {
+            return Err(BriefRejection::PrimaryEvidenceMissing);
         }
     }
     Ok(brief)
@@ -652,6 +670,16 @@ mod tests {
     }
 
     #[test]
+    fn multiple_citations_require_one_declared_primary() {
+        let store = ledger(&["ev-1", "ev-2"]);
+        let payload = r#"{"version":1,"tasks":[{"rank":1,"title":"t","why":"w","confidenceBps":100,"evidence":["ev-1","ev-2"]}]}"#;
+        assert_eq!(
+            parse_brief(&fenced(payload), &store).unwrap_err(),
+            BriefRejection::PrimaryEvidenceMissing
+        );
+    }
+
+    #[test]
     fn an_empty_brief_is_valid() {
         // Nothing worth suggesting is a legitimate answer, and a run that says so
         // should not be a failed run.
@@ -663,12 +691,13 @@ mod tests {
     #[test]
     fn a_valid_payload_parses_with_every_field_bridge_derived() {
         let store = ledger(&["ev-1", "ev-2"]);
-        let payload = r#"{"version":1,"tasks":[{"rank":1,"title":"Reply to Priya","why":"Asked twice.","confidenceBps":8200,"evidence":["ev-1","ev-2"]}]}"#;
+        let payload = r#"{"version":1,"tasks":[{"rank":1,"title":"Reply to Priya","why":"Asked twice.","confidenceBps":8200,"primaryEvidence":"ev-1","evidence":["ev-1","ev-2"]}]}"#;
         let brief = parse_brief(&fenced(payload), &store).unwrap();
         let task = &brief.tasks[0];
         assert_eq!(task.rank, 1);
         assert_eq!(task.confidence_bps, 8_200);
         assert_eq!(task.evidence, vec!["ev-1", "ev-2"]);
+        assert_eq!(task.primary_evidence.as_deref(), Some("ev-1"));
         // What the model produced is a title, a reason, a rank, a confidence, and
         // references. Everything else about the task comes from the ledger.
         let serialized = serde_json::to_string(task).unwrap();
@@ -824,6 +853,7 @@ mod tests {
             BriefRejection::EvidenceUnknown,
             BriefRejection::EvidenceDuplicated,
             BriefRejection::EvidenceMissing,
+            BriefRejection::PrimaryEvidenceMissing,
         ];
         let codes: BTreeSet<&str> = all.iter().map(BriefRejection::code).collect();
         assert_eq!(

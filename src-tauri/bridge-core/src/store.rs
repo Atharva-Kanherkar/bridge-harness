@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 24;
+const LATEST_SCHEMA_VERSION: i64 = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -249,6 +249,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             22 => migration_22_session_backend_binding(&transaction)?,
             23 => migration_23_session_title_source(&transaction)?,
             24 => migration_24_work_board(&transaction)?,
+            25 => migration_25_ephemeral_work_evidence(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -755,6 +756,39 @@ fn migration_24_work_board(transaction: &Transaction<'_>) -> Result<(), BridgeEr
             PRIMARY KEY(kind,cache_key)
         );
         CREATE INDEX IF NOT EXISTS idx_work_fact_cache_observed ON work_fact_cache(kind,observed_at);",
+    )?;
+    Ok(())
+}
+
+/// Successful connector results without a stable provider id remain valid run-scoped
+/// evidence. Their tasks are ephemeral and are never deduplicated across runs.
+fn migration_25_ephemeral_work_evidence(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS idx_work_evidence_resource;
+         ALTER TABLE work_evidence RENAME TO work_evidence_v24;
+         CREATE TABLE work_evidence (
+            run_id TEXT NOT NULL REFERENCES work_brief_runs(id) ON DELETE CASCADE,
+            evidence_ref TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            connector_instance_id TEXT NOT NULL,
+            canonical_resource_id TEXT,
+            source_kind TEXT NOT NULL,
+            target TEXT,
+            tool_definition_digest TEXT NOT NULL,
+            result_digest TEXT NOT NULL,
+            succeeded INTEGER NOT NULL DEFAULT 0,
+            observed_at TEXT NOT NULL,
+            UNIQUE(run_id,evidence_ref)
+         );
+         INSERT INTO work_evidence(
+            run_id,evidence_ref,tool_call_id,connector_instance_id,canonical_resource_id,
+            source_kind,target,tool_definition_digest,result_digest,succeeded,observed_at)
+         SELECT run_id,evidence_ref,tool_call_id,connector_instance_id,canonical_resource_id,
+            source_kind,target,tool_definition_digest,result_digest,succeeded,observed_at
+         FROM work_evidence_v24;
+         DROP TABLE work_evidence_v24;
+         CREATE INDEX idx_work_evidence_resource
+            ON work_evidence(connector_instance_id,canonical_resource_id);",
     )?;
     Ok(())
 }

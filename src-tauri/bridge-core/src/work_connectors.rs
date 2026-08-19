@@ -234,21 +234,18 @@ pub fn eligibility(instance: &ConnectorInstance) -> ConnectorEligibility {
 pub struct ResolvedEvidence {
     /// Stable across runs for the same underlying thing, so slice 5 can tell a task it
     /// has seen before from a new one.
-    pub canonical_resource_id: String,
+    pub canonical_resource_id: Option<String>,
     pub source_kind: String,
     pub target: EvidenceTarget,
 }
 
-/// Turn one successful result into provenance, or refuse to.
-///
-/// `None` means Bridge could not derive a canonical id, and evidence without one is
-/// evidence that cannot be recognised again — so it is not recorded at all rather than
-/// recorded with something guessed.
+/// Turn one successful result into provenance. A result without a stable provider id
+/// remains run-scoped evidence and reconciles to an ephemeral task.
 pub fn resolve_evidence(
     family: ConnectorFamily,
     instance_id: &str,
     result: &serde_json::Value,
-) -> Option<ResolvedEvidence> {
+) -> ResolvedEvidence {
     let text = |key: &str| result.get(key).and_then(serde_json::Value::as_str).map(str::trim).filter(|value| !value.is_empty());
     // Exactly one field per family, and no fallback to a generic `id`.
     //
@@ -258,18 +255,18 @@ pub fn resolve_evidence(
     // the field this family identifies things by is a result Bridge cannot recognise
     // again, which is the `None` case below rather than a guess.
     let (source_kind, native_id) = match family {
-        ConnectorFamily::Slack => ("slack.message", text("ts")?),
-        ConnectorFamily::Gmail => ("gmail.thread", text("threadId")?),
-        ConnectorFamily::GitHub => ("github.item", text("nodeId")?),
-        ConnectorFamily::Linear => ("linear.issue", text("identifier")?),
-        ConnectorFamily::Notion => ("notion.page", text("pageId")?),
+        ConnectorFamily::Slack => ("slack.message", text("ts")),
+        ConnectorFamily::Gmail => ("gmail.thread", text("threadId")),
+        ConnectorFamily::GitHub => ("github.item", text("nodeId")),
+        ConnectorFamily::Linear => ("linear.issue", text("identifier")),
+        ConnectorFamily::Notion => ("notion.page", text("pageId")),
     };
-    Some(ResolvedEvidence {
+    ResolvedEvidence {
         // Namespaced by instance, so the same native id on two accounts is two things.
-        canonical_resource_id: format!("{}:{}:{}", family.as_str(), instance_id, native_id),
+        canonical_resource_id: native_id.map(|native_id| format!("{}:{}:{}", family.as_str(), instance_id, native_id)),
         source_kind: source_kind.to_owned(),
         target: resolve_target(family, result),
-    })
+    }
 }
 
 /// A permalink, but only one Bridge resolved and matched against the family's hosts.
@@ -445,9 +442,8 @@ mod tests {
             "slack-1",
             // The result also carries a canonicalResourceId, which must be ignored.
             &json!({"ts": "1723459200.123", "canonicalResourceId": "attacker-chosen"}),
-        )
-        .unwrap();
-        assert_eq!(resolved.canonical_resource_id, "slack:slack-1:1723459200.123");
+        );
+        assert_eq!(resolved.canonical_resource_id.as_deref(), Some("slack:slack-1:1723459200.123"));
         assert_eq!(resolved.source_kind, "slack.message");
     }
 
@@ -455,18 +451,16 @@ mod tests {
     fn the_same_native_id_on_two_accounts_is_two_things() {
         // Namespaced by instance, so one account's message cannot be mistaken for
         // another's just because the provider numbers them the same way.
-        let one = resolve_evidence(ConnectorFamily::Gmail, "gmail-work", &json!({"threadId": "t1"})).unwrap();
-        let other = resolve_evidence(ConnectorFamily::Gmail, "gmail-personal", &json!({"threadId": "t1"})).unwrap();
+        let one = resolve_evidence(ConnectorFamily::Gmail, "gmail-work", &json!({"threadId": "t1"}));
+        let other = resolve_evidence(ConnectorFamily::Gmail, "gmail-personal", &json!({"threadId": "t1"}));
         assert_ne!(one.canonical_resource_id, other.canonical_resource_id);
     }
 
     #[test]
-    fn a_result_with_no_recognisable_id_yields_no_evidence() {
-        // Evidence without a canonical id cannot be recognised again, so it is not
-        // recorded at all rather than recorded with something guessed.
+    fn a_result_with_no_recognisable_id_yields_ephemeral_evidence() {
         for family in ConnectorFamily::ALL {
-            assert!(resolve_evidence(family, "instance", &json!({"body": "text"})).is_none());
-            assert!(resolve_evidence(family, "instance", &json!({})).is_none());
+            assert!(resolve_evidence(family, "instance", &json!({"body": "text"})).canonical_resource_id.is_none());
+            assert!(resolve_evidence(family, "instance", &json!({})).canonical_resource_id.is_none());
         }
     }
 
@@ -480,9 +474,9 @@ mod tests {
             (ConnectorFamily::Notion, json!({"pageId": "p1"}), "notion.page"),
         ];
         for (family, result, kind) in cases {
-            let resolved = resolve_evidence(family, "i", &result).unwrap();
+            let resolved = resolve_evidence(family, "i", &result);
             assert_eq!(resolved.source_kind, kind);
-            assert!(resolved.canonical_resource_id.starts_with(family.as_str()));
+            assert!(resolved.canonical_resource_id.as_deref().is_some_and(|id| id.starts_with(family.as_str())));
         }
     }
 
@@ -604,7 +598,7 @@ mod tests {
 
     #[test]
     fn a_result_with_no_permalink_has_no_target_and_that_is_not_an_error() {
-        let resolved = resolve_evidence(ConnectorFamily::Notion, "n1", &json!({"pageId": "p1"})).unwrap();
+        let resolved = resolve_evidence(ConnectorFamily::Notion, "n1", &json!({"pageId": "p1"}));
         assert_eq!(resolved.target, EvidenceTarget::None);
     }
 

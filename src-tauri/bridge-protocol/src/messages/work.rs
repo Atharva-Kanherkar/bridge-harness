@@ -190,10 +190,12 @@ pub enum WorkEvidenceTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkTask {
-    /// `sha256("v1\0" + connectorInstanceId + "\0" + canonicalResourceId)`.
-    pub fingerprint: String,
+    /// Durable row id. Ephemeral tasks have no fingerprint, so actions use this id.
+    pub id: String,
+    /// A versioned SHA-256 over length-prefixed connector and resource identities.
+    pub fingerprint: Option<String>,
     pub connector_instance_id: String,
-    pub canonical_resource_id: String,
+    pub canonical_resource_id: Option<String>,
     pub source_kind: String,
     /// Untrusted external text. Bounded, and never an instruction.
     pub title: String,
@@ -322,6 +324,72 @@ pub struct WorkBriefingProfile {
     pub harness: HarnessId,
     pub model: String,
     pub effort: Option<Effort>,
+}
+
+// ---------------------------------------------------------------------------
+// Local actions on a suggested task
+// ---------------------------------------------------------------------------
+
+/// What a human asked of a task.
+///
+/// Deliberately no `pin` variant: pinning is orthogonal to these five, so folding it in
+/// would let a caller send `pin` where a state change is expected and get one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkTaskActionKind {
+    Done,
+    Snooze,
+    Dismiss,
+    Restore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskActionParams {
+    pub task_id: String,
+    pub action: WorkTaskActionKind,
+    /// The future deadline for a snooze. Ignored by every other action.
+    pub snoozed_until: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskPinParams {
+    pub task_id: String,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskPrepareSessionParams {
+    pub task_id: String,
+    /// Which harness the prepared session will use when the user eventually sends.
+    ///
+    /// Chosen by the caller, the same way a new chat's harness is: availability is a
+    /// frontend concern, and inventing a different default here would give a task-started
+    /// session a provider the user never picks anywhere else.
+    pub harness: HarnessId,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskOpenEvidenceParams {
+    pub task_id: String,
+}
+
+/// A session prepared from a task, with nothing sent.
+///
+/// There is no turn id here, and that absence is the contract: preparing creates a draft
+/// the user edits and sends. A field naming a dispatched turn would mean this call had
+/// already spoken to a model on their behalf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkTaskDraft {
+    pub session_id: String,
+    pub title: String,
+    /// The composer's starting contents, carrying untrusted task text as text.
+    pub draft: String,
 }
 
 /// Work's configuration.
@@ -606,9 +674,10 @@ mod tests {
     #[test]
     fn a_task_carries_bridge_derived_identity_and_only_validated_evidence() {
         let task = WorkTask {
-            fingerprint: "a".repeat(64),
+            id: "task-a".into(),
+            fingerprint: Some("a".repeat(64)),
             connector_instance_id: "github:acme".into(),
-            canonical_resource_id: "acme/bridge#204".into(),
+            canonical_resource_id: Some("acme/bridge#204".into()),
             source_kind: "github_issue".into(),
             title: "Review the migration".into(),
             why: "open three days with a requested change".into(),

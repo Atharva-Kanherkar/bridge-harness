@@ -110,23 +110,36 @@ impl BridgeCore {
         model: Option<&str>,
         title: Option<&str>,
     ) -> Result<BridgeState, BridgeError> {
+        self.create_chat_id(harness, model, title)?;
+        self.state_snapshot()
+    }
+
+    /// Create a direct chat and return the UUID used for that exact insert.
+    pub fn create_chat_id(
+        &self,
+        harness: &Harness,
+        model: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<String, BridgeError> {
         let adapter_id = store::harness_name(harness);
         let id = Uuid::new_v4().to_string();
         let cwd = self.chat_scratch_dir(&id);
         let label = chat_label(title);
-        let db = self.db.lock().unwrap();
-        db.execute(
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        transaction.execute(
             "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,NULL,?2,?3,'idle','estimated',?4,'direct',?5,?6,0)",
             params![id, adapter_id, label, model, title, cwd.to_string_lossy()],
         )?;
         store::event(
-            &db,
+            &transaction,
             "chat",
             "chat.created",
             &id,
             &format!("Created chat {label}"),
         )?;
-        store::state(&db)
+        transaction.commit()?;
+        Ok(id)
     }
 
     /// Move a session's conversation head. Publishes the state-changed
@@ -940,6 +953,28 @@ mod tests {
             .query_row("SELECT label FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(label, "New chat");
+    }
+
+    #[test]
+    fn create_chat_rolls_back_the_session_when_its_event_cannot_be_recorded() {
+        let (_scratch, core) = fixture();
+        core.db
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_chat_created
+                 BEFORE INSERT ON events
+                 WHEN NEW.kind='chat.created'
+                 BEGIN SELECT RAISE(ABORT, 'event rejected'); END;",
+            )
+            .unwrap();
+
+        assert!(core.create_chat_id(&Harness::Codex, None, None).is_err());
+        let db = core.db.lock().unwrap();
+        let sessions: i64 = db
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sessions, 0, "the failed audit event must not leave a ghost chat");
     }
 
     #[test]

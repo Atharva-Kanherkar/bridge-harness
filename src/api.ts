@@ -11,6 +11,8 @@ import type {
   ReadWorkspaceFileResult,
   WorkspaceChangesResult,
   WorkBoard,
+  WorkTask,
+  WorkTaskDraft,
   WriteWorkspaceFileResult,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
@@ -265,6 +267,54 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
 const workBoardObserved = (secondsAgo: number): string =>
   new Date(Date.now() - secondsAgo * 1000).toISOString();
 
+/// Suggested-work rows the browser fallback can act on, so the task half of the board is
+/// developable without the desktop app. Mutable on purpose: an action has to visibly do
+/// something or the affordance cannot be exercised.
+const mockWorkTasks: WorkTask[] = [
+  {
+    id: "task-v1:slack-work-1",
+    fingerprint: "v1:slack-work-1",
+    connectorInstanceId: "slack-work",
+    canonicalResourceId: "slack:slack-work:1723459200.123",
+    sourceKind: "slack.message",
+    title: "Priya is blocked on the migration flag you own",
+    why: "Asked twice in two hours in #eng-releases and nobody has replied.",
+    rank: 1,
+    confidenceBps: 8_600,
+    state: "active",
+    pinned: false,
+    snoozedUntil: null,
+    evidenceDigest: "a".repeat(64),
+    evidenceTarget: { kind: "externalLink", url: "https://app.slack.com/archives/C1/p1723459200123", host: "app.slack.com" },
+    evidenceObservedAt: workBoardObserved(240),
+    missCount: 0,
+    workspaceId: null,
+    createdAt: workBoardObserved(7_200),
+    updatedAt: workBoardObserved(240),
+  },
+  {
+    id: "task-v1:github-1",
+    fingerprint: "v1:github-1",
+    connectorInstanceId: "github-1",
+    canonicalResourceId: "github:github-1:PR_418",
+    sourceKind: "github.item",
+    title: "3 review requests older than two days",
+    why: "One is on the release branch, so it is probably holding a deploy.",
+    rank: 2,
+    confidenceBps: 5_200,
+    state: "active",
+    pinned: false,
+    snoozedUntil: null,
+    evidenceDigest: "b".repeat(64),
+    evidenceTarget: { kind: "externalLink", url: "https://github.com/o/r/pulls", host: "github.com" },
+    evidenceObservedAt: workBoardObserved(240),
+    missCount: 0,
+    workspaceId: null,
+    createdAt: workBoardObserved(10_800),
+    updatedAt: workBoardObserved(240),
+  },
+];
+
 function browserWorkBoard(): WorkBoard {
   return {
     facts: [
@@ -341,7 +391,7 @@ function browserWorkBoard(): WorkBoard {
         action: { kind: "refreshBaseObservation", sessionId: "session-3", workspaceId: "workspace-3" },
       },
     ],
-    tasks: [],
+    tasks: structuredClone(mockWorkTasks),
     latestRun: null,
     generatedAt: new Date().toISOString(),
     sources: [],
@@ -580,6 +630,40 @@ export const bridgeApi = {
   waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/waive_completion", { attemptId, checkIds, reason });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); const unresolved = forest.completion.checks.filter(check => check.required && check.status !== "passed").map(check => check.checkId); if (!unresolved.every(checkId => checkIds.includes(checkId))) throw new Error("Waiver must cover every unresolved required check"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
+  },
+  // Local state on a suggested task. None of these reaches a connector: marking a task
+  // done does not close the thread it came from, and dismissing it does not archive
+  // anything. They are notes Bridge makes to itself about something it read.
+  workTaskAction: async (taskId: string, action: "done" | "snooze" | "dismiss" | "restore", snoozedUntil: string | null = null): Promise<void> => {
+    if (isTauri()) return unit(call("work/task_action", { taskId, action, snoozedUntil }));
+    const task = mockWorkTasks.find(item => item.id === taskId);
+    if (!task) throw new Error("Task not found");
+    task.state = action === "done" ? "done" : action === "snooze" ? "snoozed" : action === "dismiss" ? "dismissed" : "active";
+    return undefined;
+  },
+  workTaskPin: async (taskId: string, pinned: boolean): Promise<void> => {
+    if (isTauri()) return unit(call("work/task_pin", { taskId, pinned }));
+    const task = mockWorkTasks.find(item => item.id === taskId);
+    if (task) task.pinned = pinned;
+    return undefined;
+  },
+  // Prepares a draft and returns. Sending is the user's move, which is why nothing here
+  // returns a turn id or a run.
+  workTaskPrepareSession: async (taskId: string, harness: Harness, model: string | null): Promise<WorkTaskDraft> => {
+    if (isTauri()) return call("work/task_prepare_session", { taskId, harness, model });
+    const task = mockWorkTasks.find(item => item.id === taskId);
+    if (!task) throw new Error("Task not found");
+    return {
+      sessionId: "session-prepared",
+      title: task.title,
+      draft: `From ${task.sourceKind}: ${task.title}\n\n${task.why}`,
+    };
+  },
+  workTaskOpenEvidence: async (taskId: string) => {
+    if (isTauri()) return call("work/task_open_evidence", { taskId });
+    const task = mockWorkTasks.find(item => item.id === taskId);
+    if (!task?.evidenceTarget) throw new Error("This task has no evidence to open");
+    return structuredClone(task.evidenceTarget);
   },
   // The Work board. Read-only and store-only by construction on the Rust side, so
   // this is the whole of what opening the Work screen does — no session is selected,

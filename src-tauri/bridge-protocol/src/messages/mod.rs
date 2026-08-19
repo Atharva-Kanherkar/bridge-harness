@@ -240,6 +240,10 @@ typed_methods![
     (MarketplaceAction, MarketplaceActionParams, _),
     // work
     (GetWorkBoard, _, WorkBoard),
+    (WorkTaskAction, TaskActionParams, UnitResult),
+    (WorkTaskPin, TaskPinParams, UnitResult),
+    (WorkTaskPrepareSession, TaskPrepareSessionParams, WorkTaskDraft),
+    (WorkTaskOpenEvidence, TaskOpenEvidenceParams, WorkEvidenceTarget),
     // skills
     (SkillCatalog, _, _),
     (SkillSuggestions, SkillSuggestionsParams, _),

@@ -783,7 +783,10 @@
       "description": "One model-suggested task, after Bridge validated its identity and evidence.",
       "properties": {
         "canonicalResourceId": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "confidenceBps": {
           "format": "int64",
@@ -818,7 +821,14 @@
           ]
         },
         "fingerprint": {
-          "description": "`sha256(\"v1\\0\" + connectorInstanceId + \"\\0\" + canonicalResourceId)`.",
+          "description": "A versioned SHA-256 over length-prefixed connector and resource identities.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Durable row id. Ephemeral tasks have no fingerprint, so actions use this id.",
           "type": "string"
         },
         "missCount": {
@@ -863,11 +873,10 @@
         }
       },
       "required": [
-        "canonicalResourceId",
         "confidenceBps",
         "connectorInstanceId",
         "createdAt",
-        "fingerprint",
+        "id",
         "missCount",
         "pinned",
         "rank",

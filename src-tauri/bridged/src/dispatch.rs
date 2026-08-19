@@ -390,6 +390,22 @@ pub fn dispatch(
         }
 
         MethodName::GetWorkBoard => reply(api::get_work_board(core)),
+        MethodName::WorkTaskAction => {
+            let params: wire::TaskActionParams = decode(method, params)?;
+            reply(api::work_task_action(core, &params).map(|()| ()))
+        }
+        MethodName::WorkTaskPin => {
+            let params: wire::TaskPinParams = decode(method, params)?;
+            reply(api::work_task_pin(core, &params).map(|()| ()))
+        }
+        MethodName::WorkTaskPrepareSession => {
+            let params: wire::TaskPrepareSessionParams = decode(method, params)?;
+            reply(api::work_task_prepare_session(core, &params))
+        }
+        MethodName::WorkTaskOpenEvidence => {
+            let params: wire::TaskOpenEvidenceParams = decode(method, params)?;
+            reply(api::work_task_open_evidence(core, &params))
+        }
 
         MethodName::SkillCatalog => reply(api::skill_catalog(core)),
         MethodName::SkillSuggestions => {

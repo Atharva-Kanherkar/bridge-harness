@@ -144,6 +144,55 @@ async fn get_work_board(
 }
 
 #[tauri::command]
+async fn task_action(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+    action: bridge_protocol::messages::WorkTaskActionKind,
+    snoozed_until: Option<String>,
+) -> Result<(), BridgeError> {
+    api::work_task_action(
+        state.inner(),
+        &bridge_protocol::messages::TaskActionParams { task_id, action, snoozed_until },
+    )
+}
+
+#[tauri::command]
+async fn task_pin(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+    pinned: bool,
+) -> Result<(), BridgeError> {
+    api::work_task_pin(
+        state.inner(),
+        &bridge_protocol::messages::TaskPinParams { task_id, pinned },
+    )
+}
+
+#[tauri::command]
+async fn task_prepare_session(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+    harness: bridge_protocol::messages::HarnessId,
+    model: Option<String>,
+) -> Result<bridge_protocol::messages::WorkTaskDraft, BridgeError> {
+    api::work_task_prepare_session(
+        state.inner(),
+        &bridge_protocol::messages::TaskPrepareSessionParams { task_id, harness, model },
+    )
+}
+
+#[tauri::command]
+async fn task_open_evidence(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+) -> Result<bridge_protocol::messages::WorkEvidenceTarget, BridgeError> {
+    api::work_task_open_evidence(
+        state.inner(),
+        &bridge_protocol::messages::TaskOpenEvidenceParams { task_id },
+    )
+}
+
+#[tauri::command]
 async fn skill_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
@@ -1106,6 +1155,10 @@ pub fn run() {
             uninstall_managed_agent,
             marketplace_action,
             get_work_board,
+            task_action,
+            task_pin,
+            task_prepare_session,
+            task_open_evidence,
             skill_catalog,
             skill_suggestions,
             preview_skill_change,

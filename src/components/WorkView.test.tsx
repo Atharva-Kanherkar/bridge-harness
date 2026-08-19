@@ -2,8 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkBoard, WorkFact, WorkFactAction } from "../protocol/generated/protocol";
+import type { WorkBoard, WorkFact, WorkFactAction, WorkTask } from "../protocol/generated/protocol";
 import { WorkView, type WorkActionOutcome } from "./WorkView";
+import type { TaskAction } from "./workTasks";
 
 const RETRY_LABEL_TEXT = "Try again";
 
@@ -463,5 +464,124 @@ describe("narrow widths", () => {
     const row = host.querySelector("li")!;
     expect(row.className).toContain("flex-wrap");
     expect(row.className).toContain("sm:flex-nowrap");
+  });
+});
+
+describe("suggested work", () => {
+  const suggested = (overrides: Partial<WorkTask> = {}): WorkTask => ({
+    id: "task-v1:abc",
+    fingerprint: "v1:abc",
+    connectorInstanceId: "slack-work",
+    canonicalResourceId: "slack:slack-work:1.1",
+    sourceKind: "slack.message",
+    title: "Reply to Priya",
+    why: "She asked twice and nobody answered.",
+    rank: 1,
+    confidenceBps: 8_200,
+    state: "active",
+    pinned: false,
+    snoozedUntil: null,
+    evidenceDigest: "d".repeat(64),
+    evidenceTarget: { kind: "externalLink", url: "https://app.slack.com/archives/C1/p1", host: "app.slack.com" },
+    evidenceObservedAt: "2026-08-19T11:59:00.000Z",
+    missCount: 0,
+    workspaceId: null,
+    createdAt: "2026-08-19T11:00:00.000Z",
+    updatedAt: "2026-08-19T11:00:00.000Z",
+    ...overrides,
+  });
+
+  const withTasks = (tasks: WorkTask[], facts: WorkFact[] = []) => board(facts, { tasks });
+
+  it("renders a suggested band below the facts, or none at all", () => {
+    render({ board: withTasks([suggested()]), onTaskAction: ok as never });
+    expect(text()).toContain("Suggested");
+    expect(text()).toContain("Reply to Priya");
+    expect(text()).toContain("Slack · slack-work");
+    expect(text()).toContain("high confidence");
+    // No tasks, no section — not an empty band inviting setup.
+    render({ board: board([fact()]) });
+    expect(text()).not.toContain("from your connected tools");
+  });
+
+  it("offers restore for a hidden snoozed task when the user reveals it", async () => {
+    render({ board: withTasks([suggested({ state: "snoozed", pinned: true })]), onTaskAction: ok as never });
+    expect(host.querySelectorAll("ul[aria-label='Suggested work'] li")).toHaveLength(0);
+    expect(buttonNamed("Restore")).toBeFalsy();
+    await act(async () => { buttonNamed("Show hidden")?.click(); });
+    expect(host.querySelectorAll("ul[aria-label='Hidden suggested work'] li")).toHaveLength(1);
+    expect(buttonNamed("Restore")).toBeTruthy();
+
+    render({ board: withTasks([suggested({ state: "active" })]), onTaskAction: ok as never });
+    for (const label of ["Start", "Done", "Snooze", "Dismiss"]) {
+      expect(buttonNamed(label), label).toBeTruthy();
+    }
+    expect(buttonNamed("Restore")).toBeFalsy();
+  });
+
+  it("hides a stale task unless it is pinned", () => {
+    render({ board: withTasks([suggested({ state: "stale" })]), onTaskAction: ok as never });
+    expect(host.querySelectorAll("ul[aria-label='Suggested work'] li")).toHaveLength(0);
+    render({ board: withTasks([suggested({ state: "stale", pinned: true })]), onTaskAction: ok as never });
+    expect(host.querySelectorAll("ul[aria-label='Suggested work'] li")).toHaveLength(1);
+    expect(text()).toContain("Stale");
+    expect(text()).toContain("Pinned");
+  });
+
+  it("invokes the action it was asked for and keeps the row when it fails", async () => {
+    // Typed with the real signature, so asserting on the arguments is possible at all —
+    // an inferred zero-parameter mock makes `calls[0][1]` a type error, which vitest would
+    // never have told me about.
+    const onTaskAction = vi.fn(
+      async (_task: WorkTask, _action: TaskAction): Promise<WorkActionOutcome> => ({
+        ok: false,
+        reason: "a snoozed task cannot be snoozed",
+      }),
+    );
+    render({ board: withTasks([suggested()]), onTaskAction });
+    await act(async () => { buttonNamed("Dismiss")?.click(); });
+    expect(onTaskAction).toHaveBeenCalledOnce();
+    expect(onTaskAction.mock.calls[0][1]).toBe("dismiss");
+    expect(text()).toContain("a snoozed task cannot be snoozed");
+    expect(text()).toContain("Reply to Priya");
+  });
+
+  it("keeps pinning separate from the state actions", async () => {
+    const onTogglePin = vi.fn(async (): Promise<WorkActionOutcome> => ({ ok: true }));
+    const onTaskAction = vi.fn(async (): Promise<WorkActionOutcome> => ({ ok: true }));
+    render({ board: withTasks([suggested()]), onTaskAction, onTogglePin });
+    const pin = host.querySelector("[aria-label='Pin this task']") as HTMLButtonElement;
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => { pin.click(); });
+    expect(onTogglePin).toHaveBeenCalledOnce();
+    expect(onTaskAction).not.toHaveBeenCalled();
+  });
+
+  it("names the host before you click through to it", () => {
+    render({ board: withTasks([suggested()]), onOpenEvidence: () => {} });
+    expect(buttonNamed("Open on app.slack.com")).toBeTruthy();
+  });
+
+  it("draws no evidence affordance for a target that would be refused", () => {
+    render({
+      board: withTasks([suggested({ evidenceTarget: { kind: "externalLink", url: "http://app.slack.com/x", host: "app.slack.com" } })]),
+      onOpenEvidence: () => {},
+    });
+    expect(text()).not.toContain("Open on");
+  });
+
+  it("fires an action once even when clicked twice in the same tick", async () => {
+    let release: (value: WorkActionOutcome) => void = () => {};
+    const onTaskAction = vi.fn(() => new Promise<WorkActionOutcome>(resolve => { release = resolve; }));
+    render({ board: withTasks([suggested()]), onTaskAction });
+    const button = buttonNamed("Done")!;
+    await act(async () => { button.click(); button.click(); });
+    expect(onTaskAction).toHaveBeenCalledOnce();
+    await act(async () => { release({ ok: true }); });
+  });
+
+  it("shows a board of only suggested work rather than the empty panel", () => {
+    render({ board: withTasks([suggested()]), onTaskAction: ok as never });
+    expect(text()).not.toContain("Nothing needs you");
   });
 });

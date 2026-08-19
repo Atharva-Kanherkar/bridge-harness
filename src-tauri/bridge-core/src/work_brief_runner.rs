@@ -16,10 +16,11 @@ use sha2::{Digest, Sha256};
 
 use crate::briefing_policy::{BriefingGuard, BriefingRuntimePolicy, BriefingToolIdentity, ToolDecision};
 use crate::work_brief_parser::{parse_with_one_repair, BriefOutcome, BriefRejection, WorkBrief};
-use crate::work_brief_store::{begin_run, finish_run, record_ledger, RunOutcome, RunStart};
+use crate::work_brief_store::{begin_run, RunOutcome, RunStart};
 use crate::work_briefing_config::{BriefingSelection, BriefingUnavailable};
 use crate::work_connectors::{eligibility, ConnectorEligibility, ConnectorInstance};
 use crate::work_evidence::RunLedger;
+use crate::work_reconcile::{self, Commit};
 use crate::BridgeError;
 
 /// One tool call a provider asked for.
@@ -69,9 +70,7 @@ pub trait ConnectorSource {
 /// How a run ended, for the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunResult {
-    /// A brief was accepted. Committing its tasks is slice 5's job — this slice
-    /// deliberately stops here, with the evidence recorded and nothing on the board
-    /// changed.
+    /// A brief was accepted and committed to the durable board.
     Accepted { run_id: String, brief: WorkBrief, repaired: bool },
     /// The run happened and produced nothing usable.
     Failed { run_id: String, code: String },
@@ -256,22 +255,27 @@ pub fn run_briefing(
         }
     };
     let outcome = parse_with_one_repair(&answer, &ledger, |rejection| provider.repair(rejection));
-    record_ledger(db, &ledger)?;
-
     match outcome {
         BriefOutcome::Accepted { brief, repaired } => {
-            finish_run(
+            let completed_at = (request.now)();
+            let run_outcome = RunOutcome {
+                status: wire::WorkBriefRunStatus::Succeeded,
+                output_digest: Some(output_digest(&brief)),
+                failure_code: None,
+                failure_detail: None,
+                usage: provider.usage(),
+                tool_calls: guard.tool_calls(),
+                turns,
+                completed_at: completed_at.clone(),
+            };
+            work_reconcile::commit_brief(
                 db,
-                request.run_id,
-                &RunOutcome {
-                    status: wire::WorkBriefRunStatus::Succeeded,
-                    output_digest: Some(output_digest(&brief)),
-                    failure_code: None,
-                    failure_detail: None,
-                    usage: provider.usage(),
-                    tool_calls: guard.tool_calls(),
-                    turns,
-                    completed_at: (request.now)(),
+                Commit {
+                    run_id: request.run_id,
+                    brief: &brief,
+                    ledger: &ledger,
+                    outcome: run_outcome,
+                    now: &completed_at,
                 },
             )?;
             Ok(RunResult::Accepted {
@@ -288,9 +292,10 @@ pub fn run_briefing(
                 }
                 BriefOutcome::Accepted { .. } => None,
             };
-            finish_run(
+            work_reconcile::abandon_run(
                 db,
                 request.run_id,
+                &ledger,
                 &RunOutcome {
                     status: wire::WorkBriefRunStatus::Failed,
                     // No digest: nothing was accepted, and a digest of a refused payload
@@ -339,10 +344,10 @@ fn finish_failed(
     detail: Option<String>,
     provider: &dyn BriefingProvider,
 ) -> Result<RunResult, BridgeError> {
-    record_ledger(db, ledger)?;
-    finish_run(
+    work_reconcile::abandon_run(
         db,
         request.run_id,
+        ledger,
         &RunOutcome {
             status: wire::WorkBriefRunStatus::Failed,
             output_digest: None,
@@ -576,12 +581,16 @@ mod tests {
 
         let evidence = read_evidence(&db, "run-1").unwrap();
         assert_eq!(evidence.len(), 1);
-        assert_eq!(evidence[0].canonical_resource_id, "slack:slack-1:1723459200.123");
+        assert_eq!(evidence[0].canonical_resource_id.as_deref(), Some("slack:slack-1:1723459200.123"));
         assert_eq!(evidence[0].evidence_ref, provider.earned[0]);
 
-        // Committing tasks is slice 5, and the facts board is not a briefing's business.
-        let tasks: i64 = db.query_row("SELECT COUNT(*) FROM work_tasks", [], |row| row.get(0)).unwrap();
-        assert_eq!(tasks, 0);
+        // An accepted run publishes its evidence and reconciled task atomically.
+        let task: (i64, String, String) = db
+            .query_row("SELECT COUNT(*),title,last_run_id FROM work_tasks", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(task, (1, "Reply to Priya".into(), "run-1".into()));
         let facts: i64 = db.query_row("SELECT COUNT(*) FROM work_fact_cache", [], |row| row.get(0)).unwrap();
         assert_eq!(facts, 0);
     }

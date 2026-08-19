@@ -611,6 +611,34 @@
       "resultSchema": "work-board.json"
     },
     {
+      "command": "task_action",
+      "domain": "work",
+      "method": "work/task_action",
+      "paramsSchema": "task-action-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "task_pin",
+      "domain": "work",
+      "method": "work/task_pin",
+      "paramsSchema": "task-pin-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "task_prepare_session",
+      "domain": "work",
+      "method": "work/task_prepare_session",
+      "paramsSchema": "task-prepare-session-params.json",
+      "resultSchema": "work-task-draft.json"
+    },
+    {
+      "command": "task_open_evidence",
+      "domain": "work",
+      "method": "work/task_open_evidence",
+      "paramsSchema": "task-open-evidence-params.json",
+      "resultSchema": "work-evidence-target.json"
+    },
+    {
       "command": "skill_catalog",
       "domain": "skills",
       "method": "skills/skill_catalog",

@@ -33,7 +33,7 @@ pub struct EvidenceEntry {
     pub tool_call_id: String,
     pub connector_instance_id: String,
     pub account_identity: Option<String>,
-    pub canonical_resource_id: String,
+    pub canonical_resource_id: Option<String>,
     pub source_kind: String,
     pub tool_definition_digest: String,
     /// A digest of the result, not the result. Enough to show it did not change under
@@ -156,8 +156,7 @@ impl RunLedger {
 
     /// A call that succeeded: derive provenance and earn a reference.
     ///
-    /// Returns the reference the model may cite, or `None` when Bridge could not derive
-    /// a canonical id — evidence it cannot recognise again is evidence it does not keep.
+    /// Evidence without a canonical id is kept for this run and produces an ephemeral task.
     /// The caller must only reach here for a call the policy allowed; a denied call has
     /// no result to record.
     pub fn record_succeeded(
@@ -174,16 +173,14 @@ impl RunLedger {
             canonical_resource_id,
             source_kind,
             target,
-        } = resolve_evidence(family, instance_id, result)?;
+        } = resolve_evidence(family, instance_id, result);
 
         // The same resource read twice in one run is one piece of evidence. Returning
         // the existing reference rather than a second one keeps a brief from citing the
         // same thing twice under two names.
-        if let Some(existing) = self
-            .entries
-            .iter()
-            .find(|entry| entry.canonical_resource_id == canonical_resource_id)
-        {
+        if let Some(existing) = canonical_resource_id.as_ref().and_then(|canonical_id| {
+            self.entries.iter().find(|entry| entry.canonical_resource_id.as_ref() == Some(canonical_id))
+        }) {
             let reused = existing.evidence_ref.clone();
             self.record_source(
                 instance_id,
@@ -198,7 +195,9 @@ impl RunLedger {
         let evidence_ref = format!("{}:ev-{}", self.run_id, self.next_index);
         self.next_index += 1;
         self.refs.insert(evidence_ref.clone());
-        self.resources.insert(canonical_resource_id.clone());
+        if let Some(canonical_resource_id) = canonical_resource_id.as_ref() {
+            self.resources.insert(canonical_resource_id.clone());
+        }
         self.entries.push(EvidenceEntry {
             evidence_ref: evidence_ref.clone(),
             tool_call_id: tool_call_id.to_owned(),
@@ -322,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn a_result_bridge_cannot_identify_earns_nothing() {
+    fn a_result_bridge_cannot_identify_earns_ephemeral_evidence() {
         let mut ledger = RunLedger::new("run-7");
         let earned = ledger.record_succeeded(
             ConnectorFamily::Slack,
@@ -333,8 +332,9 @@ mod tests {
             &json!({"text": "no ts here"}),
             SEEN,
         );
-        assert!(earned.is_none(), "evidence with no canonical id is not kept");
-        assert!(ledger.entries().is_empty());
+        assert!(earned.is_some(), "successful evidence remains citable within the run");
+        assert_eq!(ledger.entries().len(), 1);
+        assert!(ledger.entries()[0].canonical_resource_id.is_none());
     }
 
     #[test]
@@ -422,7 +422,7 @@ mod tests {
     fn provenance_on_an_entry_is_all_bridge_derived() {
         let (ledger, reference) = ledger_with_one_success();
         let entry = ledger.entry(&reference).unwrap();
-        assert_eq!(entry.canonical_resource_id, "slack:slack-1:1723459200.123");
+        assert_eq!(entry.canonical_resource_id.as_deref(), Some("slack:slack-1:1723459200.123"));
         assert_eq!(entry.account_identity.as_deref(), Some("T0001/U0001"));
         assert_eq!(entry.observed_at, SEEN, "when Bridge saw it, not what the result claims");
         assert_eq!(entry.tool_call_id, "call_1");
@@ -456,7 +456,7 @@ mod tests {
             )
             .unwrap();
         let entry = ledger.entry(&reference).unwrap();
-        assert_eq!(entry.canonical_resource_id, "slack:slack-1:1.1");
+        assert_eq!(entry.canonical_resource_id.as_deref(), Some("slack:slack-1:1.1"));
         assert_eq!(entry.account_identity.as_deref(), Some("real-account"));
         assert_eq!(entry.observed_at, SEEN);
         assert_eq!(entry.target, EvidenceTarget::None, "an off-allowlist link is no link");

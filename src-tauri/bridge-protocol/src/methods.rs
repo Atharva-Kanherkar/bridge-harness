@@ -145,6 +145,10 @@ methods![
     // work — the ranked board of what needs doing. Facts are store-only, so
     // this method reads SQLite and starts nothing.
     (GetWorkBoard, "work", "get_work_board"),
+    (WorkTaskAction, "work", "task_action"),
+    (WorkTaskPin, "work", "task_pin"),
+    (WorkTaskPrepareSession, "work", "task_prepare_session"),
+    (WorkTaskOpenEvidence, "work", "task_open_evidence"),
     // skills
     (SkillCatalog, "skills", "skill_catalog"),
     (SkillSuggestions, "skills", "skill_suggestions"),
