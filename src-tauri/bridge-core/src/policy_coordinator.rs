@@ -362,7 +362,7 @@ fn subtree_has_escaping_symlink_with_limit(root: &Path, workspace: &Path, limit:
 /// `root` is not inside a repository, in which case the walk visits everything
 /// as before.
 fn git_ignored_directories(root: &Path) -> HashSet<PathBuf> {
-    let output = std::process::Command::new("git")
+    let output = crate::git::git_command(root)
         .args([
             "ls-files",
             "-z",
@@ -371,7 +371,6 @@ fn git_ignored_directories(root: &Path) -> HashSet<PathBuf> {
             "--exclude-standard",
             "--directory",
         ])
-        .current_dir(root)
         .output();
     let Ok(output) = output else {
         return HashSet::new();

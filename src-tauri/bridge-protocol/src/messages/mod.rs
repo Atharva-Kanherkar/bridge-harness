@@ -408,6 +408,7 @@ mod tests {
             MethodName::GetConfigState,
             MethodName::MarketplaceCatalog,
             MethodName::TakeoverBrowser,
+            MethodName::GetWorkBoard,
         ] {
             assert!(
                 TypedMethod::for_method(method).params.is_none(),

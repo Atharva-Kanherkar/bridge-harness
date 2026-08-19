@@ -918,6 +918,151 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // The board is store-only
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reading_the_board_starts_no_git_process() {
+        let db = memory_db();
+        seed(&db);
+        // Point the workspace at a path that is not a repository and does not
+        // exist. Anything that reached for git would fail or report
+        // "unavailable"; the board instead answers from what it was told.
+        db.execute("UPDATE workspaces SET path='/nonexistent/not-a-repo' WHERE id='w'", [])
+            .unwrap();
+        crate::work_observation::record_base_divergence(
+            &db,
+            "w",
+            Ok(&crate::git::BaseBranchDivergence {
+                base_ref: Some("origin/main".into()),
+                base_commit: Some("abc".into()),
+                head: Some("def".into()),
+                branch: Some("bridge/task".into()),
+                ahead: 0,
+                behind: 40,
+                ref_age_seconds: None,
+                fetch_attempted: false,
+                fetched: false,
+                dirty: false,
+                unavailable_reason: None,
+            }),
+            instant("2026-08-19T09:00:00+00:00").unwrap(),
+        )
+        .unwrap();
+        add_check(&db, "a-1", "cargo-test", true, "failed", "running", "2026-08-19T08:00:00+00:00");
+        add_entry(&db, "parent", 4, "approval.requested", r#"{"title":"Approve command"}"#);
+        add_blocked_queue_item(&db, "q-1", "parent", "2026-08-19T08:00:00+00:00");
+
+        let before = crate::git::git_processes_started_on_this_thread();
+        let facts = facts(&db, instant("2026-08-19T09:05:00+00:00").unwrap()).unwrap();
+        let board = board(&db).unwrap();
+        let after = crate::git::git_processes_started_on_this_thread();
+
+        assert_eq!(after, before, "the board read must not shell out to git");
+        assert_eq!(facts.len(), 4, "and it must still project every kind while doing so");
+        assert_eq!(board.facts.len(), 4);
+        assert!(board
+            .facts
+            .iter()
+            .any(|fact| fact.kind == wire::WorkFactKind::WorkspaceBehindBase));
+    }
+
+    #[test]
+    fn the_git_process_counter_is_not_vacuous() {
+        // A counter that never moves would make the test above prove nothing.
+        // Measuring a real directory moves it.
+        let repository = tempfile::tempdir().unwrap();
+        let before = crate::git::git_processes_started_on_this_thread();
+        let _ = crate::git::base_branch_divergence(repository.path(), false);
+        assert!(
+            crate::git::git_processes_started_on_this_thread() > before,
+            "measuring divergence starts git, so a zero delta above means something"
+        );
+    }
+
+    #[test]
+    fn the_board_read_path_reaches_for_no_io() {
+        // The projections take a `&Connection`, so they cannot reach the runtime.
+        // This gate covers the other half: that nothing in this module grows a
+        // subprocess, an HTTP client, or a connector call over time. Type names
+        // are fine — `git::BaseBranchDivergence` is how a cached payload is
+        // read — so what is banned is the call, `git::` followed by a function.
+        // Only the production half: the tests below legitimately observe
+        // divergence to set a fixture up, and this module's own gate literal
+        // would otherwise match itself.
+        let source = include_str!("work.rs");
+        let source = &source[..source.find("#[cfg(test)]").expect("this module has tests")];
+        for forbidden in [
+            "Command::new",
+            "std::process",
+            "reqwest",
+            "marketplace::",
+            "adapters::",
+            "core.adapters",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "the board read path must not reference {forbidden}"
+            );
+        }
+        assert!(
+            source.contains("git::"),
+            "this module does name a git type, so the loop below is not vacuous"
+        );
+        for (index, _) in source.match_indices("git::") {
+            let next = source[index + "git::".len()..]
+                .chars()
+                .next()
+                .unwrap_or(' ');
+            assert!(
+                next.is_ascii_uppercase(),
+                "work.rs may name a git type but must not call a git function: {}",
+                &source[index..(index + 48).min(source.len())]
+            );
+        }
+    }
+
+    #[test]
+    fn reading_the_board_through_the_api_starts_no_provider() {
+        // The whole way in, not just the projection: `work::board` takes a
+        // `&Connection` and so has nothing to start a provider with, and this
+        // pins that the one caller that *does* hold the runtime does not either.
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        {
+            let db = store::open(&data_dir.join("bridge.db")).unwrap();
+            seed(&db);
+            // Boot reconciles `working` and `waiting` sessions to `stopped`,
+            // which would correctly take the approval off the board — the point
+            // here is the read path, so leave the session somewhere boot keeps.
+            db.execute("UPDATE sessions SET status='idle' WHERE id='parent'", []).unwrap();
+            add_entry(&db, "parent", 4, "approval.requested", r#"{"title":"Approve command"}"#);
+        }
+        let core = std::sync::Arc::new(
+            crate::BridgeCore::boot(crate::BootConfig {
+                data_dir: data_dir.to_path_buf(),
+                browser_extension_path: data_dir.join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+
+        let before = crate::git::git_processes_started_on_this_thread();
+        let board = crate::api::get_work_board(&core).unwrap();
+        assert_eq!(crate::git::git_processes_started_on_this_thread(), before);
+
+        assert_eq!(board.facts.len(), 1, "the fixture's approval is on the board");
+        assert!(
+            core.adapters.lock().unwrap().is_empty(),
+            "no adapter runtime may be started to render a board"
+        );
+        assert!(
+            core.runtimes.lock().unwrap().is_empty(),
+            "and no PTY session either"
+        );
+    }
+
     #[test]
     fn absent_settings_read_as_the_documented_defaults() {
         let db = memory_db();

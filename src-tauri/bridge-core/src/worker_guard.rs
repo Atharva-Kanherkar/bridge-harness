@@ -1,6 +1,6 @@
 use crate::{store, BridgeError};
 use rusqlite::Connection;
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOnlyBaseline {
@@ -18,9 +18,8 @@ impl ReadOnlyBaseline {
 }
 
 pub fn tracked_status(path: &Path) -> Result<String, BridgeError> {
-    let output = Command::new("git")
+    let output = crate::git::git_command(path)
         .args(["status", "--porcelain", "--untracked-files=no"])
-        .current_dir(path)
         .output()?;
     if !output.status.success() {
         return Err(BridgeError::Git(
@@ -65,6 +64,7 @@ fn record_status_comparison(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn repository() -> tempfile::TempDir {
         let fixture = tempfile::tempdir().unwrap();

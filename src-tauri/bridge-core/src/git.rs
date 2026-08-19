@@ -720,15 +720,11 @@ pub fn integrate_worker_changes(
     if is_ancestor(task_worktree, &worker_commit, "HEAD")? {
         return Ok(IntegrationResult::AlreadyIntegrated);
     }
-    let output = Command::new("git")
+    let output = git_command(task_worktree)
         .args(["merge", "--no-ff", "--no-edit", worker_commit.as_str()])
-        .current_dir(task_worktree)
         .output()?;
     if !output.status.success() {
-        let _ = Command::new("git")
-            .args(["merge", "--abort"])
-            .current_dir(task_worktree)
-            .output();
+        let _ = git_command(task_worktree).args(["merge", "--abort"]).output();
         return Err(BridgeError::Git(format!(
             "worker integration failed and was aborted: {}",
             String::from_utf8_lossy(&output.stderr).trim()
@@ -738,9 +734,8 @@ pub fn integrate_worker_changes(
 }
 
 fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool, BridgeError> {
-    let output = Command::new("git")
+    let output = git_command(worktree)
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .current_dir(worktree)
         .output()?;
     match output.status.code() {
         Some(0) => Ok(true),
@@ -928,7 +923,7 @@ fn untracked_file_patch(worktree: &Path, relative_path: &str) -> (String, i64, b
         return (String::new(), 0, true);
     }
     let additions = String::from_utf8_lossy(&bytes).lines().count() as i64;
-    let output = Command::new("git")
+    let output = git_command(worktree)
         .args([
             "diff",
             "--no-index",
@@ -937,7 +932,6 @@ fn untracked_file_patch(worktree: &Path, relative_path: &str) -> (String, i64, b
             "/dev/null",
             relative_path,
         ])
-        .current_dir(worktree)
         .output();
     let patch = match output {
         // `--no-index` exits 1 when it finds differences, which is the normal
@@ -965,11 +959,34 @@ pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
     }
     Ok((dirty, adds, dels))
 }
+thread_local! {
+    /// How many `git` processes this thread has started. Per-thread rather than
+    /// global so a test can assert on it while the rest of the suite runs in
+    /// parallel and spawns git of its own.
+    static GIT_PROCESSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Every `git` process Bridge starts goes through here, so "this code path runs
+/// no git" is a thing a test can measure instead of a thing a comment asserts.
+/// See `work::tests` for the read path that depends on it.
+pub(crate) fn git_command(cwd: &Path) -> Command {
+    GIT_PROCESSES.with(|count| count.set(count.get() + 1));
+    let mut command = Command::new("git");
+    command.current_dir(cwd);
+    command
+}
+
+/// How many `git` processes the calling thread has started. Compare two readings
+/// around a call to prove it shelled out — or that it did not.
+pub fn git_processes_started_on_this_thread() -> u64 {
+    GIT_PROCESSES.with(std::cell::Cell::get)
+}
+
 fn run<'a, I>(cwd: &Path, args: I) -> Result<String, BridgeError>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let output = Command::new("git").args(args).current_dir(cwd).output()?;
+    let output = git_command(cwd).args(args).output()?;
     if !output.status.success() {
         return Err(BridgeError::Git(
             String::from_utf8_lossy(&output.stderr).trim().into(),
