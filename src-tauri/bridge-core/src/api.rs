@@ -1295,11 +1295,12 @@ pub fn update_router_preferences(
 
 pub fn rollback_routing_policy(
     core: &Arc<BridgeCore>,
+    workspace_id: &str,
     target_version: i64,
     explanation: &str,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::rollback_policy(&core.db.lock().unwrap(), target_version, explanation)?;
-    let result = learning_job::learning_state(&core.db.lock().unwrap())?;
+    learning_job::rollback_policy(&core.db.lock().unwrap(), workspace_id, target_version, explanation)?;
+    let result = learning_job::learning_state(&core.db.lock().unwrap(), workspace_id)?;
     core.events.publish(CoreEvent::LearningJobChanged(
         serde_json::to_value(&result).unwrap_or_default(),
     ));
@@ -1454,13 +1455,15 @@ pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigSt
 
 pub fn get_learning_state(
     core: &Arc<BridgeCore>,
+    workspace_id: &str,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::learning_state(&core.db.lock().unwrap())
+    learning_job::learning_state(&core.db.lock().unwrap(), workspace_id)
 }
 
 pub fn run_learning(
     core: &Arc<BridgeCore>,
     trigger_kind: learning_job::LearningTriggerKind,
+    workspace_id: &str,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     if matches!(
         trigger_kind,
@@ -1474,7 +1477,7 @@ pub fn run_learning(
     }
     // Learning runs open their own connection: the run must never hold the
     // global SQLite lock across model evaluation.
-    let run = learning_job::run_local_database(&core.database_path, trigger_kind)?;
+    let run = learning_job::run_local_database(&core.database_path, trigger_kind, workspace_id)?;
     core.events.publish(CoreEvent::LearningJobChanged(
         serde_json::to_value(&run).unwrap_or_default(),
     ));
@@ -1720,7 +1723,9 @@ mod tests {
         // evaluation.
         let source = include_str!("api.rs");
         assert!(
-            source.contains("learning_job::run_local_database(&core.database_path, trigger_kind)")
+            source.contains(
+                "learning_job::run_local_database(&core.database_path, trigger_kind, workspace_id)",
+            )
         );
         let locked_learning_call = [
             "learning_job::run_learning(",

@@ -418,7 +418,7 @@
       "command": "get_learning_state",
       "domain": "learning",
       "method": "learning/get_learning_state",
-      "paramsSchema": null,
+      "paramsSchema": "get-learning-state-params.json",
       "resultDeferred": "bridge_core::learning_job::LearningState"
     },
     {

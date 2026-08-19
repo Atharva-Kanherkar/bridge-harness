@@ -54,8 +54,15 @@ pub struct LearningSchedule {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetLearningStateParams {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunLearningParams {
     pub trigger_kind: LocalLearningTriggerKind,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -121,8 +128,14 @@ mod tests {
 
     #[test]
     fn trigger_kinds_are_snake_case_on_the_wire() {
-        let run = RunLearningParams { trigger_kind: LocalLearningTriggerKind::InApp };
-        assert_eq!(serde_json::to_value(&run).unwrap(), json!({"triggerKind": "in_app"}));
+        let run = RunLearningParams {
+            trigger_kind: LocalLearningTriggerKind::InApp,
+            workspace_id: "w".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&run).unwrap(),
+            json!({"triggerKind": "in_app", "workspaceId": "w"})
+        );
         assert_eq!(round_trip(&run), run);
         assert_eq!(
             serde_json::to_value(LearningTriggerKind::OpenCode).unwrap(),
@@ -225,6 +238,18 @@ mod tests {
 
     #[test]
     fn learning_params_reject_incomplete_and_misspelled_payloads() {
+        assert!(
+            serde_json::from_value::<RunLearningParams>(json!({"triggerKind": "manual"})).is_err(),
+            "workspaceId is required"
+        );
+        assert!(serde_json::from_value::<GetLearningStateParams>(json!({})).is_err());
+        assert_eq!(
+            serde_json::to_value(&GetLearningStateParams {
+                workspace_id: "w".into()
+            })
+            .unwrap(),
+            json!({"workspaceId": "w"})
+        );
         assert!(serde_json::from_value::<RunLearningParams>(json!({})).is_err());
         assert!(
             serde_json::from_value::<RunLearningParams>(json!({"trigger_kind": "manual"})).is_err(),

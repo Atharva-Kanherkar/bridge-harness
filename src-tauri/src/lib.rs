@@ -542,18 +542,23 @@ async fn reset_all_config(
 
 #[tauri::command]
 async fn get_learning_state(
+    workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    api::get_learning_state(state.inner())
+    api::get_learning_state(state.inner(), &workspace_id)
 }
 
 #[tauri::command]
 async fn run_learning(
     trigger_kind: learning_job::LearningTriggerKind,
+    workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     let core = state.inner().clone();
-    blocking("Learning", move || api::run_learning(&core, trigger_kind)).await
+    blocking("Learning", move || {
+        api::run_learning(&core, trigger_kind, &workspace_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -617,11 +622,12 @@ async fn approve_learning_run(
 
 #[tauri::command]
 async fn rollback_routing_policy(
+    workspace_id: String,
     target_version: i64,
     explanation: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    api::rollback_routing_policy(state.inner(), target_version, &explanation)
+    api::rollback_routing_policy(state.inner(), &workspace_id, target_version, &explanation)
 }
 
 #[tauri::command]

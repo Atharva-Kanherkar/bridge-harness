@@ -310,7 +310,7 @@ export interface BridgeMethodParams {
   "config/delete_agent_config": DeleteAgentConfigParams;
   "config/set_default_agent": SetDefaultAgentParams;
   "config/reset_all_config": undefined;
-  "learning/get_learning_state": undefined;
+  "learning/get_learning_state": GetLearningStateParams;
   "learning/run_learning": RunLearningParams;
   "learning/cancel_learning_run": CancelLearningRunParams;
   "learning/update_learning_schedule": UpdateLearningScheduleParams;
@@ -1406,6 +1406,7 @@ export interface UpdateRouterPreferencesParams {
 export interface RollbackRoutingPolicyParams {
   explanation: string;
   targetVersion: number;
+  workspaceId: string;
 }
 
 export type RecommendedModelProfilesResult = ModelProfileDraft[];
@@ -1455,8 +1456,13 @@ export interface SetDefaultAgentParams {
   id: string;
 }
 
+export interface GetLearningStateParams {
+  workspaceId: string;
+}
+
 export interface RunLearningParams {
   triggerKind: LocalLearningTriggerKind;
+  workspaceId: string;
 }
 
 export interface CancelLearningRunParams {
