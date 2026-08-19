@@ -7,6 +7,7 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { MissionControl } from "./components/MissionControl";
@@ -191,7 +192,6 @@ export function App() {
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell");
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
-  const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
   const isDirectChat = session?.kind === "direct";
   // A focused worker is watchable and its approvals are resolvable, but the
   // backend rejects worker turns, so it gets no composer.
@@ -390,6 +390,16 @@ export function App() {
     finally { setBusy(false); }
   }
 
+  // The new-chat dialog asks the two questions once; this routes its answer.
+  async function startChat({ workspaceId, worktree }: NewChatChoice) {
+    if (workspaceId) {
+      await newWorkspaceSession(worktree, workspaceId);
+      return;
+    }
+    setModal(null);
+    await openNewChat();
+  }
+
   useEffect(() => {
     const draft = pendingWelcomeMessageRef.current;
     if (!draft || !session) return;
@@ -402,16 +412,16 @@ export function App() {
     setPendingWorkspaceId(workspaceId);
     setModal("orchestrator");
   }
-  async function newWorkspaceSession(createWorktree: boolean) {
-    if (!pendingWorkspaceId) return;
-    const workspaceId = pendingWorkspaceId;
+  async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string) {
+    const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
+    if (!workspaceId) return;
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
       const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
       setState(next);
-      // Started from the projects screen, so land in the new agent's chat rather
-      // than leaving the user on the card they pressed.
+      // Land in the new agent's chat rather than leaving the user looking at the
+      // card or dialog they came from.
       if (created) openSession(created.id);
       setModal(null); setPendingWorkspaceId(undefined);
     } catch (e) { setError(errorMessage(e)); }
@@ -603,7 +613,7 @@ export function App() {
       projectsActive={view === "projects"}
       marketplaceActive={view === "marketplace"}
       settingsActive={view === "settings"}
-      onOpenNewChat={() => void openNewChat()}
+      onOpenNewChat={() => setModal("chat")}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenSettings={() => setView("settings")}
@@ -639,12 +649,6 @@ export function App() {
           activeTab={activeTab}
           onTabChange={id => setActiveTab(id as typeof activeTab)}
           model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
-          context={hasRepo && workspace
-            ? usesIsolatedWorktree
-              ? "isolated worktree"
-              : `${workspace.branch ?? "folder"} · ${workspace.dirtyFiles ? `${workspace.dirtyFiles} changed` : "clean"}`
-            : undefined}
-          contextWarning={!!workspace?.dirtyFiles && !usesIsolatedWorktree}
           browserOpen={browserOpen}
           onToggleBrowser={() => setBrowserOpen(value => !value)}
           fullscreen={fullscreen}
@@ -768,6 +772,14 @@ export function App() {
       );
     })()}
 
+    <NewChatDialog
+      open={modal === "chat"}
+      workspaces={state.workspaces}
+      initialWorkspaceId={pendingWorkspaceId ?? null}
+      busy={busy}
+      onClose={() => { setModal(null); setPendingWorkspaceId(undefined); }}
+      onStart={choice => void startChat(choice)}
+    />
     <WorkspaceCreateDialog
       open={modal === "workspace"}
       title={title}

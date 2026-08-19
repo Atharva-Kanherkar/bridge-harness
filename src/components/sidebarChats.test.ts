@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
 import {
+  CHAT_SCOPE_KEY,
   CHAT_VIEW_KEY,
   DEFAULT_CHAT_VIEW,
   agentOptions,
@@ -8,8 +9,12 @@ import {
   dayLabel,
   filterChats,
   groupChats,
+  inScope,
+  chatScope,
+  readChatScope,
   readChatView,
   statusBucket,
+  writeChatScope,
   writeChatView,
 } from "./sidebarChats";
 
@@ -218,6 +223,19 @@ describe("agentOptions", () => {
   });
 });
 
+describe("chat scope", () => {
+  it("puts a chat with a workspace under Code and one without under Home", () => {
+    expect(chatScope(chat("a", { workspaceId: "ws-1" }))).toBe("code");
+    expect(chatScope(chat("b", { workspaceId: null }))).toBe("home");
+  });
+
+  it("splits a mixed list without dropping anything", () => {
+    const chats = [chat("a", { workspaceId: "ws-1" }), chat("b"), chat("c", { workspaceId: "ws-2" })];
+    expect(inScope(chats, "code").map(item => item.id)).toEqual(["a", "c"]);
+    expect(inScope(chats, "home").map(item => item.id)).toEqual(["b"]);
+  });
+});
+
 describe("chat view persistence", () => {
   beforeEach(() => {
     const store = new Map<string, string>();
@@ -246,5 +264,13 @@ describe("chat view persistence", () => {
   it("falls back wholesale on unparseable storage", () => {
     localStorage.setItem(CHAT_VIEW_KEY, "{not json");
     expect(readChatView()).toEqual(DEFAULT_CHAT_VIEW);
+  });
+
+  it("round-trips the scope and defaults to Home", () => {
+    expect(readChatScope()).toBe("home");
+    writeChatScope("code");
+    expect(readChatScope()).toBe("code");
+    localStorage.setItem(CHAT_SCOPE_KEY, "nonsense");
+    expect(readChatScope()).toBe("home");
   });
 });

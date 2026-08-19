@@ -2,11 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
-import { CHAT_VIEW_KEY } from "./sidebarChats";
+import { CHAT_SCOPE_KEY, CHAT_VIEW_KEY } from "./sidebarChats";
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
-  workspaceId: "workspace-1",
+  workspaceId: null,
   harness: "codex",
   label: id,
   status: "working",
@@ -31,7 +31,7 @@ const workspace: Workspace = {
 const noop = () => {};
 
 const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps => ({
-  chats: [session("chat-1", { title: "Policy engine budget", workspaceId: null })],
+  chats: [session("chat-1", { title: "Policy engine budget" })],
   workspaces: [workspace],
   activeSessionId: undefined,
   projectsActive: false,
@@ -135,16 +135,16 @@ describe("BridgeSidebar history", () => {
     expect(html).toContain("Yesterday");
   });
 
-  it("includes chats that belong to a workspace", () => {
-    // The old rail rendered standalone chats only, so a project chat was
-    // reachable only by expanding its project.
-    const html = render({ chats: [session("in-project", { title: "Inside harness", workspaceId: "workspace-1" })] });
-    expect(html).toContain("Inside harness");
+  it("keeps a project chat out of Home and shows it under Code", () => {
+    const chats = [session("in-project", { title: "Inside harness", workspaceId: "workspace-1" })];
+    expect(render({ chats })).not.toContain("Inside harness");
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    expect(render({ chats })).toContain("Inside harness");
   });
 
   it("keeps harness and model out of the row text but in its tooltip", () => {
     const html = render({
-      chats: [session("a", { title: "Policy engine budget", harness: "opencode", model: "qwen3.7-plus", workspaceId: null })],
+      chats: [session("a", { title: "Policy engine budget", harness: "opencode", model: "qwen3.7-plus" })],
     });
     expect(html).toContain('title="Policy engine budget — OpenCode · qwen3.7-plus"');
     expect(html).not.toMatch(/>OpenCode · qwen3\.7-plus</);
@@ -152,7 +152,7 @@ describe("BridgeSidebar history", () => {
 
   it("caps a group and offers the rest behind one control", () => {
     const chats = Array.from({ length: 15 }, (_, index) =>
-      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index), workspaceId: null }));
+      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index) }));
     const html = render({ chats });
     expect(html).toContain("Show 3 more");
     expect(html).not.toContain("Chat 0");
@@ -162,7 +162,7 @@ describe("BridgeSidebar history", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "none", sortBy: "recency" }));
     const chats = Array.from({ length: 15 }, (_, index) =>
-      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index), workspaceId: null }));
+      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index) }));
     const html = render({ chats });
     expect(html).not.toContain("Show 3 more");
     // Every chat keeps a row; a cap with no control would strand the last three.
@@ -185,11 +185,12 @@ describe("BridgeSidebar history", () => {
 
 describe("BridgeSidebar without the projects tree", () => {
   it("carries no project rows and no new-project control", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
     const html = render({
       workspaces: [workspace],
       chats: [session("a", { title: "Inside harness", workspaceId: "workspace-1" })],
     });
-    // The chat itself still appears in the history; only the tree is gone.
+    // Under Code the chat is listed flat; what is gone is the tree around it.
     expect(html).toContain("Inside harness");
     expect(html).not.toContain("New project");
     expect(html).not.toContain("New agent");
@@ -206,9 +207,53 @@ describe("BridgeSidebar without the projects tree", () => {
   });
 
   it("still labels project groups, which is why it keeps the workspaces prop", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
     const html = render({ chats: [session("a", { workspaceId: "workspace-1" })] });
     expect(html).toContain("harness");
+  });
+});
+
+describe("BridgeSidebar scope switch", () => {
+  it("offers Home and Code, with Home selected by default", () => {
+    const html = render();
+    expect(html).toContain('aria-label="Home"');
+    expect(html).toContain('aria-label="Code"');
+    const home = html.split("<button").find(chunk => chunk.includes('aria-label="Home"')) ?? "";
+    expect(home).toContain('aria-selected="true"');
+  });
+
+  it("honours a persisted scope", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    const code = render().split("<button").find(chunk => chunk.includes('aria-label="Code"')) ?? "";
+    expect(code).toContain('aria-selected="true"');
+  });
+
+  it("splits plain chats from project chats", () => {
+    const chats = [
+      session("plain", { title: "Japan relocation planning" }),
+      session("project", { title: "Sidebar redesign", workspaceId: "workspace-1" }),
+    ];
+    const home = render({ chats });
+    expect(home).toContain("Japan relocation planning");
+    expect(home).not.toContain("Sidebar redesign");
+
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    const code = render({ chats });
+    expect(code).toContain("Sidebar redesign");
+    expect(code).not.toContain("Japan relocation planning");
+  });
+
+  it("says where project chats come from when Code is empty", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    expect(render({ chats: [session("plain")] })).toContain("New chat asks which project");
+  });
+
+  it("keeps the switch reachable in the collapsed rail", () => {
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    const html = render();
+    expect(html).toContain('aria-label="Home"');
+    expect(html).toContain('aria-label="Code"');
   });
 });
 

@@ -10,9 +10,15 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
   reached from the footer beside Marketplace and Settings. The rail keeps its
   `workspaces` prop only because `Group by → Project` needs workspace titles for its
   group labels.
-- **The history keeps every top-level chat.** With the tree gone from the rail, a
-  project's chats are no longer listed twice, so the flat history stays the single
-  place every chat is reachable and `Group by → Project` stays meaningful.
+- **The rail is split by scope, not by tree.** A `Home` / `Code` switch sits above
+  New chat: Home lists chats with no project, Code lists chats inside one. Both
+  halves keep the same day headers, filter menu, search and cap. This replaces the
+  tree as the way project work is reached from the rail.
+- **A chat's scope follows from its data, not from a setting.** `workspaceId` decides
+  it: no project means Home. Nothing else needs storing, and an existing chat cannot
+  be in the wrong half.
+- **Every chat still lives in exactly one list.** The tree is gone, so no chat is
+  listed twice; `Group by → Project` stays meaningful inside Code.
 - **The header loses its second line.** It currently renders
   `Orchestrator · Claude · Claude Opus · isolated worktree` — the harness twice,
   because the code calls `harnessLabel` in two places. Title, model and repo context
@@ -45,6 +51,37 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 - With no workspaces the screen shows one empty state and the `New project` action,
   not an empty grid.
 
+### New chat
+- The rail's New chat opens a dialog rather than creating immediately. It asks the
+  two questions every chat needs answered: which project, and whether to take an
+  isolated worktree.
+- `No project` is preselected and produces a plain Home chat through the existing
+  `createChat` path.
+- Choosing a project reveals the worktree checkbox. It is disabled, with a reason,
+  for a workspace with no repository behind it (`projectId` absent) — the same
+  condition the orchestrator dialog already checks.
+- The confirm names the destination: `Start chat`, or `Start in <project>`.
+- Escape closes. Each visit starts from the caller's intent, not the previous
+  answer, so a dialog opened from a project card preselects that project.
+
+### Scope switch
+- Two tabs, `Home` and `Code`, persisted under `bridge.sidebar.scope`, defaulting to
+  Home. Both stay reachable in the collapsed rail as icons.
+- Opening a chat switches the rail to that chat's scope, once per chat id — so a new
+  plain chat started from Code, or a project chat opened from the projects screen,
+  is never created into a list the rail is not showing. A manual switch afterwards
+  survives the next poll.
+- An empty Code list says where project chats come from rather than just "no chats".
+
+### Group folding
+- Every group header is a button that folds its own group away, with `aria-expanded`
+  and a chevron. The header and its count stay visible while folded, so there is
+  something to unfold from.
+- Folds are keyed by group key and reset when the grouping or the scope changes,
+  since those re-key every group.
+- The collapsed rail does not fold, for the same reason it does not cap: no header,
+  nowhere to unfold from.
+
 ### Session toolbar
 - One row replaces the old title block and the tab strip: title, segmented tab
   control, quiet context text, overflow menu.
@@ -53,9 +90,9 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 - `Changes` shows its dirty-file count whether or not it is the active tab.
 - The segmented control is absent when the session has no repo — a direct chat has
   one panel, so a one-item control would be furniture.
-- Context text reads `<model>` and, for a repo session, `isolated worktree` or
-  `<branch> · N changed` / `<branch> · clean`. It hides below `lg`, where the row
-  has no room for it; the title and tabs never hide.
+- Context text is the model alone, hidden below `lg`. The branch and dirty count are
+  deliberately absent: the count already rides on the Changes tab, and the branch
+  name in a header is the noise this strip exists to remove.
 - The overflow menu holds Browser (checked while open), Learning router settings
   (repo sessions only), Fullscreen, and End chat (only while the session is live).
   End is styled destructive and disabled while a turn is in flight.
@@ -65,6 +102,7 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 ### Rail
 - No projects tree, no `New project` button in the rail, no per-workspace rows in
   the collapsed rail.
+- Order: brand row, scope switch, New chat, search, history, footer.
 - Footer order: Projects, Marketplace, Settings.
 - Everything else from #201 is unchanged: day headers, filter/grouping popover,
   search, the 12-row cap, collapse, resize, the below-`sm` drawer.
@@ -93,8 +131,37 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 `src/components/BridgeSidebar.test.tsx` — extended:
 - Renders no projects tree and no `New project` control.
 - Renders a `Projects` footer entry, and marks it active when `projectsActive`.
+- Offers Home and Code, Home selected by default, and honours a persisted scope.
+- A project chat is absent from Home and present under Code.
+- An empty Code list explains where project chats come from.
+- The switch stays present in the collapsed rail.
 - Existing cases stay green, including `Group by → Project` labels, which still
   need the `workspaces` prop.
+
+`src/components/BridgeSidebar.interaction.test.tsx` — new, jsdom, for behaviour the
+static suite cannot reach:
+- Folding a group hides its chats and keeps its header, count and `aria-expanded`.
+- A fold does not survive a scope change, which re-keys every group.
+- Switching scope swaps which chats are listed and persists the choice.
+- Opening a chat follows the rail to that chat's scope, in both directions.
+- A manual switch survives a re-render with the same active chat.
+
+`src/components/NewChatDialog.test.tsx` — new:
+- Renders nothing while closed.
+- Lists `No project` plus every project, with `No project` chosen by default.
+- Reports `{workspaceId: null, worktree: false}` for a plain chat.
+- Reveals the worktree checkbox only once a project is chosen, and reports the
+  project and worktree together.
+- Disables the worktree option, with a reason, for a workspace with no repository,
+  and still reports `worktree: false` for it.
+- Names the project on the confirm button.
+- Preselects `initialWorkspaceId`, and forgets the previous answer between visits.
+- Closes on Escape; holds the confirm while busy.
+
+`src/components/sidebarChats.test.ts` — extended:
+- `chatScope` maps a workspace to Code and its absence to Home.
+- `inScope` splits a mixed list without dropping anything.
+- The scope round-trips through storage and falls back to Home on a bad value.
 
 `src/components/SidebarFilterMenu.test.tsx` — unchanged, and must stay green across
 the `MenuPanel` extraction. It is the proof the refactor kept behaviour.
@@ -123,6 +190,9 @@ real components against mock data and driving them in a browser, as in #201.
 
 ## Manual Tests
 
+0. New chat opens the dialog; picking `No project` produces a Home chat, picking a
+   project produces a Code chat and offers a worktree.
+0b. Fold a day header: its chats hide, its header and count stay, the chevron turns.
 1. Open the app: the rail has no projects tree; the footer has Projects.
 2. Click Projects: one card per workspace with its branch, dirty count and chats.
 3. Click a chat on a card: it opens in the workspace view.

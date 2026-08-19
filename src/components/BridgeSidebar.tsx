@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
+import { ChevronRight, Code2, FolderGit2, House, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
@@ -10,8 +10,13 @@ import {
   chatName,
   filterChats,
   groupChats,
+  chatScope,
+  inScope,
+  readChatScope,
   readChatView,
+  writeChatScope,
   writeChatView,
+  type ChatScope,
   type ChatView,
 } from "./sidebarChats";
 
@@ -68,6 +73,49 @@ function ChatRow({ chat, active, collapsed, onClick }: { chat: Session; active: 
   );
 }
 
+// Home is where plain conversations live; Code is work inside a project. One
+// switch, so the two never interleave in one list.
+function ScopeSwitch({ scope, collapsed, onChange }: { scope: ChatScope; collapsed: boolean; onChange: (scope: ChatScope) => void }) {
+  const options: { id: ChatScope; label: string; icon: typeof House }[] = [
+    { id: "home", label: "Home", icon: House },
+    { id: "code", label: "Code", icon: Code2 },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="Chat scope"
+      className={cn(
+        "flex shrink-0 rounded-lg border border-border bg-muted p-0.5",
+        collapsed ? "mb-2 flex-col gap-0.5" : "mb-2 h-8 gap-0.5",
+      )}
+    >
+      {options.map(option => {
+        const active = option.id === scope;
+        const Icon = option.icon;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            aria-label={option.label}
+            title={option.label}
+            onClick={() => onChange(option.id)}
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md text-[12.5px] font-medium transition-colors",
+              collapsed ? "h-8 w-full" : "h-7 flex-1",
+              active ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Icon size={14} strokeWidth={1.7} aria-hidden="true" />
+            {!collapsed && option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function SectionLabel({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div className="flex h-7 items-center gap-1 px-2">
@@ -77,12 +125,24 @@ function SectionLabel({ children, action }: { children: React.ReactNode; action?
   );
 }
 
-function GroupLabel({ label, count }: { label: string; count: number }) {
+function GroupLabel({ label, count, folded, onToggle }: { label: string; count: number; folded: boolean; onToggle: () => void }) {
   return (
-    <div className="sticky top-0 z-[1] flex h-6 items-center gap-2 bg-sidebar px-2">
-      <span className="text-[11px] text-muted-foreground/80">{label}</span>
-      <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">{count}</span>
-    </div>
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!folded}
+      title={folded ? `Show ${label}` : `Hide ${label}`}
+      className="sticky top-0 z-[1] flex h-6 w-full items-center gap-1.5 rounded-md bg-sidebar px-2 text-left transition-colors hover:bg-accent"
+    >
+      <ChevronRight
+        size={11}
+        strokeWidth={2}
+        aria-hidden="true"
+        className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
+      />
+      <span className="min-w-0 truncate text-[11px] text-muted-foreground/80">{label}</span>
+      <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/60">{count}</span>
+    </button>
   );
 }
 
@@ -115,6 +175,7 @@ export type BridgeSidebarProps = {
   /** Drawer state below the sm breakpoint, where the rail is off-canvas. */
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
+  /** Opens the new-chat dialog, which asks for project and worktree. */
   onOpenNewChat: () => void;
   onOpenProjects: () => void;
   onOpenMarketplace: () => void;
@@ -142,12 +203,15 @@ export function BridgeSidebar({
   const [resizing, setResizing] = useState(false);
   const [skipWidthTransition, setSkipWidthTransition] = useState(false);
   const [view, setView] = useState<ChatView>(readChatView);
+  const [scope, setScope] = useState<ChatScope>(readChatScope);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [shownInFull, setShownInFull] = useState<Set<string>>(new Set());
+  const [foldedGroups, setFoldedGroups] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(() => Date.now());
   const widthRef = useRef(width);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
+  const followedRef = useRef<string | undefined>(undefined);
   widthRef.current = width;
 
   useEffect(() => {
@@ -165,11 +229,38 @@ export function BridgeSidebar({
     localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
+  // Follow the chat that just opened. Starting a plain chat from Code, or opening
+  // a project chat from the projects screen, would otherwise leave the rail
+  // showing a list the active chat is not in. Once per id, so a manual switch
+  // afterwards survives the next poll — and so a chat that arrives a render later
+  // than its id is still followed.
+  useEffect(() => {
+    if (!activeSessionId || followedRef.current === activeSessionId) return;
+    const active = chats.find(chat => chat.id === activeSessionId);
+    if (!active) return;
+    followedRef.current = activeSessionId;
+    const next = chatScope(active);
+    setScope(current => {
+      if (current === next) return current;
+      writeChatScope(next);
+      return next;
+    });
+  }, [activeSessionId, chats]);
+
+  const changeScope = useCallback((next: ChatScope) => {
+    setScope(next);
+    writeChatScope(next);
+    setShownInFull(new Set());
+    setFoldedGroups(new Set());
+  }, []);
+
   const changeView = useCallback((next: ChatView) => {
     setView(next);
     writeChatView(next);
-    // A cap belongs to a group key, and the keys change meaning with the grouping.
+    // A cap and a fold both belong to a group key, and the keys change meaning
+    // with the grouping.
     setShownInFull(new Set());
+    setFoldedGroups(new Set());
   }, []);
 
   const toggleCollapsed = useCallback(() => {
@@ -235,14 +326,24 @@ export function BridgeSidebar({
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
 
-  const agents = useMemo(() => agentOptions(chats), [chats]);
+  const toggleFold = useCallback((key: string) => {
+    setFoldedGroups(current => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const scoped = useMemo(() => inScope(chats, scope), [chats, scope]);
+  const agents = useMemo(() => agentOptions(scoped), [scoped]);
   const workspaceTitle = useMemo(() => {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
   }, [workspaces]);
   const visible = useMemo(
-    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
-    [chats, query, view.status, view.agent, workspaceTitle],
+    () => filterChats(scoped, { query, status: view.status, agent: view.agent, workspaceTitle }),
+    [scoped, query, view.status, view.agent, workspaceTitle],
   );
   const groups = useMemo(
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
@@ -310,6 +411,8 @@ export function BridgeSidebar({
           )}
         </div>
 
+        <ScopeSwitch scope={scope} collapsed={collapsed} onChange={changeScope} />
+
         <div className="mb-2 shrink-0">
           <button
             type="button"
@@ -354,14 +457,23 @@ export function BridgeSidebar({
             // The icon rail has nowhere to put the reveal control, so it must not
             // cap either — a cap without its control puts chats out of reach.
             const capped = !collapsed && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
-            const rows = capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
+            // Folding needs a header to unfold from, so the icon rail never folds.
+            const folded = !collapsed && !!group.label && foldedGroups.has(group.key);
+            const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
             return (
               <div key={group.key}>
-                {!collapsed && group.label && <GroupLabel label={group.label} count={group.chats.length} />}
+                {!collapsed && group.label && (
+                  <GroupLabel
+                    label={group.label}
+                    count={group.chats.length}
+                    folded={folded}
+                    onToggle={() => toggleFold(group.key)}
+                  />
+                )}
                 {rows.map(chat => (
                   <ChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={collapsed} onClick={() => onOpenSession(chat.id)} />
                 ))}
-                {capped && (
+                {capped && !folded && (
                   <button
                     type="button"
                     onClick={() => setShownInFull(current => new Set(current).add(group.key))}
@@ -374,8 +486,12 @@ export function BridgeSidebar({
             );
           })}
           {!visible.length && !collapsed && (
-            <p className="px-2 py-1 text-[11px] text-muted-foreground/70">
-              {chats.length ? "No chat matches this filter." : "No chats yet."}
+            <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
+              {scoped.length
+                ? "No chat matches this filter."
+                : scope === "code"
+                  ? "No project chats yet. New chat asks which project to run in."
+                  : "No chats yet."}
             </p>
           )}
         </div>

@@ -21,10 +21,10 @@ export type SessionToolbarProps = {
   tabs: SessionToolbarTab[];
   activeTab: string;
   onTabChange: (id: string) => void;
-  /** Quiet context at the right edge: the model, then the repo state. */
+  /** Quiet context at the right edge. The branch and dirty count are deliberately
+   * absent: the count already rides on the Changes tab, and the branch name in a
+   * header was the noise this strip exists to remove. */
   model?: string;
-  context?: string;
-  contextWarning?: boolean;
   browserOpen: boolean;
   onToggleBrowser: () => void;
   fullscreen: boolean;
@@ -45,8 +45,6 @@ export function SessionToolbar({
   activeTab,
   onTabChange,
   model,
-  context,
-  contextWarning = false,
   browserOpen,
   onToggleBrowser,
   fullscreen,
@@ -101,12 +99,8 @@ export function SessionToolbar({
         </div>
       )}
 
-      {(model || context) && (
-        <p className="hidden shrink-0 items-center gap-1.5 truncate text-[11px] text-muted-foreground lg:flex">
-          {model}
-          {model && context && <span aria-hidden="true">·</span>}
-          {context && <span className={cn(contextWarning && "text-warning")}>{context}</span>}
-        </p>
+      {model && (
+        <p className="hidden shrink-0 truncate text-[11px] text-muted-foreground lg:block">{model}</p>
       )}
 
       <button

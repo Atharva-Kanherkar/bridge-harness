@@ -6,6 +6,31 @@ import { harnessLabel } from "../utils";
 // problem, not a scrolling problem — this module owns that logic so the
 // component stays presentation.
 
+/** Which half of the app a chat belongs to: a plain conversation, or work inside
+ * a project. The rail shows one or the other, never both interleaved. */
+export type ChatScope = "home" | "code";
+
+export const CHAT_SCOPE_KEY = "bridge.sidebar.scope";
+
+export function readChatScope(): ChatScope {
+  if (typeof localStorage === "undefined") return "home";
+  return localStorage.getItem(CHAT_SCOPE_KEY) === "code" ? "code" : "home";
+}
+
+export function writeChatScope(scope: ChatScope): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(CHAT_SCOPE_KEY, scope);
+}
+
+/** A chat belongs to Code when it runs inside a project, Home when it does not. */
+export function chatScope(chat: Session): ChatScope {
+  return chat.workspaceId ? "code" : "home";
+}
+
+export function inScope(chats: Session[], scope: ChatScope): Session[] {
+  return chats.filter(chat => chatScope(chat) === scope);
+}
+
 export type ChatGroupBy = "date" | "project" | "agent" | "status" | "none";
 export type ChatSortBy = "recency" | "name";
 export type ChatStatusFilter = "all" | "active" | "waiting" | "failed";

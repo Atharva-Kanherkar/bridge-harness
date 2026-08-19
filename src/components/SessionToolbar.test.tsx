@@ -23,7 +23,6 @@ const props = (overrides: Partial<SessionToolbarProps> = {}): SessionToolbarProp
   activeTab: "agent",
   onTabChange: noop,
   model: "Claude Opus",
-  context: "isolated worktree",
   browserOpen: false,
   onToggleBrowser: noop,
   fullscreen: false,
@@ -96,10 +95,14 @@ describe("SessionToolbar", () => {
     expect(onTabChange).toHaveBeenCalledWith("terminal");
   });
 
-  it("carries the model and repo context as one quiet line", () => {
+  it("carries the model and nothing else as quiet context", () => {
     mount();
     expect(container.textContent).toContain("Claude Opus");
-    expect(container.textContent).toContain("isolated worktree");
+    // The branch and its dirty count were the line the user asked to lose; the
+    // count already rides on the Changes tab.
+    expect(container.textContent).not.toContain("isolated worktree");
+    expect(container.textContent).not.toContain("changed");
+    expect(container.textContent).not.toMatch(/codex\/|feat\//);
   });
 
   it("collects the window actions behind one overflow control", () => {
