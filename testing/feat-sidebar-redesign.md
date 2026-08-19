@@ -98,8 +98,10 @@ its current value and a chevron:
 ### Search
 - The search icon on the brand row toggles a filter input; toggling it off clears
   the query.
-- A query matches case-insensitively against title, label, harness label and model,
-  and is trimmed before matching.
+- A query matches case-insensitively against title, label, harness label, model,
+  **and the title of the chat's project**, and is trimmed before matching. Matching
+  on the project name is what makes a project-name search useful: its chats surface
+  in the history and in the tree, instead of the project expanding to nothing.
 - While a query is active, a project with a matching name or a matching child
   renders expanded regardless of the `expanded` set, and a project with no match is
   hidden. The parent's `expanded` state is not mutated by searching.
@@ -151,6 +153,8 @@ callback prop other than the worker and chat-list props named above.
   when `title` is null.
 - `filterChats` — matches title, label, harness label and model,
   case-insensitively; whitespace-only query matches everything.
+- `filterChats` — with a `workspaceTitle` resolver, a chat matches on its project's
+  name; without one, the project name is not part of the haystack.
 - `filterChats` — `status: "active"` keeps only the active bucket; `agent: "codex"`
   keeps only that harness; the two compose.
 - `agentOptions` — one entry per harness present, deduped, alphabetical.
@@ -214,8 +218,9 @@ No cURL surface. Manual pass, in the running app:
 3. Set `Group by → Project`, confirm groups are project names plus `No project`.
 4. Reload the app — the four settings survive.
 5. Toggle search, type a fragment of a project name — that project renders expanded
-   and non-matching projects disappear; clear it and the tree returns to its
-   previous expansion.
+   **with its chats listed**, non-matching projects disappear, and the same chats
+   appear in the history below; clear it and the tree returns to its previous
+   expansion.
 6. Collapse the rail — icon-only, and no worker tile.
 7. Narrow the window below `sm` — the rail becomes the off-canvas drawer, scrim
    dismisses it.
