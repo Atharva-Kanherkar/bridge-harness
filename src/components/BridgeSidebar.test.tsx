@@ -135,7 +135,7 @@ describe("BridgeSidebar history", () => {
     expect(html).toContain("Yesterday");
   });
 
-  it("keeps a project chat out of Home and shows it under Code", () => {
+  it("keeps a project chat out of Work and shows it under Code", () => {
     const chats = [session("in-project", { title: "Inside harness", workspaceId: "workspace-1" })];
     expect(render({ chats })).not.toContain("Inside harness");
     localStorage.setItem(CHAT_SCOPE_KEY, "code");
@@ -215,12 +215,12 @@ describe("BridgeSidebar without the projects tree", () => {
 });
 
 describe("BridgeSidebar scope switch", () => {
-  it("offers Home and Code, with Home selected by default", () => {
+  it("offers Work and Code, with Work selected by default", () => {
     const html = render();
-    expect(html).toContain('aria-label="Home"');
+    expect(html).toContain('aria-label="Work"');
     expect(html).toContain('aria-label="Code"');
-    const home = html.split("<button").find(chunk => chunk.includes('aria-label="Home"')) ?? "";
-    expect(home).toContain('aria-selected="true"');
+    const work = html.split("<button").find(chunk => chunk.includes('aria-label="Work"')) ?? "";
+    expect(work).toContain('aria-selected="true"');
   });
 
   it("honours a persisted scope", () => {
@@ -252,7 +252,7 @@ describe("BridgeSidebar scope switch", () => {
   it("keeps the switch reachable in the collapsed rail", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
     const html = render();
-    expect(html).toContain('aria-label="Home"');
+    expect(html).toContain('aria-label="Work"');
     expect(html).toContain('aria-label="Code"');
   });
 });

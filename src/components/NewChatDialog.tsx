@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, FolderGit2, GitFork, House, MessageSquarePlus } from "lucide-react";
+import { Check, FolderGit2, GitFork, MessagesSquare, MessageSquarePlus } from "lucide-react";
 import type { Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { CreateDialogShell } from "./CreateDialogShell";
@@ -79,7 +79,7 @@ export function NewChatDialog({
             workspaceId === null ? "border-border bg-accent" : "border-transparent hover:bg-accent",
           )}
         >
-          <House size={15} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <MessagesSquare size={15} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 flex-1">
             <span className="block text-[13px] font-medium text-foreground">No project</span>
             <span className="block text-[11px] text-muted-foreground">A plain chat, no repository attached.</span>

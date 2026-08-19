@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Code2, FolderGit2, House, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
+import { ChevronRight, Code2, FolderGit2, MessagesSquare, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
@@ -73,11 +73,11 @@ function ChatRow({ chat, active, collapsed, onClick }: { chat: Session; active: 
   );
 }
 
-// Home is where plain conversations live; Code is work inside a project. One
+// Work is where plain conversations live; Code is work inside a project. One
 // switch, so the two never interleave in one list.
 function ScopeSwitch({ scope, collapsed, onChange }: { scope: ChatScope; collapsed: boolean; onChange: (scope: ChatScope) => void }) {
-  const options: { id: ChatScope; label: string; icon: typeof House }[] = [
-    { id: "home", label: "Home", icon: House },
+  const options: { id: ChatScope; label: string; icon: typeof Code2 }[] = [
+    { id: "work", label: "Work", icon: MessagesSquare },
     { id: "code", label: "Code", icon: Code2 },
   ];
   return (
@@ -86,7 +86,7 @@ function ScopeSwitch({ scope, collapsed, onChange }: { scope: ChatScope; collaps
       aria-label="Chat scope"
       className={cn(
         "flex shrink-0 rounded-lg border border-border bg-muted p-0.5",
-        collapsed ? "mb-2 flex-col gap-0.5" : "mb-2 h-8 gap-0.5",
+        collapsed ? "mb-3 flex-col gap-0.5" : "mb-3 h-8 gap-0.5",
       )}
     >
       {options.map(option => {
@@ -329,7 +329,7 @@ export function BridgeSidebar({
   // A project grouping persisted from Code is meaningless in Home, so it is
   // corrected rather than left to render one "No project" group.
   useEffect(() => {
-    if (scope === "home" && view.groupBy === "project") changeView({ ...view, groupBy: "date" });
+    if (scope === "work" && view.groupBy === "project") changeView({ ...view, groupBy: "date" });
   }, [scope, view, changeView]);
 
   const toggleFold = useCallback((key: string) => {
@@ -386,7 +386,7 @@ export function BridgeSidebar({
       <div className={cn("flex min-h-0 h-full flex-col", collapsed ? "px-2 py-3" : "px-2 py-3")}>
         <div
           className={cn(
-            "mb-2.5 grid h-7 shrink-0 items-center",
+            "mb-3 grid h-7 shrink-0 items-center",
             collapsed ? "grid-cols-1 justify-items-start pl-0.5" : "grid-cols-[40px_28px_minmax(0,1fr)_auto] gap-1",
           )}
           data-tauri-drag-region
@@ -419,7 +419,7 @@ export function BridgeSidebar({
 
         <ScopeSwitch scope={scope} collapsed={collapsed} onChange={changeScope} />
 
-        <div className="mb-2 shrink-0">
+        <div className="mb-4 shrink-0">
           <button
             type="button"
             onClick={onOpenNewChat}
@@ -437,7 +437,7 @@ export function BridgeSidebar({
         </div>
 
         {!collapsed && searchOpen && (
-          <div className="relative mb-2 shrink-0">
+          <div className="relative mb-3 shrink-0">
             <Search size={13} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-2 text-muted-foreground" />
             <input
               type="text"

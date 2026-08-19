@@ -10,13 +10,14 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
   reached from the footer beside Marketplace and Settings. The rail keeps its
   `workspaces` prop only because `Group by → Project` needs workspace titles for its
   group labels.
-- **The rail is split by scope, not by tree.** A `Home` / `Code` switch sits above
-  New chat: Home lists chats with no project, Code lists chats inside one. Both
+- **The rail is split by scope, not by tree.** A `Work` / `Code` switch sits above
+  New chat: Work lists chats with no project, Code lists chats inside one. Both
   halves keep the same day headers, filter menu, search and cap. This replaces the
   tree as the way project work is reached from the rail.
 - **A chat's scope follows from its data, not from a setting.** `workspaceId` decides
-  it: no project means Home. Nothing else needs storing, and an existing chat cannot
-  be in the wrong half.
+  it: no project means Work. Nothing else needs storing, and an existing chat cannot
+  be in the wrong half. The scope ids are `work` and `code` in the source too, so the
+  label and the code cannot drift apart.
 - **Every chat still lives in exactly one list.** The tree is gone, so no chat is
   listed twice; `Group by → Project` stays meaningful inside Code.
 - **The header loses its second line.** It currently renders
@@ -65,14 +66,16 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
   answer, so a dialog opened from a project card preselects that project.
 
 ### Scope switch
-- Two tabs, `Home` and `Code`, persisted under `bridge.sidebar.scope`, defaulting to
-  Home. Both stay reachable in the collapsed rail as icons.
+- Two tabs, `Work` and `Code`, persisted under `bridge.sidebar.scope`, defaulting to
+  Work. Both stay reachable in the collapsed rail as icons. Work carries a
+  conversation icon rather than a house — it is the plain-chat half, not a home
+  screen.
 - Opening a chat switches the rail to that chat's scope, once per chat id — so a new
   plain chat started from Code, or a project chat opened from the projects screen,
   is never created into a list the rail is not showing. A manual switch afterwards
   survives the next poll.
 - An empty Code list says where project chats come from rather than just "no chats".
-- `Group by → Project` is offered in Code only. Nothing in Home has a project, so
+- `Group by → Project` is offered in Code only. Nothing in Work has a project, so
   grouping by one there would produce a single `No project` bucket and call it a
   grouping. A project grouping carried over from Code is corrected to `Date` and the
   correction is persisted, so the stored view and the rendered list never disagree.
@@ -106,7 +109,9 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 ### Rail
 - No projects tree, no `New project` button in the rail, no per-workspace rows in
   the collapsed rail.
-- Order: brand row, scope switch, New chat, search, history, footer.
+- Order: brand row, scope switch, New chat, search, history, footer, with 12px
+  between the top controls and 16px under New chat, so the action is not crowded
+  against either the switch or the list.
 - Footer order: Projects, Marketplace, Settings.
 - Everything else from #201 is unchanged: day headers, filter/grouping popover,
   search, the 12-row cap, collapse, resize, the below-`sm` drawer.
@@ -148,8 +153,8 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 `src/components/BridgeSidebar.test.tsx` — extended:
 - Renders no projects tree and no `New project` control.
 - Renders a `Projects` footer entry, and marks it active when `projectsActive`.
-- Offers Home and Code, Home selected by default, and honours a persisted scope.
-- A project chat is absent from Home and present under Code.
+- Offers Work and Code, Work selected by default, and honours a persisted scope.
+- A project chat is absent from Work and present under Code.
 - An empty Code list explains where project chats come from.
 - The switch stays present in the collapsed rail.
 - Existing cases stay green, including `Group by → Project` labels, which still

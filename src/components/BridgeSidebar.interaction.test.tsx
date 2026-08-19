@@ -113,13 +113,13 @@ describe("BridgeSidebar group folding", () => {
     expect(text()).not.toContain("Japan relocation");
     // Switching scope re-keys every group, so a stale fold must not survive.
     click(scopeTab("Code"));
-    click(scopeTab("Home"));
+    click(scopeTab("Work"));
     expect(text()).toContain("Japan relocation");
   });
 });
 
 describe("BridgeSidebar scope switching", () => {
-  it("shows plain chats under Home and project chats under Code", () => {
+  it("shows plain chats under Work and project chats under Code", () => {
     mount();
     expect(text()).toContain("Japan relocation");
     expect(text()).not.toContain("Sidebar redesign");
@@ -132,7 +132,7 @@ describe("BridgeSidebar scope switching", () => {
 
   it("follows the chat that just opened into its own scope", () => {
     mount();
-    expect(scopeTab("Home").getAttribute("aria-selected")).toBe("true");
+    expect(scopeTab("Work").getAttribute("aria-selected")).toBe("true");
     // A project chat opened from the projects screen must not vanish into a list
     // the rail is not showing.
     mount({ activeSessionId: "project" });
@@ -140,23 +140,23 @@ describe("BridgeSidebar scope switching", () => {
     expect(text()).toContain("Sidebar redesign");
   });
 
-  it("follows a plain chat back to Home", () => {
+  it("follows a plain chat back to Work", () => {
     localStorage.setItem(CHAT_SCOPE_KEY, "code");
     mount({ activeSessionId: "project" });
     expect(scopeTab("Code").getAttribute("aria-selected")).toBe("true");
     mount({ activeSessionId: "plain" });
-    expect(scopeTab("Home").getAttribute("aria-selected")).toBe("true");
+    expect(scopeTab("Work").getAttribute("aria-selected")).toBe("true");
   });
 
-  it("corrects a project grouping carried into Home, where nothing has a project", () => {
+  it("corrects a project grouping carried into Work, where nothing has a project", () => {
     localStorage.setItem(CHAT_SCOPE_KEY, "code");
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
     mount();
     // Code groups by project name.
     expect(text()).toContain("harness");
 
-    click(scopeTab("Home"));
-    // Home falls back to day headers instead of one "No project" bucket, and the
+    click(scopeTab("Work"));
+    // Work falls back to day headers instead of one "No project" bucket, and the
     // correction is persisted so the two never disagree.
     expect(text()).toContain("Today");
     expect(text()).not.toContain("No project");

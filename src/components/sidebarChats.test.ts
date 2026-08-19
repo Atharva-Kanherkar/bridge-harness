@@ -224,15 +224,15 @@ describe("agentOptions", () => {
 });
 
 describe("chat scope", () => {
-  it("puts a chat with a workspace under Code and one without under Home", () => {
+  it("puts a chat with a workspace under Code and one without under Work", () => {
     expect(chatScope(chat("a", { workspaceId: "ws-1" }))).toBe("code");
-    expect(chatScope(chat("b", { workspaceId: null }))).toBe("home");
+    expect(chatScope(chat("b", { workspaceId: null }))).toBe("work");
   });
 
   it("splits a mixed list without dropping anything", () => {
     const chats = [chat("a", { workspaceId: "ws-1" }), chat("b"), chat("c", { workspaceId: "ws-2" })];
     expect(inScope(chats, "code").map(item => item.id)).toEqual(["a", "c"]);
-    expect(inScope(chats, "home").map(item => item.id)).toEqual(["b"]);
+    expect(inScope(chats, "work").map(item => item.id)).toEqual(["b"]);
   });
 });
 
@@ -266,11 +266,11 @@ describe("chat view persistence", () => {
     expect(readChatView()).toEqual(DEFAULT_CHAT_VIEW);
   });
 
-  it("round-trips the scope and defaults to Home", () => {
-    expect(readChatScope()).toBe("home");
+  it("round-trips the scope and defaults to Work", () => {
+    expect(readChatScope()).toBe("work");
     writeChatScope("code");
     expect(readChatScope()).toBe("code");
     localStorage.setItem(CHAT_SCOPE_KEY, "nonsense");
-    expect(readChatScope()).toBe("home");
+    expect(readChatScope()).toBe("work");
   });
 });

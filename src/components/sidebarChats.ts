@@ -8,13 +8,13 @@ import { harnessLabel } from "../utils";
 
 /** Which half of the app a chat belongs to: a plain conversation, or work inside
  * a project. The rail shows one or the other, never both interleaved. */
-export type ChatScope = "home" | "code";
+export type ChatScope = "work" | "code";
 
 export const CHAT_SCOPE_KEY = "bridge.sidebar.scope";
 
 export function readChatScope(): ChatScope {
-  if (typeof localStorage === "undefined") return "home";
-  return localStorage.getItem(CHAT_SCOPE_KEY) === "code" ? "code" : "home";
+  if (typeof localStorage === "undefined") return "work";
+  return localStorage.getItem(CHAT_SCOPE_KEY) === "code" ? "code" : "work";
 }
 
 export function writeChatScope(scope: ChatScope): void {
@@ -22,9 +22,9 @@ export function writeChatScope(scope: ChatScope): void {
   localStorage.setItem(CHAT_SCOPE_KEY, scope);
 }
 
-/** A chat belongs to Code when it runs inside a project, Home when it does not. */
+/** A chat belongs to Code when it runs inside a project, Work when it does not. */
 export function chatScope(chat: Session): ChatScope {
-  return chat.workspaceId ? "code" : "home";
+  return chat.workspaceId ? "code" : "work";
 }
 
 export function inScope(chats: Session[], scope: ChatScope): Session[] {
