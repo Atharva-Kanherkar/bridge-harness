@@ -49,8 +49,13 @@ by Bridge, so opening it starts nothing.
 - Severity, source and freshness are words in the accessible name, never colour
   alone.
 - Every fact kind maps to its own source glyph: check, approval, queue, branch.
-- Each of the four `WorkFactAction` variants invokes its own api call and reports
-  success, failure, and retry.
+- Each of the four `WorkFactAction` variants has its own handling, and reports
+  success, failure, and retry. **Two navigate and two call**: `reviewCompletionCheck`
+  and `answerApproval` open the session, because a board button must not answer an
+  approval on the user's behalf, while `refreshWorkspaceBase` and
+  `refreshBaseObservation` are Bridge's own work and do call.
+- A row's action cannot fire twice from two clicks in the same tick, and its button is
+  re-enabled however the call ends.
 
 ### Freshness
 
@@ -74,7 +79,12 @@ Three tells, so no single one carries it alone:
 - **Loading** — three skeleton rows in the shape of the answer. No spinner.
 - **Empty** — "Nothing needs you", stated plainly. No illustration, no celebration.
 - **Board failed to read** — explains that the screen only reads, so retrying is
-  safe, and offers Try again.
+  safe, and offers Try again. Shown only when there is **no** board: a re-read that
+  fails while a board is on screen keeps the board and says so in a line, because a
+  failed read adds no information and replacing the board would lose what the reader
+  had.
+- **Overlapping reads** — opening, refreshing, and both mutating actions all read, so
+  a slower earlier call must not write over a newer board.
 - **Action failed** — the fact stays. The failure attaches to its row with the real
   reason from the backend, and the action becomes Try again.
 - **No briefing model / no connector** — one quiet dismissible line saying Suggested
@@ -99,14 +109,18 @@ Three tells, so no single one carries it alone:
 - `severityAndFreshnessAreWordsInTheAccessibleName`
 - `aStaleDivergenceReadsInThePastTense`
 - `anUnknownDivergenceClaimsNoNumbers`
-- `theActionLabelFollowsFreshness` — live → fast-forward, stale/unknown → measure
-  again.
+- the two divergence actions have distinguishable labels. Which one a stale fact
+  carries is the backend's choice, so the tell that a stale row offers **no**
+  fast-forward is asserted on the rendered row in `WorkView.test.tsx` where it is
+  observable — a unit test over `actionLabel` alone would pass either way.
 - `everyFactKindHasItsOwnSourceGlyph`
 - `everyActionVariantHasALabel` — exhaustive over the four variants, so a fifth
   fails to compile.
 - `relativeTimeReadsInWholeUnits` — "just now", "4 min ago", "2 h ago", "3 d ago".
 - `anUnparseableObservedAtDoesNotRenderAsInvalidDate`
-- `theCountExcludesInfo` — the rail badge counts blocking and attention only.
+- `theCountExcludesInfo` — blocking and attention only. The header count and the rail
+  badge use the same function, because two numbers describing the same set must not
+  disagree; an info-only board is not waiting on you, and its rows still render.
 
 `src/components/WorkView.test.tsx` — the board:
 
@@ -119,7 +133,6 @@ Three tells, so no single one carries it alone:
 - `aStaleFactOffersMeasureAgainAndNotAFastForward`
 - `anUnknownFactOffersMeasureAgain`
 - `theSuggestedWorkNoticeIsQuietAndDismissible`
-- `openingTheBoardCallsOnlyWorkBoard`
 - `aLongUntrustedLabelWrapsRatherThanOverflowing`
 - `eachRowIsOneTabStopThenItsAction`
 - `theListHasAnAccessibleName`
