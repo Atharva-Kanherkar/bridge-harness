@@ -604,6 +604,13 @@
       "resultDeferred": "bridge_core::marketplace::MarketplaceActionResult"
     },
     {
+      "command": "get_work_board",
+      "domain": "work",
+      "method": "work/get_work_board",
+      "paramsSchema": null,
+      "resultSchema": "work-board.json"
+    },
+    {
       "command": "skill_catalog",
       "domain": "skills",
       "method": "skills/skill_catalog",

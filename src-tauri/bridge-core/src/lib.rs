@@ -67,6 +67,7 @@ pub mod worker_guard;
 pub mod worker_lifecycle;
 pub mod worker_pool;
 pub mod worker_sandbox;
+pub mod work;
 pub mod workspace_files;
 pub mod workspaces;
 pub mod worktree_coordinator;

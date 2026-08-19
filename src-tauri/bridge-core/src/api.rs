@@ -16,9 +16,10 @@ use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    verification_pipeline, verified_catalog, worker_adoption, worker_lifecycle, workspace_files,
-    BridgeCore, BridgeError, RuntimeSession,
+    verification_pipeline, verified_catalog, work, worker_adoption, worker_lifecycle,
+    workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
+use bridge_protocol::messages as wire;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -934,6 +935,15 @@ pub fn verifier_candidates(
         change_labels,
         &available_capabilities.into_iter().collect(),
     )
+}
+
+// --- work ---------------------------------------------------------------------
+
+/// The Work board. Store-only: it takes the connection and nothing else, so no
+/// git command, provider start, connector call, or network request can happen on
+/// the way to a rendered board.
+pub fn get_work_board(core: &Arc<BridgeCore>) -> Result<wire::WorkBoard, BridgeError> {
+    work::board(&core.db.lock().unwrap())
 }
 
 // --- base-branch divergence ----------------------------------------------------

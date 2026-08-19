@@ -93,6 +93,7 @@ export type BridgeMethod =
   | "marketplace/marketplace_catalog"
   | "marketplace/marketplace_app_auth_states"
   | "marketplace/marketplace_action"
+  | "work/get_work_board"
   | "skills/skill_catalog"
   | "skills/skill_suggestions"
   | "skills/preview_skill_change"
@@ -185,6 +186,7 @@ export const BRIDGE_METHODS = [
   { method: "marketplace/marketplace_catalog", domain: "marketplace", command: "marketplace_catalog" },
   { method: "marketplace/marketplace_app_auth_states", domain: "marketplace", command: "marketplace_app_auth_states" },
   { method: "marketplace/marketplace_action", domain: "marketplace", command: "marketplace_action" },
+  { method: "work/get_work_board", domain: "work", command: "get_work_board" },
   { method: "skills/skill_catalog", domain: "skills", command: "skill_catalog" },
   { method: "skills/skill_suggestions", domain: "skills", command: "skill_suggestions" },
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
@@ -327,6 +329,7 @@ export interface BridgeMethodParams {
   "marketplace/marketplace_catalog": undefined;
   "marketplace/marketplace_app_auth_states": undefined;
   "marketplace/marketplace_action": MarketplaceActionParams;
+  "work/get_work_board": undefined;
   "skills/skill_catalog": undefined;
   "skills/skill_suggestions": SkillSuggestionsParams;
   "skills/preview_skill_change": PreviewSkillChangeParams;
@@ -421,6 +424,7 @@ export interface BridgeMethodResults {
   "marketplace/marketplace_catalog": unknown;
   "marketplace/marketplace_app_auth_states": unknown;
   "marketplace/marketplace_action": unknown;
+  "work/get_work_board": WorkBoard;
   "skills/skill_catalog": unknown;
   "skills/skill_suggestions": unknown;
   "skills/preview_skill_change": unknown;
@@ -877,6 +881,121 @@ export interface VerifierManifest {
   requiredCapabilities?: string[];
   triggers?: string[];
 }
+
+export interface WorkBriefLimits {
+  costCeilingMicrousd?: number | null;
+  maxOutputTokens?: number | null;
+  maxToolCalls: number;
+  maxTurns: number;
+  maxWallSeconds: number;
+}
+
+export interface WorkBriefRun {
+  completedAt?: string | null;
+  failureCode?: string | null;
+  failureDetail?: string | null;
+  id: string;
+  outputDigest?: string | null;
+  profileReference?: string | null;
+  sessionId?: string | null;
+  startedAt: string;
+  status: WorkBriefRunStatus;
+  trigger: WorkBriefTrigger;
+  usage?: WorkRunUsage | null;
+}
+
+export type WorkBriefRunStatus = "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+
+export type WorkBriefTrigger = "manual" | "focus" | "schedule";
+
+export interface WorkBriefingProfile {
+  effort?: Effort | null;
+  harness: HarnessId;
+  model: string;
+}
+
+export type WorkEvidenceTarget = { host: string; kind: "externalLink"; url: string } | { kind: "session"; sessionId: string };
+
+export interface WorkFact {
+  action: WorkFactAction;
+  actionableAt: string;
+  dedupeKey: string;
+  detail?: string | null;
+  freshness: WorkFactFreshness;
+  kind: WorkFactKind;
+  observedAt: string;
+  severity: WorkFactSeverity;
+  target: WorkFactTarget;
+  title: string;
+}
+
+export type WorkFactAction = { attemptId: string; checkId: string; kind: "reviewCompletionCheck"; sessionId: string } | { approvalSequence?: number | null; kind: "answerApproval"; sessionId: string } | { kind: "refreshWorkspaceBase"; sessionId: string; workspaceId: string } | { kind: "refreshBaseObservation"; sessionId: string; workspaceId: string };
+
+export type WorkFactFreshness = "live" | "stale" | "unknown";
+
+export type WorkFactKind = "failed_completion_check" | "blocked_worker_queue_item" | "actionable_approval" | "workspace_behind_base";
+
+export type WorkFactSeverity = "blocking" | "attention" | "info";
+
+export type WorkFactTarget = { kind: "session"; sessionId: string } | { kind: "workspace"; sessionId?: string | null; workspaceId: string } | { attemptId: string; kind: "completionAttempt"; sessionId: string } | { kind: "workerQueueItem"; queueId: string; workspaceId: string };
+
+export interface WorkRunUsage {
+  cachedInputTokens: JsSafeU64;
+  costMicrousd?: number | null;
+  inputTokens: JsSafeU64;
+  outputTokens: JsSafeU64;
+  toolCalls: number;
+  turns: number;
+}
+
+export interface WorkSettings {
+  briefing?: WorkBriefingProfile | null;
+  cooldownMinutes: number;
+  enabledConnectorInstances: string[];
+  limits: WorkBriefLimits;
+  refreshIntervalMinutes?: number | null;
+  refreshOnFocus: boolean;
+}
+
+export interface WorkSourceCoverage {
+  connectorFamily: string;
+  connectorInstanceId: string;
+  detail?: string | null;
+  observedAt?: string | null;
+  status: WorkSourceStatus;
+}
+
+export type WorkSourceStatus = "failed" | "auth_required" | "ineligible" | "eligible" | "consulted" | "succeeded";
+
+export interface WorkSuggestions {
+  detail?: string | null;
+  state: WorkSuggestionsState;
+}
+
+export type WorkSuggestionsState = "running" | "ready" | "not_configured" | "provider_unsupported" | "degraded";
+
+export interface WorkTask {
+  canonicalResourceId: string;
+  confidenceBps: number;
+  connectorInstanceId: string;
+  createdAt: string;
+  evidenceDigest?: string | null;
+  evidenceObservedAt?: string | null;
+  evidenceTarget?: WorkEvidenceTarget | null;
+  fingerprint: string;
+  missCount: number;
+  pinned: boolean;
+  rank: number;
+  snoozedUntil?: string | null;
+  sourceKind: string;
+  state: WorkTaskState;
+  title: string;
+  updatedAt: string;
+  why: string;
+  workspaceId?: string | null;
+}
+
+export type WorkTaskState = "active" | "snoozed" | "done" | "dismissed" | "stale";
 
 export interface WorkerLease {
   capabilityTier: string;
@@ -1430,6 +1549,17 @@ export interface MarketplaceActionParams {
   marketplace?: string | null;
   pluginId: string;
   provider: MarketplaceProvider;
+}
+
+export interface WorkBoard {
+  facts: WorkFact[];
+  generatedAt: string;
+  latestRun?: WorkBriefRun | null;
+  settings: WorkSettings;
+  sources: WorkSourceCoverage[];
+  suggestions: WorkSuggestions;
+  tasks: WorkTask[];
+  usage?: WorkRunUsage | null;
 }
 
 export interface SkillSuggestionsParams {

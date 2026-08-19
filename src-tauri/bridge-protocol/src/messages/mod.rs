@@ -36,6 +36,7 @@ mod skills;
 mod slash;
 mod state;
 mod terminal;
+mod work;
 mod workspaces;
 
 pub use agents::*;
@@ -55,6 +56,7 @@ pub use skills::*;
 pub use slash::*;
 pub use state::*;
 pub use terminal::*;
+pub use work::*;
 pub use workspaces::*;
 
 use schemars::schema_for;
@@ -236,6 +238,8 @@ typed_methods![
     (MarketplaceCatalog, _, _),
     (MarketplaceAppAuthStates, _, _),
     (MarketplaceAction, MarketplaceActionParams, _),
+    // work
+    (GetWorkBoard, _, WorkBoard),
     // skills
     (SkillCatalog, _, _),
     (SkillSuggestions, SkillSuggestionsParams, _),

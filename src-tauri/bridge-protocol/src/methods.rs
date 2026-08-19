@@ -142,6 +142,9 @@ methods![
     (MarketplaceCatalog, "marketplace", "marketplace_catalog"),
     (MarketplaceAppAuthStates, "marketplace", "marketplace_app_auth_states"),
     (MarketplaceAction, "marketplace", "marketplace_action"),
+    // work — the ranked board of what needs doing. Facts are store-only, so
+    // this method reads SQLite and starts nothing.
+    (GetWorkBoard, "work", "get_work_board"),
     // skills
     (SkillCatalog, "skills", "skill_catalog"),
     (SkillSuggestions, "skills", "skill_suggestions"),

@@ -136,6 +136,13 @@ async fn marketplace_app_auth_states(
 }
 
 #[tauri::command]
+async fn get_work_board(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkBoard, BridgeError> {
+    api::get_work_board(state.inner())
+}
+
+#[tauri::command]
 async fn skill_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
@@ -1096,6 +1103,7 @@ pub fn run() {
             repair_managed_agent,
             uninstall_managed_agent,
             marketplace_action,
+            get_work_board,
             skill_catalog,
             skill_suggestions,
             preview_skill_change,

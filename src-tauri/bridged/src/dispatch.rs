@@ -389,6 +389,8 @@ pub fn dispatch(
             ))
         }
 
+        MethodName::GetWorkBoard => reply(api::get_work_board(core)),
+
         MethodName::SkillCatalog => reply(api::skill_catalog(core)),
         MethodName::SkillSuggestions => {
             let p: wire::SkillSuggestionsParams = decode(method, params)?;
