@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Code2, FolderGit2, MessagesSquare, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
+import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
@@ -169,6 +169,11 @@ export type BridgeSidebarProps = {
    * screen now. */
   workspaces: Workspace[];
   activeSessionId?: string;
+  /** True while the Work board is the surface on the right. */
+  workBoardActive: boolean;
+  /** How many facts are waiting, for the rail's count. Blocking and attention only,
+   * so it can actually reach zero. */
+  workNeedsYouCount: number;
   projectsActive: boolean;
   marketplaceActive: boolean;
   settingsActive: boolean;
@@ -177,6 +182,9 @@ export type BridgeSidebarProps = {
   onCloseMobile?: () => void;
   /** Opens the new-chat dialog, which asks for project and worktree. */
   onOpenNewChat: () => void;
+  /** Show the Work board. Called when the pill flips to Work, and when the rail's
+   * own row is clicked. */
+  onOpenWorkBoard: () => void;
   onOpenProjects: () => void;
   onOpenMarketplace: () => void;
   onOpenSettings: () => void;
@@ -187,12 +195,15 @@ export function BridgeSidebar({
   chats,
   workspaces,
   activeSessionId,
+  workBoardActive,
+  workNeedsYouCount,
   projectsActive,
   marketplaceActive,
   settingsActive,
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
+  onOpenWorkBoard,
   onOpenProjects,
   onOpenMarketplace,
   onOpenSettings,
@@ -252,7 +263,11 @@ export function BridgeSidebar({
     writeChatScope(next);
     setShownInFull(new Set());
     setFoldedGroups(new Set());
-  }, []);
+    // Work's surface is the board and Code's is a conversation, so the pill is the
+    // gesture that opens the board. Flipping to Code does not pick a chat — the
+    // effect above already follows whichever one is active.
+    if (next === "work") onOpenWorkBoard();
+  }, [onOpenWorkBoard]);
 
   const changeView = useCallback((next: ChatView) => {
     setView(next);
@@ -449,6 +464,40 @@ export function BridgeSidebar({
               aria-label="Filter chats and projects"
               className="h-7 w-full rounded-lg border border-border bg-background pl-7 pr-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring"
             />
+          </div>
+        )}
+
+        {scope === "work" && (
+          <div className="mb-2 shrink-0">
+            <button
+              type="button"
+              onClick={onOpenWorkBoard}
+              aria-current={workBoardActive ? "page" : undefined}
+              title={collapsed ? "Needs you" : undefined}
+              className={cn(
+                "flex shrink-0 items-center rounded-md transition-colors",
+                collapsed ? "mx-auto h-9 w-9 justify-center" : "h-7.5 w-full gap-2 px-2 text-[11.5px] font-medium",
+                workBoardActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              )}
+            >
+              <ListChecks size={14} strokeWidth={1.7} aria-hidden="true" />
+              {!collapsed && (
+                <>
+                  Needs you
+                  {/* No badge at zero. A count that is always present is a count that
+                      stops being read. */}
+                  {workNeedsYouCount > 0 && (
+                    <span className={cn(
+                      "ml-auto flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold",
+                      workBoardActive ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+                    )}>
+                      {workNeedsYouCount}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+            <div className="mt-2 h-px bg-sidebar-border" />
           </div>
         )}
 

@@ -35,10 +35,13 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   chats: [session("plain", { title: "Japan relocation" }), session("project", { title: "Sidebar redesign", workspaceId: "ws-1" })],
   workspaces: [workspace],
   activeSessionId: undefined,
+  workBoardActive: false,
+  workNeedsYouCount: 0,
   projectsActive: false,
   marketplaceActive: false,
   settingsActive: false,
   onOpenNewChat: noop,
+  onOpenWorkBoard: () => {},
   onOpenProjects: noop,
   onOpenMarketplace: noop,
   onOpenSettings: noop,
@@ -169,5 +172,70 @@ describe("BridgeSidebar scope switching", () => {
     // A poll re-renders with the same active id; the manual choice must hold.
     mount({ activeSessionId: "plain" });
     expect(scopeTab("Code").getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+// The Work board is the surface behind the pill, so the pill is what opens it and
+// the rail's own row is how you get back to it from a chat.
+describe("BridgeSidebar and the Work board", () => {
+  it("opens the board when the pill flips to Work", () => {
+    const onOpenWorkBoard = vi.fn();
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    mount({ onOpenWorkBoard });
+    expect(onOpenWorkBoard).not.toHaveBeenCalled();
+    act(() => scopeTab("Work").click());
+    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
+  });
+
+  it("does not open the board when the pill flips to Code", () => {
+    // Code's surface is a conversation. The rail already follows whichever chat is
+    // active, so flipping to Code must not reach for the board.
+    const onOpenWorkBoard = vi.fn();
+    localStorage.setItem(CHAT_SCOPE_KEY, "work");
+    mount({ onOpenWorkBoard });
+    act(() => scopeTab("Code").click());
+    expect(onOpenWorkBoard).not.toHaveBeenCalled();
+  });
+
+  it("marks the Needs you row as the current page while the board is open", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "work");
+    mount({ workBoardActive: true });
+    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("Needs you"));
+    expect(row?.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("leaves the row uncurrent once a chat is open", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "work");
+    mount({ workBoardActive: false });
+    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("Needs you"));
+    expect(row?.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("shows a count only when something needs you", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "work");
+    mount({ workNeedsYouCount: 5 });
+    expect(text()).toContain("Needs you5");
+    // A zero would be a number that is always there, which is a number nobody reads.
+    mount({ workNeedsYouCount: 0 });
+    expect(text()).toContain("Needs you");
+    expect(text()).not.toContain("Needs you0");
+  });
+
+  it("hides the row entirely in Code, where the board is not the surface", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    mount();
+    expect(text()).not.toContain("Needs you");
+  });
+
+  it("returns to the board when the row is clicked", () => {
+    const onOpenWorkBoard = vi.fn();
+    localStorage.setItem(CHAT_SCOPE_KEY, "work");
+    mount({ onOpenWorkBoard, workBoardActive: false });
+    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("Needs you"))!;
+    act(() => row.click());
+    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
   });
 });

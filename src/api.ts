@@ -10,6 +10,7 @@ import type {
   ManagedAgentStatus,
   ReadWorkspaceFileResult,
   WorkspaceChangesResult,
+  WorkBoard,
   WriteWorkspaceFileResult,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
@@ -255,6 +256,107 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
   return structuredClone(mockModelSetup);
 }
 
+// A board covering every fact kind and every freshness, so the browser fallback
+// renders the screen's real range instead of one token row.
+//
+// Built per call rather than once: the timestamps are relative to *now*, and a module
+// literal would freeze them at import, so a long-lived `bun run dev` preview would age
+// "10s ago" into hours while `freshness` stayed the value it was written with.
+const workBoardObserved = (secondsAgo: number): string =>
+  new Date(Date.now() - secondsAgo * 1000).toISOString();
+
+function browserWorkBoard(): WorkBoard {
+  return {
+    facts: [
+      {
+        kind: "failed_completion_check",
+        dedupeKey: "check:a-1:cargo-test",
+        severity: "blocking",
+        title: "cargo-test failed on Kyoto",
+        detail: "A required check failed on an attempt nobody has verified or waived.",
+        target: { kind: "completionAttempt", sessionId: "session-1", attemptId: "a-1" },
+        actionableAt: workBoardObserved(3_600),
+        observedAt: workBoardObserved(10),
+        freshness: "live",
+        action: { kind: "reviewCompletionCheck", sessionId: "session-1", attemptId: "a-1", checkId: "cargo-test" },
+      },
+      {
+        kind: "actionable_approval",
+        dedupeKey: "approval:session-2:4",
+        severity: "blocking",
+        title: "Approve command — waiting 41 minutes, past its deadline",
+        detail: "Lisbon asked to run a command and nobody answered.",
+        target: { kind: "session", sessionId: "session-2" },
+        actionableAt: workBoardObserved(2_460),
+        observedAt: workBoardObserved(10),
+        freshness: "live",
+        action: { kind: "answerApproval", sessionId: "session-2", approvalSequence: 4 },
+      },
+      {
+        kind: "blocked_worker_queue_item",
+        dedupeKey: "queue:q-1",
+        severity: "blocking",
+        title: "3 queued workers are parked behind Lisbon",
+        detail: "They are waiting on the approval above, not on each other.",
+        target: { kind: "workerQueueItem", queueId: "q-1", workspaceId: "workspace-2" },
+        actionableAt: workBoardObserved(1_800),
+        observedAt: workBoardObserved(10),
+        freshness: "live",
+        action: { kind: "answerApproval", sessionId: "session-2", approvalSequence: null },
+      },
+      {
+        kind: "workspace_behind_base",
+        dedupeKey: "workspace-base:workspace-1",
+        severity: "attention",
+        title: "Kyoto has drifted behind its base branch",
+        detail: "This workspace is 41 commit(s) behind and 2 ahead of origin/main, measured against a freshly fetched ref.",
+        target: { kind: "workspace", workspaceId: "workspace-1", sessionId: "session-1" },
+        actionableAt: workBoardObserved(7_200),
+        observedAt: workBoardObserved(120),
+        freshness: "live",
+        action: { kind: "refreshWorkspaceBase", sessionId: "session-1", workspaceId: "workspace-1" },
+      },
+      {
+        kind: "workspace_behind_base",
+        dedupeKey: "workspace-base:workspace-2",
+        severity: "attention",
+        title: "Lisbon has drifted behind its base branch",
+        detail: "This workspace is 63 commit(s) behind and 0 ahead of origin/main.",
+        target: { kind: "workspace", workspaceId: "workspace-2", sessionId: "session-2" },
+        actionableAt: workBoardObserved(9_000),
+        observedAt: workBoardObserved(1_440),
+        freshness: "stale",
+        action: { kind: "refreshBaseObservation", sessionId: "session-2", workspaceId: "workspace-2" },
+      },
+      {
+        kind: "workspace_behind_base",
+        dedupeKey: "workspace-base:workspace-3",
+        severity: "attention",
+        title: "Oslo could not be measured against its base branch",
+        detail: "No upstream or default branch ref is available to compare against.",
+        target: { kind: "workspace", workspaceId: "workspace-3", sessionId: "session-3" },
+        actionableAt: workBoardObserved(10_800),
+        observedAt: workBoardObserved(300),
+        freshness: "unknown",
+        action: { kind: "refreshBaseObservation", sessionId: "session-3", workspaceId: "workspace-3" },
+      },
+    ],
+    tasks: [],
+    latestRun: null,
+    generatedAt: new Date().toISOString(),
+    sources: [],
+    settings: {
+      briefing: null,
+      enabledConnectorInstances: [],
+      refreshOnFocus: false,
+      refreshIntervalMinutes: null,
+      cooldownMinutes: 15,
+      limits: { maxWallSeconds: 600, maxTurns: 12, maxToolCalls: 24, maxOutputTokens: null, costCeilingMicrousd: null },
+    },
+    suggestions: { state: "not_configured", detail: null },
+  };
+}
+
 export const bridgeApi = {
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   installBrowserNativeHost: async (): Promise<string> => {
@@ -478,6 +580,15 @@ export const bridgeApi = {
   waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/waive_completion", { attemptId, checkIds, reason });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); const unresolved = forest.completion.checks.filter(check => check.required && check.status !== "passed").map(check => check.checkId); if (!unresolved.every(checkId => checkIds.includes(checkId))) throw new Error("Waiver must cover every unresolved required check"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
+  },
+  // The Work board. Read-only and store-only by construction on the Rust side, so
+  // this is the whole of what opening the Work screen does — no session is selected,
+  // no model starts, and nothing touches the network. The browser fallback below is
+  // what vitest and a `bun run dev` preview render, so the screen can be developed
+  // and tested without the desktop app.
+  workBoard: async (): Promise<WorkBoard> => {
+    if (isTauri()) return call("work/get_work_board");
+    return browserWorkBoard();
   },
   // A workspace far behind its base branch produces changes and completion
   // stamps against stale code; `refresh` is the explicit choice the warning offers.
