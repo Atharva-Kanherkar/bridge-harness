@@ -29,9 +29,11 @@ implementation; not edited during it except by a separate commit.
 - **Four fact kinds**, exactly the epic's list: failed completion check,
   blocked worker-queue item awaiting approval, expired-or-actionable approval,
   workspace behind its base branch.
-- **Migration 23.** `LATEST_SCHEMA_VERSION` moves 22 → 23. No existing table's
-  shape changes, so a database written by this binary stays readable by the
-  previous one apart from the new tables.
+- **Migration 24**, not the epic's 23. `session_title_source` took 23 on `main`
+  while this slice was being written; taking "the next available number"
+  literally is the point of that instruction. `LATEST_SCHEMA_VERSION` moves
+  23 → 24. No existing table's shape changes, so a database written by this
+  binary stays readable by the previous one apart from the new tables.
 - Base-divergence observation reuses `git::base_branch_divergence`; this slice
   does not change how divergence is measured, only when it is measured and
   where the answer is kept.
@@ -134,7 +136,7 @@ same session matches it by `requestEventId` (adapter shape, nested under
 
 ### Storage
 
-Migration 23 creates, transactionally:
+Migration 24 creates, transactionally:
 
 - `work_brief_runs` — trigger, profile reference, session id, status, limits,
   output digest, parse/error code, usage columns, timestamps.
@@ -145,6 +147,10 @@ Migration 23 creates, transactionally:
   `UNIQUE(run_id, evidence_ref)`.
 - `work_tasks` — `UNIQUE(fingerprint)`, canonical identity, validated display
   fields, state, evidence digest, miss count, resolution metadata, pin/snooze.
+  `fingerprint` and `canonical_resource_id` are nullable, because a task with
+  no canonical identity is *ephemeral* rather than excluded, and SQLite counts
+  NULLs as distinct in a unique index — so several ephemeral tasks coexist
+  while two tasks can never share a real fingerprint.
 - `work_fact_cache` — `PRIMARY KEY(kind, cache_key)`, `observed_at`, `status`,
   `payload`, `detail`.
 
@@ -216,18 +222,18 @@ copy of model output; the columns that could are digests and bounded text.
   `work.rs`: the projection module references no `git::`, `marketplace::`,
   `Command::new`, or HTTP client symbol.
 
-### `bridge-core` — migration 23
+### `bridge-core` — migration 24
 
 - `migrates_current_schema_fixture_idempotently_and_creates_backup`
-  (existing, extended) — the applied-version list becomes `1..=23` and every
+  (existing, extended) — the applied-version list becomes `1..=24` and every
   new table exists on the upgraded legacy fixture.
 - `work_tables_declare_their_unique_constraints` — inserting a duplicate
   `(run_id, evidence_ref)`, a duplicate `(run_id, connector_instance_id)`, and
   a duplicate task fingerprint each fail.
 - `work_tables_cascade_from_their_run` — deleting a `work_brief_runs` row
   removes its sources and evidence.
-- `a_failed_migration_23_rolls_back` — the transaction leaves
-  `schema_version` at 22 and creates none of the new tables.
+- `a_failed_migration_24_rolls_back` — the transaction leaves
+  `schema_version` at 23 and creates none of the new tables.
 - `schema_signature_is_stable_between_fresh_and_upgraded_databases`
   (existing) — a fresh database and an upgraded legacy one agree.
 
@@ -287,5 +293,5 @@ cp ~/Library/Application\ Support/dev.bridge.deck/bridge.db /tmp/bridge-23.db
 sqlite3 /tmp/bridge-23.db "SELECT MAX(version) FROM schema_version;"
 ```
 
-Expected: 22 before, 23 after the app opens it, with a timestamped backup
+Expected: 23 before, 24 after the app opens it, with a timestamped backup
 beside it and every pre-existing row intact.
