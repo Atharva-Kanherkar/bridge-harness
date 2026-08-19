@@ -61,7 +61,7 @@
       "type": "object"
     },
     "WorkBriefRun": {
-      "description": "One briefing run's outcome. Mirrors `bridge_core::work::WorkBriefRun`.",
+      "description": "One briefing run's outcome.",
       "properties": {
         "completedAt": {
           "type": [
@@ -134,7 +134,7 @@
       "type": "object"
     },
     "WorkBriefRunStatus": {
-      "description": "How a briefing run ended. Mirrors `bridge_core::work::WorkBriefRunStatus`.",
+      "description": "How a briefing run ended.",
       "oneOf": [
         {
           "enum": [
@@ -155,7 +155,7 @@
       ]
     },
     "WorkBriefTrigger": {
-      "description": "What started a briefing run. Mirrors `bridge_core::work::WorkBriefTrigger`.",
+      "description": "What started a briefing run.",
       "enum": [
         "manual",
         "focus",
@@ -191,7 +191,7 @@
       "type": "object"
     },
     "WorkEvidenceTarget": {
-      "description": "A Bridge-derived place a task's evidence can be opened. Never a model-authored URL: an external link exists here only after Bridge resolved it and matched it against its connector's host allowlist. Mirrors `bridge_core::work::WorkEvidenceTarget`.",
+      "description": "A Bridge-derived place a task's evidence can be opened. Never a model-authored URL: an external link exists here only after Bridge resolved it and matched it against its connector's host allowlist.",
       "oneOf": [
         {
           "description": "A validated HTTPS permalink, with the host Bridge matched it against.",
@@ -238,7 +238,7 @@
       ]
     },
     "WorkFact": {
-      "description": "One deterministic thing that needs doing. Mirrors `bridge_core::work::WorkFact`.",
+      "description": "One deterministic thing that needs doing.",
       "properties": {
         "action": {
           "$ref": "#/definitions/WorkFactAction"
@@ -291,7 +291,7 @@
       "type": "object"
     },
     "WorkFactAction": {
-      "description": "The one thing a human can do about a fact, derived from the state the fact was projected from. Mirrors `bridge_core::work::WorkFactAction`.\n\nThere is no `clear` variant on purpose. A fact stops existing when the state under it changes; offering to dismiss one would let the board disagree with the database.",
+      "description": "The one thing a human can do about a fact, derived from the state the fact was projected from.\n\nThere is no `clear` variant on purpose. A fact stops existing when the state under it changes; offering to dismiss one would let the board disagree with the database.",
       "oneOf": [
         {
           "description": "Open the failed check on its attempt. Only a new run or an explicit waiver changes a verdict, so this reviews — it does not resolve.",
@@ -395,7 +395,7 @@
       ]
     },
     "WorkFactFreshness": {
-      "description": "How current the observation behind a fact is. Mirrors `bridge_core::work::WorkFactFreshness`.",
+      "description": "How current the observation behind a fact is.",
       "oneOf": [
         {
           "description": "Projected from live SQLite state, or from an observation inside the staleness window.",
@@ -421,7 +421,7 @@
       ]
     },
     "WorkFactKind": {
-      "description": "Which deterministic condition a fact describes. Mirrors `bridge_core::work::WorkFactKind`.",
+      "description": "Which deterministic condition a fact describes.",
       "oneOf": [
         {
           "description": "A required or optional completion check reported `failed` on an attempt that has not been verified, waived, or superseded.",
@@ -454,7 +454,7 @@
       ]
     },
     "WorkFactSeverity": {
-      "description": "How loudly a fact asks for attention — the board's primary sort key. Mirrors `bridge_core::work::WorkFactSeverity`.",
+      "description": "How loudly a fact asks for attention — the board's primary sort key.",
       "oneOf": [
         {
           "description": "Work is stopped until a human acts.",
@@ -480,7 +480,7 @@
       ]
     },
     "WorkFactTarget": {
-      "description": "What a fact is about, as an identity inside Bridge. Facts never carry an external link. Mirrors `bridge_core::work::WorkFactTarget`.",
+      "description": "What a fact is about, as an identity inside Bridge. Facts never carry an external link.",
       "oneOf": [
         {
           "properties": {
@@ -571,7 +571,7 @@
       ]
     },
     "WorkRunUsage": {
-      "description": "What a briefing run cost. Mirrors `bridge_core::work::WorkRunUsage`.",
+      "description": "What a briefing run cost.",
       "properties": {
         "cachedInputTokens": {
           "$ref": "#/definitions/JsSafeU64"
@@ -610,7 +610,7 @@
     },
     "WorkSettings": {
       "additionalProperties": false,
-      "description": "Work's configuration. Mirrors `bridge_core::work::WorkSettings`.",
+      "description": "Work's configuration.",
       "properties": {
         "briefing": {
           "anyOf": [
@@ -657,7 +657,7 @@
       "type": "object"
     },
     "WorkSourceCoverage": {
-      "description": "One connector instance's coverage in a run. Mirrors `bridge_core::work::WorkSourceCoverage`.",
+      "description": "One connector instance's coverage in a run.",
       "properties": {
         "connectorFamily": {
           "type": "string"
@@ -689,7 +689,7 @@
       "type": "object"
     },
     "WorkSourceStatus": {
-      "description": "How far a connector instance got in a briefing run. These are distinct states on purpose: \"available\" is not \"was read\". Mirrors `bridge_core::work::WorkSourceStatus`.",
+      "description": "How far a connector instance got in a briefing run. These are distinct states on purpose: \"available\" is not \"was read\".",
       "oneOf": [
         {
           "enum": [
@@ -729,7 +729,7 @@
       ]
     },
     "WorkSuggestions": {
-      "description": "The state of the suggested-work half, and a non-sensitive explanation. Mirrors `bridge_core::work::WorkSuggestions`.",
+      "description": "The state of the suggested-work half, and a non-sensitive explanation.",
       "properties": {
         "detail": {
           "type": [
@@ -747,7 +747,7 @@
       "type": "object"
     },
     "WorkSuggestionsState": {
-      "description": "Why suggested work looks the way it does. Mirrors `bridge_core::work::WorkSuggestionsState`.",
+      "description": "Why suggested work looks the way it does.",
       "oneOf": [
         {
           "enum": [
@@ -780,7 +780,7 @@
       ]
     },
     "WorkTask": {
-      "description": "One model-suggested task, after Bridge validated its identity and evidence. Mirrors `bridge_core::work::WorkTask`.",
+      "description": "One model-suggested task, after Bridge validated its identity and evidence.",
       "properties": {
         "canonicalResourceId": {
           "type": "string"
@@ -880,7 +880,7 @@
       "type": "object"
     },
     "WorkTaskState": {
-      "description": "Where a suggested task stands locally. `pinned` is orthogonal and lives on [`WorkTask`]. Mirrors `bridge_core::work::WorkTaskState`.",
+      "description": "Where a suggested task stands locally. `pinned` is orthogonal and lives on [`WorkTask`].",
       "enum": [
         "active",
         "snoozed",
@@ -891,7 +891,7 @@
       "type": "string"
     }
   },
-  "description": "`work/get_work_board`'s result. Mirrors `bridge_core::work::WorkBoard`.",
+  "description": "`work/get_work_board`'s result.",
   "properties": {
     "facts": {
       "items": {

@@ -28,8 +28,7 @@ use super::common::{Effort, HarnessId, JsSafeU64};
 // Facts
 // ---------------------------------------------------------------------------
 
-/// Which deterministic condition a fact describes. Mirrors
-/// `bridge_core::work::WorkFactKind`.
+/// Which deterministic condition a fact describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkFactKind {
@@ -47,7 +46,6 @@ pub enum WorkFactKind {
 }
 
 /// How loudly a fact asks for attention — the board's primary sort key.
-/// Mirrors `bridge_core::work::WorkFactSeverity`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkFactSeverity {
@@ -59,8 +57,7 @@ pub enum WorkFactSeverity {
     Info,
 }
 
-/// How current the observation behind a fact is. Mirrors
-/// `bridge_core::work::WorkFactFreshness`.
+/// How current the observation behind a fact is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkFactFreshness {
@@ -74,7 +71,7 @@ pub enum WorkFactFreshness {
 }
 
 /// What a fact is about, as an identity inside Bridge. Facts never carry an
-/// external link. Mirrors `bridge_core::work::WorkFactTarget`.
+/// external link.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WorkFactTarget {
@@ -98,7 +95,7 @@ pub enum WorkFactTarget {
 }
 
 /// The one thing a human can do about a fact, derived from the state the fact
-/// was projected from. Mirrors `bridge_core::work::WorkFactAction`.
+/// was projected from.
 ///
 /// There is no `clear` variant on purpose. A fact stops existing when the state
 /// under it changes; offering to dismiss one would let the board disagree with
@@ -138,8 +135,7 @@ pub enum WorkFactAction {
     },
 }
 
-/// One deterministic thing that needs doing. Mirrors
-/// `bridge_core::work::WorkFact`.
+/// One deterministic thing that needs doing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkFact {
@@ -165,7 +161,7 @@ pub struct WorkFact {
 // ---------------------------------------------------------------------------
 
 /// Where a suggested task stands locally. `pinned` is orthogonal and lives on
-/// [`WorkTask`]. Mirrors `bridge_core::work::WorkTaskState`.
+/// [`WorkTask`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkTaskState {
@@ -178,8 +174,7 @@ pub enum WorkTaskState {
 
 /// A Bridge-derived place a task's evidence can be opened. Never a
 /// model-authored URL: an external link exists here only after Bridge resolved
-/// it and matched it against its connector's host allowlist. Mirrors
-/// `bridge_core::work::WorkEvidenceTarget`.
+/// it and matched it against its connector's host allowlist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WorkEvidenceTarget {
@@ -192,7 +187,6 @@ pub enum WorkEvidenceTarget {
 }
 
 /// One model-suggested task, after Bridge validated its identity and evidence.
-/// Mirrors `bridge_core::work::WorkTask`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkTask {
@@ -220,7 +214,7 @@ pub struct WorkTask {
     pub updated_at: String,
 }
 
-/// What started a briefing run. Mirrors `bridge_core::work::WorkBriefTrigger`.
+/// What started a briefing run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkBriefTrigger {
@@ -229,7 +223,7 @@ pub enum WorkBriefTrigger {
     Schedule,
 }
 
-/// How a briefing run ended. Mirrors `bridge_core::work::WorkBriefRunStatus`.
+/// How a briefing run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkBriefRunStatus {
@@ -241,7 +235,7 @@ pub enum WorkBriefRunStatus {
     Skipped,
 }
 
-/// What a briefing run cost. Mirrors `bridge_core::work::WorkRunUsage`.
+/// What a briefing run cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkRunUsage {
@@ -254,7 +248,7 @@ pub struct WorkRunUsage {
     pub turns: i64,
 }
 
-/// One briefing run's outcome. Mirrors `bridge_core::work::WorkBriefRun`.
+/// One briefing run's outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkBriefRun {
@@ -276,8 +270,7 @@ pub struct WorkBriefRun {
 }
 
 /// How far a connector instance got in a briefing run. These are distinct
-/// states on purpose: "available" is not "was read". Mirrors
-/// `bridge_core::work::WorkSourceStatus`.
+/// states on purpose: "available" is not "was read".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkSourceStatus {
@@ -293,8 +286,7 @@ pub enum WorkSourceStatus {
     AuthRequired,
 }
 
-/// One connector instance's coverage in a run. Mirrors
-/// `bridge_core::work::WorkSourceCoverage`.
+/// One connector instance's coverage in a run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSourceCoverage {
@@ -332,7 +324,7 @@ pub struct WorkBriefingProfile {
     pub effort: Option<Effort>,
 }
 
-/// Work's configuration. Mirrors `bridge_core::work::WorkSettings`.
+/// Work's configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkSettings {
@@ -346,8 +338,7 @@ pub struct WorkSettings {
     pub limits: WorkBriefLimits,
 }
 
-/// Why suggested work looks the way it does. Mirrors
-/// `bridge_core::work::WorkSuggestionsState`.
+/// Why suggested work looks the way it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkSuggestionsState {
@@ -364,7 +355,6 @@ pub enum WorkSuggestionsState {
 }
 
 /// The state of the suggested-work half, and a non-sensitive explanation.
-/// Mirrors `bridge_core::work::WorkSuggestions`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSuggestions {
@@ -372,7 +362,7 @@ pub struct WorkSuggestions {
     pub detail: Option<String>,
 }
 
-/// `work/get_work_board`'s result. Mirrors `bridge_core::work::WorkBoard`.
+/// `work/get_work_board`'s result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkBoard {
