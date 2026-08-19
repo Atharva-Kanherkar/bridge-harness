@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { AlertCircle, CircleCheck, GitBranch, ListOrdered, RefreshCw, ShieldCheck, X } from "lucide-react";
-import type { WorkBoard, WorkFact, WorkFactAction } from "../protocol/generated/protocol";
+import { AlertCircle, CircleCheck, ExternalLink, GitBranch, ListOrdered, Pin, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
+import type { WorkBoard, WorkFact, WorkFactAction, WorkTask } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
 import {
   actionIsPrimary,
@@ -18,6 +18,17 @@ import {
   stalenessClause,
   type FactSource,
 } from "./workFacts";
+import {
+  ACTION_LABEL,
+  ACTIONS_BY_STATE,
+  confidenceLabel,
+  evidenceLabel,
+  hasOpenableEvidence,
+  orderTasks,
+  sourceLabel,
+  taskAnnouncement,
+  type TaskAction,
+} from "./workTasks";
 
 // The Work board. Prop-driven: it is handed a board and four callbacks and holds no
 // data of its own, so every state below is reachable from a test without a backend.
@@ -66,6 +77,12 @@ export type WorkViewProps = {
   onAction: (action: WorkFactAction) => Promise<WorkActionOutcome>;
   /** Fixed clock, so freshness copy is deterministic in tests. */
   now?: Date;
+  /** A local state action on a suggested task. Never a connector write. */
+  onTaskAction?: (task: WorkTask, action: TaskAction) => Promise<WorkActionOutcome>;
+  /** Pin or unpin. Separate from the state actions because pinning is orthogonal to them. */
+  onTogglePin?: (task: WorkTask) => Promise<WorkActionOutcome>;
+  /** Open a task's evidence. The target is rechecked in Rust before anything opens. */
+  onOpenEvidence?: (task: WorkTask) => void;
 };
 
 function Chip({ children }: { children: React.ReactNode }) {
@@ -191,6 +208,126 @@ function FactRow({
   );
 }
 
+
+/** One suggested task.
+ *
+ * Visibly a different kind of thing from a fact: a fact is a projection of Bridge's own
+ * state, and this is a model's summary of something it read elsewhere. So the row leads with
+ * where it came from and how much the model was willing to claim. */
+function TaskRow({
+  task,
+  onTaskAction,
+  onTogglePin,
+  onOpenEvidence,
+}: {
+  task: WorkTask;
+  onTaskAction?: (task: WorkTask, action: TaskAction) => Promise<WorkActionOutcome>;
+  onTogglePin?: (task: WorkTask) => Promise<WorkActionOutcome>;
+  onOpenEvidence?: (task: WorkTask) => void;
+}) {
+  const [failure, setFailure] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+
+  const run = useCallback(
+    async (perform: () => Promise<WorkActionOutcome>) => {
+      if (running.current) return;
+      running.current = true;
+      setBusy(true);
+      try {
+        const outcome = await perform();
+        setFailure(outcome.ok ? undefined : outcome.reason);
+      } catch (error) {
+        setFailure(error instanceof Error ? error.message : String(error));
+      } finally {
+        running.current = false;
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const openable = hasOpenableEvidence(task);
+  return (
+    <li className="flex flex-wrap gap-3 rounded-xl border border-border bg-card pr-3 sm:flex-nowrap sm:py-2.5">
+      <span aria-hidden="true" className="w-[3px] shrink-0 self-stretch rounded-r-sm bg-info" />
+      <span aria-hidden="true" className="mt-2.5 flex size-6.5 shrink-0 items-center justify-center rounded-md bg-muted sm:mt-0.5">
+        <Sparkles size={14} strokeWidth={1.7} className="text-muted-foreground" />
+      </span>
+      <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10.5px] font-medium text-muted-foreground">{sourceLabel(task)}</span>
+          {task.pinned && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+              <Pin size={10} strokeWidth={2} aria-hidden="true" />
+              Pinned
+            </span>
+          )}
+          {task.state === "stale" && (
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-warning">Stale</span>
+          )}
+        </div>
+        <p className="mt-0.5 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere]">
+          <span className="sr-only">{taskAnnouncement(task)}</span>
+          <span aria-hidden="true">{task.title}</span>
+        </p>
+        <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{task.why}</p>
+        {failure && (
+          <div id={`${task.fingerprint}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
+            <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
+            <p className="text-[11.5px] leading-relaxed text-muted-foreground">{failure}</p>
+          </div>
+        )}
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <Chip>{confidenceLabel(task.confidenceBps)}</Chip>
+          {openable && onOpenEvidence && (
+            <button
+              type="button"
+              onClick={() => onOpenEvidence(task)}
+              className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-px text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <ExternalLink size={10} strokeWidth={1.8} aria-hidden="true" />
+              {evidenceLabel(task)}
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="mt-2.5 flex w-full shrink-0 flex-wrap justify-end gap-1.5 border-t border-border pb-2.5 pt-2.5 sm:mt-0 sm:w-auto sm:border-0 sm:pb-0 sm:pt-0.5">
+        {onTogglePin && (
+          <button
+            type="button"
+            onClick={() => void run(() => onTogglePin(task))}
+            disabled={busy}
+            aria-pressed={task.pinned}
+            aria-label={task.pinned ? "Unpin this task" : "Pin this task"}
+            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11.5px] text-foreground transition-colors hover:bg-accent disabled:opacity-60"
+          >
+            <Pin size={12} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        )}
+        {onTaskAction &&
+          ACTIONS_BY_STATE[task.state].map(action => (
+            <button
+              key={action}
+              type="button"
+              onClick={() => void run(() => onTaskAction(task, action))}
+              disabled={busy}
+              aria-describedby={failure ? `${task.fingerprint}-failure` : undefined}
+              className={cn(
+                "h-7 shrink-0 rounded-md px-2.5 text-[11.5px] font-medium transition-colors disabled:opacity-60",
+                action === "start"
+                  ? "bg-primary text-primary-foreground hover:opacity-90"
+                  : "border border-border text-foreground hover:bg-accent",
+              )}
+            >
+              {ACTION_LABEL[action]}
+            </button>
+          ))}
+      </div>
+    </li>
+  );
+}
+
 /** Rows in the shape of the answer. A local SQLite read is fast enough that a
  * spinner would flash, and three placeholders read as "nearly there". */
 function LoadingRows() {
@@ -237,7 +374,7 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
   );
 }
 
-export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date() }: WorkViewProps) {
+export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date(), onTaskAction, onTogglePin, onOpenEvidence }: WorkViewProps) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const bands = useMemo(() => bandFacts(board?.facts ?? []), [board]);
   // The same set the rail badge counts. Info is "worth knowing, not worth
@@ -245,6 +382,9 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
   // and the two numbers must not disagree about that.
   const count = needsYouCount(board?.facts ?? []);
   const anyFacts = (board?.facts.length ?? 0) > 0;
+  // Suggested work sits below the facts and is visibly a second kind of thing. Absent
+  // entirely when there is none, rather than an empty section inviting setup.
+  const tasks = useMemo(() => orderTasks(board?.tasks ?? []), [board]);
   // Suggested work has no runner yet, so this is a statement about the product
   // rather than a call to action: the facts are complete without a model.
   const showNotice = !noticeDismissed && board?.suggestions.state === "not_configured";
@@ -309,7 +449,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
           />
         ) : board === undefined ? (
           <LoadingRows />
-        ) : !anyFacts ? (
+        ) : !anyFacts && tasks.length === 0 ? (
           <Panel
             title="Nothing needs you"
             body="No failed checks, no unanswered approvals, nothing parked, and every workspace is close to its base."
@@ -332,6 +472,31 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
               </ul>
             </section>
           ))
+        )}
+
+        {tasks.length > 0 && (
+          <section aria-labelledby="work-band-suggested">
+            <h3
+              id="work-band-suggested"
+              className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground"
+            >
+              Suggested
+              <span className="font-normal normal-case tracking-normal opacity-65">
+                — from your connected tools, summarised by a model
+              </span>
+            </h3>
+            <ul aria-label="Suggested work" className="flex flex-col gap-1.5">
+              {tasks.map(task => (
+                <TaskRow
+                  key={task.fingerprint}
+                  task={task}
+                  onTaskAction={onTaskAction}
+                  onTogglePin={onTogglePin}
+                  onOpenEvidence={onOpenEvidence}
+                />
+              ))}
+            </ul>
+          </section>
         )}
       </div>
     </section>
