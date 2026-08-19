@@ -13,6 +13,7 @@ import { ProjectsScreen } from "./components/ProjectsScreen";
 import type { WorkBoard, WorkFactAction } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { needsYouCount } from "./components/workFacts";
+import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
@@ -206,11 +207,15 @@ export function App() {
 
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
-  const topSessions = useMemo(() => state.sessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [state.sessions]);
+  // Everything a human may meet. Filtered once, here, because the rail, Mission Control
+  // and default selection disagreeing about what exists is how a briefing run ends up
+  // on a grid nobody can focus.
+  const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s)), [state.sessions]);
+  const topSessions = useMemo(() => visibleSessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [visibleSessions]);
   // Resolve across every session, not just top-level ones: a worker can be
   // opened directly (from Mission Control or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
-  const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell");
+  const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
@@ -718,7 +723,7 @@ export function App() {
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
       /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
-        sessions={state.sessions}
+        sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
         events={agentEvents}

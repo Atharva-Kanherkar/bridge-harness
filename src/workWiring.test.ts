@@ -131,3 +131,35 @@ describe("overlapping reads", () => {
     expect(APP).toContain("error={workError}");
   });
 });
+
+describe("briefing runs are hidden from every surface", () => {
+  it("filters state.sessions once, and nothing downstream reads the raw list", () => {
+    // Found in review: the previous version of this test string-matched
+    // `!isHiddenSession(s)` anywhere in the file and never checked which props got the
+    // filtered list — so Mission Control was handed `state.sessions` while the comment
+    // above claimed otherwise. Checking the props is the assertion that has teeth.
+    expect(APP).toContain("const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s))");
+    // Every session-list prop must come from the filtered list. `state.sessions` may
+    // appear only where it is being filtered.
+    const rawUses = [...APP.matchAll(/sessions=\{state\.sessions\}/g)];
+    expect(rawUses).toHaveLength(0);
+  });
+
+  it("hands Mission Control the filtered list", () => {
+    // The surface the earlier miss actually affected: a briefing run is not idle or
+    // done, so it would have appeared on the grid — and focusing it then failed,
+    // because session resolution did apply the predicate.
+    const missionControl = APP.slice(APP.indexOf("<MissionControl"));
+    expect(missionControl.slice(0, 400)).toContain("sessions={visibleSessions}");
+  });
+
+  it("builds the rail's list from the filtered one too", () => {
+    const topSessions = APP.slice(APP.indexOf("const topSessions"));
+    expect(topSessions.slice(0, 200)).toContain("visibleSessions.filter");
+  });
+
+  it("cannot be reached by selecting one directly either", () => {
+    const resolved = APP.slice(APP.indexOf("const session = state.sessions.find"));
+    expect(resolved.slice(0, 160)).toContain("!isHiddenSession(s)");
+  });
+});
