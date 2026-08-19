@@ -71,6 +71,7 @@ pub mod worker_pool;
 pub mod worker_sandbox;
 pub mod work;
 pub mod work_brief_parser;
+pub mod work_brief_store;
 pub mod work_connectors;
 pub mod work_evidence;
 pub mod work_observation;
