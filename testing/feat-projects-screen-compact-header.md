@@ -111,6 +111,19 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
 - Everything else from #201 is unchanged: day headers, filter/grouping popover,
   search, the 12-row cap, collapse, resize, the below-`sm` drawer.
 
+### Window controls (macOS)
+- The three traffic lights are hidden at startup and revealed while the pointer is
+  within 112×44 of the top-left corner — the region `trafficLightPosition (18,15)`
+  plus the cluster's own width, with slack.
+- The reveal is driven from the web layer, the only side that sees the cursor, and
+  reaches AppKit through one local command. That command is **not** a
+  `bridge-protocol` method: window chrome is not something a remote daemon can
+  serve, so it is routed ahead of the protocol lookup and stays out of
+  `generate_handler![...]`, leaving the 1:1 registry contract untouched.
+- Losing focus or leaving the window hides them again.
+- Non-macOS builds compile to a no-op; no other platform draws its controls over
+  the client area.
+
 ## Unit Tests
 
 `src/components/ProjectsScreen.test.tsx` — new:
@@ -161,6 +174,14 @@ static suite cannot reach:
 - Names the project on the confirm button.
 - Preselects `initialWorkspaceId`, and forgets the previous answer between visits.
 - Closes on Escape; holds the confirm while busy.
+
+`src/trafficLights.test.ts` — new:
+- The reveal region covers the buttons and stops short of the rail's own controls.
+- The watcher is inert outside the desktop shell, where there is no chrome to hide.
+
+`src-tauri/src/window_chrome.rs` — new unit test:
+- The chrome command is not a `bridge-protocol` method, so the 1:1 registry test
+  cannot start demanding it appear in `generate_handler![...]`.
 
 `src/components/sidebarChats.test.ts` — extended:
 - `chatScope` maps a workspace to Code and its absence to Home.
