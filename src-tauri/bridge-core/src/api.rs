@@ -16,7 +16,8 @@ use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
-    verification_pipeline, verified_catalog, work, work_observation, worker_adoption,
+    verification_pipeline, verified_catalog, work, work_actions, work_observation, work_reconcile,
+    work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use bridge_protocol::messages as wire;
@@ -944,6 +945,105 @@ pub fn verifier_candidates(
 /// the way to a rendered board.
 pub fn get_work_board(core: &Arc<BridgeCore>) -> Result<wire::WorkBoard, BridgeError> {
     work::board(&core.db.lock().unwrap())
+}
+
+/// Apply a human's decision to a suggested task.
+///
+/// Local only. Marking a task done does not close the thread it came from, and dismissing
+/// it does not archive anything — this writes one row in Bridge's own database and stops.
+/// The state machine decides whether the transition is legal; an illegal one is refused
+/// rather than quietly ignored, so a caller cannot believe something happened.
+pub fn work_task_action(
+    core: &Arc<BridgeCore>,
+    params: &wire::TaskActionParams,
+) -> Result<(), BridgeError> {
+    let action = match params.action {
+        wire::WorkTaskActionKind::Done => work_task_state::TaskAction::Complete,
+        wire::WorkTaskActionKind::Snooze => work_task_state::TaskAction::Snooze,
+        wire::WorkTaskActionKind::Dismiss => work_task_state::TaskAction::Dismiss,
+        wire::WorkTaskActionKind::Restore => work_task_state::TaskAction::Restore,
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let db = core.db.lock().unwrap();
+    let current = work_reconcile::read_task(&db, &params.task_id)?
+        .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?;
+    let next = work_task_state::apply_action(&current, action, &now)
+        .map_err(|illegal| BridgeError::Invalid(illegal.reason()))?;
+    let snoozed_until = match params.action {
+        wire::WorkTaskActionKind::Snooze => params.snoozed_until.as_deref(),
+        // Leaving a stale deadline on a task that is no longer snoozed would make a later
+        // expiry check answer about a snooze nobody set.
+        _ => None,
+    };
+    work_reconcile::write_task_state(&db, &params.task_id, &next, snoozed_until, &now)
+}
+
+/// Pin or unpin a task.
+///
+/// Its own call rather than an action variant, because pinning is orthogonal to the five
+/// states: folding it in would let a caller send `pin` where a state change is expected.
+pub fn work_task_pin(
+    core: &Arc<BridgeCore>,
+    params: &wire::TaskPinParams,
+) -> Result<(), BridgeError> {
+    let action = if params.pinned {
+        work_task_state::TaskAction::Pin
+    } else {
+        work_task_state::TaskAction::Unpin
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let db = core.db.lock().unwrap();
+    let current = work_reconcile::read_task(&db, &params.task_id)?
+        .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?;
+    let next = work_task_state::apply_action(&current, action, &now)
+        .map_err(|illegal| BridgeError::Invalid(illegal.reason()))?;
+    work_reconcile::write_task_state(&db, &params.task_id, &next, None, &now)
+}
+
+/// Prepare a session for working on a task.
+///
+/// Creates the session and the draft, and sends nothing. The returned shape carries no turn
+/// id precisely because none was dispatched: the user edits the draft and presses Send, and
+/// until they do, no model has been told anything.
+pub fn work_task_prepare_session(
+    core: &Arc<BridgeCore>,
+    params: &wire::TaskPrepareSessionParams,
+) -> Result<wire::WorkTaskDraft, BridgeError> {
+    let (title, why, source_kind) = {
+        let db = core.db.lock().unwrap();
+        db.query_row(
+            "SELECT title,why,source_kind FROM work_tasks WHERE id=?1",
+            params![params.task_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?
+    };
+    let draft = work_actions::prepare_draft(&title, &why, &source_kind);
+    // create_chat inserts a session row and starts no adapter, which is the whole
+    // requirement: the session exists to be typed into, and no provider has been spoken to.
+    let harness = Harness::parse(params.harness.as_str())
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    core.create_chat(&harness, params.model.as_deref(), Some(&draft.title))?;
+    let session_id = {
+        let db = core.db.lock().unwrap();
+        db.query_row(
+            "SELECT id FROM sessions WHERE title=?1 AND workspace_id IS NULL ORDER BY rowid DESC LIMIT 1",
+            params![draft.title],
+            |row| row.get::<_, String>(0),
+        )?
+    };
+    Ok(wire::WorkTaskDraft {
+        session_id,
+        title: draft.title,
+        draft: draft.draft,
+    })
 }
 
 // --- base-branch divergence ----------------------------------------------------

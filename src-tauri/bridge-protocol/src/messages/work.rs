@@ -324,6 +324,67 @@ pub struct WorkBriefingProfile {
     pub effort: Option<Effort>,
 }
 
+// ---------------------------------------------------------------------------
+// Local actions on a suggested task
+// ---------------------------------------------------------------------------
+
+/// What a human asked of a task.
+///
+/// Deliberately no `pin` variant: pinning is orthogonal to these five, so folding it in
+/// would let a caller send `pin` where a state change is expected and get one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkTaskActionKind {
+    Done,
+    Snooze,
+    Dismiss,
+    Restore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskActionParams {
+    pub task_id: String,
+    pub action: WorkTaskActionKind,
+    /// How long to snooze for. Ignored by every other action, and required by none —
+    /// a snooze with no deadline is one the user ends themselves.
+    pub snoozed_until: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskPinParams {
+    pub task_id: String,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskPrepareSessionParams {
+    pub task_id: String,
+    /// Which harness the prepared session will use when the user eventually sends.
+    ///
+    /// Chosen by the caller, the same way a new chat's harness is: availability is a
+    /// frontend concern, and inventing a different default here would give a task-started
+    /// session a provider the user never picks anywhere else.
+    pub harness: HarnessId,
+    pub model: Option<String>,
+}
+
+/// A session prepared from a task, with nothing sent.
+///
+/// There is no turn id here, and that absence is the contract: preparing creates a draft
+/// the user edits and sends. A field naming a dispatched turn would mean this call had
+/// already spoken to a model on their behalf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkTaskDraft {
+    pub session_id: String,
+    pub title: String,
+    /// The composer's starting contents, carrying untrusted task text as text.
+    pub draft: String,
+}
+
 /// Work's configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

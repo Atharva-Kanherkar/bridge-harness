@@ -10,8 +10,9 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { WorkBoard, WorkFactAction } from "./protocol/generated/protocol";
+import type { WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
+import type { TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
@@ -415,6 +416,41 @@ export function App() {
     void readWorkBoard();
   }, [readWorkBoard]);
 
+  // Local state on a suggested task. Nothing here reaches a connector — see
+  // bridge_core::work_actions — so a failure is Bridge's own and shows on the row.
+  const runWorkTaskAction = useCallback(async (task: WorkTask, action: TaskAction): Promise<WorkActionOutcome> => {
+    try {
+      if (action === "start") {
+        const preferred = adapters.find(adapter => adapter.available);
+        const prepared = await bridgeApi.workTaskPrepareSession(
+          task.fingerprint,
+          (preferred?.id as Harness) ?? "codex",
+          preferred?.defaultModel ?? null,
+        );
+        // Open the session with the draft in the composer. Nothing is sent: the user edits
+        // and presses Send, which is the whole point of preparing rather than starting.
+        pendingWelcomeMessageRef.current = prepared.draft;
+        openSession(prepared.sessionId);
+        return { ok: true };
+      }
+      await bridgeApi.workTaskAction(task.fingerprint, action);
+      await readWorkBoard();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, reason: errorMessage(error) };
+    }
+  }, [adapters, readWorkBoard]);
+
+  const toggleWorkTaskPin = useCallback(async (task: WorkTask): Promise<WorkActionOutcome> => {
+    try {
+      await bridgeApi.workTaskPin(task.fingerprint, !task.pinned);
+      await readWorkBoard();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, reason: errorMessage(error) };
+    }
+  }, [readWorkBoard]);
+
   // Two of the four actions are navigation and two are calls. A board button must
   // never answer an approval on the user's behalf — it takes them to where the
   // decision is made — while a fast-forward and a re-measure are Bridge's own work
@@ -713,6 +749,8 @@ export function App() {
         refreshError={workRefreshError}
         onRefresh={() => void readWorkBoard()}
         onAction={runWorkAction}
+        onTaskAction={runWorkTaskAction}
+        onTogglePin={toggleWorkTaskPin}
       /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}

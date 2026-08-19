@@ -94,6 +94,9 @@ export type BridgeMethod =
   | "marketplace/marketplace_app_auth_states"
   | "marketplace/marketplace_action"
   | "work/get_work_board"
+  | "work/task_action"
+  | "work/task_pin"
+  | "work/task_prepare_session"
   | "skills/skill_catalog"
   | "skills/skill_suggestions"
   | "skills/preview_skill_change"
@@ -187,6 +190,9 @@ export const BRIDGE_METHODS = [
   { method: "marketplace/marketplace_app_auth_states", domain: "marketplace", command: "marketplace_app_auth_states" },
   { method: "marketplace/marketplace_action", domain: "marketplace", command: "marketplace_action" },
   { method: "work/get_work_board", domain: "work", command: "get_work_board" },
+  { method: "work/task_action", domain: "work", command: "task_action" },
+  { method: "work/task_pin", domain: "work", command: "task_pin" },
+  { method: "work/task_prepare_session", domain: "work", command: "task_prepare_session" },
   { method: "skills/skill_catalog", domain: "skills", command: "skill_catalog" },
   { method: "skills/skill_suggestions", domain: "skills", command: "skill_suggestions" },
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
@@ -330,6 +336,9 @@ export interface BridgeMethodParams {
   "marketplace/marketplace_app_auth_states": undefined;
   "marketplace/marketplace_action": MarketplaceActionParams;
   "work/get_work_board": undefined;
+  "work/task_action": TaskActionParams;
+  "work/task_pin": TaskPinParams;
+  "work/task_prepare_session": TaskPrepareSessionParams;
   "skills/skill_catalog": undefined;
   "skills/skill_suggestions": SkillSuggestionsParams;
   "skills/preview_skill_change": PreviewSkillChangeParams;
@@ -425,6 +434,9 @@ export interface BridgeMethodResults {
   "marketplace/marketplace_app_auth_states": unknown;
   "marketplace/marketplace_action": unknown;
   "work/get_work_board": WorkBoard;
+  "work/task_action": UnitResult;
+  "work/task_pin": UnitResult;
+  "work/task_prepare_session": WorkTaskDraft;
   "skills/skill_catalog": unknown;
   "skills/skill_suggestions": unknown;
   "skills/preview_skill_change": unknown;
@@ -995,6 +1007,8 @@ export interface WorkTask {
   workspaceId?: string | null;
 }
 
+export type WorkTaskActionKind = "done" | "snooze" | "dismiss" | "restore";
+
 export type WorkTaskState = "active" | "snoozed" | "done" | "dismissed" | "stale";
 
 export interface WorkerLease {
@@ -1560,6 +1574,29 @@ export interface WorkBoard {
   suggestions: WorkSuggestions;
   tasks: WorkTask[];
   usage?: WorkRunUsage | null;
+}
+
+export interface TaskActionParams {
+  action: WorkTaskActionKind;
+  snoozedUntil?: string | null;
+  taskId: string;
+}
+
+export interface TaskPinParams {
+  pinned: boolean;
+  taskId: string;
+}
+
+export interface TaskPrepareSessionParams {
+  harness: HarnessId;
+  model?: string | null;
+  taskId: string;
+}
+
+export interface WorkTaskDraft {
+  draft: string;
+  sessionId: string;
+  title: string;
 }
 
 export interface SkillSuggestionsParams {
