@@ -800,11 +800,20 @@ fn migration_25_ephemeral_work_evidence(transaction: &Transaction<'_>) -> Result
 /// new table because a lease without a run is meaningless — it is the run row
 /// that is leased.
 fn migration_26_briefing_run_leases(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
-    transaction.execute_batch(
-        "ALTER TABLE work_brief_runs ADD COLUMN lease_owner TEXT;
-         ALTER TABLE work_brief_runs ADD COLUMN lease_expires_at TEXT;
-         ALTER TABLE work_brief_runs ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0;",
-    )?;
+    // Guarded per column: the repair path replays migrations over a database
+    // whose tables may already carry them, and a blind ALTER would refuse the
+    // whole replay over a column that is exactly what it should be.
+    for (column, definition) in [
+        ("lease_owner", "TEXT"),
+        ("lease_expires_at", "TEXT"),
+        ("cancellation_requested", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !column_exists(transaction, "work_brief_runs", column)? {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE work_brief_runs ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
