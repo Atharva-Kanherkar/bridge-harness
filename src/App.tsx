@@ -7,6 +7,7 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { SessionToolbar } from "./components/SessionToolbar";
@@ -399,6 +400,8 @@ export function App() {
     setModal(null);
     await openNewChat();
   }
+
+  useEffect(() => watchTrafficLights(), []);
 
   useEffect(() => {
     const draft = pendingWelcomeMessageRef.current;
