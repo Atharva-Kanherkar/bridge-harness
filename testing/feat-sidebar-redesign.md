@@ -111,6 +111,13 @@ its current value and a chevron:
 - The Status and Agent filters narrow the tree exactly as the search query does:
   the rail shows one filtered set of chats, viewed two ways. A project whose chats
   are all filtered out is hidden, and its count reflects what passes the filter.
+- With nothing narrowing the list — no query, `Status → All`, `Agent → All` — every
+  project renders whether or not it has chats, because a project with no chats yet
+  is exactly the one you need to reach to start one.
+- A query naming a project keeps that project visible even with no chats at all, so
+  searching for a project by name can never hide it. A Status or Agent filter
+  overrides that: if nothing under the project passes, the project has nothing to
+  show and is hidden rather than rendered as an empty shell.
 - A project row shows chevron, folder icon, title, and its chat count.
 - Expanding shows its chats, a `New agent` action, and `Connect folder` when the
   workspace has no path. No branch/dirty line.
@@ -119,6 +126,9 @@ its current value and a chevron:
 - A group renders at most 12 rows, then a `Show N more` control that reveals the
   rest of that group. The cap is per group key and resets when the grouping mode
   changes.
+- The collapsed rail does not cap. It has no room for the reveal control, and a cap
+  without its control would put chats out of reach entirely — under
+  `Group by → None` that would be the whole history past the twelfth row.
 
 ### Type scale
 At most four styles in the rail: 14px semibold (wordmark), 13px (row titles, new
@@ -171,6 +181,11 @@ callback prop other than the worker and chat-list props named above.
 
 - No `Live workers` text, and no worker panel markup, in either the expanded or the
   collapsed rail.
+- A Status filter that excludes every chat in a project hides that project's row
+  rather than leaving an empty shell; with no filter active, a project with no chats
+  still renders.
+- The collapsed rail renders every chat in a group, with no cap and no reveal
+  control.
 - Day headers `Today` and `Yesterday` render for chats stamped accordingly.
 - The projects section precedes the chats section in the rendered markup.
 - No branch/dirty line: an expanded workspace with `branch: "main"` and
