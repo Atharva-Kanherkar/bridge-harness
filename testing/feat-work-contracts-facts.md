@@ -35,6 +35,10 @@ implementation; not edited during it except by a separate commit.
 - Base-divergence observation reuses `git::base_branch_divergence`; this slice
   does not change how divergence is measured, only when it is measured and
   where the answer is kept.
+- **One set of Work DTOs, not two.** `bridge-core` already depends on
+  `bridge-protocol` and already uses its `AgentId`/`BackendId`/`NotificationName`
+  types directly. The Work board therefore *is* the wire type in core, with no
+  mirrored copy to keep in step.
 - Out of scope: briefing execution, provider policy, connector registry,
   evidence resolvers, reconciliation, scheduling, and the Work UI.
 
@@ -227,11 +231,20 @@ copy of model output; the columns that could are digests and bounded text.
 - `schema_signature_is_stable_between_fresh_and_upgraded_databases`
   (existing) — a fresh database and an upgraded legacy one agree.
 
-### `bridge-core` — protocol mirror
+### `bridge-core` — settings
 
-- `work_board_mirrors_its_protocol_type` — `assert_mirrors::<wire::WorkBoard>`
-  over a board with one fact of every kind; enum mirrors get exhaustive
-  `match` arms so adding a core variant fails to compile until contracted.
+- `absent_settings_read_as_the_documented_defaults`.
+- `settings_that_cannot_be_read_degrade_instead_of_failing_the_board` — a
+  stored payload the current contract rejects leaves facts intact and reports
+  `degraded` with a non-sensitive reason. Losing the whole board because one
+  configuration row is unreadable would be worse than saying so.
+
+There is deliberately **no** `protocol_mirror` entry for Work: `bridge-core`
+uses `bridge_protocol::messages`' Work DTOs directly rather than declaring a
+second copy, so there is nothing for a mirror gate to compare. The older
+domains have paired types for historical reasons and `protocol_mirror.rs`
+exists to stop those drifting; a new domain that never forks the type cannot
+drift at all, which is strictly stronger than the gate.
 
 ## Integration / Functional Tests
 
@@ -265,7 +278,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --bin bridge -- \
 ```
 
 Expected: a `WorkBoard` whose `facts` reflect local state, `tasks` is `[]`,
-`latestRun` is `null`, and `suggestions.state` is `"notConfigured"`.
+`latestRun` is `null`, and `suggestions.state` is `"not_configured"`.
 
 Migration check against a copy of a real database:
 
