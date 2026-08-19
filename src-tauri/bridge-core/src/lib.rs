@@ -54,6 +54,7 @@ pub mod routing_policy;
 mod runtime;
 pub mod secret_interception;
 pub mod session_forest;
+pub mod session_titles;
 pub mod session_supervisor;
 pub mod sessions;
 pub mod skill_marketplace;

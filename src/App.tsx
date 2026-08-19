@@ -1,12 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, Maximize2, MessageSquareText, Minimize2, Monitor, PanelLeft, Play, Plus, Search, Settings2, Square, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { watchTrafficLights } from "./trafficLights";
+import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
+import { ProjectsScreen } from "./components/ProjectsScreen";
+import { SessionToolbar } from "./components/SessionToolbar";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
@@ -32,7 +36,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
-import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
 
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
@@ -72,12 +75,11 @@ export function App() {
   const [health, setHealth] = useState<Health>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
-  const [view, setView] = useState<"workspace" | "marketplace" | "settings">("workspace");
+  const [view, setView] = useState<"workspace" | "projects" | "marketplace" | "settings">("workspace");
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
   // Fullscreen is a property of the workspace surface, not of one tab: it
   // drops the sidebar and the session header so the active tab gets the whole
@@ -191,7 +193,6 @@ export function App() {
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell");
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
-  const usesIsolatedWorktree = !!session?.cwd && !!workspace?.path && session.cwd !== workspace.path;
   const isDirectChat = session?.kind === "direct";
   // A focused worker is watchable and its approvals are resolvable, but the
   // backend rejects worker turns, so it gets no composer.
@@ -390,6 +391,18 @@ export function App() {
     finally { setBusy(false); }
   }
 
+  // The new-chat dialog asks the two questions once; this routes its answer.
+  async function startChat({ workspaceId, worktree }: NewChatChoice) {
+    if (workspaceId) {
+      await newWorkspaceSession(worktree, workspaceId);
+      return;
+    }
+    setModal(null);
+    await openNewChat();
+  }
+
+  useEffect(() => watchTrafficLights(), []);
+
   useEffect(() => {
     const draft = pendingWelcomeMessageRef.current;
     if (!draft || !session) return;
@@ -402,16 +415,17 @@ export function App() {
     setPendingWorkspaceId(workspaceId);
     setModal("orchestrator");
   }
-  async function newWorkspaceSession(createWorktree: boolean) {
-    if (!pendingWorkspaceId) return;
-    const workspaceId = pendingWorkspaceId;
+  async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string) {
+    const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
+    if (!workspaceId) return;
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
       const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
       setState(next);
-      setExpanded(current => new Set(current).add(workspaceId));
-      if (created) setSelectedSessionId(created.id);
+      // Land in the new agent's chat rather than leaving the user looking at the
+      // card or dialog they came from.
+      if (created) openSession(created.id);
       setModal(null); setPendingWorkspaceId(undefined);
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
@@ -429,8 +443,6 @@ export function App() {
     try {
       const next = await bridgeApi.createWorkspace(name);
       setState(next); setModal(null); setTitle("");
-      const created = [...next.workspaces].reverse()[0];
-      if (created) setExpanded(current => new Set(current).add(created.id));
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -568,7 +580,6 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const toggleExpanded = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
@@ -593,7 +604,7 @@ export function App() {
       >
         <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
       </button>
-      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
+      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
     </div>}
 
     {!fullscreen && <BridgeSidebar
@@ -602,22 +613,27 @@ export function App() {
       chats={topSessions}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
+      projectsActive={view === "projects"}
       marketplaceActive={view === "marketplace"}
       settingsActive={view === "settings"}
-      expanded={expanded}
-      busy={busy}
-      onOpenNewChat={() => void openNewChat()}
+      onOpenNewChat={() => setModal("chat")}
+      onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
-      onToggleWorkspace={toggleExpanded}
-      onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
-      onNewWorkspaceSession={requestWorkspaceSession}
-      onConnectFolder={workspaceId => void connectFolder(workspaceId)}
     />}
     <main className={cn("relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount", fullscreen ? "pt-0" : "pt-11 sm:pt-0")}>
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      {view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      {view === "projects" ? <ProjectsScreen
+        workspaces={state.workspaces}
+        chats={topSessions}
+        activeSessionId={session?.id}
+        busy={busy}
+        onOpenSession={openSession}
+        onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
+        onNewWorkspaceSession={requestWorkspaceSession}
+        onConnectFolder={workspaceId => void connectFolder(workspaceId)}
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={state.sessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
@@ -625,46 +641,25 @@ export function App() {
         activeSessionId={session?.id}
         onFocusSession={openSession}
       /> : session ? <>
-        {!fullscreen && <div className={`shrink-0 px-4 sm:px-6 flex items-center border-b border-border ${isDirectChat ? "h-[48px]" : "min-h-[52px] py-2"}`}>
-          <div className="min-w-0 flex-1">
-            <h1 className="m-0 font-display text-sm sm:text-[15px] leading-tight text-foreground font-semibold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis">{session.title || session.label}</h1>
-            {!isDirectChat && <div className="mt-1 flex items-center gap-1.5 text-muted-foreground font-mono text-[10px]">
-              <Bot size={12} aria-hidden="true" />{session.kind === "orchestrator" ? "Orchestrator" : harnessLabel(session.harness)}<span>·</span>{harnessLabel(session.harness)}<span>·</span>{modelDisplayName(adapters, session.harness, session.model)}
-              {hasRepo && workspace && (usesIsolatedWorktree
-                ? <><span>·</span><GitBranch size={12} aria-hidden="true" />isolated worktree</>
-                : <><span>·</span><GitBranch size={12} aria-hidden="true" />{workspace.branch ?? "folder"}<span>·</span>{workspace.dirtyFiles ? <span className="text-warning">{workspace.dirtyFiles} changed</span> : <span>clean</span>}</>)}
-            </div>}
-          </div>
-          <div className="ml-auto flex items-center gap-[7px]">
-            <Button type="button" variant={browserOpen ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setBrowserOpen(value => !value)}><Monitor size={13} aria-hidden="true" /> Browser</Button>
-            {!isDirectChat && workspace && <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setModal("router")} aria-label="Learning router settings"><Settings2 size={14} aria-hidden="true" /></Button>}
-            {sessionConnected && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => void endChat()}>{busy ? <LoaderCircle className="animate-spin" size={14} aria-hidden="true" /> : <Square size={13} aria-hidden="true" />} End</Button>}
-          </div>
-        </div>}
-        {hasRepo && <Tabs value={activeTab} onValueChange={v => setActiveTab(v as typeof activeTab)} className="shrink-0">
-          {/* In fullscreen this strip is the topmost row, so it has to leave
-              the traffic lights their corner. */}
-          <div className={cn("flex items-center gap-2 border-b-0 pr-1.5 pt-1", fullscreen ? "pl-[84px]" : "px-[14px]")} data-tauri-drag-region={fullscreen ? "" : undefined}>
-            <TabsList variant="underline" className="min-w-0 flex-1 justify-start gap-[2px] bg-transparent p-0">
-              <TabsTab value="agent" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><MessageSquareText size={14} aria-hidden="true" /> Agent</TabsTab>
-              <TabsTab value="changes" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><FileCode2 size={14} aria-hidden="true" /> Changes {workspace && workspace.dirtyFiles > 0 && <Badge variant="secondary" size="sm">{workspace.dirtyFiles}</Badge>}</TabsTab>
-              <TabsTab value="code" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><Code2 size={14} aria-hidden="true" /> Code</TabsTab>
-              <TabsTab value="terminal" className="h-[28px] px-2 text-[10.5px] text-muted-foreground rounded-none"><TerminalSquare size={14} aria-hidden="true" /> Terminal</TabsTab>
-            </TabsList>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="shrink-0 text-muted-foreground"
-              onClick={() => setFullscreen(value => !value)}
-              aria-pressed={fullscreen}
-              aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-              title={fullscreen ? "Exit fullscreen (⌥⌘F or Esc)" : "Fullscreen (⌥⌘F)"}
-            >
-              {fullscreen ? <Minimize2 size={13} aria-hidden="true" /> : <Maximize2 size={13} aria-hidden="true" />}
-            </Button>
-          </div>
-        </Tabs>}
+        <SessionToolbar
+          title={session.title || session.label}
+          tabs={hasRepo ? [
+            { id: "agent", label: "Agent", icon: MessageSquareText },
+            { id: "changes", label: "Changes", icon: FileCode2, badge: workspace?.dirtyFiles || undefined },
+            { id: "code", label: "Code", icon: Code2 },
+            { id: "terminal", label: "Terminal", icon: TerminalSquare },
+          ] : [{ id: "agent", label: "Agent", icon: MessageSquareText }]}
+          activeTab={activeTab}
+          onTabChange={id => setActiveTab(id as typeof activeTab)}
+          model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
+          browserOpen={browserOpen}
+          onToggleBrowser={() => setBrowserOpen(value => !value)}
+          fullscreen={fullscreen}
+          onToggleFullscreen={() => setFullscreen(value => !value)}
+          onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
+          onEnd={sessionConnected ? () => void endChat() : undefined}
+          busy={busy}
+        />
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
@@ -780,6 +775,14 @@ export function App() {
       );
     })()}
 
+    <NewChatDialog
+      open={modal === "chat"}
+      workspaces={state.workspaces}
+      initialWorkspaceId={pendingWorkspaceId ?? null}
+      busy={busy}
+      onClose={() => { setModal(null); setPendingWorkspaceId(undefined); }}
+      onStart={choice => void startChat(choice)}
+    />
     <WorkspaceCreateDialog
       open={modal === "workspace"}
       title={title}

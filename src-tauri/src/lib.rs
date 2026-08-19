@@ -4,6 +4,7 @@ pub use bridge_core::{
 };
 
 pub mod daemon_host;
+pub mod window_chrome;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -925,6 +926,11 @@ fn select_host(
     app: &tauri::App,
     host: &std::sync::OnceLock<HostMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Start quiet: the traffic lights come back while the pointer is in their
+    // corner, which the frontend reports.
+    if let Some(window) = app.get_webview_window("main") {
+        window_chrome::set_traffic_lights_visible(window.as_ref().window().clone(), false);
+    }
     let data = app.path().app_data_dir()?;
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
@@ -1164,16 +1170,23 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| select_host(app, &setup_slot))
-        .invoke_handler(move |invoke| match host.get() {
-            Some(HostMode::Daemon(runtime)) => {
-                daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
+        .invoke_handler(move |invoke| {
+            // Local window chrome first: it is not a protocol method, so the
+            // daemon router would reject it as unknown.
+            if window_chrome::owns(invoke.message.command()) {
+                return window_chrome::handle_invoke(invoke);
             }
-            Some(HostMode::Embedded) => embedded_commands(invoke),
-            // Invokes cannot arrive before setup finishes; refuse rather
-            // than panic if that assumption ever breaks.
-            None => {
-                invoke.resolver.reject("Bridge is still starting");
-                true
+            match host.get() {
+                Some(HostMode::Daemon(runtime)) => {
+                    daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
+                }
+                Some(HostMode::Embedded) => embedded_commands(invoke),
+                // Invokes cannot arrive before setup finishes; refuse rather
+                // than panic if that assumption ever breaks.
+                None => {
+                    invoke.resolver.reject("Bridge is still starting");
+                    true
+                }
             }
         })
         .build(tauri::generate_context!())

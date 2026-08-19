@@ -10,9 +10,9 @@ let root: Root;
 
 const agents = [{ id: "claude", label: "Claude" }, { id: "codex", label: "Codex" }];
 
-function mount(view: ChatView = DEFAULT_CHAT_VIEW, onChange: (next: ChatView) => void = () => {}) {
+function mount(view: ChatView = DEFAULT_CHAT_VIEW, onChange: (next: ChatView) => void = () => {}, allowProjectGrouping = true) {
   act(() => {
-    root.render(<SidebarFilterMenu view={view} agents={agents} onChange={onChange} />);
+    root.render(<SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={allowProjectGrouping} onChange={onChange} />);
   });
 }
 
@@ -65,6 +65,13 @@ describe("SidebarFilterMenu", () => {
     const options = [...menu()!.querySelectorAll('[role="menuitemradio"]')];
     expect(options.map(option => option.textContent)).toEqual(["Date", "Project", "Agent", "Status", "None"]);
     expect(options.filter(option => option.getAttribute("aria-checked") === "true").map(option => option.textContent)).toEqual(["Agent"]);
+  });
+
+  it("withholds project grouping where nothing has a project", () => {
+    mount(DEFAULT_CHAT_VIEW, () => {}, false);
+    click(trigger());
+    click(rowByLabel("Group by"));
+    expect([...menu()!.querySelectorAll('[role="menuitemradio"]')].map(option => option.textContent)).toEqual(["Date", "Agent", "Status", "None"]);
   });
 
   it("reports a choice and returns to the root panel", () => {
