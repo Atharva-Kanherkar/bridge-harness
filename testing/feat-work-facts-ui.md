@@ -135,14 +135,29 @@ Three tells, so no single one carries it alone:
 
 ## Integration / Functional Tests
 
-`src/App.test.tsx` additions:
+`src/workWiring.test.ts` — how Work is wired into the shell.
 
-- `theWorkViewIsLazyLoadedBehindSuspense`
-- `openingWorkDoesNotSelectOrCreateASession`
-- `existingSessionSelectionAndMissionControlAreUnchanged` — the regression that
-  matters: the conversation, Mission Control, Marketplace, Settings and Projects
-  paths behave exactly as before.
-- `theTitleStripReadsWorkWhileTheBoardIsOpen`
+This repo does not mount the whole `App` in a test; doing so needs a Tauri host, and
+no existing test does it. So the wiring is asserted where it is declared, which is
+the approach `designSystem.test.ts` already takes and which catches the regressions
+that actually matter here:
+
+- the board is loaded with `lazy()` and rendered inside `Suspense`, and the only
+  import from `WorkView` in `App.tsx` is a type import, so the lazy boundary holds;
+- the read path calls exactly `bridgeApi.workBoard` and nothing else, and mentions no
+  session-selecting or session-creating call — this is how "opening Work starts
+  nothing" is checked rather than claimed;
+- opening the view does not select a session;
+- a decision navigates and never calls, while a fast-forward and a re-measure do call
+  — a board button must not answer an approval on the user's behalf;
+- the title strip names the view;
+- the rail is handed the board's state, the count, and the way back;
+- `Work` does not appear in the footer nav, where it would be a second meaning.
+
+**Regression evidence** for "existing sidebar and Mission Control behaviour is
+unchanged" is the existing suites continuing to pass untouched — 42 files before this
+slice — not a new test. Nothing in this slice modifies a session path; the only edits
+to shared files are additive props and one render branch.
 
 `src/api.test.ts` additions:
 
