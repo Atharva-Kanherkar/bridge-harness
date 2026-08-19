@@ -358,6 +358,203 @@ fn first_duplicate(sorted: &[String]) -> Option<String> {
         .map(|pair| pair[0].clone())
 }
 
+// ---------------------------------------------------------------------------
+// Which adapters may be trusted with this authority
+// ---------------------------------------------------------------------------
+
+/// How an adapter expresses tool permissions to its provider.
+///
+/// This is the thing that decides whether briefing is even possible: the policy
+/// needs to name one exact connector tool and refuse every other, and a
+/// representation that cannot express that cannot enforce it. An unfamiliar shape
+/// is [`Self::Unrecognized`] and fails closed — never read as "no restrictions".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PermissionRepresentation {
+    /// Claude Agent SDK: a per-call `canUseTool` gate, plus explicit allow and
+    /// deny tool lists and an explicit MCP server map. Exact identities are
+    /// expressible, and the per-call gate makes them enforceable rather than
+    /// merely declared.
+    ClaudeAgentSdk,
+    /// OpenCode's rule list — `permission` × `pattern` × allow/deny/ask over
+    /// coarse families like `edit` and `bash`. There is no vocabulary for one
+    /// connector tool's exact identity.
+    OpenCodeRuleList,
+    /// Codex's app-server sandbox policy — writable roots and network access.
+    /// Filesystem authority, with nothing to say about which tools exist.
+    CodexSandboxPolicy,
+    /// Something Bridge has not been taught to compile a policy into.
+    Unrecognized,
+}
+
+impl PermissionRepresentation {
+    /// Can one exact tool identity be both named and enforced?
+    fn can_enforce_exact_identities(self) -> bool {
+        matches!(self, Self::ClaudeAgentSdk)
+    }
+
+    fn why_not(self) -> &'static str {
+        match self {
+            Self::ClaudeAgentSdk => "",
+            Self::OpenCodeRuleList => {
+                "its permission rules cover coarse families like edit and bash, with no vocabulary for one connector tool's exact identity"
+            }
+            Self::CodexSandboxPolicy => {
+                "its sandbox policy governs writable roots and network access, not which tools exist"
+            }
+            Self::Unrecognized => "Bridge does not recognize how it represents tool permissions",
+        }
+    }
+}
+
+/// Whether an adapter may claim briefing support, and what certified it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum BriefingSupport {
+    /// The shared conformance suite passed against this provider version. The
+    /// version is part of the certification: a different one is uncertified.
+    Supported { certified_provider_version: &'static str },
+    /// Not available, and why.
+    Unsupported { reason: &'static str },
+}
+
+/// One adapter's briefing standing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BriefingCapability {
+    pub adapter: &'static str,
+    pub permissions: PermissionRepresentation,
+    pub support: BriefingSupport,
+}
+
+/// The version of the Claude Agent SDK the conformance suite runs against. Kept
+/// beside the sidecar's dependency range on purpose: a provider that reports
+/// something else has not been certified, whatever else is true of it.
+pub const CLAUDE_CERTIFIED_SDK_VERSION: &str = "0.3";
+
+/// Every adapter's standing, stated explicitly.
+///
+/// Deliberately not a field on `builtin_compatibility::BuiltInAgentContract`:
+/// four earlier contracts promise that report stays byte-identical at schema v1,
+/// and briefing standing is a different kind of fact anyway — it is certified by
+/// a conformance suite rather than being install-independent transport metadata.
+const BRIEFING_CAPABILITIES: &[BriefingCapability] = &[
+    BriefingCapability {
+        adapter: "claude",
+        permissions: PermissionRepresentation::ClaudeAgentSdk,
+        support: BriefingSupport::Supported {
+            certified_provider_version: CLAUDE_CERTIFIED_SDK_VERSION,
+        },
+    },
+    BriefingCapability {
+        adapter: "codex",
+        permissions: PermissionRepresentation::CodexSandboxPolicy,
+        support: BriefingSupport::Unsupported {
+            reason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
+        },
+    },
+    BriefingCapability {
+        adapter: "opencode",
+        permissions: PermissionRepresentation::OpenCodeRuleList,
+        support: BriefingSupport::Unsupported {
+            reason: "its permission rules are coarse families, so one reviewed connector tool cannot be admitted without admitting its neighbours",
+        },
+    },
+];
+
+pub fn briefing_capabilities() -> &'static [BriefingCapability] {
+    BRIEFING_CAPABILITIES
+}
+
+/// One adapter's standing, or `None` for an adapter nobody has certified.
+pub fn briefing_capability(adapter: &str) -> Option<&'static BriefingCapability> {
+    BRIEFING_CAPABILITIES
+        .iter()
+        .find(|capability| capability.adapter == adapter)
+}
+
+/// May this adapter, at this reported version, run a briefing?
+///
+/// Every path out of here that is not `Ok` names what was wrong. An adapter that
+/// says nothing about itself is unsupported: absence is not consent.
+pub fn certify_briefing(
+    adapter: &str,
+    reported_provider_version: Option<&str>,
+) -> Result<&'static BriefingCapability, BriefingUnsupported> {
+    let Some(capability) = briefing_capability(adapter) else {
+        return Err(BriefingUnsupported::UnknownAdapter {
+            adapter: adapter.to_owned(),
+        });
+    };
+
+    // Checked before the suite verdict, because a representation Bridge cannot
+    // compile into is a fact about the adapter regardless of what a table claims.
+    if !capability.permissions.can_enforce_exact_identities() {
+        return match capability.permissions {
+            PermissionRepresentation::Unrecognized => {
+                Err(BriefingUnsupported::UnrecognizedPermissionRepresentation {
+                    adapter: adapter.to_owned(),
+                    detail: capability.permissions.why_not().to_owned(),
+                })
+            }
+            _ => Err(BriefingUnsupported::AdapterCannotEnforce {
+                adapter: adapter.to_owned(),
+                reason: match capability.support {
+                    BriefingSupport::Unsupported { reason } => reason.to_owned(),
+                    // A table claiming support for something unenforceable is a
+                    // bug, and the safe reading of a bug is refusal.
+                    BriefingSupport::Supported { .. } => capability.permissions.why_not().to_owned(),
+                },
+            }),
+        };
+    }
+
+    let BriefingSupport::Supported {
+        certified_provider_version,
+    } = capability.support
+    else {
+        let BriefingSupport::Unsupported { reason } = capability.support else {
+            unreachable!("support is one of two variants")
+        };
+        return Err(BriefingUnsupported::AdapterCannotEnforce {
+            adapter: adapter.to_owned(),
+            reason: reason.to_owned(),
+        });
+    };
+
+    // A version nobody ran the suite against is not certified, including no
+    // version at all: an adapter that cannot say what it is has not been checked.
+    let Some(reported) = reported_provider_version.map(str::trim).filter(|value| !value.is_empty())
+    else {
+        return Err(BriefingUnsupported::UncertifiedProviderVersion {
+            adapter: adapter.to_owned(),
+            found: "unreported".to_owned(),
+            certified: certified_provider_version.to_owned(),
+        });
+    };
+    if !version_line_matches(reported, certified_provider_version) {
+        return Err(BriefingUnsupported::UncertifiedProviderVersion {
+            adapter: adapter.to_owned(),
+            found: reported.to_owned(),
+            certified: certified_provider_version.to_owned(),
+        });
+    }
+    Ok(capability)
+}
+
+/// Does a reported version sit on the certified line?
+///
+/// The certified value is a prefix of dot-separated components — `0.3` certifies
+/// `0.3.209` but not `0.30.1`. Compared component-wise rather than as a string,
+/// because `"0.3"` is a textual prefix of `"0.30.1"` and those are different
+/// releases.
+fn version_line_matches(reported: &str, certified: &str) -> bool {
+    let mut reported = reported.split('.');
+    certified
+        .split('.')
+        .all(|component| reported.next() == Some(component))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +807,157 @@ mod tests {
         let empty_name = BriefingRuntimePolicy::compile(vec![identity("", "search")], limits(), &[])
             .unwrap_err();
         assert!(matches!(empty_name, BriefingUnsupported::MalformedPolicy { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Which adapters may be trusted with this authority
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn every_adapter_defaults_to_briefing_unsupported() {
+        // Absence is not consent. An adapter nobody certified gets no authority,
+        // and the refusal names it rather than being a bare false.
+        for adapter in ["", "gemini", "aider", "some-future-harness", "CLAUDE"] {
+            let error = certify_briefing(adapter, Some("0.3.209")).unwrap_err();
+            assert!(
+                matches!(error, BriefingUnsupported::UnknownAdapter { .. }),
+                "{adapter:?} must be unsupported: {error:?}"
+            );
+            assert!(error.reason().contains("no built-in briefing contract"));
+        }
+    }
+
+    #[test]
+    fn an_unknown_adapter_id_is_unsupported_with_a_reason() {
+        let error = certify_briefing("gemini", None).unwrap_err();
+        assert_eq!(
+            error,
+            BriefingUnsupported::UnknownAdapter { adapter: "gemini".into() }
+        );
+        assert!(error.reason().contains("gemini"));
+    }
+
+    #[test]
+    fn claude_declares_briefing_support() {
+        let capability = certify_briefing("claude", Some("0.3.209")).unwrap();
+        assert_eq!(capability.permissions, PermissionRepresentation::ClaudeAgentSdk);
+        assert!(matches!(capability.support, BriefingSupport::Supported { .. }));
+    }
+
+    #[test]
+    fn codex_declares_no_briefing_support_with_a_reason() {
+        let error = certify_briefing("codex", Some("1.0.0")).unwrap_err();
+        let BriefingUnsupported::AdapterCannotEnforce { adapter, reason } = &error else {
+            panic!("expected a cannot-enforce refusal, got {error:?}");
+        };
+        assert_eq!(adapter, "codex");
+        assert!(reason.contains("per-tool authority"), "{reason}");
+    }
+
+    #[test]
+    fn opencode_declares_no_briefing_support_with_a_reason() {
+        let error = certify_briefing("opencode", Some("1.0.0")).unwrap_err();
+        let BriefingUnsupported::AdapterCannotEnforce { adapter, reason } = &error else {
+            panic!("expected a cannot-enforce refusal, got {error:?}");
+        };
+        assert_eq!(adapter, "opencode");
+        assert!(reason.contains("coarse families"), "{reason}");
+    }
+
+    #[test]
+    fn an_unsupported_adapter_never_falls_back_to_another() {
+        // The refusal names the adapter that was asked for. Nothing in this path
+        // can answer "use Claude instead" — a silent substitution would run a
+        // briefing on a provider the caller did not choose.
+        for adapter in ["codex", "opencode"] {
+            let error = certify_briefing(adapter, Some("1.0.0")).unwrap_err();
+            let reason = error.reason();
+            assert!(reason.contains(adapter), "{reason}");
+            assert!(!reason.contains("claude"), "no fallback may be suggested: {reason}");
+        }
+    }
+
+    #[test]
+    fn a_provider_version_the_suite_did_not_certify_is_unsupported() {
+        for version in ["0.2.999", "0.4.0", "1.0.0", "0.30.1"] {
+            let error = certify_briefing("claude", Some(version)).unwrap_err();
+            assert!(
+                matches!(error, BriefingUnsupported::UncertifiedProviderVersion { .. }),
+                "{version} must not be certified: {error:?}"
+            );
+            assert!(error.reason().contains(version));
+        }
+        // "0.3" is a textual prefix of "0.30.1", and those are different releases.
+        assert!(certify_briefing("claude", Some("0.3.0")).is_ok());
+        assert!(certify_briefing("claude", Some("0.3")).is_ok());
+    }
+
+    #[test]
+    fn a_provider_that_cannot_say_what_it_is_has_not_been_certified() {
+        for reported in [None, Some(""), Some("   ")] {
+            let error = certify_briefing("claude", reported).unwrap_err();
+            assert!(
+                matches!(error, BriefingUnsupported::UncertifiedProviderVersion { .. }),
+                "{reported:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_permission_representation_is_unsupported_not_empty() {
+        // The shape Bridge has not been taught to compile into. The danger is
+        // reading an unfamiliar representation as "nothing is restricted", so this
+        // pins the opposite.
+        assert!(!PermissionRepresentation::Unrecognized.can_enforce_exact_identities());
+        for representation in [
+            PermissionRepresentation::OpenCodeRuleList,
+            PermissionRepresentation::CodexSandboxPolicy,
+            PermissionRepresentation::Unrecognized,
+        ] {
+            assert!(
+                !representation.can_enforce_exact_identities(),
+                "{representation:?} cannot name one exact tool and refuse the rest"
+            );
+            assert!(!representation.why_not().is_empty());
+        }
+        assert!(PermissionRepresentation::ClaudeAgentSdk.can_enforce_exact_identities());
+    }
+
+    #[test]
+    fn every_registered_adapter_has_an_explicit_briefing_verdict() {
+        // The acceptance criterion: all three are stated, none is silent.
+        let adapters: Vec<&str> = briefing_capabilities()
+            .iter()
+            .map(|capability| capability.adapter)
+            .collect();
+        assert_eq!(adapters, vec!["claude", "codex", "opencode"]);
+        for capability in briefing_capabilities() {
+            match capability.support {
+                BriefingSupport::Supported {
+                    certified_provider_version,
+                } => assert!(!certified_provider_version.is_empty()),
+                BriefingSupport::Unsupported { reason } => assert!(
+                    reason.len() > 20,
+                    "{} needs a reason worth reading, got {reason:?}",
+                    capability.adapter
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_representation_with_a_per_call_gate_may_claim_support() {
+        // A table entry claiming support for something unenforceable is a bug, and
+        // the safe reading of a bug is refusal, not the claim.
+        for capability in briefing_capabilities() {
+            if matches!(capability.support, BriefingSupport::Supported { .. }) {
+                assert!(
+                    capability.permissions.can_enforce_exact_identities(),
+                    "{} claims support without a per-call gate",
+                    capability.adapter
+                );
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
