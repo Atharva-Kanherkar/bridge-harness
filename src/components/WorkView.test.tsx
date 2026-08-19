@@ -28,6 +28,8 @@ function board(facts: WorkFact[], overrides: Partial<WorkBoard> = {}): WorkBoard
     facts,
     tasks: [],
     latestRun: null,
+    generatedAt: "2026-08-19T12:00:00.000Z",
+    sources: [],
     settings: {
       briefing: null,
       enabledConnectorInstances: [],
@@ -36,7 +38,7 @@ function board(facts: WorkFact[], overrides: Partial<WorkBoard> = {}): WorkBoard
       cooldownMinutes: 15,
       limits: { maxWallSeconds: 600, maxTurns: 12, maxToolCalls: 24, maxOutputTokens: null, costCeilingMicrousd: null },
     },
-    suggestions: { state: "unavailable", detail: null },
+    suggestions: { state: "provider_unsupported", detail: null },
     ...overrides,
   };
 }
@@ -259,7 +261,7 @@ describe("the suggested work notice", () => {
   });
 
   it("is absent when suggestions are not in the not-configured state", () => {
-    render({ board: board([fact()], { suggestions: { state: "unavailable", detail: null } }) });
+    render({ board: board([fact()], { suggestions: { state: "provider_unsupported", detail: null } }) });
     expect(text()).not.toContain("Suggested work is off");
   });
 

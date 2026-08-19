@@ -327,6 +327,8 @@ const mockWorkBoard: WorkBoard = {
   ],
   tasks: [],
   latestRun: null,
+  generatedAt: new Date().toISOString(),
+  sources: [],
   settings: {
     briefing: null,
     enabledConnectorInstances: [],

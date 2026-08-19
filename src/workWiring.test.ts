@@ -1,0 +1,107 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+// How Work is wired into the app shell.
+//
+// This repo does not mount the whole App in a test — it needs a Tauri host — so the
+// wiring is checked where it is declared instead. That is the same approach
+// `designSystem.test.ts` takes, and it catches the regressions that matter here:
+// the board being loaded eagerly, or the Work path growing a call that starts
+// something.
+
+const APP = readFileSync(join(__dirname, "App.tsx"), "utf8");
+const SIDEBAR = readFileSync(join(__dirname, "components", "BridgeSidebar.tsx"), "utf8");
+
+/** One `useCallback` body from App.tsx, ending at its dependency array.
+ *
+ * Bounded precisely rather than by a blank line: an over-wide slice would pick up
+ * the next declaration and make these assertions pass or fail for the wrong reason. */
+function declaration(name: string): string {
+  const start = APP.indexOf(name);
+  expect(start, `${name} is declared in App.tsx`).toBeGreaterThan(-1);
+  const rest = APP.slice(start);
+  const end = rest.indexOf("\n  }, [");
+  expect(end, `${name} is a useCallback closed by a dependency array`).toBeGreaterThan(-1);
+  return rest.slice(0, end);
+}
+
+describe("the Work view is lazy", () => {
+  it("is loaded with lazy() and rendered inside Suspense", () => {
+    // The board is a screen most sessions never open. Bundling it into the initial
+    // chunk would make every cold start pay for it.
+    expect(APP).toMatch(/const WorkView = lazy\(\(\) => import\("\.\/components\/WorkView"\)/);
+    // The render branch, not the title strip — both test the same view value, and
+    // only one of them renders the board.
+    const branch = APP.slice(APP.indexOf('view === "work" ? <'));
+    expect(branch.slice(0, 160)).toContain("<Suspense");
+    expect(branch.slice(0, 160)).toContain("PanelLoading");
+    expect(branch.slice(0, 160)).toContain("<WorkView");
+  });
+
+  it("imports the board's types without importing the board", () => {
+    // A value import from WorkView would defeat the lazy boundary. The outcome type
+    // is imported as a type, which is erased.
+    expect(APP).toContain('import type { WorkActionOutcome } from "./components/WorkView";');
+    expect(APP).not.toMatch(/^import \{[^}]*WorkView[^}]*\} from "\.\/components\/WorkView"/m);
+  });
+});
+
+describe("opening Work starts nothing", () => {
+  it("reads the board and calls nothing else", () => {
+    // The acceptance criterion this slice rests on: opening Work must not select or
+    // create a session, or start a model, connector, git command, or request. The
+    // read path is where that would slip in.
+    const read = declaration("const readWorkBoard");
+    const calls = read.match(/bridgeApi\.\w+/g) ?? [];
+    expect(calls).toEqual(["bridgeApi.workBoard"]);
+    expect(read).not.toMatch(/createSession|startTurn|setSelectedSessionId|openSession/);
+  });
+
+  it("opens the view without selecting a session", () => {
+    const open = declaration("const openWorkBoard");
+    expect(open).toContain('setView("work")');
+    expect(open).not.toContain("setSelectedSessionId");
+    expect(open).not.toContain("openSession");
+  });
+
+  it("navigates for a decision and calls only for Bridge's own work", () => {
+    // A board button must never answer an approval on the user's behalf; it takes
+    // them to where the decision is made. A fast-forward and a re-measure are
+    // Bridge's own work and do call.
+    const run = declaration("const runWorkAction");
+    const [navigation, work] = [
+      run.slice(run.indexOf("reviewCompletionCheck"), run.indexOf("refreshWorkspaceBase")),
+      run.slice(run.indexOf('case "refreshWorkspaceBase"')),
+    ];
+    expect(navigation).toContain("openSession");
+    expect(navigation).not.toContain("bridgeApi.");
+    expect(work).toContain("bridgeApi.refreshWorkspaceBase");
+    expect(work).toContain("bridgeApi.workspaceBaseDivergence");
+  });
+});
+
+describe("the shell knows about Work", () => {
+  it("names the view in the title strip", () => {
+    expect(APP).toContain('view === "work" ? "Work"');
+  });
+
+  it("hands the rail the board's state and the way back to it", () => {
+    expect(APP).toContain('workBoardActive={view === "work"}');
+    expect(APP).toContain("workNeedsYouCount={needsYouCount(");
+    expect(APP).toContain("onOpenWorkBoard={openWorkBoard}");
+  });
+
+  it("keeps Work out of the footer nav, where it would be a second meaning", () => {
+    // Work is the pill, not a destination beside Projects. Two rail entries reading
+    // "Work" — one a chat filter, one a screen — is the confusion this avoids.
+    const footer = SIDEBAR.slice(SIDEBAR.indexOf("onOpenProjects}"));
+    expect(footer).not.toContain('"Work"');
+  });
+
+  it("counts what needs you without mounting the board", () => {
+    // The rail shows a count while a conversation is on screen, so the count comes
+    // from a plain function rather than from the board being rendered.
+    expect(APP).toContain('import { needsYouCount } from "./components/workFacts";');
+  });
+});

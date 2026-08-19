@@ -10,6 +10,9 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
+import type { WorkBoard, WorkFactAction } from "./protocol/generated/protocol";
+import type { WorkActionOutcome } from "./components/WorkView";
+import { needsYouCount } from "./components/workFacts";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
@@ -39,6 +42,7 @@ import { Kbd } from "@/components/ui/kbd";
 
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
+const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
 const CodePanel = lazy(() => import("./components/CodePanel").then(module => ({ default: module.CodePanel })));
 // Lazy for the same reason as CodePanel: CodeMirror is a large dependency, and
@@ -75,7 +79,12 @@ export function App() {
   const [health, setHealth] = useState<Health>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
-  const [view, setView] = useState<"workspace" | "projects" | "marketplace" | "settings">("workspace");
+  const [view, setView] = useState<"workspace" | "work" | "projects" | "marketplace" | "settings">("workspace");
+  // The Work board. Held here rather than inside WorkView so the rail can show a
+  // count without the board being mounted, and so leaving and returning does not
+  // re-read for no reason.
+  const [workBoard, setWorkBoard] = useState<WorkBoard>();
+  const [workError, setWorkError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
@@ -361,6 +370,51 @@ export function App() {
   // worker from Mission Control) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); }
+
+  // Reading the board is the whole of what opening Work does: one call, no session
+  // selected, no model, no git, no network.
+  const readWorkBoard = useCallback(async () => {
+    try {
+      setWorkBoard(await bridgeApi.workBoard());
+      setWorkError(undefined);
+    } catch (error) {
+      setWorkBoard(undefined);
+      setWorkError(errorMessage(error));
+    }
+  }, []);
+
+  const openWorkBoard = useCallback(() => {
+    setView("work");
+    setParadigm("single");
+    void readWorkBoard();
+  }, [readWorkBoard]);
+
+  // Two of the four actions are navigation and two are calls. A board button must
+  // never answer an approval on the user's behalf — it takes them to where the
+  // decision is made — while a fast-forward and a re-measure are Bridge's own work
+  // and report their own failure.
+  const runWorkAction = useCallback(async (action: WorkFactAction): Promise<WorkActionOutcome> => {
+    try {
+      switch (action.kind) {
+        case "reviewCompletionCheck":
+        case "answerApproval":
+          openSession(action.sessionId);
+          return { ok: true };
+        case "refreshWorkspaceBase":
+          await bridgeApi.refreshWorkspaceBase(action.sessionId);
+          await readWorkBoard();
+          return { ok: true };
+        case "refreshBaseObservation":
+          // A user-triggered reading is written through to the cache the board reads,
+          // so re-measuring is the same call the warning offers.
+          await bridgeApi.workspaceBaseDivergence(action.sessionId, false);
+          await readWorkBoard();
+          return { ok: true };
+      }
+    } catch (error) {
+      return { ok: false, reason: errorMessage(error) };
+    }
+  }, [readWorkBoard]);
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
@@ -604,7 +658,7 @@ export function App() {
       >
         <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
       </button>
-      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
+      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
     </div>}
 
     {!fullscreen && <BridgeSidebar
@@ -613,10 +667,13 @@ export function App() {
       chats={topSessions}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
+      workBoardActive={view === "work"}
+      workNeedsYouCount={needsYouCount(workBoard?.facts ?? [])}
       projectsActive={view === "projects"}
       marketplaceActive={view === "marketplace"}
       settingsActive={view === "settings"}
       onOpenNewChat={() => setModal("chat")}
+      onOpenWorkBoard={openWorkBoard}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenSettings={() => setView("settings")}
@@ -624,7 +681,12 @@ export function App() {
     />}
     <main className={cn("relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount", fullscreen ? "pt-0" : "pt-11 sm:pt-0")}>
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      {view === "projects" ? <ProjectsScreen
+      {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
+        board={workBoard}
+        error={workError}
+        onRefresh={() => void readWorkBoard()}
+        onAction={runWorkAction}
+      /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}
         activeSessionId={session?.id}
