@@ -190,10 +190,12 @@ pub enum WorkEvidenceTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkTask {
-    /// `sha256("v1\0" + connectorInstanceId + "\0" + canonicalResourceId)`.
-    pub fingerprint: String,
+    /// Durable row id. Ephemeral tasks have no fingerprint, so actions use this id.
+    pub id: String,
+    /// A versioned SHA-256 over length-prefixed connector and resource identities.
+    pub fingerprint: Option<String>,
     pub connector_instance_id: String,
-    pub canonical_resource_id: String,
+    pub canonical_resource_id: Option<String>,
     pub source_kind: String,
     /// Untrusted external text. Bounded, and never an instruction.
     pub title: String,
@@ -346,8 +348,7 @@ pub enum WorkTaskActionKind {
 pub struct TaskActionParams {
     pub task_id: String,
     pub action: WorkTaskActionKind,
-    /// How long to snooze for. Ignored by every other action, and required by none —
-    /// a snooze with no deadline is one the user ends themselves.
+    /// The future deadline for a snooze. Ignored by every other action.
     pub snoozed_until: Option<String>,
 }
 
@@ -369,6 +370,12 @@ pub struct TaskPrepareSessionParams {
     /// session a provider the user never picks anywhere else.
     pub harness: HarnessId,
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskOpenEvidenceParams {
+    pub task_id: String,
 }
 
 /// A session prepared from a task, with nothing sent.
@@ -667,9 +674,10 @@ mod tests {
     #[test]
     fn a_task_carries_bridge_derived_identity_and_only_validated_evidence() {
         let task = WorkTask {
-            fingerprint: "a".repeat(64),
+            id: "task-a".into(),
+            fingerprint: Some("a".repeat(64)),
             connector_instance_id: "github:acme".into(),
-            canonical_resource_id: "acme/bridge#204".into(),
+            canonical_resource_id: Some("acme/bridge#204".into()),
             source_kind: "github_issue".into(),
             title: "Review the migration".into(),
             why: "open three days with a requested change".into(),

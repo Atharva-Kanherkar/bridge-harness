@@ -15,7 +15,11 @@ use rusqlite::{Connection, OptionalExtension};
 
 use bridge_protocol::messages as wire;
 
-use crate::{BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS};
+use crate::{
+    work_actions::{self, OpenTarget}, work_brief_store,
+    work_connectors::ConnectorFamily, work_task_state::TaskState,
+    BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
+};
 
 /// The defaults a board reports when Work has never been configured. Chosen to
 /// match the epic's stated operational bounds: a 10-minute run deadline inside
@@ -467,6 +471,80 @@ pub fn facts(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::WorkFact>,
 }
 
 /// The board. Deterministic, offline, and useful with no model configured.
+fn wire_task_state(state: TaskState) -> wire::WorkTaskState {
+    match state {
+        TaskState::Active => wire::WorkTaskState::Active,
+        TaskState::Snoozed => wire::WorkTaskState::Snoozed,
+        TaskState::Done => wire::WorkTaskState::Done,
+        TaskState::Dismissed => wire::WorkTaskState::Dismissed,
+        TaskState::Stale => wire::WorkTaskState::Stale,
+    }
+}
+
+fn checked_evidence_target(stored: Option<&str>, source_kind: &str) -> Option<wire::WorkEvidenceTarget> {
+    let family = ConnectorFamily::parse(source_kind.split('.').next()?)?;
+    match work_actions::open_target(stored, family).ok()? {
+        OpenTarget::External { url, host } => Some(wire::WorkEvidenceTarget::ExternalLink { url, host }),
+        OpenTarget::Session { session_id } => Some(wire::WorkEvidenceTarget::Session { session_id }),
+    }
+}
+
+/// Project durable tasks without touching connectors or providers. Expired snoozes are
+/// reactivated before visibility is decided, so a read reveals them immediately.
+fn suggested_tasks(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::WorkTask>, BridgeError> {
+    let now_text = now.to_rfc3339();
+    db.execute(
+        "UPDATE work_tasks
+            SET state=CASE WHEN miss_count >= 2 THEN 'stale' ELSE 'active' END,
+                snoozed_until=NULL,resolved_at=NULL,updated_at=?1
+          WHERE state='snoozed' AND snoozed_until IS NOT NULL
+            AND julianday(snoozed_until) <= julianday(?1)",
+        rusqlite::params![now_text],
+    )?;
+    let mut statement = db.prepare(
+        "SELECT id,fingerprint,connector_instance_id,canonical_resource_id,source_kind,
+                title,why,rank,confidence_bps,state,pinned,snoozed_until,evidence_digest,
+                evidence_target,evidence_observed_at,miss_count,workspace_id,created_at,updated_at
+           FROM work_tasks
+          WHERE state IN ('active','snoozed','dismissed') OR (state='stale' AND pinned=1)
+          ORDER BY CASE WHEN state IN ('active','stale') THEN 0 ELSE 1 END,
+                   pinned DESC,
+                   CASE WHEN state IN ('snoozed','dismissed') THEN updated_at END DESC,
+                   rank,id
+          LIMIT 100",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?,
+            row.get::<_, String>(9)?, row.get::<_, i64>(10)? != 0, row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?, row.get::<_, Option<String>>(13)?,
+            row.get::<_, Option<String>>(14)?, row.get::<_, i64>(15)?,
+            row.get::<_, Option<String>>(16)?, row.get::<_, String>(17)?, row.get::<_, String>(18)?,
+        ))
+    })?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        let (id, fingerprint, connector_instance_id, canonical_resource_id, source_kind, title, why,
+            rank, confidence_bps, stored_state, pinned, snoozed_until, evidence_digest,
+            evidence_target, evidence_observed_at, miss_count, workspace_id, created_at,
+            updated_at) = row?;
+        let state = TaskState::parse(&stored_state);
+        if !state.visible(pinned) && !matches!(state, TaskState::Snoozed | TaskState::Dismissed) {
+            continue;
+        }
+        tasks.push(wire::WorkTask {
+            id, fingerprint, connector_instance_id, canonical_resource_id,
+            source_kind: source_kind.clone(), title, why, rank, confidence_bps,
+            state: wire_task_state(state), pinned, snoozed_until, evidence_digest,
+            evidence_target: checked_evidence_target(evidence_target.as_deref(), &source_kind),
+            evidence_observed_at, miss_count, workspace_id, created_at, updated_at,
+        });
+    }
+    Ok(tasks)
+}
+
 pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
     let (settings, settings_error) = match stored_settings(db) {
         Ok(Some(settings)) => (settings, None),
@@ -480,19 +558,32 @@ pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
         ),
     };
 
-    // Suggested work is contracted but not yet produced by anything. Until the
-    // briefing runner lands, the honest state is "no model is configured" —
-    // never an empty list that looks like "nothing to suggest".
+    let latest_run = work_brief_store::latest_run(db)?;
+    let sources = match latest_run.as_ref() {
+        Some(run) => work_brief_store::read_coverage(db, &run.id)?,
+        None => Vec::new(),
+    };
+    let usage = latest_run.as_ref().and_then(|run| run.usage.clone());
     let suggestions = match settings_error {
         Some(detail) => wire::WorkSuggestions {
             state: wire::WorkSuggestionsState::Degraded,
             detail: Some(detail),
         },
-        None => wire::WorkSuggestions {
+        None if settings.briefing.is_none() => wire::WorkSuggestions {
             state: wire::WorkSuggestionsState::NotConfigured,
             detail: Some(
                 "no briefing model is configured, so Work is showing facts only".to_owned(),
             ),
+        },
+        None => match latest_run.as_ref().map(|run| run.status) {
+            Some(wire::WorkBriefRunStatus::Running) => wire::WorkSuggestions {
+                state: wire::WorkSuggestionsState::Running, detail: None,
+            },
+            Some(wire::WorkBriefRunStatus::Failed | wire::WorkBriefRunStatus::Cancelled) => wire::WorkSuggestions {
+                state: wire::WorkSuggestionsState::Degraded,
+                detail: latest_run.as_ref().and_then(|run| run.failure_detail.clone()),
+            },
+            _ => wire::WorkSuggestions { state: wire::WorkSuggestionsState::Ready, detail: None },
         },
     };
 
@@ -500,10 +591,10 @@ pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
     Ok(wire::WorkBoard {
         generated_at: now.to_rfc3339(),
         facts: facts(db, now)?,
-        tasks: Vec::new(),
-        latest_run: None,
-        sources: Vec::new(),
-        usage: None,
+        tasks: suggested_tasks(db, now)?,
+        latest_run,
+        sources,
+        usage,
         settings,
         suggestions,
     })
@@ -1088,6 +1179,55 @@ mod tests {
         assert!(board.sources.is_empty());
         assert!(board.usage.is_none());
         assert!(!board.generated_at.is_empty());
+    }
+
+    #[test]
+    fn the_board_projects_durable_tasks_and_reactivates_an_expired_snooze() {
+        let db = memory_db();
+        let safe_target = serde_json::to_string(&crate::work_connectors::EvidenceTarget::ExternalLink {
+            url: "https://app.slack.com/archives/C1/p1".into(), host: "app.slack.com".into(),
+        }).unwrap();
+        db.execute(
+            "INSERT INTO work_tasks(
+                 id,fingerprint,connector_instance_id,canonical_resource_id,source_kind,
+                 title,why,rank,confidence_bps,state,snoozed_until,evidence_target,
+                 ephemeral,created_at,updated_at)
+             VALUES('task-1','v1:one','slack-1','slack:slack-1:1','slack.message',
+                    'Reply','Asked twice',1,8200,'snoozed','2026-08-19T08:00:00+00:00',?1,0,
+                    '2026-08-19T07:00:00+00:00','2026-08-19T07:00:00+00:00')",
+            rusqlite::params![safe_target],
+        ).unwrap();
+
+        let tasks = suggested_tasks(&db, now()).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "task-1");
+        assert_eq!(tasks[0].fingerprint.as_deref(), Some("v1:one"));
+        assert_eq!(tasks[0].state, wire::WorkTaskState::Active);
+        assert!(tasks[0].snoozed_until.is_none());
+        assert_eq!(tasks[0].evidence_target, Some(wire::WorkEvidenceTarget::ExternalLink {
+            url: "https://app.slack.com/archives/C1/p1".into(), host: "app.slack.com".into(),
+        }));
+        let stored: (String, Option<String>) = db.query_row(
+            "SELECT state,snoozed_until FROM work_tasks WHERE id='task-1'", [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(stored, ("active".into(), None));
+    }
+
+    #[test]
+    fn the_board_hides_resolved_tasks_but_keeps_a_pinned_stale_task_visible() {
+        let db = memory_db();
+        for (id, state, pinned) in [("hidden", "done", 1), ("pinned", "stale", 1)] {
+            db.execute(
+                "INSERT INTO work_tasks(
+                     id,connector_instance_id,source_kind,title,why,rank,confidence_bps,
+                     state,pinned,created_at,updated_at)
+                 VALUES(?1,'slack-1','slack.message','Reply','Asked twice',1,8200,?2,?3,'now','now')",
+                rusqlite::params![id, state, pinned],
+            ).unwrap();
+        }
+        let tasks = suggested_tasks(&db, now()).unwrap();
+        assert_eq!(tasks.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), vec!["pinned"]);
     }
 
     #[test]

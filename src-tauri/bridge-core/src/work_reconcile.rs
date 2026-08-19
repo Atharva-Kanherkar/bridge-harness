@@ -15,7 +15,7 @@ use bridge_protocol::messages as wire;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::work_brief_parser::WorkBrief;
-use crate::work_brief_store::{finish_run, RunOutcome};
+use crate::work_brief_store::{record_ledger_in, RunOutcome};
 use crate::work_evidence::{EvidenceEntry, RunLedger};
 use crate::work_fingerprint::fingerprint_for;
 use crate::work_task_state::{
@@ -54,10 +54,7 @@ struct Resolved<'a> {
 fn resolve<'a>(ledger: &'a RunLedger, evidence_ref: &str) -> Option<Resolved<'a>> {
     let entry = ledger.entry(evidence_ref)?;
     Some(Resolved {
-        fingerprint: fingerprint_for(
-            &entry.connector_instance_id,
-            Some(entry.canonical_resource_id.as_str()),
-        ),
+        fingerprint: fingerprint_for(&entry.connector_instance_id, entry.canonical_resource_id.as_deref()),
         entry,
     })
 }
@@ -69,6 +66,8 @@ fn resolve<'a>(ledger: &'a RunLedger, evidence_ref: &str) -> Option<Resolved<'a>
 /// still sees.
 pub fn commit_brief(db: &mut Connection, commit: Commit<'_>) -> Result<usize, BridgeError> {
     let transaction = db.transaction()?;
+
+    record_ledger_in(&transaction, commit.ledger)?;
 
     // What each source got up to in this run, so ageing is source-scoped.
     let outcomes: BTreeMap<String, SourceOutcome> = commit
@@ -83,49 +82,72 @@ pub fn commit_brief(db: &mut Connection, commit: Commit<'_>) -> Result<usize, Br
         })
         .collect();
 
-    // Existing tasks, keyed by fingerprint where they have one.
-    let mut stored = Vec::new();
-    {
-        let mut statement = transaction.prepare(
-            "SELECT id,fingerprint,connector_instance_id,state,pinned,miss_count,ephemeral,resolved_at
-               FROM work_tasks",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(StoredTask {
-                id: row.get(0)?,
-                fingerprint: row.get(1)?,
-                connector_instance_id: row.get(2)?,
-                snapshot: TaskSnapshot {
-                    state: TaskState::parse(&row.get::<_, String>(3)?),
-                    pinned: row.get::<_, i64>(4)? != 0,
-                    miss_count: row.get(5)?,
-                    ephemeral: row.get::<_, i64>(6)? != 0,
-                    resolved_at: row.get(7)?,
-                },
-            })
-        })?;
-        for row in rows {
-            stored.push(row?);
-        }
-    }
-
     // Which fingerprints this brief mentions, and what backs each.
     let mut present: BTreeMap<String, (i64, &crate::work_brief_parser::BriefTask, &EvidenceEntry)> =
         BTreeMap::new();
     let mut ephemeral: Vec<(&crate::work_brief_parser::BriefTask, &EvidenceEntry)> = Vec::new();
     for task in &commit.brief.tasks {
-        // A task's first citation decides its identity. The parser has already refused a
-        // brief whose citations do not resolve, so this cannot silently drop one.
-        let Some(first) = task.evidence.first().and_then(|reference| resolve(commit.ledger, reference))
-        else {
+        // A multi-citation task names one primary citation explicitly. The parser permits
+        // omission only for a single citation, where identity is unambiguous. Supporting
+        // evidence can then change without creating a second durable task.
+        let primary_ref = task.primary_evidence.as_deref().or_else(|| task.evidence.first().map(String::as_str));
+        let Some(primary) = primary_ref.and_then(|reference| resolve(commit.ledger, reference)) else {
             continue;
         };
-        match first.fingerprint {
+        match primary.fingerprint {
             Some(value) => {
-                present.insert(value, (task.rank, task, first.entry));
+                // If the model repeats one resource as two tasks, keep the higher-ranked
+                // row rather than silently replacing it with the later duplicate.
+                present
+                    .entry(value)
+                    .and_modify(|current| {
+                        if task.rank < current.0 {
+                            *current = (task.rank, task, primary.entry);
+                        }
+                    })
+                    .or_insert((task.rank, task, primary.entry));
             }
-            None => ephemeral.push((task, first.entry)),
+            None => ephemeral.push((task, primary.entry)),
         }
+    }
+
+    // Read only rows this run can change: the previous run's ephemerals, tasks this brief
+    // mentioned, and live tasks from sources that succeeded and have not exhausted their
+    // two meaningful misses. Historical done/stale/dismissed rows stay off the hot path.
+    let mut sql = String::from(
+        "SELECT id,fingerprint,connector_instance_id,state,pinned,miss_count,ephemeral,resolved_at,
+                evidence_digest,resolution
+           FROM work_tasks
+          WHERE ephemeral=1
+             OR (state IN ('active','snoozed') AND miss_count < 2 AND connector_instance_id IN (
+                    SELECT connector_instance_id FROM work_brief_sources
+                     WHERE run_id=?1 AND status='succeeded'))",
+    );
+    let mut bindings = vec![commit.run_id.to_owned()];
+    if !present.is_empty() {
+        let placeholders = present.keys().map(|fingerprint| {
+            bindings.push(fingerprint.clone());
+            format!("?{}", bindings.len())
+        }).collect::<Vec<_>>().join(",");
+        sql.push_str(&format!(" OR fingerprint IN ({placeholders})"));
+    }
+    let mut stored = Vec::new();
+    {
+        let mut statement = transaction.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(bindings.iter()), |row| {
+            Ok(StoredTask {
+                id: row.get(0)?, fingerprint: row.get(1)?, connector_instance_id: row.get(2)?,
+                snapshot: TaskSnapshot {
+                    state: TaskState::parse(&row.get::<_, String>(3)?),
+                    pinned: row.get::<_, i64>(4)? != 0,
+                    miss_count: row.get(5)?, ephemeral: row.get::<_, i64>(6)? != 0,
+                    resolved_at: row.get(7)?,
+                    evidence_digest: row.get(8)?,
+                    resolved_evidence_digest: row.get(9)?,
+                },
+            })
+        })?;
+        for row in rows { stored.push(row?); }
     }
 
     // Age or refresh every task already on the board.
@@ -134,7 +156,7 @@ pub fn commit_brief(db: &mut Connection, commit: Commit<'_>) -> Result<usize, Br
         let next = match existing.fingerprint.as_ref().filter(|value| mentioned.contains(value)) {
             Some(value) => {
                 let (_, _, entry) = &present[value.as_str()];
-                reconcile_present(&existing.snapshot, Some(entry.observed_at.as_str()))
+                reconcile_present(&existing.snapshot, Some(entry.result_digest.as_str()))
             }
             None if existing.snapshot.ephemeral => {
                 // Ephemeral tasks last until the next committed briefing, and this function
@@ -152,8 +174,12 @@ pub fn commit_brief(db: &mut Connection, commit: Commit<'_>) -> Result<usize, Br
                 reconcile_absent(&existing.snapshot, outcome)
             }
         };
+        if next == existing.snapshot {
+            continue;
+        }
         transaction.execute(
-            "UPDATE work_tasks SET state=?2,pinned=?3,miss_count=?4,resolved_at=?5,last_run_id=?6,updated_at=?7
+            "UPDATE work_tasks SET state=?2,pinned=?3,miss_count=?4,resolved_at=?5,resolution=?6,
+                    last_run_id=?7,updated_at=?8
                WHERE id=?1",
             params![
                 existing.id,
@@ -161,6 +187,7 @@ pub fn commit_brief(db: &mut Connection, commit: Commit<'_>) -> Result<usize, Br
                 i64::from(next.pinned),
                 next.miss_count,
                 next.resolved_at,
+                next.resolved_evidence_digest,
                 commit.run_id,
                 commit.now,
             ],
@@ -169,7 +196,7 @@ pub fn commit_brief(db: &mut Connection, commit: Commit<'_>) -> Result<usize, Br
 
     // Insert or refresh what the brief proposed. A task the user has put away keeps its
     // state: the upsert deliberately does not touch state, pinned, miss_count or
-    // resolved_at, all of which were just decided above.
+    // resolved_at or the completion's evidence snapshot, all of which were just decided above.
     for (value, (rank, task, entry)) in &present {
         upsert_task(
             &transaction,
@@ -291,11 +318,16 @@ fn finish_run_in(
 /// Not a transaction over the board at all: there is nothing to reconcile, and a board that
 /// emptied itself on a parse error would be worse than a stale one.
 pub fn abandon_run(
-    db: &Connection,
+    db: &mut Connection,
     run_id: &str,
+    ledger: &RunLedger,
     outcome: &RunOutcome,
 ) -> Result<(), BridgeError> {
-    finish_run(db, run_id, outcome)
+    let transaction = db.transaction()?;
+    record_ledger_in(&transaction, ledger)?;
+    finish_run_in(&transaction, run_id, outcome)?;
+    transaction.commit()?;
+    Ok(())
 }
 
 /// The board a reader sees: visible tasks in rank order.
@@ -326,7 +358,8 @@ pub fn board_tasks(db: &Connection) -> Result<Vec<(String, String, TaskState, bo
 pub fn read_task(db: &Connection, task_id: &str) -> Result<Option<TaskSnapshot>, BridgeError> {
     Ok(db
         .query_row(
-            "SELECT state,pinned,miss_count,ephemeral,resolved_at FROM work_tasks WHERE id=?1",
+            "SELECT state,pinned,miss_count,ephemeral,resolved_at,evidence_digest,resolution
+               FROM work_tasks WHERE id=?1",
             params![task_id],
             |row| {
                 Ok(TaskSnapshot {
@@ -335,6 +368,8 @@ pub fn read_task(db: &Connection, task_id: &str) -> Result<Option<TaskSnapshot>,
                     miss_count: row.get(2)?,
                     ephemeral: row.get::<_, i64>(3)? != 0,
                     resolved_at: row.get(4)?,
+                    evidence_digest: row.get(5)?,
+                    resolved_evidence_digest: row.get(6)?,
                 })
             },
         )
@@ -350,17 +385,31 @@ pub fn write_task_state(
     now: &str,
 ) -> Result<(), BridgeError> {
     db.execute(
-        "UPDATE work_tasks SET state=?2,pinned=?3,resolved_at=?4,snoozed_until=?5,updated_at=?6
+        "UPDATE work_tasks SET state=?2,pinned=?3,resolved_at=?4,resolution=?5,
+                snoozed_until=?6,updated_at=?7
            WHERE id=?1",
         params![
             task_id,
             snapshot.state.as_str(),
             i64::from(snapshot.pinned),
             snapshot.resolved_at,
+            snapshot.resolved_evidence_digest,
             snoozed_until,
             now,
         ],
     )?;
+    Ok(())
+}
+
+/// Write only the orthogonal pin flag, preserving snooze and resolution metadata.
+pub fn write_task_pin(db: &Connection, task_id: &str, pinned: bool, now: &str) -> Result<(), BridgeError> {
+    let changed = db.execute(
+        "UPDATE work_tasks SET pinned=?2,updated_at=?3 WHERE id=?1",
+        params![task_id, i64::from(pinned), now],
+    )?;
+    if changed == 0 {
+        return Err(BridgeError::Invalid("that task is not on the board".into()));
+    }
     Ok(())
 }
 
@@ -445,6 +494,7 @@ mod tests {
                 title: title.into(),
                 why: "Asked twice.".into(),
                 confidence_bps: 8_200,
+                primary_evidence: None,
                 evidence: vec![reference.to_owned()],
             }],
         }
@@ -507,9 +557,11 @@ mod tests {
 
         // A run that produced nothing usable closes itself and touches no task.
         start(&db, "run-2");
+        let failed_ledger = RunLedger::new("run-2");
         abandon_run(
-            &db,
+            &mut db,
             "run-2",
+            &failed_ledger,
             &RunOutcome {
                 status: wire::WorkBriefRunStatus::Failed,
                 output_digest: None,
@@ -648,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn a_done_task_reopens_across_a_reconciliation_only_on_newer_evidence() {
+    fn a_done_task_reopens_across_a_reconciliation_only_on_changed_evidence() {
         let mut db = db();
         start(&db, "run-1");
         let (first, reference) = ledger("run-1", "1.1", T0);
@@ -659,15 +711,26 @@ mod tests {
         let done = apply_action(&snapshot, TaskAction::Complete, T0).unwrap();
         write_task_state(&db, &task_id, &done, None, T0).unwrap();
 
-        // Same evidence, observed no later than the completion: not news.
+        // The same evidence, even when collected by another run, is not news.
         start(&db, "run-2");
         let (second, again) = ledger("run-2", "1.1", T0);
         commit(&mut db, "run-2", &brief(&again, "Reply to Priya"), &second, T0);
         assert_eq!(read_task(&db, &task_id).unwrap().unwrap().state, TaskState::Done);
 
-        // Newer evidence: something happened after the user finished with it.
+        // A changed result for the same canonical resource reopens it.
         start(&db, "run-3");
-        let (third, newer) = ledger("run-3", "1.1", T1);
+        let mut third = RunLedger::new("run-3");
+        let newer = third
+            .record_succeeded(
+                ConnectorFamily::Slack,
+                "slack-1",
+                Some("T1/U1"),
+                "call_1",
+                "tool-digest",
+                &json!({"ts": "1.1", "text": "changed", "permalink": "https://app.slack.com/archives/C1/p1"}),
+                T1,
+            )
+            .unwrap();
         commit(&mut db, "run-3", &brief(&newer, "Reply to Priya"), &third, T1);
         assert_eq!(read_task(&db, &task_id).unwrap().unwrap().state, TaskState::Active);
     }
@@ -710,8 +773,8 @@ mod tests {
         let brief = WorkBrief {
             version: 1,
             tasks: vec![
-                BriefTask { rank: 1, title: "work".into(), why: "w".into(), confidence_bps: 100, evidence: vec![one] },
-                BriefTask { rank: 2, title: "personal".into(), why: "w".into(), confidence_bps: 100, evidence: vec![other] },
+                BriefTask { rank: 1, title: "work".into(), why: "w".into(), confidence_bps: 100, primary_evidence: None, evidence: vec![one] },
+                BriefTask { rank: 2, title: "personal".into(), why: "w".into(), confidence_bps: 100, primary_evidence: None, evidence: vec![other] },
             ],
         };
         assert_eq!(commit(&mut db, "run-1", &brief, &ledger, T0), 2);
@@ -722,23 +785,71 @@ mod tests {
     }
 
     #[test]
+    fn citation_order_and_duplicate_rows_do_not_change_task_identity() {
+        let mut db = db();
+        start(&db, "run-1");
+        let mut first_ledger = RunLedger::new("run-1");
+        let one = first_ledger.record_succeeded(
+            ConnectorFamily::Slack, "slack-work", None, "c1", "d", &json!({"ts": "1.1"}), T0,
+        ).unwrap();
+        let two = first_ledger.record_succeeded(
+            ConnectorFamily::Slack, "slack-work", None, "c2", "d", &json!({"ts": "2.2"}), T0,
+        ).unwrap();
+        let first_brief = WorkBrief { version: 1, tasks: vec![
+            BriefTask { rank: 2, title: "duplicate".into(), why: "w".into(), confidence_bps: 100, primary_evidence: Some(one.clone()), evidence: vec![two.clone(), one.clone()] },
+            BriefTask { rank: 1, title: "primary".into(), why: "w".into(), confidence_bps: 100, primary_evidence: Some(one.clone()), evidence: vec![one.clone(), two.clone()] },
+        ] };
+        assert_eq!(commit(&mut db, "run-1", &first_brief, &first_ledger, T0), 1);
+        let selected_title: String = db.query_row("SELECT title FROM work_tasks", [], |row| row.get(0)).unwrap();
+        assert_eq!(selected_title, "primary", "the lowest rank wins regardless of array order");
+        let first_id: String = db.query_row("SELECT id FROM work_tasks", [], |row| row.get(0)).unwrap();
+
+        start(&db, "run-2");
+        let mut second_ledger = RunLedger::new("run-2");
+        let one = second_ledger.record_succeeded(
+            ConnectorFamily::Slack, "slack-work", None, "c1", "d", &json!({"ts": "1.1"}), T1,
+        ).unwrap();
+        let two = second_ledger.record_succeeded(
+            ConnectorFamily::Slack, "slack-work", None, "c2", "d", &json!({"ts": "2.2"}), T1,
+        ).unwrap();
+        let reversed = WorkBrief { version: 1, tasks: vec![BriefTask {
+            rank: 1, title: "same task".into(), why: "w".into(), confidence_bps: 100,
+            primary_evidence: Some(one.clone()),
+            evidence: vec![two, one],
+        }] };
+        assert_eq!(commit(&mut db, "run-2", &reversed, &second_ledger, T1), 1);
+        let second_id: String = db.query_row("SELECT id FROM work_tasks", [], |row| row.get(0)).unwrap();
+        assert_eq!(second_id, first_id);
+    }
+
+    #[test]
     fn an_ephemeral_task_is_replaced_by_the_next_committed_run() {
         let mut db = db();
         start(&db, "run-1");
-        // A result Bridge cannot identify earns no evidence at all, so an ephemeral task
-        // needs evidence whose resource id is absent — which the ledger will not mint. The
-        // reachable case is a task whose citation resolves to an entry with no canonical
-        // id, so this asserts the boundary instead: every committed task here is identified.
-        let (ledger, reference) = ledger("run-1", "1.1", T0);
+        let mut ledger = RunLedger::new("run-1");
+        let reference = ledger
+            .record_succeeded(
+                ConnectorFamily::Slack,
+                "slack-work",
+                None,
+                "c1",
+                "d",
+                &json!({"text": "a successful result with no stable provider id"}),
+                T0,
+            )
+            .unwrap();
         commit(&mut db, "run-1", &brief(&reference, "Reply"), &ledger, T0);
-        let ephemeral: i64 = db
-            .query_row("SELECT COUNT(*) FROM work_tasks WHERE ephemeral=1", [], |row| row.get(0))
+        let ephemeral: (i64, i64, Option<String>) = db
+            .query_row("SELECT COUNT(*),SUM(ephemeral),fingerprint FROM work_tasks", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .unwrap();
-        assert_eq!(ephemeral, 0, "evidence without a canonical id is never recorded, so no task is ephemeral yet");
-        let identified: i64 = db
-            .query_row("SELECT COUNT(*) FROM work_tasks WHERE fingerprint IS NOT NULL", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(identified, 1);
+        assert_eq!(ephemeral, (1, 1, None));
+
+        start(&db, "run-2");
+        let next = RunLedger::new("run-2");
+        commit(&mut db, "run-2", &empty_brief(), &next, T1);
+        assert_eq!(board_tasks(&db).unwrap().len(), 0);
     }
 
     #[test]

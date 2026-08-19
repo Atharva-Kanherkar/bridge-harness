@@ -272,6 +272,7 @@ const workBoardObserved = (secondsAgo: number): string =>
 /// something or the affordance cannot be exercised.
 const mockWorkTasks: WorkTask[] = [
   {
+    id: "task-v1:slack-work-1",
     fingerprint: "v1:slack-work-1",
     connectorInstanceId: "slack-work",
     canonicalResourceId: "slack:slack-work:1723459200.123",
@@ -292,6 +293,7 @@ const mockWorkTasks: WorkTask[] = [
     updatedAt: workBoardObserved(240),
   },
   {
+    id: "task-v1:github-1",
     fingerprint: "v1:github-1",
     connectorInstanceId: "github-1",
     canonicalResourceId: "github:github-1:PR_418",
@@ -634,14 +636,14 @@ export const bridgeApi = {
   // anything. They are notes Bridge makes to itself about something it read.
   workTaskAction: async (taskId: string, action: "done" | "snooze" | "dismiss" | "restore", snoozedUntil: string | null = null): Promise<void> => {
     if (isTauri()) return unit(call("work/task_action", { taskId, action, snoozedUntil }));
-    const task = mockWorkTasks.find(item => item.fingerprint === taskId);
+    const task = mockWorkTasks.find(item => item.id === taskId);
     if (!task) throw new Error("Task not found");
     task.state = action === "done" ? "done" : action === "snooze" ? "snoozed" : action === "dismiss" ? "dismissed" : "active";
     return undefined;
   },
   workTaskPin: async (taskId: string, pinned: boolean): Promise<void> => {
     if (isTauri()) return unit(call("work/task_pin", { taskId, pinned }));
-    const task = mockWorkTasks.find(item => item.fingerprint === taskId);
+    const task = mockWorkTasks.find(item => item.id === taskId);
     if (task) task.pinned = pinned;
     return undefined;
   },
@@ -649,13 +651,19 @@ export const bridgeApi = {
   // returns a turn id or a run.
   workTaskPrepareSession: async (taskId: string, harness: Harness, model: string | null): Promise<WorkTaskDraft> => {
     if (isTauri()) return call("work/task_prepare_session", { taskId, harness, model });
-    const task = mockWorkTasks.find(item => item.fingerprint === taskId);
+    const task = mockWorkTasks.find(item => item.id === taskId);
     if (!task) throw new Error("Task not found");
     return {
       sessionId: "session-prepared",
       title: task.title,
       draft: `From ${task.sourceKind}: ${task.title}\n\n${task.why}`,
     };
+  },
+  workTaskOpenEvidence: async (taskId: string) => {
+    if (isTauri()) return call("work/task_open_evidence", { taskId });
+    const task = mockWorkTasks.find(item => item.id === taskId);
+    if (!task?.evidenceTarget) throw new Error("This task has no evidence to open");
+    return structuredClone(task.evidenceTarget);
   },
   // The Work board. Read-only and store-only by construction on the Rust side, so
   // this is the whole of what opening the Work screen does — no session is selected,

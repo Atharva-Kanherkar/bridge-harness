@@ -182,6 +182,17 @@ async fn task_prepare_session(
 }
 
 #[tauri::command]
+async fn task_open_evidence(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+) -> Result<bridge_protocol::messages::WorkEvidenceTarget, BridgeError> {
+    api::work_task_open_evidence(
+        state.inner(),
+        &bridge_protocol::messages::TaskOpenEvidenceParams { task_id },
+    )
+}
+
+#[tauri::command]
 async fn skill_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
@@ -1147,6 +1158,7 @@ pub fn run() {
             task_action,
             task_pin,
             task_prepare_session,
+            task_open_evidence,
             skill_catalog,
             skill_suggestions,
             preview_skill_change,

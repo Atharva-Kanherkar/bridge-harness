@@ -402,6 +402,10 @@ pub fn dispatch(
             let params: wire::TaskPrepareSessionParams = decode(method, params)?;
             reply(api::work_task_prepare_session(core, &params))
         }
+        MethodName::WorkTaskOpenEvidence => {
+            let params: wire::TaskOpenEvidenceParams = decode(method, params)?;
+            reply(api::work_task_open_evidence(core, &params))
+        }
 
         MethodName::SkillCatalog => reply(api::skill_catalog(core)),
         MethodName::SkillSuggestions => {

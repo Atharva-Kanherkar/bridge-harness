@@ -273,7 +273,7 @@ function TaskRow({
         </p>
         <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{task.why}</p>
         {failure && (
-          <div id={`${task.fingerprint}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
+          <div id={`${task.id}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
             <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
             <p className="text-[11.5px] leading-relaxed text-muted-foreground">{failure}</p>
           </div>
@@ -312,7 +312,7 @@ function TaskRow({
               type="button"
               onClick={() => void run(() => onTaskAction(task, action))}
               disabled={busy}
-              aria-describedby={failure ? `${task.fingerprint}-failure` : undefined}
+              aria-describedby={failure ? `${task.id}-failure` : undefined}
               className={cn(
                 "h-7 shrink-0 rounded-md px-2.5 text-[11.5px] font-medium transition-colors disabled:opacity-60",
                 action === "start"
@@ -376,6 +376,7 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
 
 export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date(), onTaskAction, onTogglePin, onOpenEvidence }: WorkViewProps) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const [hiddenShown, setHiddenShown] = useState(false);
   const bands = useMemo(() => bandFacts(board?.facts ?? []), [board]);
   // The same set the rail badge counts. Info is "worth knowing, not worth
   // interrupting for", so a board holding only info facts is not waiting on you —
@@ -385,8 +386,10 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
   // Suggested work sits below the facts and is visibly a second kind of thing. Absent
   // entirely when there is none, rather than an empty section inviting setup.
   const tasks = useMemo(() => orderTasks(board?.tasks ?? []), [board]);
-  // Suggested work has no runner yet, so this is a statement about the product
-  // rather than a call to action: the facts are complete without a model.
+  const hiddenTasks = useMemo(
+    () => (board?.tasks ?? []).filter(task => task.state === "snoozed" || task.state === "dismissed"),
+    [board],
+  );
   const showNotice = !noticeDismissed && board?.suggestions.state === "not_configured";
 
   return (
@@ -428,6 +431,19 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
           >
             <X size={12} strokeWidth={1.8} aria-hidden="true" />
           </button>
+        </div>
+      )}
+
+      {board?.suggestions.state === "running" && (
+        <div className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2 text-[11.5px] text-muted-foreground">
+          Suggestions are being refreshed. The current board remains available while Bridge reads.
+        </div>
+      )}
+
+      {board?.suggestions.state === "degraded" && (
+        <div className="mx-5 mb-2.5 rounded-lg border border-border border-l-[3px] border-l-warning px-2.5 py-2 text-[11.5px] text-muted-foreground">
+          <span className="font-medium text-foreground">Suggestions may be stale.</span>{" "}
+          {board.suggestions.detail ?? "The latest briefing did not complete."}
         </div>
       )}
 
@@ -488,7 +504,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
             <ul aria-label="Suggested work" className="flex flex-col gap-1.5">
               {tasks.map(task => (
                 <TaskRow
-                  key={task.fingerprint}
+                  key={task.id}
                   task={task}
                   onTaskAction={onTaskAction}
                   onTogglePin={onTogglePin}
@@ -496,6 +512,32 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
                 />
               ))}
             </ul>
+          </section>
+        )}
+
+        {hiddenTasks.length > 0 && (
+          <section aria-labelledby="work-band-hidden">
+            <div className="mb-1 mt-2.5 flex items-center justify-between gap-2">
+              <h3 id="work-band-hidden" className="pl-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Hidden — {hiddenTasks.length}
+              </h3>
+              <GhostButton onClick={() => setHiddenShown(value => !value)}>
+                {hiddenShown ? "Hide" : "Show hidden"}
+              </GhostButton>
+            </div>
+            {hiddenShown && (
+              <ul aria-label="Hidden suggested work" className="flex flex-col gap-1.5">
+                {hiddenTasks.map(task => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    onTaskAction={onTaskAction}
+                    onTogglePin={onTogglePin}
+                    onOpenEvidence={onOpenEvidence}
+                  />
+                ))}
+              </ul>
+            )}
           </section>
         )}
       </div>

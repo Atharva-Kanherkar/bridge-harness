@@ -632,6 +632,13 @@
       "resultSchema": "work-task-draft.json"
     },
     {
+      "command": "task_open_evidence",
+      "domain": "work",
+      "method": "work/task_open_evidence",
+      "paramsSchema": "task-open-evidence-params.json",
+      "resultSchema": "work-evidence-target.json"
+    },
+    {
       "command": "skill_catalog",
       "domain": "skills",
       "method": "skills/skill_catalog",

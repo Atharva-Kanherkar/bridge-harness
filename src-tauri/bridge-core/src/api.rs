@@ -963,19 +963,29 @@ pub fn work_task_action(
         wire::WorkTaskActionKind::Dismiss => work_task_state::TaskAction::Dismiss,
         wire::WorkTaskActionKind::Restore => work_task_state::TaskAction::Restore,
     };
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now();
+    let now_text = now.to_rfc3339();
     let db = core.db.lock().unwrap();
     let current = work_reconcile::read_task(&db, &params.task_id)?
         .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?;
-    let next = work_task_state::apply_action(&current, action, &now)
+    let next = work_task_state::apply_action(&current, action, &now_text)
         .map_err(|illegal| BridgeError::Invalid(illegal.reason()))?;
     let snoozed_until = match params.action {
-        wire::WorkTaskActionKind::Snooze => params.snoozed_until.as_deref(),
+        wire::WorkTaskActionKind::Snooze => {
+            let deadline = params.snoozed_until.as_deref()
+                .ok_or_else(|| BridgeError::Invalid("snoozing requires a deadline".into()))?;
+            let parsed = chrono::DateTime::parse_from_rfc3339(deadline)
+                .map_err(|_| BridgeError::Invalid("the snooze deadline is not a timestamp".into()))?;
+            if parsed <= now {
+                return Err(BridgeError::Invalid("the snooze deadline must be in the future".into()));
+            }
+            Some(deadline)
+        }
         // Leaving a stale deadline on a task that is no longer snoozed would make a later
         // expiry check answer about a snooze nobody set.
         _ => None,
     };
-    work_reconcile::write_task_state(&db, &params.task_id, &next, snoozed_until, &now)
+    work_reconcile::write_task_state(&db, &params.task_id, &next, snoozed_until, &now_text)
 }
 
 /// Pin or unpin a task.
@@ -997,7 +1007,7 @@ pub fn work_task_pin(
         .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?;
     let next = work_task_state::apply_action(&current, action, &now)
         .map_err(|illegal| BridgeError::Invalid(illegal.reason()))?;
-    work_reconcile::write_task_state(&db, &params.task_id, &next, None, &now)
+    work_reconcile::write_task_pin(&db, &params.task_id, next.pinned, &now)
 }
 
 /// Prepare a session for working on a task.
@@ -1026,24 +1036,45 @@ pub fn work_task_prepare_session(
         .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?
     };
     let draft = work_actions::prepare_draft(&title, &why, &source_kind);
-    // create_chat inserts a session row and starts no adapter, which is the whole
+    // create_chat_id inserts a session row and starts no adapter, which is the whole
     // requirement: the session exists to be typed into, and no provider has been spoken to.
     let harness = Harness::parse(params.harness.as_str())
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    core.create_chat(&harness, params.model.as_deref(), Some(&draft.title))?;
-    let session_id = {
-        let db = core.db.lock().unwrap();
-        db.query_row(
-            "SELECT id FROM sessions WHERE title=?1 AND workspace_id IS NULL ORDER BY rowid DESC LIMIT 1",
-            params![draft.title],
-            |row| row.get::<_, String>(0),
-        )?
-    };
+    let session_id = core.create_chat_id(&harness, params.model.as_deref(), Some(&draft.title))?;
     Ok(wire::WorkTaskDraft {
         session_id,
         title: draft.title,
         draft: draft.draft,
     })
+}
+
+/// Recheck and return one task's evidence destination at the point the user opens it.
+pub fn work_task_open_evidence(
+    core: &Arc<BridgeCore>,
+    params: &wire::TaskOpenEvidenceParams,
+) -> Result<wire::WorkEvidenceTarget, BridgeError> {
+    let (stored, source_kind): (Option<String>, String) = core.db.lock().unwrap()
+        .query_row(
+            "SELECT evidence_target,source_kind FROM work_tasks WHERE id=?1",
+            params![params.task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| BridgeError::Invalid("that task is not on the board".into()))?;
+    let family = crate::work_connectors::ConnectorFamily::parse(
+        source_kind.split('.').next().unwrap_or_default(),
+    )
+    .ok_or_else(|| BridgeError::Invalid("that task's source is not supported".into()))?;
+    match work_actions::open_target(stored.as_deref(), family)
+        .map_err(|refused| BridgeError::Invalid(refused.reason()))?
+    {
+        work_actions::OpenTarget::External { url, host } => {
+            Ok(wire::WorkEvidenceTarget::ExternalLink { url, host })
+        }
+        work_actions::OpenTarget::Session { session_id } => {
+            Ok(wire::WorkEvidenceTarget::Session { session_id })
+        }
+    }
 }
 
 // --- base-branch divergence ----------------------------------------------------

@@ -423,17 +423,21 @@ export function App() {
       if (action === "start") {
         const preferred = adapters.find(adapter => adapter.available);
         const prepared = await bridgeApi.workTaskPrepareSession(
-          task.fingerprint,
+          task.id,
           (preferred?.id as Harness) ?? "codex",
           preferred?.defaultModel ?? null,
         );
         // Open the session with the draft in the composer. Nothing is sent: the user edits
         // and presses Send, which is the whole point of preparing rather than starting.
-        pendingWelcomeMessageRef.current = prepared.draft;
+        setState(await bridgeApi.state());
+        setComposer(prepared.draft);
         openSession(prepared.sessionId);
         return { ok: true };
       }
-      await bridgeApi.workTaskAction(task.fingerprint, action);
+      const snoozedUntil = action === "snooze"
+        ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+        : null;
+      await bridgeApi.workTaskAction(task.id, action, snoozedUntil);
       await readWorkBoard();
       return { ok: true };
     } catch (error) {
@@ -443,13 +447,33 @@ export function App() {
 
   const toggleWorkTaskPin = useCallback(async (task: WorkTask): Promise<WorkActionOutcome> => {
     try {
-      await bridgeApi.workTaskPin(task.fingerprint, !task.pinned);
+      await bridgeApi.workTaskPin(task.id, !task.pinned);
       await readWorkBoard();
       return { ok: true };
     } catch (error) {
       return { ok: false, reason: errorMessage(error) };
     }
   }, [readWorkBoard]);
+
+  const openWorkTaskEvidence = useCallback(async (task: WorkTask): Promise<void> => {
+    const reserved = task.evidenceTarget?.kind === "externalLink"
+      ? window.open("about:blank", "_blank")
+      : null;
+    if (reserved) reserved.opener = null;
+    try {
+      const target = await bridgeApi.workTaskOpenEvidence(task.id);
+      if (target.kind === "session") {
+        reserved?.close();
+        openSession(target.sessionId);
+        return;
+      }
+      if (reserved) reserved.location.replace(target.url);
+      else window.open(target.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reserved?.close();
+      setError(errorMessage(error));
+    }
+  }, []);
 
   // Two of the four actions are navigation and two are calls. A board button must
   // never answer an approval on the user's behalf — it takes them to where the
@@ -751,6 +775,7 @@ export function App() {
         onAction={runWorkAction}
         onTaskAction={runWorkTaskAction}
         onTogglePin={toggleWorkTaskPin}
+        onOpenEvidence={task => void openWorkTaskEvidence(task)}
       /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}

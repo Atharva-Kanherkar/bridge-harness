@@ -13,6 +13,7 @@ import {
 
 function task(overrides: Partial<WorkTask> = {}): WorkTask {
   return {
+    id: "task-v1:abc",
     fingerprint: "v1:abc",
     connectorInstanceId: "slack-work",
     canonicalResourceId: "slack:slack-work:1.1",
@@ -56,10 +57,10 @@ describe("visibility", () => {
     expect(ordered.map(item => item.fingerprint)).toEqual(["c", "a", "b"]);
   });
 
-  it("breaks a rank tie on fingerprint so the order is total", () => {
+  it("breaks a rank tie on durable id so the order is total", () => {
     const ordered = orderTasks([
-      task({ fingerprint: "z", rank: 1 }),
-      task({ fingerprint: "a", rank: 1 }),
+      task({ id: "z", fingerprint: "z", rank: 1 }),
+      task({ id: "a", fingerprint: "a", rank: 1 }),
     ]);
     expect(ordered.map(item => item.fingerprint)).toEqual(["a", "z"]);
   });

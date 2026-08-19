@@ -148,6 +148,7 @@ methods![
     (WorkTaskAction, "work", "task_action"),
     (WorkTaskPin, "work", "task_pin"),
     (WorkTaskPrepareSession, "work", "task_prepare_session"),
+    (WorkTaskOpenEvidence, "work", "task_open_evidence"),
     // skills
     (SkillCatalog, "skills", "skill_catalog"),
     (SkillSuggestions, "skills", "skill_suggestions"),

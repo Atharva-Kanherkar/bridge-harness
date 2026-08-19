@@ -24,7 +24,7 @@ export type TaskAction = "start" | "done" | "snooze" | "dismiss" | "restore";
 export const ACTION_LABEL: Record<TaskAction, string> = {
   start: "Start",
   done: "Done",
-  snooze: "Snooze",
+  snooze: "Snooze 1 day",
   dismiss: "Dismiss",
   restore: "Restore",
 };
@@ -48,7 +48,7 @@ export function orderTasks(tasks: WorkTask[]): WorkTask[] {
     .sort((left, right) => {
       if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
       if (left.rank !== right.rank) return left.rank - right.rank;
-      return left.fingerprint.localeCompare(right.fingerprint);
+      return left.id.localeCompare(right.id);
     });
 }
 

@@ -243,6 +243,7 @@ typed_methods![
     (WorkTaskAction, TaskActionParams, UnitResult),
     (WorkTaskPin, TaskPinParams, UnitResult),
     (WorkTaskPrepareSession, TaskPrepareSessionParams, WorkTaskDraft),
+    (WorkTaskOpenEvidence, TaskOpenEvidenceParams, WorkEvidenceTarget),
     // skills
     (SkillCatalog, _, _),
     (SkillSuggestions, SkillSuggestionsParams, _),

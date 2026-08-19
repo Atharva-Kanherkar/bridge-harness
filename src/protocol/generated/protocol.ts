@@ -97,6 +97,7 @@ export type BridgeMethod =
   | "work/task_action"
   | "work/task_pin"
   | "work/task_prepare_session"
+  | "work/task_open_evidence"
   | "skills/skill_catalog"
   | "skills/skill_suggestions"
   | "skills/preview_skill_change"
@@ -193,6 +194,7 @@ export const BRIDGE_METHODS = [
   { method: "work/task_action", domain: "work", command: "task_action" },
   { method: "work/task_pin", domain: "work", command: "task_pin" },
   { method: "work/task_prepare_session", domain: "work", command: "task_prepare_session" },
+  { method: "work/task_open_evidence", domain: "work", command: "task_open_evidence" },
   { method: "skills/skill_catalog", domain: "skills", command: "skill_catalog" },
   { method: "skills/skill_suggestions", domain: "skills", command: "skill_suggestions" },
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
@@ -339,6 +341,7 @@ export interface BridgeMethodParams {
   "work/task_action": TaskActionParams;
   "work/task_pin": TaskPinParams;
   "work/task_prepare_session": TaskPrepareSessionParams;
+  "work/task_open_evidence": TaskOpenEvidenceParams;
   "skills/skill_catalog": undefined;
   "skills/skill_suggestions": SkillSuggestionsParams;
   "skills/preview_skill_change": PreviewSkillChangeParams;
@@ -437,6 +440,7 @@ export interface BridgeMethodResults {
   "work/task_action": UnitResult;
   "work/task_pin": UnitResult;
   "work/task_prepare_session": WorkTaskDraft;
+  "work/task_open_evidence": WorkEvidenceTarget;
   "skills/skill_catalog": unknown;
   "skills/skill_suggestions": unknown;
   "skills/preview_skill_change": unknown;
@@ -987,14 +991,15 @@ export interface WorkSuggestions {
 export type WorkSuggestionsState = "running" | "ready" | "not_configured" | "provider_unsupported" | "degraded";
 
 export interface WorkTask {
-  canonicalResourceId: string;
+  canonicalResourceId?: string | null;
   confidenceBps: number;
   connectorInstanceId: string;
   createdAt: string;
   evidenceDigest?: string | null;
   evidenceObservedAt?: string | null;
   evidenceTarget?: WorkEvidenceTarget | null;
-  fingerprint: string;
+  fingerprint?: string | null;
+  id: string;
   missCount: number;
   pinned: boolean;
   rank: number;
@@ -1597,6 +1602,10 @@ export interface WorkTaskDraft {
   draft: string;
   sessionId: string;
   title: string;
+}
+
+export interface TaskOpenEvidenceParams {
+  taskId: string;
 }
 
 export interface SkillSuggestionsParams {

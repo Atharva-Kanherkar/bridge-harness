@@ -23,7 +23,7 @@ pub const FINGERPRINT_VERSION: &str = "v1";
 /// Length-prefix one component so no arrangement of separators can forge another
 /// component boundary.
 fn write_component(hasher: &mut Sha256, component: &str) {
-    hasher.update(component.len().to_le_bytes());
+    hasher.update((component.len() as u64).to_le_bytes());
     hasher.update(component.as_bytes());
 }
 
@@ -79,6 +79,14 @@ mod tests {
         let again = fingerprint("slack-1", "slack:slack-1:1723459200.123");
         assert_eq!(once, again);
         assert!(once.starts_with("v1:"));
+    }
+
+    #[test]
+    fn the_length_prefix_is_fixed_width_across_architectures() {
+        assert_eq!(
+            fingerprint("a", "b"),
+            "v1:62933c6256860d7ab643853ed8518752b7d17ef4817ae8fd10db9ca26233b0a7"
+        );
     }
 
     #[test]

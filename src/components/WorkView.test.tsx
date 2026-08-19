@@ -469,6 +469,7 @@ describe("narrow widths", () => {
 
 describe("suggested work", () => {
   const suggested = (overrides: Partial<WorkTask> = {}): WorkTask => ({
+    id: "task-v1:abc",
     fingerprint: "v1:abc",
     connectorInstanceId: "slack-work",
     canonicalResourceId: "slack:slack-work:1.1",
@@ -503,10 +504,13 @@ describe("suggested work", () => {
     expect(text()).not.toContain("from your connected tools");
   });
 
-  it("offers only the actions the backend would accept", () => {
+  it("offers restore for a hidden snoozed task when the user reveals it", async () => {
     render({ board: withTasks([suggested({ state: "snoozed", pinned: true })]), onTaskAction: ok as never });
-    // A snoozed task is hidden, so nothing to act on.
     expect(host.querySelectorAll("ul[aria-label='Suggested work'] li")).toHaveLength(0);
+    expect(buttonNamed("Restore")).toBeFalsy();
+    await act(async () => { buttonNamed("Show hidden")?.click(); });
+    expect(host.querySelectorAll("ul[aria-label='Hidden suggested work'] li")).toHaveLength(1);
+    expect(buttonNamed("Restore")).toBeTruthy();
 
     render({ board: withTasks([suggested({ state: "active" })]), onTaskAction: ok as never });
     for (const label of ["Start", "Done", "Snooze", "Dismiss"]) {

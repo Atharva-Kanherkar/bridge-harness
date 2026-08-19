@@ -19,7 +19,7 @@
       "$ref": "#/definitions/WorkTaskActionKind"
     },
     "snoozedUntil": {
-      "description": "How long to snooze for. Ignored by every other action, and required by none — a snooze with no deadline is one the user ends themselves.",
+      "description": "The future deadline for a snooze. Ignored by every other action.",
       "type": [
         "string",
         "null"

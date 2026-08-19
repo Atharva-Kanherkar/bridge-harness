@@ -151,15 +151,17 @@ describe("the Work board", () => {
 });
 
 describe("suggested-task actions", () => {
+  const taskId = "task-v1:slack-work-1";
+
   it("performs no connector write or provider turn", async () => {
     // The claim step 4 deferred here, where it can actually be made: a spy over the whole
     // api surface. Marking a task done must not close the thread it came from.
     const outward = ["sendTurn", "startChat", "startSession", "createWorkspaceSession", "resolveApproval", "interruptTurn", "refreshWorkspaceBase", "workspaceBaseDivergence"] as const;
     const spies = outward.map(name => vi.spyOn(bridgeApi, name));
     try {
-      await bridgeApi.workTaskAction("v1:slack-work-1", "done");
-      await bridgeApi.workTaskPin("v1:slack-work-1", true);
-      await bridgeApi.workTaskPrepareSession("v1:slack-work-1", "codex", null);
+      await bridgeApi.workTaskAction(taskId, "done");
+      await bridgeApi.workTaskPin(taskId, true);
+      await bridgeApi.workTaskPrepareSession(taskId, "codex", null);
       for (const spy of spies) {
         expect(spy, `${spy.getMockName()} must not be called by a task action`).not.toHaveBeenCalled();
       }
@@ -171,7 +173,7 @@ describe("suggested-task actions", () => {
   it("prepares a draft and returns no turn id", async () => {
     // The absence is the contract: a field naming a dispatched turn would mean this call
     // had already spoken to a model on the user's behalf.
-    const prepared = await bridgeApi.workTaskPrepareSession("v1:slack-work-1", "codex", null);
+    const prepared = await bridgeApi.workTaskPrepareSession(taskId, "codex", null);
     expect(prepared.sessionId).toBeTruthy();
     expect(prepared.draft).toContain("slack.message");
     expect(Object.keys(prepared)).toEqual(expect.arrayContaining(["sessionId", "title", "draft"]));
@@ -184,7 +186,7 @@ describe("suggested-task actions", () => {
   });
 
   it("carries a task's untrusted text into the draft as text", async () => {
-    const prepared = await bridgeApi.workTaskPrepareSession("v1:slack-work-1", "codex", null);
+    const prepared = await bridgeApi.workTaskPrepareSession(taskId, "codex", null);
     expect(prepared.draft).toContain("Priya is blocked on the migration flag you own");
     for (const framing of ["You must", "Your task is", "```"]) {
       expect(prepared.draft).not.toContain(framing);

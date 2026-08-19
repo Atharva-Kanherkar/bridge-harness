@@ -147,6 +147,10 @@ pub struct TaskSnapshot {
     pub ephemeral: bool,
     /// When the user resolved it, for the newer-evidence rule.
     pub resolved_at: Option<String>,
+    /// The evidence currently backing the task.
+    pub evidence_digest: Option<String>,
+    /// The evidence the user saw when completing the task.
+    pub resolved_evidence_digest: Option<String>,
 }
 
 impl TaskSnapshot {
@@ -157,6 +161,8 @@ impl TaskSnapshot {
             miss_count: 0,
             ephemeral: false,
             resolved_at: None,
+            evidence_digest: None,
+            resolved_evidence_digest: None,
         }
     }
 }
@@ -193,8 +199,13 @@ pub fn apply_action(
     match (task.state, action) {
         // Restore is only meaningful for something the user put away.
         (TaskState::Dismissed, TaskAction::Restore) | (TaskState::Snoozed, TaskAction::Restore) => {
-            next.state = TaskState::Active;
+            next.state = if task.miss_count >= MISSES_BEFORE_STALE {
+                TaskState::Stale
+            } else {
+                TaskState::Active
+            };
             next.resolved_at = None;
+            next.resolved_evidence_digest = None;
         }
         (_, TaskAction::Restore) => return illegal(task.state),
 
@@ -202,6 +213,7 @@ pub fn apply_action(
         (TaskState::Active | TaskState::Snoozed | TaskState::Stale, TaskAction::Complete) => {
             next.state = TaskState::Done;
             next.resolved_at = Some(at.to_owned());
+            next.resolved_evidence_digest = task.evidence_digest.clone();
         }
         (TaskState::Active | TaskState::Snoozed | TaskState::Stale, TaskAction::Dismiss) => {
             next.state = TaskState::Dismissed;
@@ -233,6 +245,11 @@ pub fn reconcile_absent(task: &TaskSnapshot, outcome: SourceOutcome) -> TaskSnap
         // this whole module is shaped around avoiding.
         return next;
     }
+    // Once absence has reached its terminal meaning, further silent reads add no
+    // information. Capping here also prevents historical rows being rewritten forever.
+    if task.miss_count >= MISSES_BEFORE_STALE {
+        return next;
+    }
     next.miss_count = task.miss_count.saturating_add(1);
     if next.miss_count >= MISSES_BEFORE_STALE && matches!(task.state, TaskState::Active) {
         next.state = TaskState::Stale;
@@ -242,9 +259,9 @@ pub fn reconcile_absent(task: &TaskSnapshot, outcome: SourceOutcome) -> TaskSnap
 
 /// What a reconciliation does to one task the new brief **did** mention.
 ///
-/// `evidence_observed_at` is when Bridge saw the evidence behind it, which is what decides
-/// whether a completed task reopens.
-pub fn reconcile_present(task: &TaskSnapshot, evidence_observed_at: Option<&str>) -> TaskSnapshot {
+/// `evidence_digest` is the content Bridge saw behind it. Collection time cannot decide
+/// whether a completed task reopens: rereading unchanged content would otherwise resurrect it.
+pub fn reconcile_present(task: &TaskSnapshot, evidence_digest: Option<&str>) -> TaskSnapshot {
     let mut next = task.clone();
     if !task.state.reconciles() {
         return next;
@@ -255,12 +272,14 @@ pub fn reconcile_present(task: &TaskSnapshot, evidence_observed_at: Option<&str>
     match task.state {
         TaskState::Stale => next.state = TaskState::Active,
         TaskState::Done => {
-            // A completed task reopens only on evidence newer than the completion.
-            // Otherwise every run would resurrect everything the user has finished, since
-            // the source still holds it.
-            if is_newer(evidence_observed_at, task.resolved_at.as_deref()) {
+            // A completed task reopens only when its backing content changed. A missing
+            // completion snapshot fails closed, preserving a decision made by an older build.
+            if task.resolved_evidence_digest.as_deref().is_some_and(|resolved| {
+                evidence_digest.is_some_and(|current| current != resolved)
+            }) {
                 next.state = TaskState::Active;
                 next.resolved_at = None;
+                next.resolved_evidence_digest = None;
             }
         }
         // A snooze is a decision about time, not about the brief, so it survives being
@@ -268,21 +287,6 @@ pub fn reconcile_present(task: &TaskSnapshot, evidence_observed_at: Option<&str>
         TaskState::Snoozed | TaskState::Active | TaskState::Dismissed => {}
     }
     next
-}
-
-/// Is the evidence strictly newer than the resolution?
-///
-/// Unparseable or missing on either side reads as *not* newer, which keeps a completed task
-/// completed. Reopening on a timestamp nobody could compare would undo a user's decision on
-/// the strength of a bad string.
-fn is_newer(evidence_observed_at: Option<&str>, resolved_at: Option<&str>) -> bool {
-    let Some(evidence) = evidence_observed_at.and_then(parse_instant) else {
-        return false;
-    };
-    let Some(resolved) = resolved_at.and_then(parse_instant) else {
-        return false;
-    };
-    evidence > resolved
 }
 
 fn parse_instant(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -307,7 +311,6 @@ mod tests {
     use super::*;
 
     const RESOLVED: &str = "2026-08-19T12:00:00+00:00";
-    const BEFORE: &str = "2026-08-19T11:00:00+00:00";
     const AFTER: &str = "2026-08-19T13:00:00+00:00";
 
     fn task(state: TaskState) -> TaskSnapshot {
@@ -378,7 +381,7 @@ mod tests {
     #[test]
     fn a_reappearing_task_resets_its_miss_count() {
         let aged = reconcile_absent(&TaskSnapshot::active(), SourceOutcome::Read);
-        let back = reconcile_present(&aged, Some(AFTER));
+        let back = reconcile_present(&aged, Some("digest-1"));
         assert_eq!(back.miss_count, 0);
         assert_eq!(back.state, TaskState::Active);
     }
@@ -386,7 +389,7 @@ mod tests {
     #[test]
     fn a_stale_task_that_reappears_becomes_active_again() {
         let stale = TaskSnapshot { state: TaskState::Stale, miss_count: 2, ..TaskSnapshot::active() };
-        let back = reconcile_present(&stale, Some(AFTER));
+        let back = reconcile_present(&stale, Some("digest-1"));
         assert_eq!(back.state, TaskState::Active);
         assert_eq!(back.miss_count, 0);
     }
@@ -404,7 +407,7 @@ mod tests {
         let aged = reconcile_absent(&snoozed, SourceOutcome::Read);
         assert_eq!(aged.miss_count, 1, "it is still being tracked");
         assert_eq!(aged.state, TaskState::Snoozed, "but the snooze is not overridden");
-        let mentioned = reconcile_present(&snoozed, Some(AFTER));
+        let mentioned = reconcile_present(&snoozed, Some("digest-1"));
         assert_eq!(mentioned.state, TaskState::Snoozed, "a snooze is about time, not the brief");
     }
 
@@ -417,42 +420,42 @@ mod tests {
     }
 
     #[test]
-    fn a_done_task_reopens_only_on_newer_evidence() {
+    fn a_done_task_reopens_only_on_changed_evidence() {
         let done = TaskSnapshot {
             state: TaskState::Done,
             resolved_at: Some(RESOLVED.into()),
+            evidence_digest: Some("digest-1".into()),
+            resolved_evidence_digest: Some("digest-1".into()),
             ..TaskSnapshot::active()
         };
-        // Newer: something happened after the user finished with it.
-        let reopened = reconcile_present(&done, Some(AFTER));
+        let reopened = reconcile_present(&done, Some("digest-2"));
         assert_eq!(reopened.state, TaskState::Active);
         assert!(reopened.resolved_at.is_none());
-        // Older or equal: the source still holds it, which is not news.
-        for stale_evidence in [Some(BEFORE), Some(RESOLVED), None] {
-            let untouched = reconcile_present(&done, stale_evidence);
-            assert_eq!(untouched.state, TaskState::Done, "{stale_evidence:?} must not reopen it");
+        assert!(reopened.resolved_evidence_digest.is_none());
+        // Rereading the same content later is not news.
+        for unchanged_evidence in [Some("digest-1"), None] {
+            let untouched = reconcile_present(&done, unchanged_evidence);
+            assert_eq!(untouched.state, TaskState::Done, "{unchanged_evidence:?} must not reopen it");
             assert_eq!(untouched.resolved_at.as_deref(), Some(RESOLVED));
         }
     }
 
     #[test]
-    fn an_unreadable_timestamp_leaves_a_done_task_done() {
-        // Undoing a user's decision on the strength of a bad string is the wrong default.
+    fn a_missing_completion_digest_leaves_a_done_task_done() {
+        // Older rows have no content snapshot. Undoing their decision is the wrong default.
         let done = TaskSnapshot {
             state: TaskState::Done,
             resolved_at: Some("whenever".into()),
             ..TaskSnapshot::active()
         };
-        assert_eq!(reconcile_present(&done, Some(AFTER)).state, TaskState::Done);
-        let sane = TaskSnapshot { resolved_at: Some(RESOLVED.into()), ..done.clone() };
-        assert_eq!(reconcile_present(&sane, Some("whenever")).state, TaskState::Done);
+        assert_eq!(reconcile_present(&done, Some("digest-2")).state, TaskState::Done);
     }
 
     #[test]
     fn a_dismissed_task_stays_suppressed_until_restore() {
         let dismissed = task(TaskState::Dismissed);
         assert!(!dismissed.state.reconciles());
-        assert_eq!(reconcile_present(&dismissed, Some(AFTER)).state, TaskState::Dismissed);
+        assert_eq!(reconcile_present(&dismissed, Some("digest-1")).state, TaskState::Dismissed);
         assert_eq!(reconcile_absent(&dismissed, SourceOutcome::Read).state, TaskState::Dismissed);
         assert_eq!(reconcile_absent(&dismissed, SourceOutcome::Read).miss_count, 0);
         // Only an explicit restore brings it back.
@@ -490,7 +493,7 @@ mod tests {
     fn a_pin_survives_reconciliation() {
         let pinned = TaskSnapshot { pinned: true, ..TaskSnapshot::active() };
         assert!(reconcile_absent(&pinned, SourceOutcome::Read).pinned);
-        assert!(reconcile_present(&pinned, Some(AFTER)).pinned);
+        assert!(reconcile_present(&pinned, Some("digest-1")).pinned);
     }
 
     // -----------------------------------------------------------------------
@@ -541,11 +544,17 @@ mod tests {
 
     #[test]
     fn a_resolution_records_when_it_happened_and_a_restore_clears_it() {
-        let done = apply_action(&TaskSnapshot::active(), TaskAction::Complete, RESOLVED).unwrap();
+        let current = TaskSnapshot {
+            evidence_digest: Some("digest-1".into()),
+            ..TaskSnapshot::active()
+        };
+        let done = apply_action(&current, TaskAction::Complete, RESOLVED).unwrap();
         assert_eq!(done.resolved_at.as_deref(), Some(RESOLVED));
+        assert_eq!(done.resolved_evidence_digest.as_deref(), Some("digest-1"));
         let dismissed = apply_action(&TaskSnapshot::active(), TaskAction::Dismiss, RESOLVED).unwrap();
         let restored = apply_action(&dismissed, TaskAction::Restore, AFTER).unwrap();
         assert!(restored.resolved_at.is_none(), "a restored task is not resolved");
+        assert!(restored.resolved_evidence_digest.is_none());
     }
 
     // -----------------------------------------------------------------------
