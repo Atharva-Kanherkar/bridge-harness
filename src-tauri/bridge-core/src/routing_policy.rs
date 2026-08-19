@@ -62,7 +62,7 @@ pub(crate) struct EvidenceRow {
     fingerprint: String,
     task_family: String,
     profile_key: String,
-    candidate: String,
+    pub(crate) candidate: String,
     effort: String,
     success: Option<bool>,
     cost_microusd: Option<i64>,

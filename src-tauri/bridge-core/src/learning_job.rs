@@ -2709,5 +2709,15 @@ mod tests {
             5,
             "a small workspace must keep its own last 5 outcomes instead of a global rowid window"
         );
+        assert!(
+            other.iter().all(|row| row.candidate == "codex:b"),
+            "the surviving rows must be the small workspace's own outcomes, not the newest rows from a busier one"
+        );
+        let flooded = routing_policy::load_evidence(&db, "w", boundary).unwrap();
+        assert_eq!(flooded.len(), 5_000);
+        assert!(
+            flooded.iter().all(|row| row.candidate == "codex:a"),
+            "a busy workspace must not absorb another workspace's outcomes"
+        );
     }
 }
