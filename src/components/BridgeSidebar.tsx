@@ -242,9 +242,13 @@ export function BridgeSidebar({
   const searching = needle.length > 0;
 
   const agents = useMemo(() => agentOptions(chats), [chats]);
+  const workspaceTitle = useMemo(() => {
+    const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
+    return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
+  }, [workspaces]);
   const visible = useMemo(
-    () => filterChats(chats, { query, status: view.status, agent: view.agent }),
-    [chats, query, view.status, view.agent],
+    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
+    [chats, query, view.status, view.agent, workspaceTitle],
   );
   const groups = useMemo(
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),

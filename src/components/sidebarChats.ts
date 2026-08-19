@@ -123,14 +123,27 @@ export function agentOptions(chats: Session[]): { id: string; label: string }[] 
 
 export function filterChats(
   chats: Session[],
-  { query = "", status = "all", agent = "all" }: { query?: string; status?: ChatStatusFilter; agent?: string } = {},
+  {
+    query = "",
+    status = "all",
+    agent = "all",
+    workspaceTitle,
+  }: {
+    query?: string;
+    status?: ChatStatusFilter;
+    agent?: string;
+    /** Resolves a chat's project name into the search haystack, so looking up a
+     * project by name surfaces its chats instead of an empty project. */
+    workspaceTitle?: (workspaceId: string | null | undefined) => string | undefined;
+  } = {},
 ): Session[] {
   const needle = query.trim().toLowerCase();
   return chats.filter(chat => {
     if (status !== "all" && statusBucket(chat.status) !== status) return false;
     if (agent !== "all" && chat.harness !== agent) return false;
     if (!needle) return true;
-    const haystack = `${chatName(chat)} ${chat.label} ${harnessLabel(chat.harness)} ${chat.model ?? ""}`.toLowerCase();
+    const project = workspaceTitle?.(chat.workspaceId) ?? "";
+    const haystack = `${chatName(chat)} ${chat.label} ${harnessLabel(chat.harness)} ${chat.model ?? ""} ${project}`.toLowerCase();
     return haystack.includes(needle);
   });
 }

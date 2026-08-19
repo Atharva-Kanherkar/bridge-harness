@@ -187,6 +187,14 @@ describe("filterChats", () => {
     expect(filterChats(chats, { query: "b" }).map(item => item.id)).toEqual(["a", "b"]);
   });
 
+  it("matches a chat on its project name when a resolver is supplied", () => {
+    const inProject = chat("p", { title: "Token cost report", workspaceId: "ws-1" });
+    const resolver = (id: string | null | undefined) => (id === "ws-1" ? "agentclash" : undefined);
+    expect(filterChats([...chats, inProject], { query: "agentclash", workspaceTitle: resolver }).map(item => item.id)).toEqual(["p"]);
+    // Without the resolver the project name is simply not searchable.
+    expect(filterChats([...chats, inProject], { query: "agentclash" })).toEqual([]);
+  });
+
   it("treats a blank query as no query", () => {
     expect(filterChats(chats, { query: "   " })).toHaveLength(3);
     expect(filterChats(chats)).toHaveLength(3);

@@ -201,6 +201,14 @@ describe("BridgeSidebar projects", () => {
   });
 });
 
+describe("BridgeSidebar search", () => {
+  it("keeps the field closed until the search control is used", () => {
+    const html = render();
+    expect(html).toContain("Search chats");
+    expect(html).not.toContain("Filter chats and projects");
+  });
+});
+
 describe("BridgeSidebar without the worker panel", () => {
   it("shows no live-worker strip in the expanded rail", () => {
     const html = render({ chats: [session("a", { status: "working" })] });
