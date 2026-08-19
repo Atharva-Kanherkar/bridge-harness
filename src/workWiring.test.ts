@@ -105,3 +105,29 @@ describe("the shell knows about Work", () => {
     expect(APP).toContain('import { needsYouCount } from "./components/workFacts";');
   });
 });
+
+describe("overlapping reads", () => {
+  it("guards the read against a slower earlier call landing last", () => {
+    // Opening, refreshing, and both mutating actions all read. Without a generation
+    // check, a slow earlier call — especially a failing one — writes its result over
+    // a newer board.
+    const read = declaration("const readWorkBoard");
+    expect(read).toContain("++workReadGeneration.current");
+    expect(read).toMatch(/if \(generation !== workReadGeneration\.current\) return;/);
+    // Both arms are guarded, not just the success path: the failure arm is the one
+    // that used to wipe the board.
+    expect(read.match(/if \(generation !== workReadGeneration\.current\) return;/g)).toHaveLength(2);
+  });
+
+  it("never replaces a board on screen with a read failure", () => {
+    const read = declaration("const readWorkBoard");
+    expect(read).not.toContain("setWorkBoard(undefined)");
+    expect(read).toContain("if (workBoardRef.current === undefined) setWorkError(reason);");
+    expect(read).toContain("else setWorkRefreshError(reason);");
+  });
+
+  it("hands the view the refresh failure separately from the fatal one", () => {
+    expect(APP).toContain("refreshError={workRefreshError}");
+    expect(APP).toContain("error={workError}");
+  });
+});

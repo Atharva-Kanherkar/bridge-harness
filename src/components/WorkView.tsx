@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { AlertCircle, CircleCheck, GitBranch, ListOrdered, RefreshCw, ShieldCheck, X } from "lucide-react";
 import type { WorkBoard, WorkFact, WorkFactAction } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,7 @@ import {
   detailIsDimmed,
   factAnnouncement,
   freshnessText,
+  needsYouCount,
   RETRY_LABEL,
   SEVERITY_CAPTION,
   SEVERITY_LABEL,
@@ -51,8 +52,13 @@ export type WorkActionOutcome = { ok: true } | { ok: false; reason: string };
 export type WorkViewProps = {
   /** The board, or `undefined` while it is being read for the first time. */
   board?: WorkBoard;
-  /** Why the board could not be read, if it could not. */
+  /** Why the board could not be read at all. Only set when there is nothing to show:
+   * a failure that arrives while a board is on screen is a `refreshError`. */
   error?: string;
+  /** A re-read that failed while a board was already rendered. Shown as a line rather
+   * than replacing the board, because the numbers on screen are still the last thing
+   * Bridge actually read. */
+  refreshError?: string;
   /** Re-read the board. */
   onRefresh: () => void;
   /** Perform a fact's action. Resolving with `ok: false` attaches the reason to the
@@ -95,17 +101,31 @@ function FactRow({
 }) {
   const [failure, setFailure] = useState<string>();
   const [busy, setBusy] = useState(false);
+  // `disabled={busy}` is state, so it is not in effect until the next render — two
+  // clicks in the same tick would both get through and fire two fast-forwards. The
+  // ref closes that window synchronously.
+  const running = useRef(false);
   const source = SOURCE_BY_KIND[fact.kind];
   const Icon = SOURCE_ICON[source];
   const stale = stalenessClause(fact, now);
 
   const run = useCallback(async () => {
+    if (running.current) return;
+    running.current = true;
     setBusy(true);
-    const outcome = await onAction(fact.action);
-    setBusy(false);
-    // A failure attaches to the row. The fact is still true — only the attempt
-    // failed — so removing or replacing the row would be a lie about the state.
-    setFailure(outcome.ok ? undefined : outcome.reason);
+    try {
+      const outcome = await onAction(fact.action);
+      // A failure attaches to the row. The fact is still true — only the attempt
+      // failed — so removing or replacing the row would be a lie about the state.
+      setFailure(outcome.ok ? undefined : outcome.reason);
+    } catch (error) {
+      // The handler is supposed to return an outcome rather than throw, but a button
+      // stuck disabled forever is the worst way to find out that it did.
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
   }, [fact.action, onAction]);
 
   return (
@@ -217,10 +237,14 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
   );
 }
 
-export function WorkView({ board, error, onRefresh, onAction, now = new Date() }: WorkViewProps) {
+export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date() }: WorkViewProps) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const bands = useMemo(() => bandFacts(board?.facts ?? []), [board]);
-  const count = board?.facts.length ?? 0;
+  // The same set the rail badge counts. Info is "worth knowing, not worth
+  // interrupting for", so a board holding only info facts is not waiting on you —
+  // and the two numbers must not disagree about that.
+  const count = needsYouCount(board?.facts ?? []);
+  const anyFacts = (board?.facts.length ?? 0) > 0;
   // Suggested work has no runner yet, so this is a statement about the product
   // rather than a call to action: the facts are complete without a model.
   const showNotice = !noticeDismissed && board?.suggestions.state === "not_configured";
@@ -236,7 +260,9 @@ export function WorkView({ board, error, onRefresh, onAction, now = new Date() }
               : board === undefined
                 ? "Reading what needs you."
                 : count === 0
-                  ? "Nothing is waiting on you."
+                  ? anyFacts
+                    ? "Nothing is waiting on you. What is below is worth knowing, not urgent."
+                    : "Nothing is waiting on you."
                   : `${count} ${count === 1 ? "thing needs" : "things need"} you. Nothing was started to build this list.`}
           </p>
         </div>
@@ -265,8 +291,17 @@ export function WorkView({ board, error, onRefresh, onAction, now = new Date() }
         </div>
       )}
 
+      {refreshError && board !== undefined && (
+        <div className="mx-5 mb-2.5 flex items-start gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
+          <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
+          <p className="min-w-0 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">Could not re-read the board.</span> {refreshError} What is below is the last thing Bridge read.
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5 px-5 pb-5">
-        {error ? (
+        {board === undefined && error ? (
           <Panel
             title="Work could not be read"
             body="The local database did not answer. Nothing is wrong with your sessions — this screen only reads, so retrying is safe."
@@ -274,7 +309,7 @@ export function WorkView({ board, error, onRefresh, onAction, now = new Date() }
           />
         ) : board === undefined ? (
           <LoadingRows />
-        ) : count === 0 ? (
+        ) : !anyFacts ? (
           <Panel
             title="Nothing needs you"
             body="No failed checks, no unanswered approvals, nothing parked, and every workspace is close to its base."

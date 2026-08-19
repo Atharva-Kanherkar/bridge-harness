@@ -107,7 +107,12 @@ describe("the Work board", () => {
     expect(new Set(board.facts.map(fact => fact.kind))).toEqual(
       new Set(["failed_completion_check", "actionable_approval", "blocked_worker_queue_item", "workspace_behind_base"]),
     );
-    expect(new Set(board.facts.map(fact => fact.freshness))).toContain("stale");
+    // Every freshness, not just stale: an unknown reading is a state the screen has a
+    // whole row treatment for, and it was unreachable in the fallback until review
+    // pointed out the claim above did not match the data.
+    expect(new Set(board.facts.map(fact => fact.freshness))).toEqual(
+      new Set(["live", "stale", "unknown"]),
+    );
     // Every fact carries the action its kind implies, and no action is missing.
     for (const fact of board.facts) {
       expect(fact.action.kind).toBeTruthy();
@@ -120,6 +125,18 @@ describe("the Work board", () => {
     first.facts.length = 0;
     const second = await bridgeApi.workBoard();
     expect(second.facts.length).toBeGreaterThan(0);
+  });
+
+  it("stamps its timestamps at read time, not at import", async () => {
+    // Frozen timestamps would age a preview's 'just now' into hours while freshness
+    // stayed 'live', so the screen would contradict itself the longer it stayed open.
+    const first = await bridgeApi.workBoard();
+    await new Promise(resolve => setTimeout(resolve, 12));
+    const second = await bridgeApi.workBoard();
+    expect(Date.parse(second.generatedAt)).toBeGreaterThan(Date.parse(first.generatedAt));
+    const live = (board: Awaited<ReturnType<typeof bridgeApi.workBoard>>) =>
+      board.facts.find(fact => fact.freshness === "live")!.observedAt;
+    expect(Date.parse(live(second))).toBeGreaterThan(Date.parse(live(first)));
   });
 
   it("orders facts the way the backend does, blocking before attention", async () => {

@@ -167,9 +167,11 @@ describe("actions", () => {
     ]);
   });
 
-  it("offers a fast-forward for a live reading and a re-measure otherwise", () => {
-    // The strongest of the three freshness tells: you cannot fast-forward onto a
-    // measurement nobody has taken recently, so that action is simply not offered.
+  it("gives the two divergence actions distinguishable labels", () => {
+    // Only what this function can know. Which of the two a stale fact carries is the
+    // backend's choice, and the tell that a stale row offers no fast-forward is
+    // asserted on the rendered row in WorkView.test.tsx, where it is observable —
+    // this assertion would pass either way and must not claim otherwise.
     expect(actionLabel({ kind: "refreshWorkspaceBase", sessionId: "s", workspaceId: "w" })).toBe("Fast-forward");
     expect(actionLabel({ kind: "refreshBaseObservation", sessionId: "s", workspaceId: "w" })).toBe("Measure again");
   });

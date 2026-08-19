@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkBoard, WorkFact, WorkFactAction } from "../protocol/generated/protocol";
 import { WorkView, type WorkActionOutcome } from "./WorkView";
 
+const RETRY_LABEL_TEXT = "Try again";
+
 const NOW = new Date("2026-08-19T12:00:00.000Z");
 
 function fact(overrides: Partial<WorkFact> = {}): WorkFact {
@@ -306,6 +308,87 @@ describe("keyboard", () => {
     await act(async () => { release({ ok: true }); });
     expect(buttonNamed("Review check")?.disabled).toBe(false);
     expect(onAction).toHaveBeenCalledOnce();
+  });
+});
+
+describe("counting", () => {
+  it("counts the same set the rail badge counts", () => {
+    // The header and the badge must not disagree about what is waiting on you.
+    render({
+      board: board([
+        fact({ dedupeKey: "b", severity: "blocking" }),
+        fact({ dedupeKey: "a", severity: "attention", title: "second" }),
+        fact({ dedupeKey: "i", severity: "info", title: "third" }),
+      ]),
+    });
+    expect(text()).toContain("2 things need you");
+  });
+
+  it("does not say anything needs you when only info is on the board", () => {
+    render({ board: board([fact({ severity: "info", title: "worth knowing" })]) });
+    expect(text()).toContain("Nothing is waiting on you");
+    expect(text()).toContain("worth knowing, not urgent");
+    // …and still shows the row, which counting only urgency must not hide.
+    expect(host.querySelectorAll("li")).toHaveLength(1);
+    expect(text()).not.toContain("Nothing needs you");
+  });
+
+  it("says one thing in the singular", () => {
+    render({ board: board([fact()]) });
+    expect(text()).toContain("1 thing needs you");
+  });
+});
+
+describe("a failed re-read", () => {
+  it("keeps the board and says what is on screen is the last thing read", () => {
+    // A read that failed adds no information, so replacing the board with an error
+    // panel would lose what the reader had.
+    render({ board: board([fact()]), refreshError: "database is locked" });
+    expect(text()).toContain("Could not re-read the board");
+    expect(text()).toContain("database is locked");
+    expect(text()).toContain("the last thing Bridge read");
+    expect(text()).toContain("cargo-test failed on Kyoto");
+    expect(text()).not.toContain("Work could not be read");
+  });
+
+  it("shows the full panel only when there is no board at all", () => {
+    render({ board: undefined, error: "database is locked" });
+    expect(text()).toContain("Work could not be read");
+    expect(host.querySelectorAll("li")).toHaveLength(0);
+  });
+
+  it("prefers the board over an error that arrived with one", () => {
+    render({ board: board([fact()]), error: "stale error from an earlier read" });
+    expect(host.querySelectorAll("li")).toHaveLength(1);
+    expect(text()).not.toContain("Work could not be read");
+  });
+});
+
+describe("double clicks", () => {
+  it("fires an action once even when clicked twice in the same tick", async () => {
+    // `disabled` is React state and is not in effect until the next render, so two
+    // clicks in one tick would both get through without a synchronous guard. A second
+    // fast-forward is not harmless.
+    let release: (value: WorkActionOutcome) => void = () => {};
+    const onAction = vi.fn(() => new Promise<WorkActionOutcome>(resolve => { release = resolve; }));
+    render({ board: board([fact()]), onAction });
+    const button = buttonNamed("Review check")!;
+    await act(async () => {
+      button.click();
+      button.click();
+    });
+    expect(onAction).toHaveBeenCalledOnce();
+    await act(async () => { release({ ok: true }); });
+  });
+
+  it("re-enables the button when the handler throws instead of returning an outcome", async () => {
+    // A button stuck disabled forever is the worst way to learn the handler broke.
+    const onAction = vi.fn(async (): Promise<WorkActionOutcome> => { throw new Error("handler exploded"); });
+    render({ board: board([fact()]), onAction });
+    await act(async () => { buttonNamed("Review check")?.click(); });
+    const retry = buttonNamed(RETRY_LABEL_TEXT)!;
+    expect(retry.disabled).toBe(false);
+    expect(text()).toContain("handler exploded");
   });
 });
 

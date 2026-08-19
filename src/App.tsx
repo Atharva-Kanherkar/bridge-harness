@@ -81,10 +81,21 @@ export function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "work" | "projects" | "marketplace" | "settings">("workspace");
   // The Work board. Held here rather than inside WorkView so the rail can show a
-  // count without the board being mounted, and so leaving and returning does not
-  // re-read for no reason.
+  // count while a conversation is on screen. Returning to the board does re-read, on
+  // purpose: a fact you just acted on may be gone, and showing it again would be
+  // worse than a second SQLite read.
   const [workBoard, setWorkBoard] = useState<WorkBoard>();
   const [workError, setWorkError] = useState<string>();
+  // A re-read that failed while a board is on screen. Separate from `workError`
+  // because it must not replace the board — see `readWorkBoard`.
+  const [workRefreshError, setWorkRefreshError] = useState<string>();
+  // Which read is the newest. Opening, refreshing, and both mutating actions all
+  // read, so a slow earlier call can land after a fast later one; without this it
+  // would write its own result over the newer board.
+  const workReadGeneration = useRef(0);
+  // Mirrors `workBoard` so the catch below can tell "nothing to show" from "a refresh
+  // failed" without depending on the state it is setting.
+  const workBoardRef = useRef<WorkBoard>();
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
@@ -374,12 +385,22 @@ export function App() {
   // Reading the board is the whole of what opening Work does: one call, no session
   // selected, no model, no git, no network.
   const readWorkBoard = useCallback(async () => {
+    const generation = ++workReadGeneration.current;
     try {
-      setWorkBoard(await bridgeApi.workBoard());
+      const board = await bridgeApi.workBoard();
+      if (generation !== workReadGeneration.current) return;
+      workBoardRef.current = board;
+      setWorkBoard(board);
       setWorkError(undefined);
+      setWorkRefreshError(undefined);
     } catch (error) {
-      setWorkBoard(undefined);
-      setWorkError(errorMessage(error));
+      if (generation !== workReadGeneration.current) return;
+      const reason = errorMessage(error);
+      // A failed re-read never throws away a board that is on screen. The numbers
+      // are a snapshot either way, and replacing them with an error panel loses
+      // what the reader had without telling them anything they can act on.
+      if (workBoardRef.current === undefined) setWorkError(reason);
+      else setWorkRefreshError(reason);
     }
   }, []);
 
@@ -684,6 +705,7 @@ export function App() {
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
         board={workBoard}
         error={workError}
+        refreshError={workRefreshError}
         onRefresh={() => void readWorkBoard()}
         onAction={runWorkAction}
       /></Suspense> : view === "projects" ? <ProjectsScreen
