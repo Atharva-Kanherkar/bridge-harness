@@ -281,6 +281,22 @@ describe("hidden sessions", () => {
     expect(visibleChats(chats).map(item => item.id)).toEqual(["first", "second", "third"]);
   });
 
+  it("keeps a briefing session out of every surface that filters through here", () => {
+    // The contract named `a_briefing_session_is_hidden_from_every_surface`, and this is
+    // it: the rail, Mission Control and default selection all read the list this
+    // predicate produces, so one assertion covers all three. Review caught that the
+    // name existed in the contract and nowhere else.
+    const briefing = chat("briefing-1", BRIEFING_SESSION_KIND);
+    const chats = [chat("plain"), briefing, chat("orchestrated", "orchestrator")];
+    const visible = visibleChats(chats);
+    expect(visible).not.toContain(briefing);
+    expect(visible.map(item => item.id)).toEqual(["plain", "orchestrated"]);
+    // And the two scopes it could hide behind.
+    for (const scope of ["work", "code"] as const) {
+      expect(visibleChats(inScope(chats, scope))).not.toContain(briefing);
+    }
+  });
+
   it("names the same kind the backend does", () => {
     // The Rust side owns BRIEFING_SESSION_KIND; if these ever diverge, a briefing run
     // becomes visible in the rail, which is the one place it must never appear.

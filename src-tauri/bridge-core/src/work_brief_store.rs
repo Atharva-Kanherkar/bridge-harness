@@ -467,6 +467,7 @@ mod tests {
         assert_eq!(run.completed_at.as_deref(), Some(FINISHED));
         let usage = run.usage.unwrap();
         assert_eq!(usage.input_tokens.get(), 1_200);
+        assert_eq!(usage.output_tokens.get(), 340, "the field this test writes and used not to read");
         assert_eq!(usage.cached_input_tokens.get(), 900);
         assert_eq!(usage.cost_microusd, Some(4_100));
         assert_eq!(usage.tool_calls, 3);

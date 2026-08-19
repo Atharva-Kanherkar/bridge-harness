@@ -250,12 +250,19 @@ pub fn resolve_evidence(
     result: &serde_json::Value,
 ) -> Option<ResolvedEvidence> {
     let text = |key: &str| result.get(key).and_then(serde_json::Value::as_str).map(str::trim).filter(|value| !value.is_empty());
+    // Exactly one field per family, and no fallback to a generic `id`.
+    //
+    // Found in review: `threadId.or(id)` looks forgiving and is not — the two are
+    // different grains of identity, so the same Gmail conversation read twice could mint
+    // two canonical ids and slice 5 would treat one resource as two. A result without
+    // the field this family identifies things by is a result Bridge cannot recognise
+    // again, which is the `None` case below rather than a guess.
     let (source_kind, native_id) = match family {
-        ConnectorFamily::Slack => ("slack.message", text("ts").or_else(|| text("messageTs"))?),
-        ConnectorFamily::Gmail => ("gmail.thread", text("threadId").or_else(|| text("id"))?),
-        ConnectorFamily::GitHub => ("github.item", text("nodeId").or_else(|| text("id"))?),
-        ConnectorFamily::Linear => ("linear.issue", text("identifier").or_else(|| text("id"))?),
-        ConnectorFamily::Notion => ("notion.page", text("pageId").or_else(|| text("id"))?),
+        ConnectorFamily::Slack => ("slack.message", text("ts")?),
+        ConnectorFamily::Gmail => ("gmail.thread", text("threadId")?),
+        ConnectorFamily::GitHub => ("github.item", text("nodeId")?),
+        ConnectorFamily::Linear => ("linear.issue", text("identifier")?),
+        ConnectorFamily::Notion => ("notion.page", text("pageId")?),
     };
     Some(ResolvedEvidence {
         // Namespaced by instance, so the same native id on two accounts is two things.
@@ -522,13 +529,36 @@ mod tests {
 
     #[test]
     fn a_hosts_case_and_port_do_not_smuggle_it_past_the_allowlist() {
-        // Case is normalised because hosts are case-insensitive; a port is stripped
-        // before matching so the host itself is what is compared.
-        assert!(matches!(
-            safe_external_link(ConnectorFamily::GitHub, "https://GitHub.com/o/r/pull/1"),
-            Some(EvidenceTarget::ExternalLink { .. })
-        ));
-        assert!(safe_external_link(ConnectorFamily::GitHub, "https://notgithub.com/x").is_none());
+        // Case is normalised because hosts are case-insensitive, and a port is stripped
+        // before matching so the host itself is what is compared. Both halves are fed
+        // real inputs — found in review, the port claim had no test behind it.
+        for allowed in [
+            "https://GitHub.com/o/r/pull/1",
+            "https://github.com:443/o/r/pull/1",
+            "https://GITHUB.COM:8443/o/r",
+        ] {
+            assert!(
+                matches!(safe_external_link(ConnectorFamily::GitHub, allowed), Some(EvidenceTarget::ExternalLink { .. })),
+                "{allowed} is github.com whatever its case or port"
+            );
+        }
+        for refused in [
+            "https://notgithub.com/x",
+            "https://notgithub.com:443/x",
+            "https://github.com.evil.example:443/x",
+        ] {
+            assert!(
+                safe_external_link(ConnectorFamily::GitHub, refused).is_none(),
+                "{refused} is not github.com, port or no port"
+            );
+        }
+        // The host recorded is the bare host, not the authority it arrived in.
+        let Some(EvidenceTarget::ExternalLink { host, .. }) =
+            safe_external_link(ConnectorFamily::GitHub, "https://github.com:443/o/r")
+        else {
+            panic!("expected a link");
+        };
+        assert_eq!(host, "github.com");
     }
 
     #[test]
@@ -538,10 +568,38 @@ mod tests {
     }
 
     #[test]
-    fn a_bridge_local_target_needs_no_allowlist() {
-        // A session is not a link out, so nothing to allowlist.
-        let target = EvidenceTarget::Session { session_id: "session-1".into() };
-        assert!(matches!(target, EvidenceTarget::Session { .. }));
+    fn the_resolver_never_invents_a_session_target() {
+        // Found in review: this test used to construct a Session target and match it
+        // against itself, which asserted nothing. The real invariant available here is
+        // that resolve_target only ever produces a checked link or nothing — a
+        // Bridge-local target is not something a connector result can talk Bridge into.
+        for permalink in [
+            "https://app.slack.com/archives/C1/p1",
+            "https://evil.example/x",
+            "bridge://session/session-1",
+        ] {
+            let target = resolve_target(ConnectorFamily::Slack, &json!({"permalink": permalink}));
+            assert!(
+                !matches!(target, EvidenceTarget::Session { .. }),
+                "{permalink} must not become a Bridge-local target"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_keeps_its_kind_across_the_json_the_store_writes() {
+        // The store persists a target as tagged JSON so "no target" and "a target we
+        // dropped" cannot become the same thing. That only holds if every variant round
+        // trips, including the Bridge-local one slice 5 will start producing.
+        for target in [
+            EvidenceTarget::ExternalLink { url: "https://github.com/o/r".into(), host: "github.com".into() },
+            EvidenceTarget::Session { session_id: "session-1".into() },
+            EvidenceTarget::None,
+        ] {
+            let encoded = serde_json::to_string(&target).unwrap();
+            let decoded: EvidenceTarget = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, target);
+        }
     }
 
     #[test]

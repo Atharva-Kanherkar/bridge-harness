@@ -272,8 +272,10 @@ fn unknown_field(message: &str) -> String {
     "unknown".into()
 }
 
-/// How many repair turns a run may spend. One, and the constant exists so the number
-/// is stated once rather than implied by a loop somebody can widen.
+/// How many repair turns a run may spend.
+///
+/// Read by [`parse_with_one_repair`], so this is the bound rather than a description of
+/// one: raising it raises the number of attempts, and a test asserts the two agree.
 pub const MAX_REPAIR_ATTEMPTS: usize = 1;
 
 /// The outcome of reading a brief, with or without a repair.
@@ -299,15 +301,17 @@ impl BriefOutcome {
     }
 }
 
-/// Read a brief, asking for exactly one repair if the first attempt is refused.
+/// Read a brief, asking for repairs up to [`MAX_REPAIR_ATTEMPTS`].
 ///
-/// `repair` is called at most once, and its own failure is terminal: a loop that
-/// retries until something parses turns a bounded run into an unbounded one, and the
-/// bound is the only reason a briefing is safe to run unattended.
+/// The loop is bounded by the constant rather than by its own shape, so the number the
+/// docs tell you to trust is the number that governs. Found in review: an earlier
+/// version hardcoded one attempt through `FnOnce`, which meant changing the constant
+/// changed nothing — the bound was decorative, and the bound is the only reason a
+/// briefing is safe to run unattended.
 pub fn parse_with_one_repair(
     message: &str,
     ledger: &dyn EvidenceLedger,
-    repair: impl FnOnce(&BriefRejection) -> Option<String>,
+    mut repair: impl FnMut(&BriefRejection) -> Option<String>,
 ) -> BriefOutcome {
     let first = match parse_brief(message, ledger) {
         Ok(brief) => {
@@ -318,22 +322,24 @@ pub fn parse_with_one_repair(
         }
         Err(rejection) => rejection,
     };
-    let Some(second) = repair(&first) else {
-        return BriefOutcome::Refused {
-            first,
-            repair: None,
+
+    let mut last = None;
+    for _ in 0..MAX_REPAIR_ATTEMPTS {
+        // A provider that cannot be asked again ends the run on what it already said.
+        let Some(attempt) = repair(last.as_ref().unwrap_or(&first)) else {
+            return BriefOutcome::Refused { first, repair: last };
         };
-    };
-    match parse_brief(&second, ledger) {
-        Ok(brief) => BriefOutcome::Accepted {
-            brief,
-            repaired: true,
-        },
-        Err(rejection) => BriefOutcome::Refused {
-            first,
-            repair: Some(rejection),
-        },
+        match parse_brief(&attempt, ledger) {
+            Ok(brief) => {
+                return BriefOutcome::Accepted {
+                    brief,
+                    repaired: true,
+                }
+            }
+            Err(rejection) => last = Some(rejection),
+        }
     }
+    BriefOutcome::Refused { first, repair: last }
 }
 
 #[cfg(test)]
@@ -703,6 +709,23 @@ mod tests {
         };
         assert_eq!(first, BriefRejection::FenceCount { found: 0 });
         assert_eq!(repair, Some(BriefRejection::FenceCount { found: 0 }));
+    }
+
+    #[test]
+    fn the_repair_bound_is_the_constant_not_the_functions_shape() {
+        // Found in review: the constant was decorative — the function hardcoded one
+        // attempt, so raising the number the docs tell you to trust changed nothing.
+        // This asks for the impossible and counts how many times it was asked.
+        let store = ledger(&[]);
+        let mut asked = 0;
+        let outcome = parse_with_one_repair("no brief", &store, |_| {
+            asked += 1;
+            Some("still no brief".to_owned())
+        });
+        assert_eq!(asked, MAX_REPAIR_ATTEMPTS);
+        assert!(matches!(outcome, BriefOutcome::Refused { .. }));
+        // And the value itself is one, which is what makes an unattended run bounded.
+        assert_eq!(MAX_REPAIR_ATTEMPTS, 1);
     }
 
     #[test]

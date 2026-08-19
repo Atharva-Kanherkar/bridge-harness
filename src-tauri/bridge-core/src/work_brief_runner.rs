@@ -40,13 +40,20 @@ pub enum ToolResult {
 
 /// The provider side of a run, reduced to what a briefing actually needs from it.
 pub trait BriefingProvider {
-    /// Start the run and return the provider's first message.
-    fn open(&mut self, offered: &[BriefingToolIdentity]) -> Result<String, String>;
+    /// Start the run, told which tools it may use.
+    fn open(&mut self, offered: &[BriefingToolIdentity]) -> Result<(), String>;
     /// The calls the provider wants to make before it answers. Called until empty.
     fn pending_calls(&mut self) -> Vec<ToolCall>;
-    /// Hand a call's outcome back, so the provider can continue.
-    fn deliver(&mut self, call_id: &str, outcome: &ToolResult);
-    /// Ask for one repair, given why the last answer was refused. `None` if the provider
+    /// Hand a call's outcome back.
+    ///
+    /// `evidence_ref` is the reference this call earned, and `None` when it earned
+    /// nothing. It is the only way a provider can know what to cite: a brief names
+    /// evidence by reference, and a model that had to guess the reference format would
+    /// be authoring provenance again by the back door.
+    fn deliver(&mut self, call_id: &str, outcome: &ToolResult, evidence_ref: Option<&str>);
+    /// Ask for the brief, once the calls are done.
+    fn answer(&mut self) -> Result<String, String>;
+    /// Ask for a repair, given why the last answer was refused. `None` if the provider
     /// cannot be asked again.
     fn repair(&mut self, rejection: &BriefRejection) -> Option<String>;
     fn usage(&self) -> Option<wire::WorkRunUsage>;
@@ -163,12 +170,9 @@ pub fn run_briefing(
     };
     let mut guard = BriefingGuard::new(&policy);
 
-    let first = match provider.open(&offered) {
-        Ok(message) => message,
-        Err(detail) => {
-            return finish_failed(db, &mut ledger, &request, "provider_failed", Some(detail), provider)
-        }
-    };
+    if let Err(detail) = provider.open(&offered) {
+        return finish_failed(db, &mut ledger, &request, "provider_failed", Some(detail), provider);
+    }
 
     // Serve the provider's calls. Each one is decided by the policy, and only a call it
     // allowed reaches a connector at all.
@@ -193,7 +197,11 @@ pub fn run_briefing(
                 // the policy would refuse it anyway, and this keeps the coverage row
                 // from being attributed to a connector that was never involved.
                 None => {
-                    provider.deliver(&call.call_id, &ToolResult::Failed { detail: "unknown tool".into() });
+                    provider.deliver(
+                        &call.call_id,
+                        &ToolResult::Failed { detail: "unknown tool".into() },
+                        None,
+                    );
                     continue;
                 }
             };
@@ -201,12 +209,18 @@ pub fn run_briefing(
                 // Denied: the model tried, which is worth recording, but nothing is
                 // earned and no connector is touched.
                 ledger.record_consulted(&instance.instance_id, family.as_str());
-                provider.deliver(&call.call_id, &ToolResult::Failed { detail: denial.reason() });
+                provider.deliver(
+                    &call.call_id,
+                    &ToolResult::Failed { detail: denial.reason() },
+                    None,
+                );
                 continue;
             }
             ledger.record_consulted(&instance.instance_id, family.as_str());
             let outcome = connectors.call(&call);
-            match &outcome {
+            // The reference this call earned, handed straight back so the provider can
+            // cite it. Nothing else in the run tells it what exists.
+            let earned = match &outcome {
                 ToolResult::Succeeded(result) => {
                     let digest = instance
                         .reviewed_tools
@@ -222,18 +236,26 @@ pub fn run_briefing(
                         &digest,
                         result,
                         &(request.now)(),
-                    );
+                    )
                 }
                 ToolResult::Failed { detail } => {
-                    ledger.record_failed(&instance.instance_id, family.as_str(), detail.clone())
+                    ledger.record_failed(&instance.instance_id, family.as_str(), detail.clone());
+                    None
                 }
-            }
-            provider.deliver(&call.call_id, &outcome);
+            };
+            provider.deliver(&call.call_id, &outcome, earned.as_deref());
         }
     }
 
-    // Read the answer, with exactly one repair.
-    let outcome = parse_with_one_repair(&first, &ledger, |rejection| provider.repair(rejection));
+    // Now ask for the brief. After the calls, so the provider has been told every
+    // reference it earned and a citation is something it was given rather than guessed.
+    let answer = match provider.answer() {
+        Ok(message) => message,
+        Err(detail) => {
+            return finish_failed(db, &mut ledger, &request, "provider_failed", Some(detail), provider)
+        }
+    };
+    let outcome = parse_with_one_repair(&answer, &ledger, |rejection| provider.repair(rejection));
     record_ledger(db, &ledger)?;
 
     match outcome {
@@ -383,15 +405,13 @@ mod tests {
         BriefingToolIdentity { server: server.into(), tool: tool.into() }
     }
 
-    fn definition() -> serde_json::Value {
-        json!({"name": "search", "parameters": {"query": {"type": "string"}}})
-    }
+    const SLACK_TOOL: &str = "mcp__slack-1__search_messages";
 
-    /// A signed-in Slack instance with one reviewed tool, plus a Gmail instance nobody
-    /// is signed into and a Notion instance with no reviewed tools.
+    /// A signed-in Slack instance with one reviewed tool, a Gmail instance nobody is
+    /// signed into, and a Notion instance with nothing reviewed.
     fn instances() -> Vec<ConnectorInstance> {
         let reviewed = identity("slack-1", "search_messages");
-        let digest = tool_definition_digest(&definition());
+        let digest = tool_definition_digest(&json!({"name": "search"}));
         vec![
             ConnectorInstance {
                 instance_id: "slack-1".into(),
@@ -422,9 +442,14 @@ mod tests {
 
     struct Connectors {
         instances: Vec<ConnectorInstance>,
-        /// What the next call returns, in order.
         results: Vec<ToolResult>,
         calls: Vec<String>,
+    }
+
+    impl Connectors {
+        fn with(results: Vec<ToolResult>) -> Self {
+            Self { instances: instances(), results, calls: vec![] }
+        }
     }
 
     impl ConnectorSource for Connectors {
@@ -440,32 +465,57 @@ mod tests {
         }
     }
 
-    struct Provider {
-        calls: Vec<Vec<ToolCall>>,
-        /// The answer, built once the run knows what references exist.
-        answer: Box<dyn Fn() -> String>,
-        repair: Option<String>,
-        repairs_asked: std::cell::Cell<usize>,
-        delivered: std::cell::RefCell<Vec<(String, bool)>>,
-        offered: std::cell::RefCell<Vec<String>>,
+    /// A provider that makes the calls it was given, then cites exactly the references
+    /// it was handed. Nothing here knows the reference format, which is the point: a
+    /// stub that predicted `{run}:ev-N` would prove the run works only for a stub.
+    struct Citing {
+        rounds: Vec<Vec<ToolCall>>,
+        earned: Vec<String>,
+        delivered: Vec<(String, bool)>,
+        repairs: usize,
+        /// When set, the first answer is this instead, so a refusal can be exercised.
+        bad_answer: Option<String>,
+        repair_answer: Option<String>,
     }
 
-    impl BriefingProvider for Provider {
-        fn open(&mut self, offered: &[BriefingToolIdentity]) -> Result<String, String> {
-            *self.offered.borrow_mut() = offered.iter().map(BriefingToolIdentity::wire_name).collect();
-            Ok(String::new())
+    impl Citing {
+        fn new(rounds: Vec<Vec<ToolCall>>) -> Self {
+            Self { rounds, earned: vec![], delivered: vec![], repairs: 0, bad_answer: None, repair_answer: None }
+        }
+    }
+
+    fn brief_citing(refs: &[String]) -> String {
+        let cited: Vec<String> = refs.iter().map(|value| format!("\"{value}\"")).collect();
+        format!(
+            "```bridge-work-brief\n{{\"version\":1,\"tasks\":[{{\"rank\":1,\"title\":\"Reply to Priya\",\"why\":\"Asked twice.\",\"confidenceBps\":8200,\"evidence\":[{}]}}]}}\n```",
+            cited.join(",")
+        )
+    }
+
+    const EMPTY_BRIEF: &str = "```bridge-work-brief\n{\"version\":1,\"tasks\":[]}\n```";
+
+    impl BriefingProvider for Citing {
+        fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<(), String> {
+            Ok(())
         }
         fn pending_calls(&mut self) -> Vec<ToolCall> {
-            if self.calls.is_empty() { vec![] } else { self.calls.remove(0) }
+            if self.rounds.is_empty() { vec![] } else { self.rounds.remove(0) }
         }
-        fn deliver(&mut self, call_id: &str, outcome: &ToolResult) {
-            self.delivered
-                .borrow_mut()
-                .push((call_id.to_owned(), matches!(outcome, ToolResult::Succeeded(_))));
+        fn deliver(&mut self, call_id: &str, outcome: &ToolResult, evidence_ref: Option<&str>) {
+            self.delivered.push((call_id.to_owned(), matches!(outcome, ToolResult::Succeeded(_))));
+            if let Some(reference) = evidence_ref {
+                self.earned.push(reference.to_owned());
+            }
+        }
+        fn answer(&mut self) -> Result<String, String> {
+            if let Some(bad) = self.bad_answer.take() {
+                return Ok(bad);
+            }
+            Ok(if self.earned.is_empty() { EMPTY_BRIEF.to_owned() } else { brief_citing(&self.earned) })
         }
         fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> {
-            self.repairs_asked.set(self.repairs_asked.get() + 1);
-            self.repair.clone()
+            self.repairs += 1;
+            self.repair_answer.clone()
         }
         fn usage(&self) -> Option<wire::WorkRunUsage> {
             None
@@ -480,20 +530,11 @@ mod tests {
         json!({"ts": "1723459200.123", "permalink": "https://app.slack.com/archives/C1/p1", "text": "secret sk-ant-x"})
     }
 
-    fn brief_citing(reference: &str) -> String {
-        format!(
-            "```bridge-work-brief\n{}\n```",
-            format!(
-                r#"{{"version":1,"tasks":[{{"rank":1,"title":"Reply to Priya","why":"Asked twice.","confidenceBps":8200,"evidence":["{reference}"]}}]}}"#
-            )
-        )
-    }
-
-    fn request<'a>(run_id: &'a str, selection: &'a BriefingSelection, now: &'a dyn Fn() -> String) -> RunRequest<'a> {
+    fn request<'a>(run_id: &'a str, chosen: &'a BriefingSelection, now: &'a dyn Fn() -> String) -> RunRequest<'a> {
         RunRequest {
             run_id,
             trigger: wire::WorkBriefTrigger::Manual,
-            selection,
+            selection: chosen,
             limits: limits(),
             session_id: None,
             idempotency_key: None,
@@ -503,55 +544,30 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_run_offers_reads_parses_and_records() {
+    fn a_whole_run_offers_reads_and_parses_a_brief_citing_what_it_earned() {
+        // The provider is told its references rather than predicting them, which is what
+        // makes this a test of the run instead of a test of the id format.
         let mut db = db();
         let chosen = selection();
         let now = || STARTED.to_owned();
-        let mut connectors = Connectors {
-            instances: instances(),
-            results: vec![ToolResult::Succeeded(slack_result())],
-            calls: vec![],
-        };
-        let mut provider = Provider {
-            calls: vec![vec![call("c1", "mcp__slack-1__search_messages")]],
-            // The reference the run will have earned by the time it answers.
-            answer: Box::new(|| brief_citing("run-1:ev-1")),
-            repair: None,
-            repairs_asked: std::cell::Cell::new(0),
-            delivered: std::cell::RefCell::new(vec![]),
-            offered: std::cell::RefCell::new(vec![]),
-        };
-        // The provider answers on the first message, so stage it as the opening text.
-        let answer = (provider.answer)();
-        struct Answering<'a>(&'a mut Provider, String);
-        impl BriefingProvider for Answering<'_> {
-            fn open(&mut self, offered: &[BriefingToolIdentity]) -> Result<String, String> {
-                self.0.open(offered)?;
-                Ok(self.1.clone())
-            }
-            fn pending_calls(&mut self) -> Vec<ToolCall> { self.0.pending_calls() }
-            fn deliver(&mut self, id: &str, outcome: &ToolResult) { self.0.deliver(id, outcome) }
-            fn repair(&mut self, rejection: &BriefRejection) -> Option<String> { self.0.repair(rejection) }
-            fn usage(&self) -> Option<wire::WorkRunUsage> { self.0.usage() }
-        }
-        let mut answering = Answering(&mut provider, answer);
+        let mut connectors = Connectors::with(vec![ToolResult::Succeeded(slack_result())]);
+        let mut provider = Citing::new(vec![vec![call("c1", SLACK_TOOL)]]);
 
-        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut answering).unwrap();
+        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
         let RunResult::Accepted { brief, repaired, .. } = &result else {
             panic!("expected an accepted run, got {result:?}");
         };
         assert!(!repaired);
         assert_eq!(brief.tasks.len(), 1);
-
-        // Only the eligible connector was offered.
-        assert_eq!(*answering.0.offered.borrow(), vec!["mcp__slack-1__search_messages"]);
+        // The citation is the reference the runner handed over.
+        assert_eq!(provider.earned.len(), 1);
+        assert_eq!(brief.tasks[0].evidence, provider.earned);
 
         let run = read_run(&db, "run-1").unwrap().unwrap();
         assert_eq!(run.status, wire::WorkBriefRunStatus::Succeeded);
-        assert!(run.output_digest.is_some(), "an accepted brief is digested, not stored");
+        assert!(run.output_digest.is_some());
         assert_eq!(run.profile_reference.as_deref(), Some("claude/sonnet/medium"));
 
-        // Coverage tells the three connectors apart.
         let coverage = read_coverage(&db, "run-1").unwrap();
         let status = |id: &str| coverage.iter().find(|row| row.connector_instance_id == id).unwrap().status;
         assert_eq!(status("slack-1"), wire::WorkSourceStatus::Succeeded);
@@ -561,118 +577,28 @@ mod tests {
         let evidence = read_evidence(&db, "run-1").unwrap();
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].canonical_resource_id, "slack:slack-1:1723459200.123");
+        assert_eq!(evidence[0].evidence_ref, provider.earned[0]);
 
-        // The board is untouched: committing tasks is slice 5.
+        // Committing tasks is slice 5, and the facts board is not a briefing's business.
         let tasks: i64 = db.query_row("SELECT COUNT(*) FROM work_tasks", [], |row| row.get(0)).unwrap();
         assert_eq!(tasks, 0);
         let facts: i64 = db.query_row("SELECT COUNT(*) FROM work_fact_cache", [], |row| row.get(0)).unwrap();
-        assert_eq!(facts, 0, "the facts board is not touched by a briefing");
+        assert_eq!(facts, 0);
     }
 
     #[test]
-    fn a_fabricated_citation_fails_the_run_after_exactly_one_repair() {
+    fn a_failed_call_is_delivered_with_no_reference() {
         let mut db = db();
         let chosen = selection();
         let now = || STARTED.to_owned();
-        let mut connectors = Connectors { instances: instances(), results: vec![], calls: vec![] };
-        struct Fabricating {
-            repairs: std::cell::Cell<usize>,
-        }
-        impl BriefingProvider for Fabricating {
-            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<String, String> {
-                // Cites evidence no call earned.
-                Ok(format!(
-                    "```bridge-work-brief\n{}\n```",
-                    r#"{"version":1,"tasks":[{"rank":1,"title":"t","why":"w","confidenceBps":100,"evidence":["run-1:ev-99"]}]}"#
-                ))
-            }
-            fn pending_calls(&mut self) -> Vec<ToolCall> { vec![] }
-            fn deliver(&mut self, _id: &str, _outcome: &ToolResult) {}
-            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> {
-                self.repairs.set(self.repairs.get() + 1);
-                // Fabricates again.
-                Some(format!(
-                    "```bridge-work-brief\n{}\n```",
-                    r#"{"version":1,"tasks":[{"rank":1,"title":"t","why":"w","confidenceBps":100,"evidence":["run-1:ev-98"]}]}"#
-                ))
-            }
-            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
-        }
-        let mut provider = Fabricating { repairs: std::cell::Cell::new(0) };
+        let mut connectors = Connectors::with(vec![ToolResult::Failed { detail: "503 from Slack".into() }]);
+        let mut provider = Citing::new(vec![vec![call("c1", SLACK_TOOL)]]);
 
-        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
-        assert_eq!(
-            result,
-            RunResult::Failed { run_id: "run-1".into(), code: "evidence_invalid".into() }
-        );
-        assert_eq!(provider.repairs.get(), 1, "exactly one repair, however many would fail");
-
-        let run = read_run(&db, "run-1").unwrap().unwrap();
-        assert_eq!(run.status, wire::WorkBriefRunStatus::Failed);
-        assert_eq!(run.failure_code.as_deref(), Some("evidence_invalid"));
-        assert!(run.output_digest.is_none(), "nothing was accepted, so nothing is digested");
-        // The useful part of a failed run survives: what was offered and why.
-        assert_eq!(read_coverage(&db, "run-1").unwrap().len(), 3);
-    }
-
-    #[test]
-    fn a_denied_call_is_recorded_as_consulted_and_touches_no_connector() {
-        let mut db = db();
-        let chosen = selection();
-        let now = || STARTED.to_owned();
-        let mut connectors = Connectors { instances: instances(), results: vec![], calls: vec![] };
-        struct Escalating(bool);
-        impl BriefingProvider for Escalating {
-            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<String, String> {
-                Ok(format!("```bridge-work-brief\n{}\n```", r#"{"version":1,"tasks":[]}"#))
-            }
-            fn pending_calls(&mut self) -> Vec<ToolCall> {
-                if self.0 { return vec![] }
-                self.0 = true;
-                // Asks for the reviewed tool's neighbour, which nobody reviewed.
-                vec![call("c1", "mcp__slack-1__post_message")]
-            }
-            fn deliver(&mut self, _id: &str, _outcome: &ToolResult) {}
-            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
-            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
-        }
-
-        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Escalating(false)).unwrap();
-        assert!(matches!(result, RunResult::Accepted { .. }), "an empty brief is a valid answer");
-        // The connector was never called: an unreviewed tool belongs to no instance the
-        // runner will serve.
-        assert!(connectors.calls.is_empty(), "no connector is touched for a tool nobody reviewed");
-        assert!(read_evidence(&db, "run-1").unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_failed_connector_call_earns_no_evidence_but_is_recorded() {
-        let mut db = db();
-        let chosen = selection();
-        let now = || STARTED.to_owned();
-        let mut connectors = Connectors {
-            instances: instances(),
-            results: vec![ToolResult::Failed { detail: "503 from Slack".into() }],
-            calls: vec![],
-        };
-        struct Trying(bool);
-        impl BriefingProvider for Trying {
-            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<String, String> {
-                Ok(format!("```bridge-work-brief\n{}\n```", r#"{"version":1,"tasks":[]}"#))
-            }
-            fn pending_calls(&mut self) -> Vec<ToolCall> {
-                if self.0 { return vec![] }
-                self.0 = true;
-                vec![call("c1", "mcp__slack-1__search_messages")]
-            }
-            fn deliver(&mut self, _id: &str, _outcome: &ToolResult) {}
-            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
-            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
-        }
-
-        run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Trying(false)).unwrap();
+        run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
         assert_eq!(connectors.calls.len(), 1, "the allowed call did reach the connector");
-        assert!(read_evidence(&db, "run-1").unwrap().is_empty(), "a failure vouches for nothing");
+        assert!(provider.earned.is_empty(), "a failure vouches for nothing, so it cites nothing");
+        assert_eq!(provider.delivered, vec![("c1".to_owned(), false)]);
+        assert!(read_evidence(&db, "run-1").unwrap().is_empty());
         let coverage = read_coverage(&db, "run-1").unwrap();
         let slack = coverage.iter().find(|row| row.connector_instance_id == "slack-1").unwrap();
         assert_eq!(slack.status, wire::WorkSourceStatus::Failed);
@@ -680,27 +606,142 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_denied_call_is_recorded_as_consulted_and_touches_no_connector() {
+        // A real policy deny, not the unknown-tool branch: the tool is reviewed and
+        // offered, and the arguments are over the ceiling. Found in review — the earlier
+        // version of this test asked for an unreviewed tool and so never reached the
+        // deny arm at all.
+        let mut db = db();
+        let chosen = selection();
+        let now = || STARTED.to_owned();
+        let mut connectors = Connectors::with(vec![ToolResult::Succeeded(slack_result())]);
+        let oversized = ToolCall {
+            call_id: "c1".into(),
+            tool: SLACK_TOOL.into(),
+            arguments: json!({"query": "x".repeat(16 * 1024)}),
+        };
+        let mut provider = Citing::new(vec![vec![oversized]]);
+
+        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
+        assert!(matches!(result, RunResult::Accepted { .. }), "an empty brief is a valid answer");
+        assert!(connectors.calls.is_empty(), "a denied call never reaches the connector");
+        assert!(provider.earned.is_empty(), "and earns nothing to cite");
+        assert_eq!(provider.delivered, vec![("c1".to_owned(), false)]);
+        // The model tried, which is worth recording.
+        let coverage = read_coverage(&db, "run-1").unwrap();
+        let slack = coverage.iter().find(|row| row.connector_instance_id == "slack-1").unwrap();
+        assert_eq!(slack.status, wire::WorkSourceStatus::Consulted);
+        assert!(read_evidence(&db, "run-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_call_naming_no_known_connector_is_not_attributed_to_one() {
+        let mut db = db();
+        let chosen = selection();
+        let now = || STARTED.to_owned();
+        let mut connectors = Connectors::with(vec![]);
+        let mut provider = Citing::new(vec![vec![call("c1", "mcp__slack-1__post_message")]]);
+
+        run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
+        assert!(connectors.calls.is_empty());
+        let coverage = read_coverage(&db, "run-1").unwrap();
+        let slack = coverage.iter().find(|row| row.connector_instance_id == "slack-1").unwrap();
+        assert_eq!(
+            slack.status,
+            wire::WorkSourceStatus::Eligible,
+            "an unreviewed tool is nobody's call, so no connector is marked consulted"
+        );
+    }
+
+    #[test]
+    fn a_fabricated_citation_fails_the_run_after_exactly_one_repair() {
+        let mut db = db();
+        let chosen = selection();
+        let now = || STARTED.to_owned();
+        let mut connectors = Connectors::with(vec![ToolResult::Succeeded(slack_result())]);
+        let mut provider = Citing::new(vec![vec![call("c1", SLACK_TOOL)]]);
+        let fabricated = brief_citing(&["run-1:ev-99".to_owned()]);
+        provider.bad_answer = Some(fabricated.clone());
+        provider.repair_answer = Some(brief_citing(&["run-1:ev-98".to_owned()]));
+
+        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
+        assert_eq!(result, RunResult::Failed { run_id: "run-1".into(), code: "evidence_invalid".into() });
+        assert_eq!(provider.repairs, 1, "exactly one repair, however many would fail");
+
+        let run = read_run(&db, "run-1").unwrap().unwrap();
+        assert_eq!(run.failure_code.as_deref(), Some("evidence_invalid"));
+        assert!(run.output_digest.is_none(), "nothing was accepted, so nothing is digested");
+        // The useful part of a failed run survives: the evidence it did earn, and why
+        // each source got where it did.
+        assert_eq!(read_evidence(&db, "run-1").unwrap().len(), 1);
+        assert_eq!(read_coverage(&db, "run-1").unwrap().len(), 3);
+    }
+
+    #[test]
     fn a_provider_that_never_opens_still_leaves_a_run_to_ask_about() {
         let mut db = db();
         let chosen = selection();
         let now = || STARTED.to_owned();
-        let mut connectors = Connectors { instances: instances(), results: vec![], calls: vec![] };
+        let mut connectors = Connectors::with(vec![]);
         struct Broken;
         impl BriefingProvider for Broken {
-            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<String, String> {
+            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<(), String> {
                 Err("the sidecar exited before answering".into())
             }
             fn pending_calls(&mut self) -> Vec<ToolCall> { vec![] }
-            fn deliver(&mut self, _id: &str, _outcome: &ToolResult) {}
+            fn deliver(&mut self, _id: &str, _outcome: &ToolResult, _earned: Option<&str>) {}
+            fn answer(&mut self) -> Result<String, String> { Ok(String::new()) }
             fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
             fn usage(&self) -> Option<wire::WorkRunUsage> { None }
         }
         let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Broken).unwrap();
         assert_eq!(result, RunResult::Failed { run_id: "run-1".into(), code: "provider_failed".into() });
-        // A run that vanished is one nobody can ask about.
-        let run = read_run(&db, "run-1").unwrap().unwrap();
-        assert_eq!(run.status, wire::WorkBriefRunStatus::Failed);
         assert_eq!(read_coverage(&db, "run-1").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_provider_that_dies_before_answering_is_a_failed_run_not_a_lost_one() {
+        let mut db = db();
+        let chosen = selection();
+        let now = || STARTED.to_owned();
+        let mut connectors = Connectors::with(vec![ToolResult::Succeeded(slack_result())]);
+        struct Mute(bool);
+        impl BriefingProvider for Mute {
+            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<(), String> { Ok(()) }
+            fn pending_calls(&mut self) -> Vec<ToolCall> {
+                if self.0 { return vec![] }
+                self.0 = true;
+                vec![call("c1", SLACK_TOOL)]
+            }
+            fn deliver(&mut self, _id: &str, _outcome: &ToolResult, _earned: Option<&str>) {}
+            fn answer(&mut self) -> Result<String, String> { Err("the sidecar stopped".into()) }
+            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
+            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
+        }
+        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Mute(false)).unwrap();
+        assert_eq!(result, RunResult::Failed { run_id: "run-1".into(), code: "provider_failed".into() });
+        // The evidence it earned before dying is still recorded.
+        assert_eq!(read_evidence(&db, "run-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_provider_that_never_stops_asking_is_stopped_by_its_turn_ceiling() {
+        // An unattended run whose provider loops must end, not spin.
+        let mut db = db();
+        let chosen = selection();
+        let now = || STARTED.to_owned();
+        let mut connectors = Connectors::with(vec![]);
+        struct Looping;
+        impl BriefingProvider for Looping {
+            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<(), String> { Ok(()) }
+            fn pending_calls(&mut self) -> Vec<ToolCall> { vec![call("c", SLACK_TOOL)] }
+            fn deliver(&mut self, _id: &str, _outcome: &ToolResult, _earned: Option<&str>) {}
+            fn answer(&mut self) -> Result<String, String> { Ok(EMPTY_BRIEF.to_owned()) }
+            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
+            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
+        }
+        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Looping).unwrap();
+        assert_eq!(result, RunResult::Failed { run_id: "run-1".into(), code: "budget_exceeded".into() });
     }
 
     #[test]
@@ -708,61 +749,15 @@ mod tests {
         let mut db = db();
         let chosen = selection();
         let now = || STARTED.to_owned();
-        let mut connectors = Connectors {
-            instances: instances().into_iter().filter(|i| i.instance_id != "slack-1").collect(),
-            results: vec![],
-            calls: vec![],
-        };
-        struct Quiet;
-        impl BriefingProvider for Quiet {
-            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<String, String> {
-                Ok(format!("```bridge-work-brief\n{}\n```", r#"{"version":1,"tasks":[]}"#))
-            }
-            fn pending_calls(&mut self) -> Vec<ToolCall> { vec![] }
-            fn deliver(&mut self, _id: &str, _outcome: &ToolResult) {}
-            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
-            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
-        }
-        run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Quiet).unwrap();
+        let mut connectors = Connectors::with(vec![]);
+        connectors.instances.retain(|instance| instance.instance_id != "slack-1");
+        let mut provider = Citing::new(vec![]);
+        run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut provider).unwrap();
         let coverage = read_coverage(&db, "run-1").unwrap();
         assert_eq!(coverage.len(), 2);
         for row in &coverage {
             assert!(row.detail.is_some(), "each ineligible source says why");
         }
-    }
-
-    #[test]
-    fn a_provider_that_never_stops_asking_is_stopped_by_its_turn_ceiling() {
-        // Found while writing the test above: a stub that kept requesting calls ran until
-        // the guard refused a turn. That is the protection working, and it is worth
-        // pinning — an unattended run whose provider loops must end, not spin.
-        let mut db = db();
-        let chosen = selection();
-        let now = || STARTED.to_owned();
-        let mut connectors = Connectors {
-            instances: instances(),
-            results: vec![],
-            calls: vec![],
-        };
-        struct Looping;
-        impl BriefingProvider for Looping {
-            fn open(&mut self, _offered: &[BriefingToolIdentity]) -> Result<String, String> {
-                Ok(String::new())
-            }
-            fn pending_calls(&mut self) -> Vec<ToolCall> {
-                vec![call("c", "mcp__slack-1__search_messages")]
-            }
-            fn deliver(&mut self, _id: &str, _outcome: &ToolResult) {}
-            fn repair(&mut self, _rejection: &BriefRejection) -> Option<String> { None }
-            fn usage(&self) -> Option<wire::WorkRunUsage> { None }
-        }
-        let result = run_briefing(&mut db, request("run-1", &chosen, &now), &mut connectors, &mut Looping).unwrap();
-        assert_eq!(
-            result,
-            RunResult::Failed { run_id: "run-1".into(), code: "budget_exceeded".into() }
-        );
-        let run = read_run(&db, "run-1").unwrap().unwrap();
-        assert_eq!(run.failure_code.as_deref(), Some("budget_exceeded"));
     }
 
     #[test]
