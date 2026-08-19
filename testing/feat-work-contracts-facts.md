@@ -169,8 +169,13 @@ copy of model output; the columns that could are digests and bounded text.
 - `work_settings_reject_unknown_fields` — `WorkSettings`,
   `WorkBriefLimits`, and the task/run DTOs refuse a field they do not declare.
 - `severity_and_freshness_wire_values_are_snake_case` — enum spellings pinned.
-- `absent_options_stay_off_the_wire` — `skip_serializing_if` behaviour pinned
-  so the generated TypeScript optionality is honest.
+- Absent options are serialized as explicit `null` rather than omitted, and the
+  round-trip test pins that. No `skip_serializing_if` on the Work DTOs: both
+  styles exist in this crate (`CreateCompletionPlanParams` omits,
+  `BaseBranchDivergence` nulls), and for a *result* the frontend renders, a
+  field that is always present is easier to reason about than one that is
+  sometimes missing. The generated TypeScript stays honest either way, since it
+  emits `field?: T | null`.
 
 ### `bridge-protocol` — registry and generated artifacts
 
