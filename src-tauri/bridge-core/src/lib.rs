@@ -77,6 +77,7 @@ pub mod work_brief_store;
 pub mod work_connectors;
 pub mod work_evidence;
 pub mod work_fingerprint;
+pub mod work_reconcile;
 pub mod work_task_state;
 pub mod work_observation;
 pub mod workspace_files;

@@ -302,14 +302,6 @@ pub fn snooze_expired(snoozed_until: Option<&str>, now: &str) -> bool {
     }
 }
 
-/// Should an ephemeral task survive this run?
-///
-/// Only a successfully committed briefing clears them: a failed run has not replaced them
-/// with anything, and clearing them would empty part of the board on a parse error.
-pub fn ephemeral_survives(run_committed: bool) -> bool {
-    !run_committed
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,11 +573,5 @@ mod tests {
         assert!(!snooze_expired(None, AFTER));
         assert!(!snooze_expired(Some("whenever"), AFTER));
         assert!(!snooze_expired(Some(RESOLVED), "whenever"));
-    }
-
-    #[test]
-    fn an_ephemeral_task_survives_only_until_the_next_committed_run() {
-        assert!(!ephemeral_survives(true), "a committed briefing replaces them");
-        assert!(ephemeral_survives(false), "a failed one has not replaced them with anything");
     }
 }
