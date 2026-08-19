@@ -4,6 +4,8 @@ Bridge stores versioned role profiles and typed learning evidence in its local `
 
 Router learning is scoped to `workspace:{id}`. Direct chats are out of the router. Existing rows from before this split keep `legacy:global`; live routing never selects that bucket. Memory jobs never enter the learning router.
 
+Online routing treats missing or stale quota/context as unknown (eligible). Only a live session in the same workspace can mark a harness `QuotaExhausted` or `ContextExhausted`. An old row at `usage_percent=100` does not block a later route.
+
 ## Manual and in-app runs
 
 Use **Learning router → Run learning now** for an immediate local run in the current workspace. The same settings panel can enable Bridge's in-app schedule. If Bridge was closed across several intervals, startup performs at most one catch-up and advances `next_run_at` from the current time. A scheduled or CLI wake-up iterates workspaces that have routing outcomes **one at a time** (the durable lease is still global) and never mixes their evidence.

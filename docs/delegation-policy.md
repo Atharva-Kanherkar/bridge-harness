@@ -34,6 +34,8 @@ Every worker route now records the complete harness/model candidate inventory, r
 
 The router starts in `shadow` mode per workspace. Shadow recommendations are measured while the baseline route continues to execute. Autonomous mode cannot be enabled until the workspace has at least 20 completed shadow outcomes with fewer than 5% no-route/manual selections. Users may pin or exclude harnesses and models, but preferences cannot revive a candidate excluded by availability, tools, platform, permissions, quota, context, risk, or the deterministic capability-unit budget. Explicit harness/model selections are retained and labeled as manual overrides.
 
+Quota and context exclusions come only from **live** sessions in that workspace (`working`, `waiting`, `starting`, `checkpointing`, `resuming`, `warm`, `restored`, and `ended_at` still null). An ended or ready session that last reported `usage_percent=100` is unknown, which stays eligible — it must not permanently mark the harness `QuotaExhausted` or `ContextExhausted`.
+
 Learning selects a candidate before the existing policy gate; it does not replace that gate. Owned-path provenance, approval, depth, concurrency, worktree, retry, and budget rules in Rust still decide whether the selected route may spawn, resume, queue, or run at all. Failed worker results become negative outcome labels, not permission to alter safety policy. Escalation only moves to a strictly higher eligible capability tier and is terminal after `strong`.
 
 Replay recorded candidate snapshots without starting a provider or writing to Bridge's database:
