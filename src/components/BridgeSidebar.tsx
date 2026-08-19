@@ -326,6 +326,12 @@ export function BridgeSidebar({
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
 
+  // A project grouping persisted from Code is meaningless in Home, so it is
+  // corrected rather than left to render one "No project" group.
+  useEffect(() => {
+    if (scope === "home" && view.groupBy === "project") changeView({ ...view, groupBy: "date" });
+  }, [scope, view, changeView]);
+
   const toggleFold = useCallback((key: string) => {
     setFoldedGroups(current => {
       const next = new Set(current);
@@ -448,7 +454,7 @@ export function BridgeSidebar({
 
         <div className="flex-1 overflow-y-auto">
           {!collapsed && (
-            <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} onChange={changeView} />}>
+            <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />}>
               Chats
             </SectionLabel>
           )}

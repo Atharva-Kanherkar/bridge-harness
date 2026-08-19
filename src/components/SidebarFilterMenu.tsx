@@ -17,7 +17,15 @@ type Panel = "root" | "status" | "agent" | "groupBy" | "sortBy";
 type Option = { id: string; label: string };
 
 const STATUS_OPTIONS: Option[] = (["all", "active", "waiting", "failed"] as ChatStatusFilter[]).map(id => ({ id, label: CHAT_STATUS_LABELS[id] }));
-const GROUP_BY_OPTIONS: Option[] = (["date", "project", "agent", "status", "none"] as ChatGroupBy[]).map(id => ({ id, label: CHAT_GROUP_BY_LABELS[id] }));
+
+function groupByOptions(allowProject: boolean): Option[] {
+  const ids: ChatGroupBy[] = allowProject
+    ? ["date", "project", "agent", "status", "none"]
+    // Nothing in Home has a project, so grouping by one would offer a single
+    // "No project" bucket and call it a grouping.
+    : ["date", "agent", "status", "none"];
+  return ids.map(id => ({ id, label: CHAT_GROUP_BY_LABELS[id] }));
+}
 const SORT_BY_OPTIONS: Option[] = (["recency", "name"] as ChatSortBy[]).map(id => ({ id, label: CHAT_SORT_BY_LABELS[id] }));
 
 const ALL_LABEL = "All";
@@ -30,10 +38,12 @@ export type SidebarFilterMenuProps = {
   view: ChatView;
   /** Harnesses present in the unfiltered list, for the Agent panel. */
   agents: Option[];
+  /** False in Home, where no chat has a project to group by. */
+  allowProjectGrouping: boolean;
   onChange: (view: ChatView) => void;
 };
 
-export function SidebarFilterMenu({ view, agents, onChange }: SidebarFilterMenuProps) {
+export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange }: SidebarFilterMenuProps) {
   const menu = useMenuPanel<HTMLButtonElement>({ width: MENU_WIDTH, height: MENU_HEIGHT_ESTIMATE });
   const [panel, setPanel] = useState<Panel>("root");
 
@@ -56,7 +66,7 @@ export function SidebarFilterMenu({ view, agents, onChange }: SidebarFilterMenuP
   const panels: Record<Exclude<Panel, "root">, { title: string; options: Option[]; current: string; apply: (id: string) => ChatView }> = {
     status: { title: "Status", options: STATUS_OPTIONS, current: view.status, apply: id => ({ ...view, status: id as ChatStatusFilter }) },
     agent: { title: "Agent", options: [{ id: "all", label: ALL_LABEL }, ...agents], current: view.agent, apply: id => ({ ...view, agent: id }) },
-    groupBy: { title: "Group by", options: GROUP_BY_OPTIONS, current: view.groupBy, apply: id => ({ ...view, groupBy: id as ChatGroupBy }) },
+    groupBy: { title: "Group by", options: groupByOptions(allowProjectGrouping), current: view.groupBy, apply: id => ({ ...view, groupBy: id as ChatGroupBy }) },
     sortBy: { title: "Sort by", options: SORT_BY_OPTIONS, current: view.sortBy, apply: id => ({ ...view, sortBy: id as ChatSortBy }) },
   };
 

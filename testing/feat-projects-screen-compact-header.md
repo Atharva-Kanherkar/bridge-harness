@@ -72,6 +72,10 @@ Agent/Changes/Code/Terminal tab row collapses into a compact icon strip.
   is never created into a list the rail is not showing. A manual switch afterwards
   survives the next poll.
 - An empty Code list says where project chats come from rather than just "no chats".
+- `Group by → Project` is offered in Code only. Nothing in Home has a project, so
+  grouping by one there would produce a single `No project` bucket and call it a
+  grouping. A project grouping carried over from Code is corrected to `Date` and the
+  correction is persisted, so the stored view and the rendered list never disagree.
 
 ### Group folding
 - Every group header is a button that folds its own group away, with `aria-expanded`

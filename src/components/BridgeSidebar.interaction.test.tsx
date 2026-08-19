@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
-import { CHAT_SCOPE_KEY } from "./sidebarChats";
+import { CHAT_SCOPE_KEY, CHAT_VIEW_KEY, readChatView } from "./sidebarChats";
 
 // The static suite covers what the rail renders. This one covers what it does:
 // folding a group, switching scope, and following the chat that just opened.
@@ -146,6 +146,21 @@ describe("BridgeSidebar scope switching", () => {
     expect(scopeTab("Code").getAttribute("aria-selected")).toBe("true");
     mount({ activeSessionId: "plain" });
     expect(scopeTab("Home").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("corrects a project grouping carried into Home, where nothing has a project", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
+    mount();
+    // Code groups by project name.
+    expect(text()).toContain("harness");
+
+    click(scopeTab("Home"));
+    // Home falls back to day headers instead of one "No project" bucket, and the
+    // correction is persisted so the two never disagree.
+    expect(text()).toContain("Today");
+    expect(text()).not.toContain("No project");
+    expect(readChatView().groupBy).toBe("date");
   });
 
   it("leaves a manual switch alone once it has followed a chat", () => {
