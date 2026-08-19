@@ -50,9 +50,17 @@ Two rules fall out of that, and most of this contract is their consequences:
 
 - An `evidenceRef` exists only for a call that (a) was allowed by the policy, (b)
   belongs to this run, and (c) returned successfully.
+- **The provider is told each reference as its call returns.** A brief names evidence by
+  reference, so a model that had to guess the reference format would be authoring
+  provenance by the back door — and a test that predicted the format would be testing the
+  format rather than the run. The answer is therefore asked for *after* the calls.
 - For each such call Bridge derives and stores: the canonical resource id, the
   connector instance and account identity, the observed time, the tool-definition
   digest, a digest of the result, and a safe target.
+- The canonical id comes from **one** field per family, with no fallback to a generic
+  `id`. Two different fields are two different grains of identity, so a fallback could
+  mint two ids for one resource and slice 5 would treat it as two things. A result
+  without that field earns nothing rather than an id nobody can match again.
 - A target is only an external link when Bridge resolved it *and* matched its host
   against the connector's allowlist. Anything else is a Bridge-local target or none.
 - Raw connector payloads are never stored. Only digests and Bridge-derived identity.
@@ -74,7 +82,9 @@ readable as exactly that.
 - `title` and `why` are bounded; `confidenceBps` is `0..=10000`.
 - Every `evidenceRef` resolves to evidence this run earned. A wrong-run, failed-call,
   duplicate, or unknown reference invalidates the payload.
-- On failure, **one** bounded repair turn is attempted, and only one. If the repair
+- On failure, **one** bounded repair turn is attempted, and only one. The bound is read
+  from `MAX_REPAIR_ATTEMPTS` by the function that enforces it, so the constant governs
+  rather than describes — a constant the code ignores is a claim, not a limit. If the repair
   also fails, the run ends `failed` with a stable non-sensitive code, and the
   previously committed board is left exactly as it was.
 
@@ -115,7 +125,11 @@ readable as exactly that.
 - `a_changed_tool_definition_digest_makes_the_tool_ineligible`
 - `only_reviewed_exact_tools_are_offered`
 - `a_target_outside_the_connector_allowlist_is_refused`
-- `a_bridge_local_target_needs_no_allowlist`
+- `the_resolver_never_invents_a_session_target` — a Bridge-local target is not
+  something a connector result can talk Bridge into. (The original name assumed a
+  resolver path that produces one; none exists until slice 5, so asserting it here would
+  have been a test of nothing.)
+- `a_target_keeps_its_kind_across_the_json_the_store_writes`
 - `the_canonical_resource_id_is_derived_not_taken`
 
 `work_evidence` ledger:
@@ -140,7 +154,10 @@ Briefing session and configuration:
 - `an_unconfigured_briefing_is_not_configured_not_an_error`
 - `an_uncertified_provider_fails_with_a_code_and_no_fallback`
 - `a_briefing_session_is_workspace_less_and_kind_briefing`
-- `a_briefing_session_is_hidden_from_every_surface`
+- `keeps a briefing session out of every surface that filters through here` — asserted
+  on the shared predicate, which the rail, Mission Control and default selection all read
+  through, plus a wiring test that checks the **props** rather than string-matching the
+  filter's presence.
 - `run_usage_and_coverage_are_readable_without_selecting_the_session`
 
 Adversarial:
