@@ -66,7 +66,21 @@ an allowlist of exact tool identities punched through it.
 
 - Wall time, turn count, tool-call count, per-call argument bytes, and total
   output bytes are enforced by Bridge, not by trusting the provider to respect
-  a number in a prompt. Sourced from `WorkBriefLimits`.
+  a number in a prompt. Three of the five come from `WorkBriefLimits`
+  (`maxWallSeconds`, `maxTurns`, `maxToolCalls`); the other two do not, because
+  that struct has no byte-denominated field:
+  - **argument bytes** are `DEFAULT_MAX_ARGUMENT_BYTES` (8 KiB), a constant on the
+    policy rather than a setting, since no caller has a reason to raise the size
+    of one connector query;
+  - **output bytes** derive from `maxOutputTokens` at a deliberately conservative
+    four bytes per token, falling back to `DEFAULT_MAX_OUTPUT_BYTES` (256 KiB)
+    when no token ceiling is stated.
+- `costCeilingMicrousd` is carried on the limits and **not** enforced by this
+  slice. Cost needs per-turn token accounting from a running provider, and there
+  is no briefing runner yet; the issue's list of limits to enforce at the runtime
+  boundary is wall time, turns, tool calls, arguments, and output. The field is
+  the runner's to honour, and saying so here is better than implying every field
+  on the struct is already policed.
 - Argument bytes are checked *before* dispatch; output bytes are checked while
   streaming and stop the run when exceeded.
 - Every limit breach terminates the run with a typed reason, distinguishable
@@ -182,8 +196,10 @@ existing tests — `node:test` takes a description, not an identifier:
 - `npx vitest run` green.
 - `bun run build` green.
 - Regenerating protocol artifacts leaves the tree clean.
-- `scripts/check-builtin-adapters.sh` still produces its report, now including
-  the briefing capability per adapter.
+- `scripts/check-builtin-adapters.sh` still produces its report, and now also
+  gates on the conformance suite. The report JSON itself stays byte-identical at
+  schema v1 — briefing standing is a separate table for exactly that reason, so
+  what the script gained is three `--exact` test gates, not a wider report.
 
 ## E2E Tests
 

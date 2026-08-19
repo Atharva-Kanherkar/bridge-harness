@@ -21,21 +21,66 @@ use serde::{Deserialize, Serialize};
 
 use crate::delegation::WriteMode;
 
-/// Built-in tool families a briefing run must never reach, matched
-/// case-insensitively against the name a provider presents.
+/// One family of built-in tools a briefing run must never reach.
+///
+/// Two vocabularies, deliberately separate. `identities` are the exact names the
+/// provider uses, and are the only thing handed to an SDK deny-list — a name in
+/// the wrong case is not a tool identity, so it would silently strip nothing.
+/// `aliases` are extra spellings matched only when explaining a refusal, where
+/// being generous costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeniedFamily {
+    pub family: &'static str,
+    /// Exact provider tool identities. Cased as the provider cases them.
+    pub identities: &'static [&'static str],
+    /// Additional spellings recognized when naming a refusal. Never sent anywhere.
+    pub aliases: &'static [&'static str],
+}
+
+/// Built-in tool families a briefing run must never reach.
 ///
 /// This list does not do the securing — [`BriefingRuntimePolicy::decide`] denies
 /// anything not explicitly allowed, so a family missing from here is still
-/// refused. It exists so a refusal can name the liability, and so each adapter
-/// has something concrete to hand its provider as an explicit deny-list.
-pub const DENIED_BUILTIN_FAMILIES: &[(&str, &[&str])] = &[
-    ("filesystem", &["read", "write", "edit", "multiedit", "notebookedit", "glob", "ls"]),
-    ("search", &["grep", "rg", "ripgrep"]),
-    ("shell", &["bash", "shell", "sh", "zsh", "exec", "execute", "run", "killshell", "bashoutput"]),
-    ("web", &["webfetch", "websearch", "fetch", "browse", "browser"]),
-    ("skill", &["skill", "slashcommand"]),
-    ("subagent", &["task", "agent", "spawn", "delegate"]),
-    ("computer_use", &["computer", "screenshot", "mouse", "keyboard"]),
+/// refused. It exists so a refusal can name the liability, and so each adapter has
+/// exact identities to hand its provider as an explicit deny-list.
+pub const DENIED_BUILTIN_FAMILIES: &[DeniedFamily] = &[
+    DeniedFamily {
+        family: "filesystem",
+        identities: &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "LS"],
+        aliases: &[],
+    },
+    DeniedFamily {
+        family: "search",
+        identities: &["Grep"],
+        aliases: &["rg", "ripgrep"],
+    },
+    DeniedFamily {
+        family: "shell",
+        identities: &["Bash", "BashOutput", "KillShell"],
+        aliases: &["sh", "zsh", "shell", "exec", "execute", "run"],
+    },
+    DeniedFamily {
+        family: "web",
+        identities: &["WebFetch", "WebSearch"],
+        aliases: &["fetch", "browse", "browser"],
+    },
+    DeniedFamily {
+        family: "skill",
+        identities: &["Skill", "SlashCommand"],
+        aliases: &[],
+    },
+    DeniedFamily {
+        family: "subagent",
+        identities: &["Task"],
+        aliases: &["agent", "spawn", "delegate"],
+    },
+    DeniedFamily {
+        // The provider-specific identities vary, so this family leans on
+        // deny-by-default and carries spellings only for a legible refusal.
+        family: "computer_use",
+        identities: &[],
+        aliases: &["computer", "screenshot", "mouse", "keyboard"],
+    },
 ];
 
 /// An exact connector tool identity, as reviewed and supplied by Bridge.
@@ -168,7 +213,14 @@ impl ToolDecision {
 ///
 /// Built by [`Self::compile`], which is the only way to get one: the checks it
 /// performs are what make the resulting value safe to hand to an adapter.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Deliberately **not** `Deserialize`. Serde would be a second constructor that
+/// fills these fields straight from JSON, running none of those checks — an
+/// unreviewed allowlist arriving as if it had been compiled. A caller that needs to
+/// persist authority stores the inputs and calls [`Self::compile`] again, because
+/// recompiling is the only thing that can re-run the checks. `Serialize` is kept
+/// for diagnostics, which cannot construct anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BriefingRuntimePolicy {
     /// Reviewed identities, sorted and deduplicated by [`Self::compile`].
@@ -214,16 +266,6 @@ impl BriefingRuntimePolicy {
             if identity.server.trim().is_empty() || identity.tool.trim().is_empty() {
                 return Err(BriefingUnsupported::MalformedPolicy {
                     detail: "a reviewed identity has an empty server or tool name".into(),
-                });
-            }
-            // An identity that renders to a built-in name would let a reviewed
-            // entry re-admit something the deny-list exists to keep out.
-            if let Some(family) = builtin_family(&identity.tool) {
-                return Err(BriefingUnsupported::MalformedPolicy {
-                    detail: format!(
-                        "`{}` collides with the {family} built-in family and cannot be reviewed in",
-                        identity.tool
-                    ),
                 });
             }
         }
@@ -322,12 +364,15 @@ impl BriefingRuntimePolicy {
         servers
     }
 
-    /// Built-in names to hand a provider as an explicit deny-list, for providers
-    /// that accept one. Belt to `decide`'s braces.
+    /// Exact built-in tool identities to hand a provider as an explicit deny-list.
+    ///
+    /// Belt to `decide`'s braces, and only useful if the names match what the
+    /// provider actually calls its tools: a deny-list entry that matches nothing
+    /// strips nothing, and the tool stays in context to be attempted.
     pub fn denied_builtin_names() -> Vec<&'static str> {
         DENIED_BUILTIN_FAMILIES
             .iter()
-            .flat_map(|(_, tools)| tools.iter().copied())
+            .flat_map(|family| family.identities.iter().copied())
             .collect()
     }
 
@@ -341,14 +386,20 @@ impl BriefingRuntimePolicy {
 }
 
 /// Which built-in family a presented tool name belongs to, if any. Matching
-/// ignores case and the `mcp__` prefixing providers apply, because a deny-list
-/// that can be sidestepped by capitalisation is decoration.
+/// ignores case and the `mcp__` prefixing providers apply, because a refusal that
+/// can be sidestepped by capitalisation explains nothing.
 fn builtin_family(tool: &str) -> Option<&'static str> {
     let bare = tool.rsplit("__").next().unwrap_or(tool).trim().to_lowercase();
     DENIED_BUILTIN_FAMILIES
         .iter()
-        .find(|(_, tools)| tools.contains(&bare.as_str()))
-        .map(|(family, _)| *family)
+        .find(|family| {
+            family
+                .identities
+                .iter()
+                .any(|identity| identity.to_lowercase() == bare)
+                || family.aliases.contains(&bare.as_str())
+        })
+        .map(|family| family.family)
 }
 
 fn first_duplicate(sorted: &[String]) -> Option<String> {
@@ -924,16 +975,17 @@ mod tests {
     #[test]
     fn every_builtin_tool_family_is_denied() {
         let policy = policy();
-        for (family, tools) in DENIED_BUILTIN_FAMILIES {
-            for tool in *tools {
+        for family in DENIED_BUILTIN_FAMILIES {
+            for tool in family.identities.iter().chain(family.aliases.iter()) {
                 let decision = policy.decide(tool, 10);
                 assert_eq!(
                     decision,
                     ToolDecision::Deny(BriefingDenial::BuiltInFamily {
-                        family: (*family).into(),
+                        family: family.family.into(),
                         tool: (*tool).into(),
                     }),
-                    "{tool} is a {family} tool and must be refused"
+                    "{tool} is a {} tool and must be refused",
+                    family.family
                 );
             }
         }
@@ -1007,6 +1059,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_policy_cannot_be_reconstituted_around_its_own_checks() {
+        // Found in review: the type derived Deserialize while documenting compile as
+        // the only constructor. Serde fills private fields straight from JSON, so an
+        // unreviewed allowlist could have arrived looking compiled. Nothing
+        // deserialized one, which is why nothing failed — the invariant was still
+        // broken. This pins that the only way in runs the checks.
+        let reviewed = identity("notion", "search");
+        let policy =
+            BriefingRuntimePolicy::compile(vec![reviewed.clone()], limits(), &[reviewed.wire_name()])
+                .unwrap();
+        let serialized = serde_json::to_string(&policy).expect("diagnostics may read it");
+        assert!(serialized.contains("mcp__notion__search"));
+
+        // The absence of a second door is a compile-time property, so it is checked
+        // where it is declared. A source gate rather than a round-trip assertion,
+        // because code that cannot be written cannot be asserted about at run time.
+        let source = include_str!("briefing_policy.rs");
+        let declaration = source
+            .split("pub struct BriefingRuntimePolicy")
+            .next()
+            .expect("the struct is declared in this file")
+            .rsplit("#[derive(")
+            .next()
+            .expect("it carries a derive");
+        assert!(
+            !declaration.contains("Deserialize"),
+            "BriefingRuntimePolicy must not derive Deserialize: serde would fill its \
+             fields without compile()'s checks. Persist the inputs and recompile instead."
+        );
+        assert!(declaration.contains("Serialize"), "diagnostics still need to read it");
+    }
+
     // -----------------------------------------------------------------------
     // Compilation fails closed
     // -----------------------------------------------------------------------
@@ -1066,14 +1151,6 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, BriefingUnsupported::ToolListDrift { .. }), "{error:?}");
         assert!(policy.check_for_drift(&[]).is_err(), "an empty list is drift as well");
-    }
-
-    #[test]
-    fn a_reviewed_identity_cannot_smuggle_in_a_builtin_family() {
-        let error = BriefingRuntimePolicy::compile(vec![identity("evil", "bash")], limits(), &[])
-            .unwrap_err();
-        assert!(matches!(error, BriefingUnsupported::MalformedPolicy { .. }), "{error:?}");
-        assert!(error.reason().contains("shell"));
     }
 
     #[test]
@@ -1559,13 +1636,73 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_denylist_covers_every_family() {
+    fn the_denylist_handed_to_a_provider_uses_the_names_that_provider_uses() {
+        // Found in review: the deny-list was emitting lowercase, which the Claude
+        // Agent SDK does not treat as a tool identity — so it stripped nothing and
+        // every built-in stayed in context to be attempted. A deny-list entry that
+        // matches no tool is not a weaker defence, it is no defence.
         let names = BriefingRuntimePolicy::denied_builtin_names();
-        for (_, tools) in DENIED_BUILTIN_FAMILIES {
-            for tool in *tools {
-                assert!(names.contains(tool), "{tool} must be in the explicit deny-list");
-            }
+        for expected in [
+            "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "LS", "Grep", "Bash",
+            "BashOutput", "KillShell", "WebFetch", "WebSearch", "Skill", "SlashCommand", "Task",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "{expected} must be denied by the exact name the provider uses"
+            );
         }
-        assert!(names.contains(&"bash") && names.contains(&"webfetch") && names.contains(&"task"));
+        // Aliases exist to explain a refusal, and must never be sent as identities.
+        for alias in ["bash", "webfetch", "task", "sh", "fetch", "screenshot"] {
+            assert!(
+                !names.contains(&alias),
+                "{alias} is a spelling for refusal messages, not a tool identity"
+            );
+        }
+        // Every name sent is an identity some family actually declared.
+        for name in &names {
+            assert!(
+                DENIED_BUILTIN_FAMILIES
+                    .iter()
+                    .any(|family| family.identities.contains(name)),
+                "{name} is not declared by any family"
+            );
+        }
+    }
+
+    #[test]
+    fn the_denylist_matches_the_casing_the_write_mode_path_already_uses() {
+        // The sidecar's existing ReadOnly options use Read/Grep/Glob/Bash and
+        // Edit/Write/NotebookEdit against the same SDK. Those spellings are the
+        // evidence for what an identity looks like, so the two must not disagree.
+        let names = BriefingRuntimePolicy::denied_builtin_names();
+        for already_used in ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "NotebookEdit"] {
+            assert!(
+                names.contains(&already_used),
+                "{already_used} is spelled this way elsewhere for this SDK"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reviewed_identity_is_admitted_by_its_wire_name_and_nothing_else_is() {
+        // This replaces a check that refused any reviewed tool whose bare name
+        // resembled a built-in. That check protected nothing — matching is by full
+        // wire name, so a reviewed `mcp__evil__bash` never admits the built-in
+        // `Bash` — while making a connector tool legitimately named `read` or
+        // `fetch` impossible to review in. The real invariant is pinned here.
+        let smuggle = identity("evil", "bash");
+        let policy = BriefingRuntimePolicy::compile(
+            vec![smuggle.clone()],
+            limits(),
+            &[smuggle.wire_name()],
+        )
+        .expect("a connector tool may be named anything its connector names it");
+        assert_eq!(policy.decide("mcp__evil__bash", 10), ToolDecision::Allow);
+        for builtin in ["Bash", "bash", "BASH"] {
+            assert!(
+                !policy.decide(builtin, 10).is_allowed(),
+                "{builtin} is the built-in, not the reviewed connector tool"
+            );
+        }
     }
 }

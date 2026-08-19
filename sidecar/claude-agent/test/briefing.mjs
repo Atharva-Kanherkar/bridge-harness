@@ -8,7 +8,9 @@ import { briefingOptions, makeBriefingGate } from "../briefing.mjs";
 const briefing = {
   allowedTools: ["mcp__notion__search"],
   allowedServers: ["notion"],
-  deniedBuiltins: ["read", "write", "edit", "bash", "webfetch", "websearch", "task", "skill"],
+  // Exact SDK tool identities, as Rust now emits them. Lowercase entries would
+  // match no tool and strip nothing — the bug this list is spelled against.
+  deniedBuiltins: ["Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "Task", "Skill"],
   maxArgumentBytes: 256,
 };
 
@@ -25,6 +27,26 @@ test("briefing options deny every built-in tool handed down from Bridge", () => 
     assert.ok(
       options.disallowedTools.includes(denied),
       `${denied} must be denied explicitly, not merely left unallowed`,
+    );
+  }
+});
+
+test("the deny-list is spelled the way the SDK names tools", () => {
+  // A disallowedTools entry only removes a tool when the name matches exactly, so
+  // a lowercase list leaves every built-in in context to be attempted. The write
+  // mode path in options.mjs uses these same spellings against the same SDK.
+  const options = buildOptions({ ...base, briefing });
+  for (const identity of ["Read", "Write", "Edit", "Bash", "WebFetch", "Task"]) {
+    assert.ok(
+      options.disallowedTools.includes(identity),
+      `${identity} must be denied by the exact name the SDK uses`,
+    );
+  }
+  for (const entry of options.disallowedTools) {
+    assert.notEqual(
+      entry,
+      entry.toLowerCase(),
+      `${entry} looks like a spelling, not a tool identity`,
     );
   }
 });

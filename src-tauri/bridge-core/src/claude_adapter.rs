@@ -815,8 +815,10 @@ mod briefing_boundary_tests {
         assert_eq!(policy.allowed_wire_names(), vec!["mcp__notion__search"]);
         assert_eq!(policy.allowed_servers(), vec!["notion"]);
         assert!(policy.max_argument_bytes() > 0);
+        // The exact identities the provider uses. Lowercase would match nothing in
+        // an SDK deny-list, which is how this went wrong the first time.
         let denied = BriefingRuntimePolicy::denied_builtin_names();
-        for expected in ["bash", "read", "write", "webfetch", "task", "skill"] {
+        for expected in ["Bash", "Read", "Write", "WebFetch", "Task", "Skill"] {
             assert!(denied.contains(&expected), "{expected} must be denied explicitly");
         }
     }

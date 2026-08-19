@@ -9,8 +9,10 @@
 //   1. `canUseTool` — the real gate. Every tool call arrives here and is denied
 //      unless it is exactly one of the reviewed identities. Nothing is
 //      pre-approved, precisely so that no call can bypass this function.
-//   2. `disallowedTools` — an explicit deny-list of built-in families, so the
-//      common case is refused before it reaches the gate at all.
+//   2. `disallowedTools` — exact built-in identities from Rust, so the common case
+//      is stripped from the request before it reaches the gate at all. Only exact
+//      names work here: an entry the SDK does not recognize as a tool removes
+//      nothing, and the tool stays in context to be attempted.
 //   3. Withheld options — no `onUserDialog`, no `supportedDialogKinds`, no
 //      inherited setting sources, no plugins. The SDK documents that a dialog
 //      kind not declared is never emitted, so withholding the declaration is what
