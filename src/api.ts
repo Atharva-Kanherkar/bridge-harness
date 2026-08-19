@@ -11,6 +11,9 @@ import type {
   ReadWorkspaceFileResult,
   WorkspaceChangesResult,
   WorkBoard,
+  WorkBriefingOptions,
+  WorkSettings,
+  WorkSettingsSnapshot,
   WorkTask,
   WorkTaskDraft,
   WriteWorkspaceFileResult,
@@ -314,6 +317,39 @@ const mockWorkTasks: WorkTask[] = [
     updatedAt: workBoardObserved(240),
   },
 ];
+
+// Work settings for the browser fallback. Starts unconfigured, the fresh-install
+// state, and flips to configured when the mock write runs — so the Settings
+// surface's whole round-trip is exercisable without the desktop app.
+let mockWorkSettings: WorkSettingsSnapshot = {
+  configured: false,
+  settings: {
+    briefing: null,
+    enabledConnectorInstances: [],
+    refreshOnFocus: false,
+    refreshIntervalMinutes: null,
+    cooldownMinutes: 15,
+    limits: { maxWallSeconds: 600, maxTurns: 12, maxToolCalls: 24, maxOutputTokens: null, costCeilingMicrousd: null },
+  },
+};
+
+const mockBriefingOptions: WorkBriefingOptions = {
+  harnesses: [
+    {
+      id: "claude", label: "Claude Code", available: true, supported: true, reason: null,
+      defaultModel: "haiku",
+      models: [
+        { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true },
+        { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false },
+      ],
+    },
+    {
+      id: "codex", label: "Codex", available: true, supported: false,
+      reason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
+      defaultModel: null, models: [],
+    },
+  ],
+};
 
 function browserWorkBoard(): WorkBoard {
   return {
@@ -673,6 +709,26 @@ export const bridgeApi = {
   workBoard: async (): Promise<WorkBoard> => {
     if (isTauri()) return call("work/get_work_board");
     return browserWorkBoard();
+  },
+  // Work's configuration. `configured: false` is a fresh install reading defaults;
+  // `configured: true` with `briefing: null` is briefing explicitly switched off —
+  // the write path keeps those two states distinguishable.
+  readWorkSettings: async (): Promise<WorkSettingsSnapshot> => {
+    if (isTauri()) return call("work/read_settings");
+    return structuredClone(mockWorkSettings);
+  },
+  // Validation is Rust's. The Settings surface may pre-empt an obvious mistake,
+  // but a payload that bypasses it is refused by the same rules server-side.
+  writeWorkSettings: async (settings: WorkSettings): Promise<WorkSettingsSnapshot> => {
+    if (isTauri()) return call("work/write_settings", { settings });
+    mockWorkSettings = { configured: true, settings: structuredClone(settings) };
+    return structuredClone(mockWorkSettings);
+  },
+  // Which harnesses passed the briefing conformance gate, why the others were
+  // refused, and the cheapest capable default model for each.
+  workBriefingOptions: async (): Promise<WorkBriefingOptions> => {
+    if (isTauri()) return call("work/briefing_options");
+    return structuredClone(mockBriefingOptions);
   },
   // A workspace far behind its base branch produces changes and completion
   // stamps against stale code; `refresh` is the explicit choice the warning offers.

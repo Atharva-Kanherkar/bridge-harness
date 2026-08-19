@@ -193,6 +193,31 @@ async fn task_open_evidence(
 }
 
 #[tauri::command]
+async fn read_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkSettingsSnapshot, BridgeError> {
+    api::read_work_settings(state.inner())
+}
+
+#[tauri::command]
+async fn write_settings(
+    state: State<'_, Arc<BridgeCore>>,
+    settings: bridge_protocol::messages::WorkSettings,
+) -> Result<bridge_protocol::messages::WorkSettingsSnapshot, BridgeError> {
+    api::write_work_settings(
+        state.inner(),
+        &bridge_protocol::messages::WriteSettingsParams { settings },
+    )
+}
+
+#[tauri::command]
+async fn briefing_options(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkBriefingOptions, BridgeError> {
+    Ok(api::work_briefing_options(state.inner()))
+}
+
+#[tauri::command]
 async fn skill_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
@@ -1159,6 +1184,9 @@ pub fn run() {
             task_pin,
             task_prepare_session,
             task_open_evidence,
+            read_settings,
+            write_settings,
+            briefing_options,
             skill_catalog,
             skill_suggestions,
             preview_skill_change,

@@ -406,6 +406,12 @@ pub fn dispatch(
             let params: wire::TaskOpenEvidenceParams = decode(method, params)?;
             reply(api::work_task_open_evidence(core, &params))
         }
+        MethodName::ReadWorkSettings => reply(api::read_work_settings(core)),
+        MethodName::WriteWorkSettings => {
+            let params: wire::WriteSettingsParams = decode(method, params)?;
+            reply(api::write_work_settings(core, &params))
+        }
+        MethodName::WorkBriefingOptions => encode(api::work_briefing_options(core)),
 
         MethodName::SkillCatalog => reply(api::skill_catalog(core)),
         MethodName::SkillSuggestions => {

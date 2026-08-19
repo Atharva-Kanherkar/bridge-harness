@@ -11,7 +11,9 @@
 //! DB commit, per the event contract) — never through a host event system.
 
 use crate::events::CoreEvent;
-use crate::model::{AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot};
+use crate::model::{
+    AdapterDescriptor, AgentEvent, BridgeState, CapabilityTier, Harness, SessionForestSnapshot,
+};
 use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
@@ -1075,6 +1077,87 @@ pub fn work_task_open_evidence(
             Ok(wire::WorkEvidenceTarget::Session { session_id })
         }
     }
+}
+
+/// Work's stored settings, with whether they were ever written.
+pub fn read_work_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
+    work::read_settings(&core.db.lock().unwrap())
+}
+
+/// Persist Work's settings. Validation lives in Rust — `work::validate_settings`
+/// plus the model-catalog check below, which needs the adapter registry that the
+/// store-only module deliberately cannot reach.
+pub fn write_work_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::WriteSettingsParams,
+) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
+    if let Some(briefing) = params.settings.briefing.as_ref() {
+        let descriptors = core.adapter_registry.descriptors();
+        if let Some(descriptor) = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == briefing.harness.as_str())
+        {
+            // An empty catalog is a runtime-discovered one; only a non-empty
+            // catalog can refuse a model by name.
+            if !descriptor.models.is_empty()
+                && !descriptor.models.iter().any(|model| model.id == briefing.model)
+            {
+                return Err(BridgeError::Invalid(format!(
+                    "{} is not a model {} offers",
+                    briefing.model, descriptor.label
+                )));
+            }
+        }
+    }
+    work::write_settings(&core.db.lock().unwrap(), &params.settings)
+}
+
+/// Every registered harness as the briefing Settings surface needs it: certified
+/// or refused with the gate's reason, plus the cheapest capable default model.
+pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOptions {
+    let harnesses = core
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .map(|descriptor| {
+            let certification = crate::briefing_policy::certify_briefing(
+                &descriptor.id,
+                descriptor.version.as_deref(),
+            );
+            let supported = certification.is_ok();
+            // The cheapest capable model is the Fast-tier default. Chosen here,
+            // at the settings layer, because `resolve_briefing` deliberately
+            // refuses to invent a model at run time.
+            let default_model = supported
+                .then(|| {
+                    core.adapter_registry
+                        .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
+                        .ok()
+                        .map(|resolution| resolution.actual_model)
+                })
+                .flatten();
+            wire::WorkBriefingHarness {
+                supported,
+                reason: certification.err().map(|unsupported| unsupported.reason()),
+                default_model,
+                models: descriptor
+                    .models
+                    .iter()
+                    .map(|model| wire::WorkBriefingModel {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        tier: model.tier.as_str().to_owned(),
+                        default_for_briefing: model.tier == CapabilityTier::Fast
+                            && model.default_for_tier,
+                    })
+                    .collect(),
+                id: descriptor.id,
+                label: descriptor.label,
+                available: descriptor.available,
+            }
+        })
+        .collect();
+    wire::WorkBriefingOptions { harnesses }
 }
 
 // --- base-branch divergence ----------------------------------------------------

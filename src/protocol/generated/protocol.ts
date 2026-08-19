@@ -98,6 +98,9 @@ export type BridgeMethod =
   | "work/task_pin"
   | "work/task_prepare_session"
   | "work/task_open_evidence"
+  | "work/read_settings"
+  | "work/write_settings"
+  | "work/briefing_options"
   | "skills/skill_catalog"
   | "skills/skill_suggestions"
   | "skills/preview_skill_change"
@@ -195,6 +198,9 @@ export const BRIDGE_METHODS = [
   { method: "work/task_pin", domain: "work", command: "task_pin" },
   { method: "work/task_prepare_session", domain: "work", command: "task_prepare_session" },
   { method: "work/task_open_evidence", domain: "work", command: "task_open_evidence" },
+  { method: "work/read_settings", domain: "work", command: "read_settings" },
+  { method: "work/write_settings", domain: "work", command: "write_settings" },
+  { method: "work/briefing_options", domain: "work", command: "briefing_options" },
   { method: "skills/skill_catalog", domain: "skills", command: "skill_catalog" },
   { method: "skills/skill_suggestions", domain: "skills", command: "skill_suggestions" },
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
@@ -342,6 +348,9 @@ export interface BridgeMethodParams {
   "work/task_pin": TaskPinParams;
   "work/task_prepare_session": TaskPrepareSessionParams;
   "work/task_open_evidence": TaskOpenEvidenceParams;
+  "work/read_settings": undefined;
+  "work/write_settings": WriteSettingsParams;
+  "work/briefing_options": undefined;
   "skills/skill_catalog": undefined;
   "skills/skill_suggestions": SkillSuggestionsParams;
   "skills/preview_skill_change": PreviewSkillChangeParams;
@@ -441,6 +450,9 @@ export interface BridgeMethodResults {
   "work/task_pin": UnitResult;
   "work/task_prepare_session": WorkTaskDraft;
   "work/task_open_evidence": WorkEvidenceTarget;
+  "work/read_settings": WorkSettingsSnapshot;
+  "work/write_settings": WorkSettingsSnapshot;
+  "work/briefing_options": WorkBriefingOptions;
   "skills/skill_catalog": unknown;
   "skills/skill_suggestions": unknown;
   "skills/preview_skill_change": unknown;
@@ -923,6 +935,23 @@ export interface WorkBriefRun {
 export type WorkBriefRunStatus = "running" | "succeeded" | "failed" | "cancelled" | "skipped";
 
 export type WorkBriefTrigger = "manual" | "focus" | "schedule";
+
+export interface WorkBriefingHarness {
+  available: boolean;
+  defaultModel?: string | null;
+  id: string;
+  label: string;
+  models: WorkBriefingModel[];
+  reason?: string | null;
+  supported: boolean;
+}
+
+export interface WorkBriefingModel {
+  defaultForBriefing: boolean;
+  id: string;
+  label: string;
+  tier: string;
+}
 
 export interface WorkBriefingProfile {
   effort?: Effort | null;
@@ -1606,6 +1635,19 @@ export interface WorkTaskDraft {
 
 export interface TaskOpenEvidenceParams {
   taskId: string;
+}
+
+export interface WorkSettingsSnapshot {
+  configured: boolean;
+  settings: WorkSettings;
+}
+
+export interface WriteSettingsParams {
+  settings: WorkSettings;
+}
+
+export interface WorkBriefingOptions {
+  harnesses: WorkBriefingHarness[];
 }
 
 export interface SkillSuggestionsParams {

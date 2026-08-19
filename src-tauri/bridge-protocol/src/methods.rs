@@ -149,6 +149,13 @@ methods![
     (WorkTaskPin, "work", "task_pin"),
     (WorkTaskPrepareSession, "work", "task_prepare_session"),
     (WorkTaskOpenEvidence, "work", "task_open_evidence"),
+    // work settings and the briefing surface. Reading and writing settings is
+    // what makes a briefing reachable from a fresh install at all; the options
+    // method reports which harnesses passed the conformance gate and why the
+    // others were refused.
+    (ReadWorkSettings, "work", "read_settings"),
+    (WriteWorkSettings, "work", "write_settings"),
+    (WorkBriefingOptions, "work", "briefing_options"),
     // skills
     (SkillCatalog, "skills", "skill_catalog"),
     (SkillSuggestions, "skills", "skill_suggestions"),
