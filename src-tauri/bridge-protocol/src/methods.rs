@@ -156,6 +156,11 @@ methods![
     (ReadWorkSettings, "work", "read_settings"),
     (WriteWorkSettings, "work", "write_settings"),
     (WorkBriefingOptions, "work", "briefing_options"),
+    // triggers. Both funnel through the one claim path in bridge-core; the
+    // receipt says whether this call started the run, observed somebody
+    // else's, or was refused with a stable code.
+    (RunWorkBriefing, "work", "run_briefing"),
+    (CancelWorkBriefing, "work", "cancel_briefing"),
     // skills
     (SkillCatalog, "skills", "skill_catalog"),
     (SkillSuggestions, "skills", "skill_suggestions"),

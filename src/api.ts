@@ -11,6 +11,7 @@ import type {
   ReadWorkspaceFileResult,
   WorkspaceChangesResult,
   WorkBoard,
+  WorkBriefReceipt,
   WorkBriefingOptions,
   WorkSettings,
   WorkSettingsSnapshot,
@@ -729,6 +730,19 @@ export const bridgeApi = {
   workBriefingOptions: async (): Promise<WorkBriefingOptions> => {
     if (isTauri()) return call("work/briefing_options");
     return structuredClone(mockBriefingOptions);
+  },
+  // Trigger a briefing run. Returns a receipt immediately — a claimed run lands
+  // on the run row, and the board's suggestions.state is how the screen follows it.
+  runWorkBriefing: async (trigger: "manual" | "focus" | "schedule"): Promise<WorkBriefReceipt> => {
+    if (isTauri()) return call("work/run_briefing", { trigger });
+    if (!mockWorkSettings.configured || !mockWorkSettings.settings.briefing) {
+      return { outcome: "refused", runId: null, code: "not_configured", detail: "Work has never been configured" };
+    }
+    return { outcome: "started", runId: "run-mock-1", code: null, detail: null };
+  },
+  cancelWorkBriefing: async (): Promise<WorkBriefReceipt> => {
+    if (isTauri()) return call("work/cancel_briefing");
+    return { outcome: "refused", runId: null, code: "not_running", detail: "no briefing run is active" };
   },
   // A workspace far behind its base branch produces changes and completion
   // stamps against stale code; `refresh` is the explicit choice the warning offers.

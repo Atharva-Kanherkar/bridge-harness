@@ -1160,6 +1160,79 @@ pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOption
     wire::WorkBriefingOptions { harnesses }
 }
 
+/// Trigger a briefing run. Every trigger — this one, app focus, and the cadence
+/// thread — funnels through `work_briefing_trigger::claim`, so racing calls
+/// start at most one run and the others observe it.
+///
+/// Returns immediately: a claimed run executes on its own thread and lands on
+/// the run row, never in this response. The board's `suggestions.state` is how
+/// a client follows it.
+pub fn run_work_briefing(
+    core: &Arc<BridgeCore>,
+    params: &wire::RunBriefingParams,
+) -> Result<wire::WorkBriefReceipt, BridgeError> {
+    let registry = core.adapter_registry.clone();
+    let versions = move |harness: &str| {
+        registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == harness)
+            .and_then(|descriptor| descriptor.version)
+    };
+    let outcome = {
+        let db = core.db.lock().unwrap();
+        crate::work_briefing_trigger::claim(&db, params.trigger, &versions, chrono::Utc::now())?
+    };
+    Ok(match outcome {
+        crate::work_briefing_trigger::ClaimOutcome::Claimed(run) => {
+            let run_id = run.run_id.clone();
+            let worker_core = core.clone();
+            thread::spawn(move || crate::work_briefing_live::execute(&worker_core, run));
+            wire::WorkBriefReceipt {
+                outcome: wire::WorkBriefReceiptOutcome::Started,
+                run_id: Some(run_id),
+                code: None,
+                detail: None,
+            }
+        }
+        crate::work_briefing_trigger::ClaimOutcome::Observed { run_id } => wire::WorkBriefReceipt {
+            outcome: wire::WorkBriefReceiptOutcome::Observed,
+            run_id: Some(run_id),
+            code: None,
+            detail: None,
+        },
+        crate::work_briefing_trigger::ClaimOutcome::Refused { code, detail } => {
+            wire::WorkBriefReceipt {
+                outcome: wire::WorkBriefReceiptOutcome::Refused,
+                run_id: None,
+                code: Some(code),
+                detail: Some(detail),
+            }
+        }
+    })
+}
+
+/// Ask the active briefing run to stop. The run loop notices the flag, stops
+/// the provider, records terminal status and measured usage, and leaves the
+/// last good board intact.
+pub fn cancel_work_briefing(core: &Arc<BridgeCore>) -> Result<wire::WorkBriefReceipt, BridgeError> {
+    let cancelled = crate::work_briefing_trigger::request_cancel(&core.db.lock().unwrap())?;
+    Ok(match cancelled {
+        Some(run_id) => wire::WorkBriefReceipt {
+            outcome: wire::WorkBriefReceiptOutcome::Observed,
+            run_id: Some(run_id),
+            code: None,
+            detail: Some("cancellation requested; the run settles on its own thread".into()),
+        },
+        None => wire::WorkBriefReceipt {
+            outcome: wire::WorkBriefReceiptOutcome::Refused,
+            run_id: None,
+            code: Some("not_running".into()),
+            detail: Some("no briefing run is active".into()),
+        },
+    })
+}
+
 // --- base-branch divergence ----------------------------------------------------
 
 /// Cache a divergence reading the user just paid for.

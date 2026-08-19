@@ -101,6 +101,8 @@ export type BridgeMethod =
   | "work/read_settings"
   | "work/write_settings"
   | "work/briefing_options"
+  | "work/run_briefing"
+  | "work/cancel_briefing"
   | "skills/skill_catalog"
   | "skills/skill_suggestions"
   | "skills/preview_skill_change"
@@ -201,6 +203,8 @@ export const BRIDGE_METHODS = [
   { method: "work/read_settings", domain: "work", command: "read_settings" },
   { method: "work/write_settings", domain: "work", command: "write_settings" },
   { method: "work/briefing_options", domain: "work", command: "briefing_options" },
+  { method: "work/run_briefing", domain: "work", command: "run_briefing" },
+  { method: "work/cancel_briefing", domain: "work", command: "cancel_briefing" },
   { method: "skills/skill_catalog", domain: "skills", command: "skill_catalog" },
   { method: "skills/skill_suggestions", domain: "skills", command: "skill_suggestions" },
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
@@ -351,6 +355,8 @@ export interface BridgeMethodParams {
   "work/read_settings": undefined;
   "work/write_settings": WriteSettingsParams;
   "work/briefing_options": undefined;
+  "work/run_briefing": RunBriefingParams;
+  "work/cancel_briefing": undefined;
   "skills/skill_catalog": undefined;
   "skills/skill_suggestions": SkillSuggestionsParams;
   "skills/preview_skill_change": PreviewSkillChangeParams;
@@ -453,6 +459,8 @@ export interface BridgeMethodResults {
   "work/read_settings": WorkSettingsSnapshot;
   "work/write_settings": WorkSettingsSnapshot;
   "work/briefing_options": WorkBriefingOptions;
+  "work/run_briefing": WorkBriefReceipt;
+  "work/cancel_briefing": WorkBriefReceipt;
   "skills/skill_catalog": unknown;
   "skills/skill_suggestions": unknown;
   "skills/preview_skill_change": unknown;
@@ -917,6 +925,8 @@ export interface WorkBriefLimits {
   maxTurns: number;
   maxWallSeconds: number;
 }
+
+export type WorkBriefReceiptOutcome = "started" | "refused" | "observed";
 
 export interface WorkBriefRun {
   completedAt?: string | null;
@@ -1648,6 +1658,17 @@ export interface WriteSettingsParams {
 
 export interface WorkBriefingOptions {
   harnesses: WorkBriefingHarness[];
+}
+
+export interface RunBriefingParams {
+  trigger: WorkBriefTrigger;
+}
+
+export interface WorkBriefReceipt {
+  code?: string | null;
+  detail?: string | null;
+  outcome: WorkBriefReceiptOutcome;
+  runId?: string | null;
 }
 
 export interface SkillSuggestionsParams {

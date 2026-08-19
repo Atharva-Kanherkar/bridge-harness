@@ -660,6 +660,20 @@
       "resultSchema": "work-briefing-options.json"
     },
     {
+      "command": "run_briefing",
+      "domain": "work",
+      "method": "work/run_briefing",
+      "paramsSchema": "run-briefing-params.json",
+      "resultSchema": "work-brief-receipt.json"
+    },
+    {
+      "command": "cancel_briefing",
+      "domain": "work",
+      "method": "work/cancel_briefing",
+      "paramsSchema": null,
+      "resultSchema": "work-brief-receipt.json"
+    },
+    {
       "command": "skill_catalog",
       "domain": "skills",
       "method": "skills/skill_catalog",

@@ -247,6 +247,8 @@ typed_methods![
     (ReadWorkSettings, _, WorkSettingsSnapshot),
     (WriteWorkSettings, WriteSettingsParams, WorkSettingsSnapshot),
     (WorkBriefingOptions, _, WorkBriefingOptions),
+    (RunWorkBriefing, RunBriefingParams, WorkBriefReceipt),
+    (CancelWorkBriefing, _, WorkBriefReceipt),
     // skills
     (SkillCatalog, _, _),
     (SkillSuggestions, SkillSuggestionsParams, _),

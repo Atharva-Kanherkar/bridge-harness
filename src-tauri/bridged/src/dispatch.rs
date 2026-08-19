@@ -412,6 +412,11 @@ pub fn dispatch(
             reply(api::write_work_settings(core, &params))
         }
         MethodName::WorkBriefingOptions => encode(api::work_briefing_options(core)),
+        MethodName::RunWorkBriefing => {
+            let params: wire::RunBriefingParams = decode(method, params)?;
+            reply(api::run_work_briefing(core, &params))
+        }
+        MethodName::CancelWorkBriefing => reply(api::cancel_work_briefing(core)),
 
         MethodName::SkillCatalog => reply(api::skill_catalog(core)),
         MethodName::SkillSuggestions => {

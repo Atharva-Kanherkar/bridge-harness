@@ -215,6 +215,7 @@ impl Daemon {
         bridge_core::live_turn::start_completion_check_maintenance(core.clone());
         bridge_core::work_observation::start_work_fact_maintenance(core.clone());
         bridge_core::live_turn::start_learning_maintenance(core.clone());
+        bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
         bridge_core::live_turn::start_history_snapshot_maintenance(core.clone());
 
         state.ready.store(true, Ordering::SeqCst);

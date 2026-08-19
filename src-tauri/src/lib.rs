@@ -218,6 +218,24 @@ async fn briefing_options(
 }
 
 #[tauri::command]
+async fn run_briefing(
+    state: State<'_, Arc<BridgeCore>>,
+    trigger: bridge_protocol::messages::WorkBriefTrigger,
+) -> Result<bridge_protocol::messages::WorkBriefReceipt, BridgeError> {
+    api::run_work_briefing(
+        state.inner(),
+        &bridge_protocol::messages::RunBriefingParams { trigger },
+    )
+}
+
+#[tauri::command]
+async fn cancel_briefing(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkBriefReceipt, BridgeError> {
+    api::cancel_work_briefing(state.inner())
+}
+
+#[tauri::command]
 async fn skill_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
@@ -1149,6 +1167,7 @@ fn setup_embedded(
     live_turn::start_completion_check_maintenance(core.clone());
     work_observation::start_work_fact_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
+    bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
 }
@@ -1187,6 +1206,8 @@ pub fn run() {
             read_settings,
             write_settings,
             briefing_options,
+            run_briefing,
+            cancel_briefing,
             skill_catalog,
             skill_suggestions,
             preview_skill_change,
