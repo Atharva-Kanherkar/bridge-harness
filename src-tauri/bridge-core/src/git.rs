@@ -1002,6 +1002,51 @@ pub fn workspace_path(base: &Path, project: &str, city: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn no_production_git_spawn_bypasses_the_counted_constructor() {
+        // The counter in `work` is only as good as this being true, and it is the
+        // kind of thing a later helper reintroduces by accident. Walking the
+        // crate is cheap and catches the next one.
+        let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut pending = vec![source_root.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).expect("the crate source is readable") {
+                let path = entry.expect("a readable entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("a readable module");
+                // Test scaffolding is allowed to shell out however it likes, so
+                // only the text above `#[cfg(test)]` is held to this.
+                let production = &source[..source.find("#[cfg(test)]").unwrap_or(source.len())];
+                let is_the_funnel = path.file_name().is_some_and(|name| name == "git.rs");
+                for (number, line) in production.lines().enumerate() {
+                    if !line.contains(r#"Command::new("git")"#) {
+                        continue;
+                    }
+                    // git.rs declares the one permitted spawn.
+                    if is_the_funnel && line.contains("let mut command") {
+                        continue;
+                    }
+                    offenders.push(format!(
+                        "{}:{}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        number + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these spawn git outside git_command, so the store-only counter cannot see them: {offenders:?}"
+        );
+    }
+
     fn git(cwd: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .args(args)

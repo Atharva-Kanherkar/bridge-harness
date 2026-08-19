@@ -6,7 +6,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    process::Command,
 };
 use uuid::Uuid;
 
@@ -1852,13 +1851,11 @@ pub fn repository_path_for_session(
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
-    let head = Command::new("git")
+    let head = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
-        .current_dir(path)
         .output();
-    let status = Command::new("git")
+    let status = crate::git::git_command(path)
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .current_dir(path)
         .output();
     let (Ok(head), Ok(status)) = (head, status) else {
         return serde_json::json!({"status":"unavailable"});

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Cap on entries returned to the autocomplete list.
 const MAX_FILES: usize = 5000;
@@ -60,7 +60,7 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, BridgeError> {
 }
 
 fn git_tracked(root: &Path) -> Option<Vec<String>> {
-    let mut child = Command::new("git")
+    let mut child = crate::git::git_command(root)
         .args([
             "ls-files",
             "--cached",
@@ -68,7 +68,6 @@ fn git_tracked(root: &Path) -> Option<Vec<String>> {
             "--exclude-standard",
             "-z",
         ])
-        .current_dir(root)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
