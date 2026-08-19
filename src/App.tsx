@@ -8,7 +8,6 @@ import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, H
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { MissionControl } from "./components/MissionControl";
-import { isVisibleWorker } from "./components/workerStatus";
 import { ComposerPill } from "./components/ComposerPill";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
@@ -186,7 +185,6 @@ export function App() {
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
   const topSessions = useMemo(() => state.sessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [state.sessions]);
-  const standaloneChats = useMemo(() => topSessions.filter(s => !s.workspaceId), [topSessions]);
   // Resolve across every session, not just top-level ones: a worker can be
   // opened directly (from Mission Control or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
@@ -200,11 +198,6 @@ export function App() {
   const isWorkerView = !!session?.parentSessionId;
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
-  const childWorkers = useMemo(() => session ? state.sessions.filter(worker => {
-    if (worker.parentSessionId !== session.id) return false;
-    const runtime = forest?.workerRuntimes.find(item => item.sessionId === worker.id);
-    return isVisibleWorker(worker, runtime);
-  }) : [], [state.sessions, session?.id, forest?.workerRuntimes]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
   const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
@@ -606,17 +599,13 @@ export function App() {
     {!fullscreen && <BridgeSidebar
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
-      standaloneChats={standaloneChats}
+      chats={topSessions}
       workspaces={state.workspaces}
-      workspaceChats={workspaceId => topSessions.filter(s => s.workspaceId === workspaceId)}
       activeSessionId={session?.id}
       marketplaceActive={view === "marketplace"}
       settingsActive={view === "settings"}
       expanded={expanded}
       busy={busy}
-      workers={childWorkers}
-      workerRuntimes={forest?.workerRuntimes ?? []}
-      workerReasons={forest?.reasons ?? []}
       onOpenNewChat={() => void openNewChat()}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenSettings={() => setView("settings")}
