@@ -106,6 +106,9 @@ its current value and a chevron:
 
 ### Projects
 - The projects section renders **above** the chat history.
+- The Status and Agent filters narrow the tree exactly as the search query does:
+  the rail shows one filtered set of chats, viewed two ways. A project whose chats
+  are all filtered out is hidden, and its count reflects what passes the filter.
 - A project row shows chevron, folder icon, title, and its chat count.
 - Expanding shows its chats, a `New agent` action, and `Connect folder` when the
   workspace has no path. No branch/dirty line.
