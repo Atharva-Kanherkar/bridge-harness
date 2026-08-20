@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent, MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { ArrowUp, Plus, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,6 +18,18 @@ export type ComposerPillProps = {
   activeAction?: "steer" | "queue";
   onStop?: () => void;
   onPlusClick?: () => void;
+  /// What the `+` control does on this surface, as the user reads it. A control
+  /// whose label and behaviour disagree is worse than no control, so the label
+  /// travels with the handler rather than being hardcoded here.
+  plusLabel?: string;
+  /// Set to explain why `+` is unavailable. Present means disabled, and the
+  /// reason becomes the tooltip — an unexplained dead control is the thing this
+  /// avoids.
+  plusUnavailableReason?: string;
+  /// Lets the owner put the caret back in the composer after an action of its
+  /// own — opening the file picker from `+` is useless if the user then has to
+  /// click into the box to filter it.
+  inputRef?: MutableRefObject<HTMLTextAreaElement | null>;
   trailing?: ReactNode;
   className?: string;
   layout?: "hero" | "dock";
@@ -37,12 +49,15 @@ export function ComposerPill({
   activeAction,
   onStop,
   onPlusClick,
+  plusLabel = "Attach a file",
+  plusUnavailableReason,
+  inputRef,
   trailing,
   className,
   layout = "dock",
   autocomplete,
 }: ComposerPillProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isHero = layout === "hero";
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
@@ -76,7 +91,10 @@ export function ComposerPill({
         }}
       >
         <textarea
-          ref={textareaRef}
+          ref={node => {
+            textareaRef.current = node;
+            if (inputRef) inputRef.current = node;
+          }}
           value={value}
           rows={1}
           placeholder={placeholder}
@@ -106,11 +124,11 @@ export function ComposerPill({
             type="button"
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
             onClick={onPlusClick}
-            // Not gated on `working`: opening a workspace is a shell action, and
-            // an orchestrator mid-turn is exactly when the user reaches for it.
-            disabled={disabled || !onPlusClick}
-            aria-label="New workspace"
-            title="New workspace"
+            // Not gated on `working`: adding context is not a turn action, and an
+            // agent mid-work is exactly when the user reaches for it.
+            disabled={disabled || !onPlusClick || !!plusUnavailableReason}
+            aria-label={plusLabel}
+            title={plusUnavailableReason ?? plusLabel}
           >
             <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
           </button>
