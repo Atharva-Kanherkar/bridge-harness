@@ -2395,14 +2395,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first, None);
+        // Two rows, in order: the audit fact, and the recovery turn it cost.
+        // The second is what makes a repair turn visible as a repair turn
+        // rather than as anonymous agent activity.
         assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "worker.result.repair_requested"
+            event_kinds(&db),
+            vec![
+                "worker.result.repair_requested".to_owned(),
+                bridge_core::worker_retry::RECOVERY_REPAIR.to_owned(),
+            ]
         );
 
         let fallback = process_worker_result_output(
@@ -2425,15 +2426,28 @@ mod tests {
         assert!(fallback.summary.contains("could not be read"));
         assert!(fallback.summary.contains("invalid first output"));
         assert!(fallback.summary.contains("invalid repair output"));
+        // The fallback is a classification, not another paid turn, so nothing
+        // new is charged to the recovery ledger.
         assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "worker.result.unstructured"
+            event_kinds(&db),
+            vec![
+                "worker.result.repair_requested".to_owned(),
+                bridge_core::worker_retry::RECOVERY_REPAIR.to_owned(),
+                "worker.result.unstructured".to_owned(),
+            ]
         );
+    }
+
+    fn event_kinds(db: &rusqlite::Connection) -> Vec<String> {
+        let mut statement = db
+            .prepare("SELECT kind FROM events ORDER BY id")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
     }
 
     #[test]

@@ -262,6 +262,13 @@ pub fn consume_attempt(
 }
 
 /// Record one turn Bridge spent recovering from its own coordination failure.
+///
+/// Two writes on purpose. `recovery_turns` is the ledger these counts are
+/// queried from; the event row is what makes them visible, because a turn the
+/// user paid for and cannot see is exactly the problem this whole path is
+/// about. The event kind is the recovery kind, so the feed separates a
+/// correction from a repair from a task retry without anyone having to parse a
+/// message.
 pub fn record_recovery_turn(
     db: &Connection,
     session_id: &str,
@@ -272,6 +279,7 @@ pub fn record_recovery_turn(
         "INSERT INTO recovery_turns(session_id,kind,detail,created_at) VALUES(?1,?2,?3,?4)",
         params![session_id, kind, detail, Utc::now().to_rfc3339()],
     )?;
+    crate::store::event(db, "recovery", kind, session_id, detail)?;
     Ok(())
 }
 
@@ -325,6 +333,14 @@ mod tests {
                 session_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 detail TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                body TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );",
         )
@@ -474,6 +490,29 @@ mod tests {
         assert_eq!(
             recovery_turn_counts(&db, "worker").unwrap(),
             vec![(RECOVERY_TASK_RETRY.to_owned(), 1)]
+        );
+
+        // And they reach the feed the user can actually read, one row per turn,
+        // kept apart by kind. A turn nobody can see is the problem, not the fix.
+        let visible: Vec<(String, String)> = {
+            let mut statement = db
+                .prepare("SELECT kind,entity_id FROM events WHERE source='recovery' ORDER BY id")
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert_eq!(
+            visible,
+            vec![
+                (RECOVERY_CORRECTION.to_owned(), "chat".to_owned()),
+                (RECOVERY_CORRECTION.to_owned(), "chat".to_owned()),
+                (RECOVERY_REPAIR.to_owned(), "chat".to_owned()),
+                (RECOVERY_TASK_RETRY.to_owned(), "worker".to_owned()),
+            ]
         );
     }
 }
