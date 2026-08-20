@@ -243,6 +243,23 @@ pub fn archive_workspace(
 
 // --- sessions ----------------------------------------------------------------
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForestDigest {
+    pub digest: String,
+}
+
+/// The cheap half of forest polling: an opaque token that changes whenever
+/// `get_session_forest` would return different store-derived content.
+pub fn get_session_forest_digest(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<ForestDigest, BridgeError> {
+    Ok(ForestDigest {
+        digest: core.session_forest_digest(session_id)?,
+    })
+}
+
 pub fn get_session_forest(
     core: &Arc<BridgeCore>,
     session_id: &str,

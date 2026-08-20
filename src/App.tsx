@@ -34,7 +34,7 @@ import { useThemePreference } from "./theme";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
-import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
+import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { startSerialPoll } from "./polling";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -341,17 +341,28 @@ export function App() {
     setPendingAdoptions([]);
     if (!session?.id) return;
     let active = true;
+    let pollsSinceFullFetch = 0;
     const refresh = async () => {
+      // The digest is tens of bytes; the snapshot is the entire history. Only
+      // fetch the snapshot when the digest moves, with a periodic forced
+      // fetch as the safety net for state the store cannot see (repository
+      // divergence above all).
+      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
+      const force = pollsSinceFullFetch >= 9 || digest === undefined;
+      if (!active) return;
+      if (!force && digest === forestKeyRef.current) {
+        pollsSinceFullFetch += 1;
+        return;
+      }
       const [value, adoptions] = await Promise.all([
         bridgeApi.sessionForest(session.id).catch(() => undefined),
         bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
       ]);
       if (!active) return;
+      pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
-      const key = forestSnapshotKey(value);
-      if (key === forestKeyRef.current) return;
-      forestKeyRef.current = key;
+      forestKeyRef.current = digest ?? "";
       setForest(current => mergeForestSnapshot(current, value));
     };
     const stop = startSerialPoll(refresh, 3000);
@@ -731,7 +742,8 @@ export function App() {
       bridgeApi.sessionForest(session.id),
       bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
     ]);
-    forestKeyRef.current = forestSnapshotKey(next);
+    // Out-of-band fetch: reset the digest so the next poll reconciles.
+    forestKeyRef.current = "";
     setForest(next);
     setPendingAdoptions(adoptions);
   }, [session]);

@@ -87,6 +87,10 @@ pub fn dispatch(
             let p: wire::GetSessionForestParams = decode(method, params)?;
             reply(api::get_session_forest(core, &p.session_id))
         }
+        MethodName::GetSessionForestDigest => {
+            let p: wire::GetSessionForestDigestParams = decode(method, params)?;
+            reply(api::get_session_forest_digest(core, &p.session_id))
+        }
         MethodName::ReplaySessionEvents => {
             let p: wire::ReplaySessionEventsParams = decode(method, params)?;
             reply(api::replay_session_events(core, &p.session_id, p.after_sequence, p.limit))

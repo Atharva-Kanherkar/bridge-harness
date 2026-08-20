@@ -980,6 +980,9 @@ fn result_payloads_mirror_core() {
             default_model: Some("gpt-5".into()),
         }],
     });
+    assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
+        digest: "v1:42:2026-08-20T00:00:00Z".into(),
+    });
     assert_mirrors::<wire::SanitizedTurn>(&crate::secret_interception::SanitizedTurn {
         text: "use {{bridge:secret:ref-1}}".into(),
         interceptions: vec![crate::secret_interception::SecretInterception {

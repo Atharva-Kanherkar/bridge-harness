@@ -20,6 +20,7 @@ export type BridgeMethod =
   | "workspaces/archive_workspace"
   | "workspaces/workspace_changes"
   | "sessions/get_session_forest"
+  | "sessions/get_session_forest_digest"
   | "sessions/replay_session_events"
   | "sessions/activate_session_entry"
   | "sessions/create_chat"
@@ -124,6 +125,7 @@ export const BRIDGE_METHODS = [
   { method: "workspaces/archive_workspace", domain: "workspaces", command: "archive_workspace" },
   { method: "workspaces/workspace_changes", domain: "workspaces", command: "workspace_changes" },
   { method: "sessions/get_session_forest", domain: "sessions", command: "get_session_forest" },
+  { method: "sessions/get_session_forest_digest", domain: "sessions", command: "get_session_forest_digest" },
   { method: "sessions/replay_session_events", domain: "sessions", command: "replay_session_events" },
   { method: "sessions/activate_session_entry", domain: "sessions", command: "activate_session_entry" },
   { method: "sessions/create_chat", domain: "sessions", command: "create_chat" },
@@ -278,6 +280,7 @@ export interface BridgeMethodParams {
   "workspaces/archive_workspace": ArchiveWorkspaceParams;
   "workspaces/workspace_changes": WorkspaceChangesParams;
   "sessions/get_session_forest": GetSessionForestParams;
+  "sessions/get_session_forest_digest": GetSessionForestDigestParams;
   "sessions/replay_session_events": ReplaySessionEventsParams;
   "sessions/activate_session_entry": ActivateSessionEntryParams;
   "sessions/create_chat": CreateChatParams;
@@ -384,6 +387,7 @@ export interface BridgeMethodResults {
   "workspaces/archive_workspace": BridgeState;
   "workspaces/workspace_changes": WorkspaceChangesResult;
   "sessions/get_session_forest": SessionForestSnapshot;
+  "sessions/get_session_forest_digest": SessionForestDigestResult;
   "sessions/replay_session_events": ReplaySessionEventsResult;
   "sessions/activate_session_entry": SessionForestSnapshot;
   "sessions/create_chat": BridgeState;
@@ -1281,6 +1285,14 @@ export interface SessionForestSnapshot {
   workerLeases: WorkerLease[];
   workerQueue: QueuedWorkerRequest[];
   workerRuntimes: WorkerRuntimeRecord[];
+}
+
+export interface GetSessionForestDigestParams {
+  sessionId: string;
+}
+
+export interface SessionForestDigestResult {
+  digest: string;
 }
 
 export interface ReplaySessionEventsParams {
