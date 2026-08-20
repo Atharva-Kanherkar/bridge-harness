@@ -946,8 +946,15 @@ export type WorkBriefRunStatus = "running" | "succeeded" | "failed" | "cancelled
 
 export type WorkBriefTrigger = "manual" | "focus" | "schedule";
 
+export interface WorkBriefingConnector {
+  connected?: boolean | null;
+  family: string;
+  id: string;
+}
+
 export interface WorkBriefingHarness {
   available: boolean;
+  connectors: WorkBriefingConnector[];
   defaultModel?: string | null;
   id: string;
   label: string;

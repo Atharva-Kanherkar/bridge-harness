@@ -1136,6 +1136,30 @@ pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOption
                         .map(|resolution| resolution.actual_model)
                 })
                 .flatten();
+            // The connectors this harness itself holds, so Settings offers
+            // narrowing to what actually exists. Only a certified harness gets
+            // the (subprocess-backed) discovery: an uncertified one runs
+            // nothing, so there is nothing to narrow.
+            let connectors = (supported && descriptor.id == "claude")
+                .then(|| {
+                    let configuration = crate::marketplace::claude_sdk_configuration();
+                    configuration
+                        .mcp_servers
+                        .keys()
+                        .map(|instance| wire::WorkBriefingConnector {
+                            id: instance.clone(),
+                            family: crate::work_briefing_live::family_for_server(instance)
+                                .map(|family| family.as_str().to_owned())
+                                .unwrap_or_else(|| "unknown".to_owned()),
+                            connected: configuration
+                                .connector_health
+                                .get(instance)
+                                .copied()
+                                .flatten(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             wire::WorkBriefingHarness {
                 supported,
                 reason: certification.err().map(|unsupported| unsupported.reason()),
@@ -1151,6 +1175,7 @@ pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOption
                             && model.default_for_tier,
                     })
                     .collect(),
+                connectors,
                 id: descriptor.id,
                 label: descriptor.label,
                 available: descriptor.available,
