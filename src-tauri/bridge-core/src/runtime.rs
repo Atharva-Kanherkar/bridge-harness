@@ -479,6 +479,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn boot_reaps_ledgered_children_of_dead_supervisors() {
+        // Boot re-registers the process-wide managed root; hold the shared
+        // lock so tests that count walks under that root are not perturbed.
+        let _managed_root_guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let fixture = tempfile::tempdir().unwrap();
         let data_dir = fixture.path();
         {

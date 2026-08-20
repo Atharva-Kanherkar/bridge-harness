@@ -158,18 +158,23 @@ pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
 /// recovery only helps once something boots again — this monitor closes the
 /// window in between by polling its own parentage and tearing the child down
 /// the moment it is re-parented to init.
+// The wrapper is its own process-group leader (configure_process_group runs
+// on it), so `-$$` names the whole group: the child and anything it forked.
+// Killing only `$child` would leave forked helpers as the very PID-1 orphans
+// this monitor exists to prevent. TERM is ignored first so the group signal
+// does not interrupt the wrapper's own escalation.
 #[cfg(unix)]
 const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
 "$cmd" "$@" &
 child=$!
-trap 'kill -TERM "$child" 2>/dev/null' TERM INT
+trap 'trap "" TERM INT; kill -TERM -- -$$ 2>/dev/null' TERM INT
 while kill -0 "$child" 2>/dev/null; do
   ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
   if [ -z "$ppid" ] || [ "$ppid" -le 1 ]; then
-    kill -TERM "$child" 2>/dev/null
+    trap '' TERM
+    kill -TERM -- -$$ 2>/dev/null
     sleep 2
-    kill -KILL "$child" 2>/dev/null
-    wait "$child" 2>/dev/null
+    kill -KILL -- -$$ 2>/dev/null
     exit 143
   fi
   sleep 2 &
@@ -1181,34 +1186,21 @@ mod tests {
         );
     }
 
-    /// The wrapped child must die when its supervisor is SIGKILLed — the path
-    /// where no destructor, drain, or boot recovery can help — and must stay
-    /// up while the supervisor lives.
+    /// The wrapped child — and anything it forked into the group — must die
+    /// when the supervisor is SIGKILLed, the path where no destructor, drain,
+    /// or boot recovery can help; and everything must stay up while the
+    /// supervisor lives.
     #[cfg(unix)]
     #[test]
-    fn watchdog_reaps_child_after_supervisor_sigkill() {
+    fn watchdog_reaps_child_and_group_mates_after_supervisor_sigkill() {
         use std::time::Instant;
-        let marker = format!("300.0{:03}", std::process::id() % 1000);
-        // An exact-command pattern so neither the watchdog shell nor the
-        // intermediate supervisor (both carry the marker in their argv)
-        // satisfies the liveness probe.
-        let pattern = format!("^/bin/sleep {marker}$");
-        let mut intermediate = Command::new("/bin/sh");
-        intermediate
-            .env("BRIDGE_WATCHDOG_UNDER_TEST", PARENT_WATCHDOG_SCRIPT)
-            .args([
-                "-c",
-                &format!(
-                    "/bin/sh -c 'eval \"$BRIDGE_WATCHDOG_UNDER_TEST\"' bridge-watchdog /bin/sleep {marker} & sleep 600"
-                ),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        configure_process_group(&mut intermediate);
-        let mut supervisor = intermediate.spawn().expect("intermediate supervisor spawns");
-
-        let sleeper_running = || {
+        let stamp = std::process::id() % 1000;
+        let mate_marker = format!("300.1{stamp:03}");
+        let child_marker = format!("300.2{stamp:03}");
+        // Exact-command patterns so neither the shells nor the intermediate
+        // supervisor (whose argv carries the markers) satisfy the probes.
+        let probe = |marker: &str| {
+            let pattern = format!("^/bin/sleep {marker}$");
             Command::new("pgrep")
                 .args(["-f", &pattern])
                 .stdout(Stdio::null())
@@ -1216,20 +1208,41 @@ mod tests {
                 .status()
                 .is_ok_and(|status| status.success())
         };
+        // The wrapped command forks a group-mate, then execs into the pid the
+        // watchdog tracks — killing only that pid would leave the mate as a
+        // PID-1 orphan. `set -m` gives the watchdog its own process group, as
+        // configure_process_group does in production.
+        let mut intermediate = Command::new("/bin/sh");
+        intermediate
+            .env("BRIDGE_WATCHDOG_UNDER_TEST", PARENT_WATCHDOG_SCRIPT)
+            .env(
+                "BRIDGE_WATCHDOG_INNER",
+                format!("/bin/sleep {mate_marker} & exec /bin/sleep {child_marker}"),
+            )
+            .args([
+                "-c",
+                "set -m; /bin/sh -c 'eval \"$BRIDGE_WATCHDOG_UNDER_TEST\"' bridge-watchdog /bin/sh -c \"$BRIDGE_WATCHDOG_INNER\" & sleep 600",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut intermediate);
+        let mut supervisor = intermediate.spawn().expect("intermediate supervisor spawns");
+
         let deadline = Instant::now() + Duration::from_secs(8);
-        while !sleeper_running() {
+        while !(probe(&mate_marker) && probe(&child_marker)) {
             assert!(
                 Instant::now() < deadline,
-                "the wrapped child never started"
+                "the wrapped child and its group-mate never started"
             );
             thread::sleep(Duration::from_millis(100));
         }
 
         // Longer than a watchdog poll interval: a false trigger would have
-        // reaped the child by now.
+        // reaped by now.
         thread::sleep(Duration::from_millis(2_500));
         assert!(
-            sleeper_running(),
+            probe(&mate_marker) && probe(&child_marker),
             "the watchdog must not reap while the supervisor lives"
         );
 
@@ -1239,16 +1252,16 @@ mod tests {
         let _ = supervisor.wait();
 
         let deadline = Instant::now() + Duration::from_secs(12);
-        while sleeper_running() {
+        while probe(&mate_marker) || probe(&child_marker) {
             assert!(
                 Instant::now() < deadline,
-                "the watchdog must reap the child once the supervisor dies"
+                "the watchdog must reap the whole group once the supervisor dies"
             );
             thread::sleep(Duration::from_millis(200));
         }
 
-        // The intermediate's own `sleep 600` shares the group; sweep it so the
-        // test leaves nothing behind.
+        // The intermediate's own `sleep 600` shares its group; sweep it so
+        // the test leaves nothing behind.
         let _ = terminate_process_group(supervisor.id());
     }
 }

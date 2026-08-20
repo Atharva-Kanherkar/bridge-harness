@@ -1003,9 +1003,18 @@ fn spawn_reader_thread(
         );
         // The runtime is gone either way (user stop or process exit), so drop
         // the adapter's normalization state for this provider session — those
-        // maps otherwise grow for the life of the process.
+        // maps otherwise grow for the life of the process. The exited runtime
+        // itself names the provider session that owns the map entry; the
+        // persisted row is only the fallback for the user-stop path, where the
+        // runtime left the map before this thread saw EOF. Never the other way
+        // around: a concurrent relaunch may already have persisted the *new*
+        // runtime's id into that row.
         {
-            let identifiers: Option<(String, Option<String>)> = state
+            let provider_session_id = exited_runtime
+                .as_ref()
+                .map(|runtime| runtime.provider_session_id().to_owned())
+                .filter(|id| !id.is_empty());
+            let (harness, persisted_id): (Option<String>, Option<String>) = state
                 .db
                 .lock()
                 .unwrap()
@@ -1014,8 +1023,11 @@ fn spawn_reader_thread(
                     params![session_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .ok();
-            if let Some((harness, Some(provider_session_id))) = identifiers {
+                .map(|(harness, id): (String, Option<String>)| (Some(harness), id))
+                .unwrap_or((None, None));
+            if let (Some(harness), Some(provider_session_id)) =
+                (harness, provider_session_id.or(persisted_id))
+            {
                 state
                     .adapter_registry
                     .forget_session(&harness, &provider_session_id);

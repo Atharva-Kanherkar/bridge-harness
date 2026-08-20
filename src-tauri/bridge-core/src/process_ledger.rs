@@ -153,8 +153,17 @@ pub fn recover_in_dir(db: &Connection, root: &Path) -> Result<RecoveryOutcome, B
         if record.supervisor_pid == std::process::id() {
             continue;
         }
-        if adapters::process_identity(record.supervisor_pid).as_deref()
-            == Some(record.supervisor_identity.as_str())
+        let supervisor_identity = adapters::process_identity(record.supervisor_pid);
+        if supervisor_identity.as_deref() == Some(record.supervisor_identity.as_str()) {
+            continue;
+        }
+        // A `None` identity is how a dead supervisor looks — and also how a
+        // transient probe failure looks. Only a clean listing that shows the
+        // PID gone counts as dead; anything else keeps the entry for the next
+        // boot instead of risking a live supervisor's child. A differing
+        // identity is the PID verifiably reused, which is the supervisor gone.
+        if supervisor_identity.is_none()
+            && !process_is_verifiably_gone(record.supervisor_pid)
         {
             continue;
         }
@@ -178,6 +187,20 @@ pub fn recover_in_dir(db: &Connection, root: &Path) -> Result<RecoveryOutcome, B
         }
     }
     Ok(outcome)
+}
+
+/// True only when a clean `ps` run lists nothing for the PID. A probe that
+/// cannot run at all returns false, so callers treat the process as possibly
+/// alive and fail closed.
+fn process_is_verifiably_gone(pid: u32) -> bool {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    String::from_utf8_lossy(&output.stdout).trim().is_empty()
 }
 
 fn record_recovery_event(
@@ -497,6 +520,23 @@ mod tests {
         let outcome = recover_in_dir(&db, scratch.path()).expect("recovery runs");
         assert_eq!(outcome.cleared, 2);
         assert!(scratch.path().join("notes.txt").exists(), "foreign files stay");
+    }
+
+    #[test]
+    fn gone_probe_distinguishes_live_dead_and_reaped() {
+        assert!(
+            !process_is_verifiably_gone(std::process::id()),
+            "a live process is never verifiably gone"
+        );
+        let mut child = spawn_sleeper();
+        let pid = child.id();
+        assert!(!process_is_verifiably_gone(pid));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            process_is_verifiably_gone(pid),
+            "a killed and reaped process lists nothing"
+        );
     }
 
     #[test]
