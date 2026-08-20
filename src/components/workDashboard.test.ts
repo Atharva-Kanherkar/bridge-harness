@@ -24,15 +24,21 @@ describe("toolsReadLine", () => {
       source({ connectorInstanceId: "notion-1", connectorFamily: "notion", status: "failed" }),
       source({ connectorInstanceId: "gmail-1", connectorFamily: "gmail", status: "auth_required" }),
     ]);
-    expect(line).toContain("Read Slack, GitHub");
+    // The Read clause is pinned exactly: only the succeeded sources may appear
+    // in it, so a failed or signed-out family sneaking in fails here.
+    expect(line.split(" · ")[0]).toBe("Read Slack, GitHub");
     expect(line).toContain("Notion could not be reached");
     expect(line).toContain("Gmail needs sign-in — reconnect it in your harness");
   });
 
   it("never claims an unread source was read", () => {
     const line = toolsReadLine([source({ status: "eligible" }), source({ connectorInstanceId: "g", connectorFamily: "github", status: "consulted" })]);
-    expect(line).toContain("Nothing was read");
+    // Neither the eligible-but-unread source nor the consulted one may appear
+    // as read — the whole first clause must be the empty reading.
+    expect(line.split(" · ")[0]).toBe("Nothing was read.");
     expect(line).not.toContain("Read Slack");
+    expect(line).not.toContain("Read GitHub");
+    expect(line).not.toContain("GitHub");
   });
 
   it("says so plainly when there were no tools at all", () => {

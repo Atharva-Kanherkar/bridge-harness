@@ -89,14 +89,36 @@ fn repair_prompt(rejection: &BriefRejection) -> String {
 }
 
 /// Which connector family a harness-configured MCP server most plausibly is.
-/// Used for evidence resolution and the board's logos, never for authority —
-/// the read policy is verb-and-scope based and does not care about family.
+/// Used for evidence resolution and the board's logos, never for authority:
+/// scope admission is `briefing_scope`'s job and ignores family entirely. The
+/// match is on whole name tokens, not substrings, so `nonlinear-mcp` is not
+/// Linear and `unslacker` is not Slack.
 pub fn family_for_server(server: &str) -> Option<ConnectorFamily> {
     let lowered = server.to_lowercase();
+    let tokens: Vec<&str> = lowered
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
     ConnectorFamily::ALL
         .iter()
         .copied()
-        .find(|family| lowered.contains(family.as_str()))
+        .find(|family| tokens.iter().any(|token| *token == family.as_str()))
+}
+
+/// Which servers a run may read. Admission is exactly two facts, neither of
+/// them family: the server exists in the harness's own MCP configuration, and
+/// the user has not narrowed it out. A server whose family Bridge cannot
+/// resolve is still readable — the model may use it for context — but its
+/// results earn no citations, so nothing on the board can rest on it.
+pub fn briefing_scope(
+    configured: &[String],
+    enabled: &[String],
+) -> Vec<(String, Option<ConnectorFamily>)> {
+    configured
+        .iter()
+        .filter(|server| enabled.is_empty() || enabled.iter().any(|allow| allow == *server))
+        .map(|server| (server.clone(), family_for_server(server)))
+        .collect()
 }
 
 /// Accumulated provider usage across the run's turns.
@@ -364,33 +386,32 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     // narrowed to the instances the user enabled (when they narrowed anything)
     // and to families Bridge can resolve evidence for.
     let configured = crate::marketplace::claude_sdk_configuration();
+    let configured_servers: Vec<String> = configured.mcp_servers.keys().cloned().collect();
     let mut observer = StreamObserver::new(&run_id);
     let mut scope: Vec<String> = Vec::new();
-    for server in configured.mcp_servers.keys() {
-        if !settings.enabled_connector_instances.is_empty()
-            && !settings.enabled_connector_instances.iter().any(|enabled| enabled == server)
-        {
-            continue;
-        }
-        match family_for_server(server) {
-            Some(family) => {
-                observer.ledger.record_source(
-                    server,
-                    family.as_str(),
-                    wire::WorkSourceStatus::Eligible,
-                    None,
-                    None,
-                );
-                scope.push(server.clone());
-            }
+    for (server, family) in
+        briefing_scope(&configured_servers, &settings.enabled_connector_instances)
+    {
+        match family {
+            Some(family) => observer.ledger.record_source(
+                &server,
+                family.as_str(),
+                wire::WorkSourceStatus::Eligible,
+                None,
+                None,
+            ),
             None => observer.ledger.record_source(
-                server,
+                &server,
                 "unknown",
-                wire::WorkSourceStatus::Ineligible,
-                Some("its family is not one Bridge can resolve evidence for".into()),
+                wire::WorkSourceStatus::Eligible,
+                Some(
+                    "readable, but Bridge cannot resolve its family, so its results cannot anchor evidence"
+                        .into(),
+                ),
                 None,
             ),
         }
+        scope.push(server);
     }
 
     let policy = match BriefingRuntimePolicy::compile_scoped(scope, settings.limits) {
@@ -764,13 +785,36 @@ mod tests {
     }
 
     #[test]
-    fn families_are_inferred_from_server_names_and_unknowns_stay_unknown() {
+    fn families_are_inferred_from_whole_name_tokens_and_unknowns_stay_unknown() {
         assert_eq!(family_for_server("slack-work"), Some(ConnectorFamily::Slack));
         assert_eq!(family_for_server("my-gmail"), Some(ConnectorFamily::Gmail));
         assert_eq!(family_for_server("GitHub"), Some(ConnectorFamily::GitHub));
         assert_eq!(family_for_server("linear"), Some(ConnectorFamily::Linear));
         assert_eq!(family_for_server("notion-team"), Some(ConnectorFamily::Notion));
         assert_eq!(family_for_server("internal-crm"), None);
+        // Token match, not substring: a name merely containing a family word
+        // is not that family.
+        assert_eq!(family_for_server("nonlinear-mcp"), None);
+        assert_eq!(family_for_server("unslacker"), None);
+    }
+
+    #[test]
+    fn scope_admission_ignores_family_and_honours_only_the_users_narrowing() {
+        let configured = vec!["slack-work".to_owned(), "internal-crm".to_owned(), "gmail".to_owned()];
+
+        // No narrowing: everything the harness configured is readable — the
+        // unresolvable-family server included. Family is not authority.
+        let scope = briefing_scope(&configured, &[]);
+        assert_eq!(
+            scope.iter().map(|(server, _)| server.as_str()).collect::<Vec<_>>(),
+            vec!["slack-work", "internal-crm", "gmail"]
+        );
+        assert_eq!(scope[1], ("internal-crm".to_owned(), None));
+
+        // Narrowed: the user's list is the only filter that removes a server.
+        let narrowed = briefing_scope(&configured, &["internal-crm".to_owned()]);
+        assert_eq!(narrowed.len(), 1);
+        assert_eq!(narrowed[0], ("internal-crm".to_owned(), None));
     }
 
     #[test]

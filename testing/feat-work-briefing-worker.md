@@ -96,8 +96,10 @@ No trigger starts a provider any other way.
   board byte-identical (`abandon_run` touches no task).
 - A connector the harness could not reach is marked failed **for that source only**;
   reconciliation already refuses to age a task whose own source was not read.
-- Usage is measured from the provider's result messages and lands on the run row and
-  in `usage_ledger` with its own source, so background cost is visible.
+- Usage is measured from the provider's result messages and lands on the run row
+  (tokens, cache reads, cost), so a run is always answerable for what it spent.
+  The `usage_ledger` attribution line — background cost beside interactive cost in
+  the usage dashboards — is deliberately **not** in this slice; it is issue #222.
 - Briefing sessions stay hidden: `kind='briefing'` is already filtered from the rail,
   Mission Control, and default selection by `isHiddenSession`; the session row exists
   so the transcript stays inspectable.

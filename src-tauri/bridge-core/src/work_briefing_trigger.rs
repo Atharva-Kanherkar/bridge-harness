@@ -101,9 +101,24 @@ pub fn claim(
             params![run_id, now.to_rfc3339(), lease_expires_at],
         )?;
         if settled == 0 {
-            // Another trigger settled or re-leased it between our read and our
-            // write. Either way somebody else is ahead; observe them.
-            return Ok(ClaimOutcome::Observed { run_id });
+            // Lost the CAS: between our read and our write the row changed
+            // hands. Which way matters — a peer may have re-leased it (still
+            // running: observe them), or settled it terminally (nothing is
+            // running any more, and observing a dead run id would silently
+            // skip the briefing this trigger came to start). Re-read rather
+            // than assume.
+            let still_running: Option<String> = db
+                .query_row(
+                    "SELECT id FROM work_brief_runs WHERE status='running'
+                      ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(active) = still_running {
+                return Ok(ClaimOutcome::Observed { run_id: active });
+            }
+            // Terminal now — fall through and claim.
         }
     }
 
@@ -363,6 +378,15 @@ mod tests {
         }
     }
 
+    fn lease_expiry(db: &Connection, run_id: &str) -> Option<String> {
+        db.query_row(
+            "SELECT lease_expires_at FROM work_brief_runs WHERE id=?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn an_unconfigured_install_is_refused_with_the_stable_code() {
         let db = db();
@@ -459,11 +483,21 @@ mod tests {
         let db = db();
         configure(&db, 0, None);
         let run = claimed(claim(&db, wire::WorkBriefTrigger::Manual, &versions, now()).unwrap());
-        assert!(heartbeat(&db, &run.run_id, &run.lease_owner, now()).unwrap());
-        assert!(!heartbeat(&db, &run.run_id, "someone-else", now()).unwrap());
+        let before = lease_expiry(&db, &run.run_id).unwrap();
+        let later = now() + Duration::minutes(5);
+        assert!(heartbeat(&db, &run.run_id, &run.lease_owner, later).unwrap());
+        let extended = lease_expiry(&db, &run.run_id).unwrap();
+        assert_eq!(extended, (later + Duration::minutes(LEASE_MINUTES)).to_rfc3339());
+        assert!(extended > before, "the heartbeat must move the expiry forward");
+        assert!(!heartbeat(&db, &run.run_id, "someone-else", later).unwrap());
+        assert_eq!(
+            lease_expiry(&db, &run.run_id).unwrap(),
+            extended,
+            "a non-owner heartbeat writes nothing"
+        );
         finish(&db, &run.run_id, "2026-08-19T12:01:00+00:00");
         assert!(
-            !heartbeat(&db, &run.run_id, &run.lease_owner, now()).unwrap(),
+            !heartbeat(&db, &run.run_id, &run.lease_owner, later).unwrap(),
             "a terminal run has no lease to extend"
         );
     }

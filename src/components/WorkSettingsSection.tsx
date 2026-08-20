@@ -120,10 +120,13 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
             </p>
           </div>
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            {/* Only turning ON needs a certified harness. Off must always be
+                reachable — a stored profile whose harness later loses
+                certification would otherwise freeze this whole form. */}
             <input
               type="checkbox"
               checked={briefingOn}
-              disabled={supported.length === 0}
+              disabled={!briefingOn && supported.length === 0}
               onChange={event => setBriefingOn(event.target.checked)}
             />
             Enabled
@@ -133,6 +136,16 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
         {supported.length === 0 && (
           <p className="mt-3 text-[11.5px] text-muted-foreground">
             No installed harness has passed the briefing conformance gate yet.
+          </p>
+        )}
+
+        {briefingOn && draft.briefing && !chosen && (
+          <p className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {draft.briefing.harness} is no longer certified.
+            </span>{" "}
+            Runs are skipped until you pick another harness or turn the briefing off — your
+            other settings still save.
           </p>
         )}
 

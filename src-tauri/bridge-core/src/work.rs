@@ -108,6 +108,20 @@ pub const MAX_TOOL_CALLS_CEILING: i64 = 256;
 /// pre-empt an obvious mistake, but a payload that bypasses it is refused here
 /// with the same rules.
 pub fn validate_settings(settings: &wire::WorkSettings) -> Result<(), String> {
+    validate_settings_keeping(settings, None)
+}
+
+/// Validate against what is already stored. `stored_briefing` is the profile
+/// the database currently holds: submitting it back unchanged is not making a
+/// choice, so it is exempt from the conformance gate. Without the exemption, a
+/// harness that loses certification after being stored would freeze the whole
+/// settings row — cadence, focus, even turning briefing off would be refused
+/// over a profile the user is not changing. The run-time `resolve_briefing`
+/// still refuses to *run* the uncertified profile, so nothing unsafe executes.
+pub fn validate_settings_keeping(
+    settings: &wire::WorkSettings,
+    stored_briefing: Option<&wire::WorkBriefingProfile>,
+) -> Result<(), String> {
     if !(0..=MAX_COOLDOWN_MINUTES).contains(&settings.cooldown_minutes) {
         return Err(format!(
             "cooldownMinutes must be between 0 and {MAX_COOLDOWN_MINUTES}"
@@ -156,8 +170,12 @@ pub fn validate_settings(settings: &wire::WorkSettings) -> Result<(), String> {
         // The conformance gate is the authority on which harnesses may brief.
         // Refusing here keeps an unsupported harness out of storage entirely,
         // rather than storing it and skipping every run it would have caused.
-        crate::briefing_policy::adapter_may_brief(briefing.harness.as_str())
-            .map_err(|unsupported| unsupported.reason())?;
+        // The one exemption is the profile already stored, unchanged — see
+        // `validate_settings_keeping`.
+        if stored_briefing != Some(briefing) {
+            crate::briefing_policy::adapter_may_brief(briefing.harness.as_str())
+                .map_err(|unsupported| unsupported.reason())?;
+        }
     }
     Ok(())
 }
@@ -167,7 +185,9 @@ pub fn write_settings(
     db: &Connection,
     settings: &wire::WorkSettings,
 ) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
-    validate_settings(settings).map_err(BridgeError::Invalid)?;
+    let stored = read_settings(db)?;
+    let stored_briefing = stored.configured.then_some(stored.settings.briefing.as_ref()).flatten();
+    validate_settings_keeping(settings, stored_briefing).map_err(BridgeError::Invalid)?;
     let payload = serde_json::to_string(settings)
         .map_err(|error| BridgeError::Invalid(format!("settings could not be serialised: {error}")))?;
     let now = Utc::now().to_rfc3339();
@@ -832,6 +852,54 @@ mod tests {
             !read_settings(&db).unwrap().configured,
             "a refused write stores nothing"
         );
+    }
+
+    #[test]
+    fn a_stored_profile_that_lost_certification_does_not_freeze_the_settings_row() {
+        // A profile can be certified when stored and uncertified later. Keeping
+        // it unchanged is not making a choice, so cadence edits and turning the
+        // briefing off must still write — only naming it anew is gated.
+        let db = memory_db();
+        let uncertified = wire::WorkBriefingProfile {
+            harness: wire::HarnessId::parse("codex").unwrap(),
+            model: "gpt-5.6-luna".into(),
+            effort: None,
+        };
+        let mut stored = default_settings();
+        stored.briefing = Some(uncertified.clone());
+        // Planted directly, simulating certification lost after storage: the
+        // production writer would have accepted this while the gate passed.
+        db.execute(
+            "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
+             VALUES(?1,?2,?3,'2026-08-19T00:00:00+00:00','2026-08-19T00:00:00+00:00')",
+            rusqlite::params![
+                SETTINGS_KIND,
+                SETTINGS_ID,
+                serde_json::to_string(&stored).unwrap()
+            ],
+        )
+        .unwrap();
+
+        // Changing the cadence while keeping the stored profile writes.
+        let mut cadence_edit = stored.clone();
+        cadence_edit.refresh_interval_minutes = Some(60);
+        write_settings(&db, &cadence_edit).unwrap();
+        assert_eq!(
+            read_settings(&db).unwrap().settings.refresh_interval_minutes,
+            Some(60)
+        );
+
+        // Turning the briefing off writes: null names no harness at all.
+        let mut off = cadence_edit.clone();
+        off.briefing = None;
+        write_settings(&db, &off).unwrap();
+        assert_eq!(read_settings(&db).unwrap().settings.briefing, None);
+
+        // Naming the uncertified harness *again* is a new choice, and refused.
+        let mut renamed = off;
+        renamed.briefing = Some(uncertified);
+        let refused = write_settings(&db, &renamed).unwrap_err();
+        assert!(refused.to_string().contains("codex"), "{refused}");
     }
 
     #[test]
