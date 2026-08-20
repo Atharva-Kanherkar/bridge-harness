@@ -195,10 +195,14 @@ fn workspaces_with_outcomes(db: &Connection) -> Result<Vec<String>, BridgeError>
         .map_err(BridgeError::from)
 }
 
-fn evidence_boundary(db: &Connection) -> Result<i64, BridgeError> {
+/// The scope's own evidence high-water mark. A global rowid here would mint a
+/// fresh idempotency key for every workspace whenever any one of them recorded
+/// an outcome, spawning a noop run per idle workspace on every sweep.
+fn evidence_boundary(db: &Connection, workspace_id: &str) -> Result<i64, BridgeError> {
     Ok(db.query_row(
-        "SELECT COALESCE(MAX(rowid),0) FROM router_outcomes",
-        [],
+        "SELECT COALESCE(MAX(o.rowid),0) FROM router_outcomes o
+         JOIN router_decisions d ON d.id=o.decision_id WHERE d.workspace_id=?1",
+        params![workspace_id],
         |row| row.get(0),
     )?)
 }
@@ -556,7 +560,7 @@ pub fn run_learning(
 ) -> Result<LearningRun, BridgeError> {
     let scope = learning_router::workspace_learning_scope(workspace_id)?;
     settle_canary(db, &scope)?;
-    let boundary = evidence_boundary(db)?;
+    let boundary = evidence_boundary(db, workspace_id)?;
     let base_version = active_policy_version(db, &scope)?;
     let key = format!("{DEFAULT_JOB_ID}:{scope}:{boundary}:{base_version}");
     let now = Utc::now();
@@ -1299,26 +1303,25 @@ pub fn update_schedule(
             "learning mode must be manual, ask, or automatic".into(),
         ));
     }
-    let current = load_schedule(db)?;
-    // While the job is already enabled the runner owns next_run_at. A dialog
-    // that loaded hours ago must not write a stale timestamp back over a
-    // cadence the scheduler already advanced. Accept a client next_run_at
-    // only on the disabled → enabled transition.
-    let next_run_at = if schedule.enabled && !current.enabled {
-        match &schedule.next_run_at {
-            Some(next) => {
-                DateTime::parse_from_rfc3339(next)
-                    .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
-                Some(next.clone())
-            }
-            None => Some((Utc::now() + Duration::minutes(schedule.cadence_minutes)).to_rfc3339()),
+    // While the job is already enabled the runner owns next_run_at, and the
+    // scheduler advances it on its own connection — a read-then-write here
+    // would race it. The transition check lives inside the UPDATE, where
+    // `enabled` still names the stored row, so a client next_run_at applies
+    // only on the disabled-to-enabled edge and the runner's value survives a
+    // stale dialog snapshot atomically.
+    let requested_next_run_at = match (&schedule.next_run_at, schedule.enabled) {
+        (Some(next), true) => {
+            DateTime::parse_from_rfc3339(next)
+                .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
+            next.clone()
         }
-    } else {
-        current.next_run_at.clone()
+        _ => (Utc::now() + Duration::minutes(schedule.cadence_minutes)).to_rfc3339(),
     };
     db.execute(
-        "UPDATE learning_jobs SET enabled=?2,cadence_minutes=?3,next_run_at=?4,run_budget_microusd=?5,run_budget_tokens=?6,mode=?7,updated_at=?8 WHERE id=?1",
-        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
+        "UPDATE learning_jobs SET enabled=?2,cadence_minutes=?3,
+            next_run_at=CASE WHEN ?2 AND NOT enabled THEN ?4 ELSE next_run_at END,
+            run_budget_microusd=?5,run_budget_tokens=?6,mode=?7,updated_at=?8 WHERE id=?1",
+        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, requested_next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
     )?;
     load_schedule(db)
 }
@@ -1867,6 +1870,32 @@ mod tests {
     }
 
     #[test]
+    fn another_workspaces_evidence_does_not_mint_a_new_run_key() {
+        let db = database();
+        add_workspace(&db, "other");
+        add_outcome(&db, 0, "a", true, Some(100), 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        for index in 0..3 {
+            add_outcome_in(&db, "other", "other-parent", index, "b", true, Some(100), 1);
+        }
+        let second = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(
+            second.duplicate,
+            "an idle workspace must not get a fresh noop run because another desk recorded outcomes"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM learning_job_runs WHERE learning_scope='workspace:w'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn duplicate_triggers_share_one_snapshot_run() {
         let db = database();
         let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
@@ -2027,6 +2056,25 @@ mod tests {
         assert_eq!(stored.mode, "ask");
         let expected = future.to_rfc3339();
         assert_eq!(stored.next_run_at.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_runner_advance_survives_a_stale_dialog_save() {
+        let db = database();
+        let mut schedule = load_schedule(&db).unwrap();
+        schedule.enabled = true;
+        let stale = update_schedule(&db, &schedule).unwrap();
+        let advanced = (Utc::now() + Duration::hours(6)).to_rfc3339();
+        db.execute(
+            "UPDATE learning_jobs SET next_run_at=?1 WHERE id='default'",
+            params![advanced],
+        )
+        .unwrap();
+        let mut resave = stale;
+        resave.mode = "ask".into();
+        let stored = update_schedule(&db, &resave).unwrap();
+        assert_eq!(stored.mode, "ask");
+        assert_eq!(stored.next_run_at.as_deref(), Some(advanced.as_str()));
     }
 
     #[test]
@@ -2814,8 +2862,9 @@ mod tests {
         for index in 0..5_000 {
             add_outcome(&db, index, "a", false, Some(200), 1);
         }
-        let boundary = evidence_boundary(&db).unwrap();
-        let other = routing_policy::load_evidence(&db, "other", boundary).unwrap();
+        let other =
+            routing_policy::load_evidence(&db, "other", evidence_boundary(&db, "other").unwrap())
+                .unwrap();
         assert_eq!(
             other.len(),
             5,
@@ -2825,7 +2874,8 @@ mod tests {
             other.iter().all(|row| row.candidate == "codex:b"),
             "the surviving rows must be the small workspace's own outcomes, not the newest rows from a busier one"
         );
-        let flooded = routing_policy::load_evidence(&db, "w", boundary).unwrap();
+        let flooded =
+            routing_policy::load_evidence(&db, "w", evidence_boundary(&db, "w").unwrap()).unwrap();
         assert_eq!(flooded.len(), 5_000);
         assert!(
             flooded.iter().all(|row| row.candidate == "codex:a"),
