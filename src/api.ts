@@ -217,7 +217,7 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 }
 
 const mockHealth: Health = {
-  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", telemetry_database: "demo-telemetry",
+  ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", snapshot_count: 3, snapshot_total_bytes: 12_288, telemetry_database: "demo-telemetry",
   adapters: [
     { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
     { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt", "steering"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
@@ -661,6 +661,9 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(preferences));
   },
   sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? call("sessions/get_session_forest", { sessionId }) as Promise<SessionForestSnapshot> : Promise.resolve(mockForest(sessionId)),
+  // Tens of bytes per poll instead of the entire history; equal digests mean
+  // sessionForest would return unchanged store content.
+  sessionForestDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;

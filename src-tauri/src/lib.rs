@@ -341,6 +341,18 @@ async fn get_session_forest(
 }
 
 #[tauri::command]
+async fn get_session_forest_digest(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ForestDigest, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Forest digest", move || {
+        api::get_session_forest_digest(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn create_completion_plan(
     session_id: String,
     acceptance_criteria: Vec<String>,
@@ -1246,6 +1258,7 @@ pub fn run() {
             execute_skill_change,
             get_state,
             get_session_forest,
+            get_session_forest_digest,
             replay_session_events,
             create_completion_plan,
             record_completion_check,

@@ -956,6 +956,8 @@ fn result_payloads_mirror_core() {
         database: "/data/bridge.db".into(),
         telemetry_database: "/data/bridge-telemetry.db".into(),
         snapshot_directory: "/data/history-snapshots".into(),
+        snapshot_count: 9,
+        snapshot_total_bytes: 4_096,
         adapters: vec![model::AdapterDescriptor {
             // Deliberately a partial declaration so the mirror proves the wire
             // shape carries the exact list rather than a defaulted one.
@@ -977,6 +979,9 @@ fn result_payloads_mirror_core() {
             }],
             default_model: Some("gpt-5".into()),
         }],
+    });
+    assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
+        digest: "v1:42:2026-08-20T00:00:00Z".into(),
     });
     assert_mirrors::<wire::SanitizedTurn>(&crate::secret_interception::SanitizedTurn {
         text: "use {{bridge:secret:ref-1}}".into(),

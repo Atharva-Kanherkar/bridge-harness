@@ -1001,6 +1001,38 @@ fn spawn_reader_thread(
             &state.db.lock().unwrap(),
             &session_id,
         );
+        // The runtime is gone either way (user stop or process exit), so drop
+        // the adapter's normalization state for this provider session — those
+        // maps otherwise grow for the life of the process. The exited runtime
+        // itself names the provider session that owns the map entry; the
+        // persisted row is only the fallback for the user-stop path, where the
+        // runtime left the map before this thread saw EOF. Never the other way
+        // around: a concurrent relaunch may already have persisted the *new*
+        // runtime's id into that row.
+        {
+            let provider_session_id = exited_runtime
+                .as_ref()
+                .map(|runtime| runtime.provider_session_id().to_owned())
+                .filter(|id| !id.is_empty());
+            let (harness, persisted_id): (Option<String>, Option<String>) = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT harness,provider_session_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map(|(harness, id): (String, Option<String>)| (Some(harness), id))
+                .unwrap_or((None, None));
+            if let (Some(harness), Some(provider_session_id)) =
+                (harness, provider_session_id.or(persisted_id))
+            {
+                state
+                    .adapter_registry
+                    .forget_session(&harness, &provider_session_id);
+            }
+        }
         let failure_context = exited_runtime.and_then(|mut runtime| runtime.failure_context());
         notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
         let db = state.db.lock().unwrap();

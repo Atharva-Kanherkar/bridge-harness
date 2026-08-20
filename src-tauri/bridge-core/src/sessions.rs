@@ -427,6 +427,13 @@ impl BridgeCore {
         store::session_events_after(&db, session_id, after_sequence, limit)
     }
 
+    /// The change token for one session's forest, holding the store lock only
+    /// for a handful of indexed lookups.
+    pub fn session_forest_digest(&self, session_id: &str) -> Result<String, BridgeError> {
+        let db = self.db.lock().unwrap();
+        session_forest_digest(&db, session_id)
+    }
+
     /// Interrupt the session's active turn on its live adapter runtime.
     pub fn interrupt_turn(&self, session_id: &str) -> Result<(), BridgeError> {
         let adapters = self.adapters.lock().unwrap();
@@ -628,6 +635,40 @@ fn chat_label(title: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("New chat")
         .to_string()
+}
+
+/// An opaque change token composed from the monotonic columns behind every
+/// store-derived field of [`SessionForestSnapshot`]. Equal tokens mean the
+/// snapshot would be byte-identical except for repository divergence, which
+/// lives outside the store; a token may change without a visible snapshot
+/// change (worker tables are folded in globally), and that costs one full
+/// fetch — the same work every poll used to do. Entries never need loading:
+/// the forest is append-only, so the max sequence plus the head row cover it.
+pub fn session_forest_digest(db: &Connection, session_id: &str) -> Result<String, BridgeError> {
+    // The same existence check the snapshot performs, so both surfaces agree
+    // on unknown sessions. Direct chats carry no workspace.
+    let _workspace: Option<String> = db.query_row(
+        "SELECT workspace_id FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let digest: String = db.query_row(
+        "SELECT 'v1'
+            ||':'||COALESCE((SELECT MAX(sequence) FROM session_entries WHERE session_id=?1),0)
+            ||':'||COALESCE((SELECT updated_at FROM session_heads WHERE session_id=?1),'')
+            ||':'||COALESCE((SELECT active_entry_id FROM session_heads WHERE session_id=?1),'')
+            ||':'||(SELECT status||'/'||COALESCE(active_turn_id,'') FROM sessions WHERE id=?1)
+            ||':'||COALESCE((SELECT MAX(id) FROM usage_ledger),0)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_leases)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_runtime)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(sequence),0)||'/'||COALESCE(MAX(updated_at),'') FROM worker_queue)
+            ||':'||COALESCE((SELECT MAX(id) FROM events),0)
+            ||':'||(SELECT COUNT(*)||'/'||COALESCE(MAX(updated_at),'') FROM worker_worktree_adoptions)
+            ||':'||COALESCE((SELECT rowid||'/'||status FROM eval_attempts WHERE session_id=?1 ORDER BY started_at DESC,rowid DESC LIMIT 1),'')",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    Ok(digest)
 }
 
 pub fn session_forest_snapshot(
@@ -919,6 +960,158 @@ mod tests {
             params![with_project.then_some("p")],
         )
         .unwrap();
+    }
+
+    fn only_session_id(core: &BridgeCore) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT id FROM sessions", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn forest_digest_is_stable_until_a_store_input_changes() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, Some("stub-standard"), Some("Digest"))
+            .unwrap();
+        let session_id = only_session_id(&core);
+        let baseline = core.session_forest_digest(&session_id).unwrap();
+        assert_eq!(
+            baseline,
+            core.session_forest_digest(&session_id).unwrap(),
+            "an unchanged session yields an unchanged digest"
+        );
+
+        // An appended forest entry.
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::SessionStatus,
+                    serde_json::json!({"status":"working"}),
+                )
+                .unwrap();
+        }
+        let after_entry = core.session_forest_digest(&session_id).unwrap();
+        assert_ne!(baseline, after_entry, "entry appends invalidate");
+
+        // A head move.
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,restoration_mode,resume_eligibility,updated_at)
+                 VALUES(?1,'fresh','fresh','2026-08-20T10:00:00Z')
+                 ON CONFLICT(session_id) DO UPDATE SET updated_at='2026-08-20T10:00:00Z'",
+                params![session_id],
+            )
+            .unwrap();
+        }
+        let after_head = core.session_forest_digest(&session_id).unwrap();
+        assert_ne!(after_entry, after_head, "head updates invalidate");
+
+        // A usage row.
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO usage_ledger(workspace_id,session_id,source,created_at) VALUES('w',?1,'test','now')",
+                params![session_id],
+            )
+            .unwrap();
+        }
+        let after_usage = core.session_forest_digest(&session_id).unwrap();
+        assert_ne!(after_head, after_usage, "usage appends invalidate");
+
+        // A reason event.
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','test.reason','w','because','now')",
+                [],
+            )
+            .unwrap();
+        }
+        let after_event = core.session_forest_digest(&session_id).unwrap();
+        assert_ne!(after_usage, after_event, "workspace events invalidate");
+
+        assert_eq!(
+            after_event,
+            core.session_forest_digest(&session_id).unwrap(),
+            "quiescence is stable again"
+        );
+    }
+
+    #[test]
+    fn forest_digest_rejects_unknown_sessions_like_the_snapshot_does() {
+        let (_scratch, core) = fixture();
+        assert!(core.session_forest_digest("no-such-session").is_err());
+    }
+
+    /// The measurable half of the polling fix: per-poll cost of the digest
+    /// versus building and serializing the full snapshot for a 5k-entry
+    /// session. Run with:
+    /// `cargo test -p bridge-core forest_digest_poll_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark: prints poll-cost numbers, no assertions beyond sanity"]
+    fn forest_digest_poll_cost() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('bench-s','w','codex','Bench','working','reported')",
+                [],
+            )
+            .unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            let forest = session_forest::SessionForest::new(&db);
+            for index in 0..5_000 {
+                forest
+                    .append(
+                        &session_id,
+                        session_forest::EntryKind::SessionStatus,
+                        serde_json::json!({"status":"working","detail":format!("turn {index} of a long conversation with realistic payload text")}),
+                    )
+                    .unwrap();
+            }
+        }
+        let iterations = 100u32;
+        let db = core.db.lock().unwrap();
+
+        let start = std::time::Instant::now();
+        let mut snapshot_bytes = 0usize;
+        for _ in 0..iterations {
+            let snapshot = session_forest_snapshot_with_repository_state(
+                &db,
+                &session_id,
+                serde_json::json!({"status":"unavailable"}),
+            )
+            .unwrap();
+            snapshot_bytes = serde_json::to_string(&snapshot).unwrap().len();
+        }
+        let full_elapsed = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let mut digest_bytes = 0usize;
+        for _ in 0..iterations {
+            digest_bytes = session_forest_digest(&db, &session_id).unwrap().len();
+        }
+        let digest_elapsed = start.elapsed();
+
+        println!(
+            "full-snapshot poll: {:?}/iter, {snapshot_bytes} bytes/iter",
+            full_elapsed / iterations
+        );
+        println!(
+            "digest poll:        {:?}/iter, {digest_bytes} bytes/iter",
+            digest_elapsed / iterations
+        );
+        assert!(digest_bytes < 512);
+        assert!(snapshot_bytes > 100_000);
     }
 
     #[test]

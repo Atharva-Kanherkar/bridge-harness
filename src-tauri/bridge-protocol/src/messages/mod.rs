@@ -152,6 +152,7 @@ typed_methods![
     (WorkspaceChanges, WorkspaceChangesParams, WorkspaceChangesResult),
     // sessions
     (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
+    (GetSessionForestDigest, GetSessionForestDigestParams, SessionForestDigestResult),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),

@@ -125,8 +125,18 @@
     "ok": {
       "type": "boolean"
     },
+    "snapshot_count": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "snapshot_directory": {
       "type": "string"
+    },
+    "snapshot_total_bytes": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "telemetry_database": {
       "type": "string"
@@ -140,7 +150,9 @@
     "database",
     "harnesses",
     "ok",
+    "snapshot_count",
     "snapshot_directory",
+    "snapshot_total_bytes",
     "telemetry_database",
     "version"
   ],

@@ -93,6 +93,13 @@
       "resultSchema": "session-forest-snapshot.json"
     },
     {
+      "command": "get_session_forest_digest",
+      "domain": "sessions",
+      "method": "sessions/get_session_forest_digest",
+      "paramsSchema": "get-session-forest-digest-params.json",
+      "resultSchema": "session-forest-digest-result.json"
+    },
+    {
       "command": "replay_session_events",
       "domain": "sessions",
       "method": "sessions/replay_session_events",

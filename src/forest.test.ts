@@ -1,11 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
-import type { SessionForestSnapshot } from "./types";
+import { mergeForestSnapshot } from "./forest";
+import type { SessionEntry, SessionForestSnapshot } from "./types";
 
-function snapshot(): SessionForestSnapshot {
+function entry(id: string, sequence: number): SessionEntry {
+  return {
+    id,
+    sessionId: "session-1",
+    parentEntryId: null,
+    sequence,
+    semanticSchemaVersion: 1,
+    kind: "assistant.message",
+    payload: { text: `entry ${id}` },
+    providerEventId: null,
+    contextVisibility: "eligible",
+    tokenEstimate: null,
+    createdAt: "now",
+  };
+}
+
+function snapshot(entries: SessionEntry[] = []): SessionForestSnapshot {
   return {
     sessionId: "session-1",
-    entries: [],
+    entries,
     head: null,
     leaves: [],
     workerLeases: [],
@@ -27,35 +43,11 @@ function snapshot(): SessionForestSnapshot {
   };
 }
 
-describe("forestSnapshotKey", () => {
-  it("is stable for equivalent snapshots and changes with durable state", () => {
-    const first = snapshot();
-    const equivalent = structuredClone(first);
-    expect(forestSnapshotKey(equivalent)).toBe(forestSnapshotKey(first));
-
-    equivalent.entries.push({
-      id: "entry-1",
-      sessionId: "session-1",
-      parentEntryId: null,
-      sequence: 1,
-      semanticSchemaVersion: 1,
-      kind: "assistant.message",
-      payload: { text: "done" },
-      providerEventId: null,
-      contextVisibility: "eligible",
-      tokenEstimate: null,
-      createdAt: "now",
-    });
-    expect(forestSnapshotKey(equivalent)).not.toBe(forestSnapshotKey(first));
-  });
-});
-
 describe("mergeForestSnapshot", () => {
   it("preserves entry identity when only a worker heartbeat changes", () => {
-    const current = snapshot();
+    const current = snapshot([entry("entry-1", 1)]);
     const next: SessionForestSnapshot = {
-      ...current,
-      entries: current.entries.map(entry => ({ ...entry })),
+      ...snapshot(current.entries.map(value => ({ ...value }))),
       workerRuntimes: [{
         sessionId: "worker",
         parentSessionId: current.sessionId,
@@ -75,5 +67,28 @@ describe("mergeForestSnapshot", () => {
     const merged = mergeForestSnapshot(current, next);
     expect(merged.entries).toBe(current.entries);
     expect(merged.workerRuntimes).toBe(next.workerRuntimes);
+  });
+
+  it("adopts the new entry array when history grows", () => {
+    const current = snapshot([entry("entry-1", 1)]);
+    const next = snapshot([entry("entry-1", 1), entry("entry-2", 2)]);
+    expect(mergeForestSnapshot(current, next).entries).toBe(next.entries);
+  });
+
+  it("adopts the new entry array when the tail differs at equal length", () => {
+    const current = snapshot([entry("entry-1", 1)]);
+    const next = snapshot([entry("entry-other", 1)]);
+    expect(mergeForestSnapshot(current, next).entries).toBe(next.entries);
+  });
+
+  it("treats matching empty histories as unchanged", () => {
+    const current = snapshot();
+    const next = snapshot();
+    expect(mergeForestSnapshot(current, next).entries).toBe(current.entries);
+  });
+
+  it("returns the fresh snapshot when there is no current one", () => {
+    const next = snapshot([entry("entry-1", 1)]);
+    expect(mergeForestSnapshot(undefined, next)).toBe(next);
   });
 });

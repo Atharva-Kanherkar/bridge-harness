@@ -28,6 +28,7 @@ pub mod context;
 pub mod credential_broker;
 pub mod delegation;
 pub mod events;
+pub mod frame_queue;
 pub mod git;
 pub mod handoff;
 pub mod learning_job;
@@ -45,6 +46,7 @@ pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
+pub mod process_ledger;
 pub mod prompt_compiler;
 pub mod prompts;
 /// Test-only: asserts core DTOs and their bridge-protocol mirrors agree.

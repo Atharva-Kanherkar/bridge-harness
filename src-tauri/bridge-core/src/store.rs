@@ -166,8 +166,7 @@ pub fn export_history_snapshot(
     let database_path = snapshot_dir.join(format!("bridge-history-{id}.sqlite"));
     let escaped = database_path.to_string_lossy().replace('\'', "''");
     db.execute_batch(&format!("VACUUM INTO '{escaped}'"))?;
-    let bytes = std::fs::read(&database_path)?;
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let sha256 = hash_file_streaming(&database_path)?;
     let manifest = HistorySnapshotManifest {
         schema_version: 1,
         database_file: database_path
@@ -184,7 +183,38 @@ pub fn export_history_snapshot(
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     std::fs::write(&pending_manifest, manifest_bytes)?;
     std::fs::rename(&pending_manifest, &manifest_path)?;
+    // Every producer prunes, so the directory stays within policy no matter
+    // which cadence (boot or the maintenance loop) wrote last. Best effort: a
+    // prune failure must not fail the export that just succeeded.
+    let _ = prune_history_snapshots(snapshot_dir, HistorySnapshotRetention::default());
     Ok((database_path, manifest_path))
+}
+
+/// Export unless the newest snapshot is younger than `max_age`. Booting used
+/// to export unconditionally, which is where a development restart loop gets
+/// its snapshot-per-restart growth; the skip path still prunes so an
+/// over-full directory converges without waiting for the next export.
+pub fn export_history_snapshot_if_stale(
+    db: &Connection,
+    snapshot_dir: &Path,
+    max_age: std::time::Duration,
+) -> Result<Option<(PathBuf, PathBuf)>, BridgeError> {
+    let newest_manifest = valid_snapshot_pairs(snapshot_dir)
+        .into_iter()
+        .max_by(|left, right| left.database_file.cmp(&right.database_file));
+    if let Some(pair) = newest_manifest {
+        let age = chrono::DateTime::parse_from_rfc3339(&pair.created_at)
+            .ok()
+            .map(|created| Utc::now().signed_duration_since(created));
+        if age.is_some_and(|age| {
+            age >= chrono::Duration::zero()
+                && age.to_std().is_ok_and(|elapsed| elapsed < max_age)
+        }) {
+            let _ = prune_history_snapshots(snapshot_dir, HistorySnapshotRetention::default());
+            return Ok(None);
+        }
+    }
+    export_history_snapshot(db, snapshot_dir).map(Some)
 }
 
 pub fn verify_history_snapshot(
@@ -199,8 +229,147 @@ pub fn verify_history_snapshot(
     {
         return Ok(false);
     }
-    let actual = format!("{:x}", Sha256::digest(std::fs::read(database_path)?));
-    Ok(actual == manifest.sha256)
+    Ok(hash_file_streaming(database_path)? == manifest.sha256)
+}
+
+/// Constant-memory SHA-256 of a file, chunked through a buffered reader. The
+/// previous `fs::read` pulled the whole vacuumed database into one allocation
+/// on every snapshot, an allocation spike that grows with total history.
+fn hash_file_streaming(path: &Path) -> Result<String, BridgeError> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut hasher = Sha256::new();
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            break;
+        }
+        hasher.update(chunk);
+        let consumed = chunk.len();
+        reader.consume(consumed);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistorySnapshotRetention {
+    /// Newest snapshots always kept.
+    pub keep_recent: usize,
+    /// Beyond those, the newest snapshot of each of this many most recent
+    /// distinct days is kept.
+    pub keep_daily_days: usize,
+}
+
+impl Default for HistorySnapshotRetention {
+    fn default() -> Self {
+        Self {
+            keep_recent: 8,
+            keep_daily_days: 7,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotPruneOutcome {
+    pub removed_pairs: usize,
+    pub removed_bytes: u64,
+}
+
+struct SnapshotPair {
+    manifest_path: PathBuf,
+    database_path: PathBuf,
+    database_file: String,
+    created_at: String,
+}
+
+/// Snapshots with a valid manifest/database pairing — the only files
+/// retention is allowed to consider. Unpaired, foreign, or torn files are
+/// never touched.
+fn valid_snapshot_pairs(snapshot_dir: &Path) -> Vec<SnapshotPair> {
+    let Ok(entries) = std::fs::read_dir(snapshot_dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let manifest_path = entry.path();
+            let name = manifest_path.file_name()?.to_str()?;
+            if !name.starts_with("bridge-history-") || !name.ends_with(".manifest.json") {
+                return None;
+            }
+            let manifest: HistorySnapshotManifest =
+                serde_json::from_slice(&std::fs::read(&manifest_path).ok()?).ok()?;
+            if manifest.schema_version != 1 {
+                return None;
+            }
+            let database_path = snapshot_dir.join(&manifest.database_file);
+            if !manifest.database_file.starts_with("bridge-history-")
+                || !manifest.database_file.ends_with(".sqlite")
+                || !database_path.is_file()
+            {
+                return None;
+            }
+            Some(SnapshotPair {
+                manifest_path,
+                database_path,
+                database_file: manifest.database_file,
+                created_at: manifest.created_at,
+            })
+        })
+        .collect()
+}
+
+/// Delete validly paired snapshots beyond the retention policy, newest first:
+/// `keep_recent` newest pairs stay, plus the newest pair of each of the
+/// `keep_daily_days` most recent distinct days.
+pub fn prune_history_snapshots(
+    snapshot_dir: &Path,
+    retention: HistorySnapshotRetention,
+) -> Result<SnapshotPruneOutcome, BridgeError> {
+    let mut pairs = valid_snapshot_pairs(snapshot_dir);
+    // The file name embeds the UTC timestamp, so name order is time order.
+    pairs.sort_by(|left, right| right.database_file.cmp(&left.database_file));
+    let mut days_kept = std::collections::BTreeSet::new();
+    let mut outcome = SnapshotPruneOutcome::default();
+    for (index, pair) in pairs.iter().enumerate() {
+        let day = pair
+            .database_file
+            .get("bridge-history-".len().."bridge-history-".len() + 8)
+            .unwrap_or_default()
+            .to_owned();
+        if index < retention.keep_recent {
+            days_kept.insert(day);
+            continue;
+        }
+        if days_kept.len() < retention.keep_daily_days && !days_kept.contains(&day) {
+            days_kept.insert(day);
+            continue;
+        }
+        let bytes = std::fs::metadata(&pair.database_path)
+            .map(|meta| meta.len())
+            .unwrap_or_default()
+            + std::fs::metadata(&pair.manifest_path)
+                .map(|meta| meta.len())
+                .unwrap_or_default();
+        std::fs::remove_file(&pair.database_path)?;
+        std::fs::remove_file(&pair.manifest_path)?;
+        outcome.removed_pairs += 1;
+        outcome.removed_bytes += bytes;
+    }
+    Ok(outcome)
+}
+
+/// Count and total bytes of everything under the snapshot directory, for
+/// health diagnostics.
+pub fn history_snapshot_stats(snapshot_dir: &Path) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(snapshot_dir) else {
+        return (0, 0);
+    };
+    entries.flatten().fold((0, 0), |(count, bytes), entry| {
+        let size = entry.metadata().map(|meta| meta.len()).unwrap_or_default();
+        (count + 1, bytes + size)
+    })
 }
 
 fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), BridgeError> {
@@ -3006,6 +3175,146 @@ mod tests {
         bytes[0] ^= 0xff;
         std::fs::write(&snapshot, bytes).unwrap();
         assert!(!verify_history_snapshot(&snapshot, &manifest).unwrap());
+    }
+
+    #[test]
+    fn streamed_hash_matches_whole_file_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob");
+        // Larger than the reader's buffer so chunking is actually exercised.
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &payload).unwrap();
+        assert_eq!(
+            hash_file_streaming(&path).unwrap(),
+            format!("{:x}", Sha256::digest(&payload)),
+            "streaming and whole-file hashing must agree for manifest compatibility"
+        );
+    }
+
+    fn fabricate_snapshot_pair(dir: &Path, stamp: &str) {
+        let database_file = format!("bridge-history-{stamp}.sqlite");
+        std::fs::write(dir.join(&database_file), b"snapshot-bytes").unwrap();
+        let manifest = HistorySnapshotManifest {
+            schema_version: 1,
+            database_file,
+            sha256: "unchecked-by-retention".into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        std::fs::write(
+            dir.join(format!("bridge-history-{stamp}.manifest.json")),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn retention_keeps_recent_and_one_pair_per_day() {
+        let dir = tempfile::tempdir().unwrap();
+        // Three snapshots on the newest day, two on the day before, one each
+        // on two older days.
+        for stamp in [
+            "20260820T120000000000000Z-f1",
+            "20260820T110000000000000Z-f2",
+            "20260820T100000000000000Z-f3",
+            "20260819T120000000000000Z-f4",
+            "20260819T110000000000000Z-f5",
+            "20260818T120000000000000Z-f6",
+            "20260817T120000000000000Z-f7",
+        ] {
+            fabricate_snapshot_pair(dir.path(), stamp);
+        }
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 2,
+                keep_daily_days: 3,
+            },
+        )
+        .unwrap();
+        let kept: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".sqlite"))
+            .collect();
+        // Newest two, plus the newest of each of the next two distinct days
+        // (the newest day is already represented by the recent set).
+        assert_eq!(outcome.removed_pairs, 7 - kept.len());
+        assert!(kept.contains(&"bridge-history-20260820T120000000000000Z-f1.sqlite".into()));
+        assert!(kept.contains(&"bridge-history-20260820T110000000000000Z-f2.sqlite".into()));
+        assert!(kept.contains(&"bridge-history-20260819T120000000000000Z-f4.sqlite".into()));
+        assert!(kept.contains(&"bridge-history-20260818T120000000000000Z-f6.sqlite".into()));
+        assert_eq!(kept.len(), 4, "{kept:?}");
+        assert!(outcome.removed_bytes > 0);
+        // Deterministic: pruning again removes nothing.
+        let second = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 2,
+                keep_daily_days: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(second, SnapshotPruneOutcome::default());
+    }
+
+    #[test]
+    fn retention_never_touches_unpaired_or_foreign_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bridge-history-orphan.sqlite"), b"x").unwrap();
+        std::fs::write(
+            dir.path().join("bridge-history-loner.manifest.json"),
+            serde_json::to_vec(&HistorySnapshotManifest {
+                schema_version: 1,
+                database_file: "bridge-history-gone.sqlite".into(),
+                sha256: "x".into(),
+                created_at: Utc::now().to_rfc3339(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("user-notes.txt"), b"keep").unwrap();
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 0,
+                keep_daily_days: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, SnapshotPruneOutcome::default());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn boot_export_skips_while_fresh_and_exports_when_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary_path = dir.path().join("bridge.db");
+        let primary = open(&primary_path).unwrap();
+        let snapshots = dir.path().join("snapshots");
+        let first = export_history_snapshot_if_stale(
+            &primary,
+            &snapshots,
+            std::time::Duration::from_secs(900),
+        )
+        .unwrap();
+        assert!(first.is_some(), "an empty directory exports");
+        let (count, _) = history_snapshot_stats(&snapshots);
+        let skipped = export_history_snapshot_if_stale(
+            &primary,
+            &snapshots,
+            std::time::Duration::from_secs(900),
+        )
+        .unwrap();
+        assert!(skipped.is_none(), "a fresh snapshot suppresses the boot export");
+        assert_eq!(history_snapshot_stats(&snapshots).0, count);
+        let again = export_history_snapshot_if_stale(
+            &primary,
+            &snapshots,
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        assert!(again.is_some(), "a stale snapshot exports again");
     }
 
     #[test]
