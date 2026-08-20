@@ -17,7 +17,7 @@ pub struct GetSessionForestParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetSessionForestDigestParams {
     pub session_id: String,
 }

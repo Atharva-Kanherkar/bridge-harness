@@ -302,6 +302,8 @@ mod tests {
             database: "/data/bridge.db".into(),
             telemetry_database: "/data/bridge-telemetry.db".into(),
             snapshot_directory: "/data/history-snapshots".into(),
+            snapshot_count: 9,
+            snapshot_total_bytes: 4_096,
             adapters: vec![AdapterDescriptor {
                 id: "codex".into(),
                 label: "Codex".into(),
