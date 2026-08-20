@@ -7,7 +7,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     io::{BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -509,6 +509,12 @@ impl AdapterRuntime for ClaudeRuntime {
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text)
     }
+    /// The sidecar feeds one long-lived streaming-input `query()`, so a user
+    /// message written while a turn is running is picked up by that turn — the
+    /// SDK's own steering path — instead of starting a competing one.
+    fn supports_active_turn_steering(&self) -> bool {
+        true
+    }
     fn interrupt(&self) -> Result<(), BridgeError> {
         ClaudeRuntime::interrupt(self)
     }
@@ -531,7 +537,38 @@ impl Drop for ClaudeRuntime {
 
 pub fn binary_version() -> Option<String> {
     sidecar_entry().ok()?;
-    binary::version("node").map(|version| format!("Agent SDK (Node {version})"))
+    // The version is the certification subject: the Claude Agent SDK actually
+    // installed, resolved the same way the sidecar resolves its import. The
+    // Node runtime that hosts it is not what the conformance suite ran
+    // against — reporting "Agent SDK (Node v26)" certifies nothing, which is
+    // exactly how the briefing gate treated it. The Node string survives only
+    // as the fallback for an install whose SDK package cannot be read, where
+    // staying uncertified is the correct reading.
+    installed_sdk_version()
+        .or_else(|| binary::version("node").map(|version| format!("Agent SDK (Node {version})")))
+}
+
+/// The installed Claude Agent SDK's own version, from its package manifest.
+/// The managed payload wins when present, then the bundled sidecar — the same
+/// order the sidecar uses to resolve the module it imports.
+fn installed_sdk_version() -> Option<String> {
+    let package_manifest = managed_sdk_module()
+        .and_then(|module| Some(module.parent()?.join("package.json")))
+        .filter(|manifest| manifest.is_file())
+        .or_else(|| {
+            let entry = sidecar_entry().ok()?;
+            let manifest = entry
+                .parent()?
+                .join("node_modules/@anthropic-ai/claude-agent-sdk/package.json");
+            manifest.is_file().then_some(manifest)
+        })?;
+    sdk_version_from_manifest(&package_manifest)
+}
+
+fn sdk_version_from_manifest(manifest: &Path) -> Option<String> {
+    let parsed: Value = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
+    let version = parsed.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_owned())
 }
 
 /// The managed Claude SDK module to import, if a managed payload is installed.
@@ -631,6 +668,25 @@ mod tests {
         assert_eq!(write_mode_label(WriteMode::ReadOnly), "ReadOnly");
         assert_eq!(write_mode_label(WriteMode::Shared), "Shared");
         assert_eq!(write_mode_label(WriteMode::Isolated), "Isolated");
+    }
+
+    #[test]
+    fn the_reported_version_is_the_sdks_own_not_the_node_runtimes() {
+        // The certification subject is the installed Agent SDK. A manifest
+        // saying 0.3.209 must surface exactly that, because certify_briefing
+        // compares it against the certified 0.3 line component-wise.
+        let dir = std::env::temp_dir().join(format!("bridge-sdk-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("package.json");
+        std::fs::write(&manifest, r#"{"name":"@anthropic-ai/claude-agent-sdk","version":"0.3.209"}"#).unwrap();
+        assert_eq!(sdk_version_from_manifest(&manifest), Some("0.3.209".to_owned()));
+        assert!(crate::briefing_policy::certify_briefing("claude", Some("0.3.209")).is_ok());
+
+        std::fs::write(&manifest, r#"{"name":"x","version":"  "}"#).unwrap();
+        assert_eq!(sdk_version_from_manifest(&manifest), None, "a blank version is unreported");
+        std::fs::write(&manifest, "not json").unwrap();
+        assert_eq!(sdk_version_from_manifest(&manifest), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

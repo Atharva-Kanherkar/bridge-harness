@@ -34,6 +34,64 @@ impl WorkerRole {
             Self::Documentation => "documentation",
         }
     }
+
+    /// Fold what a model actually writes into one of the five roles.
+    ///
+    /// A model asked for a role writes `implementer`, `reviewer`, or
+    /// `implementation-verifier`. Those are the same five jobs under different
+    /// names, and rejecting the request over the spelling threw away real work.
+    /// Anything genuinely unrecognized still returns `None` — this widens the
+    /// vocabulary, it does not invent roles.
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' ', '.'], "_");
+        match normalized.as_str() {
+            "research" | "researcher" | "investigation" | "investigator" | "analysis"
+            | "analyst" | "explore" | "exploration" => Some(Self::Research),
+            "implementation" | "implementer" | "implement" | "coder" | "code" | "coding"
+            | "engineer" | "developer" | "dev" | "fix" | "builder" => Some(Self::Implementation),
+            "verification" | "verifier" | "verify" | "implementation_verifier"
+            | "implementation_verification" | "review" | "reviewer" | "test" | "tester"
+            | "testing" | "qa" | "validation" | "validator" => Some(Self::Verification),
+            "planning" | "planner" | "plan" | "design" | "designer" | "architect"
+            | "architecture" | "orchestrator" | "coordinator" => Some(Self::Planning),
+            "documentation" | "documenter" | "docs" | "doc" | "writer" | "technical_writer" => {
+                Some(Self::Documentation)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a role's work is reading, not writing.
+    ///
+    /// This is authority, not a hint: the clamp in [`normalize_delegation`] uses
+    /// it to hold a read-only role read-only no matter what write mode the model
+    /// asked for.
+    pub const fn is_read_only(self) -> bool {
+        !matches!(self, Self::Implementation)
+    }
+
+    /// The write mode a role gets when the request does not name one.
+    pub const fn default_write_mode(self) -> WriteMode {
+        match self {
+            Self::Implementation => WriteMode::Isolated,
+            _ => WriteMode::ReadOnly,
+        }
+    }
+
+    /// The result contract a role is held to. Derived host-side so the model
+    /// never has to restate its own role in a second vocabulary.
+    pub const fn output_contract(self) -> OutputContract {
+        match self {
+            Self::Research => OutputContract::ResearchResult,
+            Self::Implementation => OutputContract::ImplementationResult,
+            Self::Verification => OutputContract::VerificationResult,
+            Self::Planning => OutputContract::DecisionResult,
+            Self::Documentation => OutputContract::DocumentationResult,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,8 +133,15 @@ pub enum OutputContract {
     DocumentationResult,
 }
 
+/// A delegation request as Bridge holds it.
+///
+/// Every transport field here is filled in by [`normalize_delegation`] before
+/// deserialization, so a model only has to supply the semantic objective. The
+/// struct stays strict — unknown fields are ignored rather than refused, because
+/// an extra explanatory key from a model is not a reason to throw away the
+/// request it was attached to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct DelegationRequest {
     pub schema_version: u32,
     pub role: WorkerRole,
@@ -194,6 +259,14 @@ pub enum WorkerResultStatus {
     Cancelled,
     Blocked,
     NeedsDelegation,
+    /// The worker's final message could not be read as a result, even after
+    /// normalization.
+    ///
+    /// Separate from `Failed` on purpose. "You formatted the envelope wrong" and
+    /// "the task did not work" are different facts, and conflating them was what
+    /// turned a bad fence into a failed task, a failed task into a retry, and a
+    /// retry into another paid turn for a cause that had not changed.
+    ProtocolInvalid,
 }
 
 impl WorkerResultStatus {
@@ -204,6 +277,32 @@ impl WorkerResultStatus {
             Self::Cancelled => "cancelled",
             Self::Blocked => "blocked",
             Self::NeedsDelegation => "needs_delegation",
+            Self::ProtocolInvalid => "protocol_invalid",
+        }
+    }
+
+    /// Fold what a model writes into a status.
+    ///
+    /// `escalate` means `needs_delegation`; `success` means `completed`. A worker
+    /// that finished its job and said so in its own words has still finished it.
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' ', '.'], "_");
+        match normalized.as_str() {
+            "completed" | "complete" | "success" | "succeeded" | "done" | "ok" | "finished" => {
+                Some(Self::Completed)
+            }
+            "failed" | "failure" | "fail" | "error" | "errored" => Some(Self::Failed),
+            "cancelled" | "canceled" | "aborted" | "abandoned" => Some(Self::Cancelled),
+            "blocked" | "block" | "stuck" | "waiting" | "needs_input" | "needs_approval" => {
+                Some(Self::Blocked)
+            }
+            "needs_delegation" | "needsdelegation" | "escalate" | "escalation" | "delegate"
+            | "needs_specialist" | "handoff" => Some(Self::NeedsDelegation),
+            "protocol_invalid" => Some(Self::ProtocolInvalid),
+            _ => None,
         }
     }
 }
@@ -217,7 +316,7 @@ pub enum TestStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerTestResult {
     pub command: String,
     pub status: TestStatus,
@@ -234,8 +333,53 @@ pub enum SuggestedNextAction {
     RequestApproval,
 }
 
+impl SuggestedNextAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Finish => "finish",
+            Self::Retry => "retry",
+            Self::FollowUp => "follow_up",
+            Self::RequestApproval => "request_approval",
+        }
+    }
+
+    /// Fold a model's suggestion into the four Bridge acts on. Advisory only —
+    /// Rust decides what actually happens next, so a generous reading here
+    /// cannot buy the model an action it is not entitled to.
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' ', '.'], "_");
+        match normalized.as_str() {
+            "finish" | "finished" | "done" | "complete" | "completed" | "none" | "stop" => {
+                Some(Self::Finish)
+            }
+            "retry" | "retry_once" | "try_again" => Some(Self::Retry),
+            "follow_up" | "followup" | "continue" | "next" | "escalate"
+            | "delegate_implementation" | "delegate" | "delegation" | "handoff" => {
+                Some(Self::FollowUp)
+            }
+            "request_approval" | "approval" | "ask" | "ask_user" | "needs_approval"
+            | "request_permission" => Some(Self::RequestApproval),
+            _ => None,
+        }
+    }
+
+    /// What Bridge assumes when a result does not say. Derived from the status,
+    /// which the worker did report, rather than demanded a second time.
+    pub const fn for_status(status: WorkerResultStatus) -> Self {
+        match status {
+            WorkerResultStatus::Completed | WorkerResultStatus::Cancelled => Self::Finish,
+            WorkerResultStatus::Failed | WorkerResultStatus::ProtocolInvalid => Self::FollowUp,
+            WorkerResultStatus::Blocked => Self::RequestApproval,
+            WorkerResultStatus::NeedsDelegation => Self::FollowUp,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkerResult {
     pub schema_version: u32,
     pub status: WorkerResultStatus,
@@ -274,9 +418,9 @@ impl WorkerResult {
             require_non_empty("tests.command", &test.command)?;
         }
         if self.status == WorkerResultStatus::NeedsDelegation {
-            if self.suggested_role.is_none() {
-                return Err("needs_delegation requires suggestedRole".into());
-            }
+            // `suggestedRole` is derived host-side when absent. A worker must not
+            // have to guess a closed vocabulary word to avoid losing the work it
+            // already did — naming what it needs is enough.
             require_non_empty(
                 "suggestedTask",
                 self.suggested_task.as_deref().unwrap_or_default(),
@@ -285,8 +429,16 @@ impl WorkerResult {
         Ok(())
     }
 
+    /// A formatting mistake is never a retryable task failure: nothing about the
+    /// task changed, so another turn would produce the same thing at the same
+    /// price. See [`WorkerResultStatus::ProtocolInvalid`].
     pub fn is_retryable(&self) -> bool {
         self.status == WorkerResultStatus::Failed
+    }
+
+    /// Whether this result describes a transport problem rather than the work.
+    pub fn is_protocol_invalid(&self) -> bool {
+        self.status == WorkerResultStatus::ProtocolInvalid
     }
 
     pub fn is_terminal_cancellation(&self) -> bool {
@@ -420,7 +572,405 @@ fn is_worker_result_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("worker") && tag.contains("result")
 }
 
-pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationRequest>> {
+/// What the host filled in, corrected, or ignored on the model's behalf.
+///
+/// Recorded rather than applied silently: a normalized envelope has to be
+/// auditable, and "Bridge chose isolated because the role is implementation" is
+/// a fact someone reading a session later needs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Normalizations(Vec<String>);
+
+impl Normalizations {
+    fn record(&mut self, note: impl Into<String>) {
+        self.0.push(note.into());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn notes(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn summary(&self) -> String {
+        self.0.join("; ")
+    }
+
+    fn absorb(&mut self, other: Normalizations) {
+        self.0.extend(other.0);
+    }
+}
+
+/// The fields a delegation request owns semantically. Everything else in the
+/// envelope is transport, and transport is Bridge's job.
+const DELEGATION_SEMANTIC_FIELDS: &[&str] = &[
+    "role",
+    "objective",
+    "acceptanceCriteria",
+    "knownFacts",
+    "decisions",
+    "evidenceIds",
+    "relevantFiles",
+    "ownedPaths",
+    "verification",
+    "harness",
+    "model",
+];
+
+/// Fill in a delegation envelope's transport fields and fold its vocabulary.
+///
+/// This is the authority boundary made concrete. The model supplies an objective
+/// and what it knows; Bridge supplies the schema version, the defaults, the
+/// derived output contract — and, crucially, **clamps** the write mode by role,
+/// so a generous reading of the wire format never buys a read-only role a
+/// writable worker. Opening the format does not open the permissions.
+pub fn normalize_delegation(value: &mut Value) -> Normalizations {
+    let mut notes = Normalizations::default();
+    let Some(object) = value.as_object_mut() else {
+        return notes;
+    };
+
+    match object.get("schemaVersion").and_then(Value::as_u64) {
+        Some(version) if version == SCHEMA_VERSION as u64 => {}
+        Some(version) => {
+            notes.record(format!("schemaVersion {version} rewritten to {SCHEMA_VERSION}"));
+            object.insert("schemaVersion".into(), Value::from(SCHEMA_VERSION));
+        }
+        None => {
+            object.insert("schemaVersion".into(), Value::from(SCHEMA_VERSION));
+        }
+    }
+
+    // Role first: every other default is derived from it.
+    let role = object
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            let role = WorkerRole::parse(raw);
+            if role.is_some_and(|role| role.as_str() != raw) {
+                notes.record(format!("role {raw:?} read as {}", role.unwrap().as_str()));
+            }
+            role
+        })
+        .unwrap_or_else(|| {
+            notes.record("role missing or unreadable; defaulted to implementation");
+            WorkerRole::Implementation
+        });
+    object.insert("role".into(), Value::from(role.as_str()));
+
+    if object
+        .get("objective")
+        .and_then(Value::as_str)
+        .is_none_or(|objective| objective.trim().is_empty())
+    {
+        // The one thing Bridge cannot invent. Left absent so validation refuses
+        // it with a reason instead of dispatching a worker at nothing.
+        notes.record("objective missing");
+    }
+
+    let criteria_present = object
+        .get("acceptanceCriteria")
+        .and_then(Value::as_array)
+        .is_some_and(|criteria| !criteria.is_empty());
+    if !criteria_present {
+        object.insert(
+            "acceptanceCriteria".into(),
+            Value::from(vec![Value::from(
+                "Complete the objective and report concrete verification evidence",
+            )]),
+        );
+        notes.record("acceptanceCriteria defaulted");
+    }
+
+    // Write mode: normalized, then clamped by role. The clamp is the authority.
+    let requested_mode = object.get("writeMode").and_then(Value::as_str).map(str::to_owned);
+    let mode = match requested_mode.as_deref().and_then(parse_write_mode) {
+        Some(mode) => mode,
+        None => {
+            if let Some(raw) = &requested_mode {
+                notes.record(format!("writeMode {raw:?} unreadable; defaulted by role"));
+            }
+            role.default_write_mode()
+        }
+    };
+    let clamped = if role.is_read_only() && mode != WriteMode::ReadOnly {
+        notes.record(format!(
+            "writeMode {} clamped to readOnly for a {} worker",
+            write_mode_wire_name(mode),
+            role.as_str()
+        ));
+        WriteMode::ReadOnly
+    } else {
+        mode
+    };
+    object.insert("writeMode".into(), Value::from(write_mode_wire_name(clamped)));
+
+    let tier = match object.get("capabilityTier").and_then(Value::as_str) {
+        Some(raw) => parse_capability_tier(raw).unwrap_or_else(|| {
+            notes.record(format!("capabilityTier {raw:?} unreadable; defaulted to standard"));
+            CapabilityTier::Standard
+        }),
+        None => CapabilityTier::Standard,
+    };
+    object.insert("capabilityTier".into(), Value::from(tier.as_str()));
+
+    let effort = match object.get("effort").and_then(Value::as_str) {
+        Some(raw) => parse_effort(raw),
+        None => Effort::Medium,
+    };
+    object.insert("effort".into(), Value::from(effort.as_str()));
+
+    // Derived, never demanded: the contract is a function of the role, and
+    // making the model restate it in a second vocabulary only created a way to
+    // disagree with itself.
+    let contract = role.output_contract();
+    if object
+        .get("outputContract")
+        .and_then(Value::as_str)
+        .is_some_and(|raw| raw != output_contract_wire_name(contract))
+    {
+        notes.record(format!(
+            "outputContract derived from role as {}",
+            output_contract_wire_name(contract)
+        ));
+    }
+    object.insert(
+        "outputContract".into(),
+        Value::from(output_contract_wire_name(contract)),
+    );
+
+    let ignored = object
+        .keys()
+        .filter(|key| {
+            !DELEGATION_SEMANTIC_FIELDS.contains(&key.as_str())
+                && !matches!(
+                    key.as_str(),
+                    "schemaVersion"
+                        | "writeMode"
+                        | "capabilityTier"
+                        | "effort"
+                        | "outputContract"
+                        | "networkAccess"
+                        | "writableOutputPaths"
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !ignored.is_empty() {
+        // Named, not fatal. An extra explanatory key is the model being helpful;
+        // discarding the whole request over it was the bug.
+        notes.record(format!("ignored extra field(s): {}", ignored.join(", ")));
+        for key in ignored {
+            object.remove(&key);
+        }
+    }
+    notes
+}
+
+/// Fill in a worker result's transport fields and fold its vocabulary.
+///
+/// Same boundary from the other direction: the worker reports what happened, and
+/// Bridge supplies the schema version, the next action, and the escalation role
+/// it would otherwise have had to guess.
+pub fn normalize_worker_result(value: &mut Value) -> Normalizations {
+    let mut notes = Normalizations::default();
+    let Some(object) = value.as_object_mut() else {
+        return notes;
+    };
+
+    match object.get("schemaVersion").and_then(Value::as_u64) {
+        Some(version) if version == SCHEMA_VERSION as u64 => {}
+        Some(version) => {
+            notes.record(format!("schemaVersion {version} rewritten to {SCHEMA_VERSION}"));
+            object.insert("schemaVersion".into(), Value::from(SCHEMA_VERSION));
+        }
+        None => {
+            object.insert("schemaVersion".into(), Value::from(SCHEMA_VERSION));
+        }
+    }
+
+    let status = object.get("status").and_then(Value::as_str).and_then(|raw| {
+        let status = WorkerResultStatus::parse(raw);
+        if status.is_some_and(|status| status.as_str() != raw) {
+            notes.record(format!(
+                "status {raw:?} read as {}",
+                status.unwrap().as_str()
+            ));
+        }
+        status
+    });
+    if let Some(status) = status {
+        object.insert("status".into(), Value::from(status.as_str()));
+    }
+
+    // A summary under another name is still a summary.
+    if object
+        .get("summary")
+        .and_then(Value::as_str)
+        .is_none_or(|summary| summary.trim().is_empty())
+    {
+        let borrowed = ["result", "message", "details", "detail", "output", "text"]
+            .into_iter()
+            .find_map(|key| {
+                object
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+            });
+        if let Some(borrowed) = borrowed {
+            notes.record("summary taken from an equivalent field");
+            object.insert("summary".into(), Value::from(borrowed));
+        }
+    }
+
+    let action = match object.get("suggestedNextAction").and_then(Value::as_str) {
+        Some(raw) => SuggestedNextAction::parse(raw).unwrap_or_else(|| {
+            let derived = SuggestedNextAction::for_status(status.unwrap_or(WorkerResultStatus::Completed));
+            notes.record(format!(
+                "suggestedNextAction {raw:?} read as {}",
+                derived.as_str()
+            ));
+            derived
+        }),
+        None => SuggestedNextAction::for_status(status.unwrap_or(WorkerResultStatus::Completed)),
+    };
+    object.insert("suggestedNextAction".into(), Value::from(action.as_str()));
+
+    if status == Some(WorkerResultStatus::NeedsDelegation) {
+        let derived = object
+            .get("suggestedRole")
+            .and_then(Value::as_str)
+            .and_then(WorkerRole::parse)
+            .unwrap_or_else(|| {
+                // Derived from what the worker asked for, not demanded from it.
+                // Having to invent a closed vocabulary word to avoid losing
+                // completed work is exactly the trap this removes.
+                let task = object
+                    .get("suggestedTask")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let role = WorkerRole::parse(task).unwrap_or_else(|| infer_role_from_task(task));
+                notes.record(format!("suggestedRole derived as {}", role.as_str()));
+                role
+            });
+        object.insert("suggestedRole".into(), Value::from(derived.as_str()));
+    } else if let Some(raw) = object.get("suggestedRole").and_then(Value::as_str) {
+        match WorkerRole::parse(raw) {
+            Some(role) => {
+                object.insert("suggestedRole".into(), Value::from(role.as_str()));
+            }
+            None => {
+                // Advisory on a result that is not escalating: drop it rather
+                // than fail an otherwise usable result over it.
+                notes.record(format!("ignored unreadable suggestedRole {raw:?}"));
+                object.remove("suggestedRole");
+            }
+        }
+    }
+
+    if let Some(tests) = object.get_mut("tests").and_then(Value::as_array_mut) {
+        for test in tests.iter_mut() {
+            let Some(test) = test.as_object_mut() else {
+                continue;
+            };
+            let status = match test.get("status").and_then(Value::as_str) {
+                Some(raw) => parse_test_status(raw).unwrap_or(TestStatus::Skipped),
+                None => TestStatus::Skipped,
+            };
+            test.insert("status".into(), Value::from(test_status_wire_name(status)));
+        }
+    }
+    notes
+}
+
+fn infer_role_from_task(task: &str) -> WorkerRole {
+    let task = task.to_ascii_lowercase();
+    for (needles, role) in [
+        (["verify", "test", "review"], WorkerRole::Verification),
+        (["research", "investigate", "find out"], WorkerRole::Research),
+        (["document", "docs", "changelog"], WorkerRole::Documentation),
+        (["plan", "design", "decide"], WorkerRole::Planning),
+    ] {
+        if needles.iter().any(|needle| task.contains(needle)) {
+            return role;
+        }
+    }
+    WorkerRole::Implementation
+}
+
+fn parse_write_mode(value: &str) -> Option<WriteMode> {
+    let normalized = value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' ', '.'], "_");
+    match normalized.as_str() {
+        "readonly" | "read_only" | "read" | "none" | "no_write" => Some(WriteMode::ReadOnly),
+        "shared" | "workspace" | "write" => Some(WriteMode::Shared),
+        "isolated" | "worktree" | "branch" => Some(WriteMode::Isolated),
+        "full" | "danger_full_access" | "unrestricted" => Some(WriteMode::Full),
+        _ => None,
+    }
+}
+
+pub const fn write_mode_wire_name(mode: WriteMode) -> &'static str {
+    match mode {
+        WriteMode::ReadOnly => "readOnly",
+        WriteMode::Shared => "shared",
+        WriteMode::Isolated => "isolated",
+        WriteMode::Full => "full",
+    }
+}
+
+const fn output_contract_wire_name(contract: OutputContract) -> &'static str {
+    match contract {
+        OutputContract::ImplementationResult => "implementation-result",
+        OutputContract::ResearchResult => "research-result",
+        OutputContract::VerificationResult => "verification-result",
+        OutputContract::DecisionResult => "decision-result",
+        OutputContract::DocumentationResult => "documentation-result",
+    }
+}
+
+fn parse_capability_tier(value: &str) -> Option<CapabilityTier> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fast" | "low" | "cheap" | "quick" => Some(CapabilityTier::Fast),
+        "standard" | "medium" | "balanced" | "default" => Some(CapabilityTier::Standard),
+        "strong" | "high" | "max" | "best" => Some(CapabilityTier::Strong),
+        _ => None,
+    }
+}
+
+fn parse_test_status(value: &str) -> Option<TestStatus> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "passed" | "pass" | "passing" | "green" | "ok" | "success" => Some(TestStatus::Passed),
+        "failed" | "fail" | "failing" | "red" | "error" => Some(TestStatus::Failed),
+        "skipped" | "skip" | "not_run" | "notrun" | "n/a" => Some(TestStatus::Skipped),
+        _ => None,
+    }
+}
+
+const fn test_status_wire_name(status: TestStatus) -> &'static str {
+    match status {
+        TestStatus::Passed => "passed",
+        TestStatus::Failed => "failed",
+        TestStatus::Skipped => "skipped",
+    }
+}
+
+/// Parsed requests plus what Bridge filled in or corrected to get them.
+///
+/// The notes travel with the requests rather than being applied silently: a
+/// normalized envelope has to be auditable, and "Bridge clamped writeMode to
+/// readOnly because the role is research" is a fact a session's reader needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedRequests {
+    pub requests: Vec<DelegationRequest>,
+    pub notes: Normalizations,
+}
+
+pub fn parse_delegation_requests(text: &str) -> ParseOutcome<NormalizedRequests> {
     let blocks = fenced_blocks(text, is_delegation_tag);
     if blocks.is_empty() {
         return ParseOutcome::Absent;
@@ -431,6 +981,7 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
         .collect::<Vec<_>>()
         .join("\n");
     let mut requests = Vec::new();
+    let mut notes = Normalizations::default();
     for block in blocks {
         let value = match serde_json::from_str::<Value>(&block.body) {
             Ok(value) => value,
@@ -447,7 +998,10 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
         };
         for value in values {
             match request_from_value(value) {
-                Ok(request) => requests.push(request),
+                Ok((request, request_notes)) => {
+                    requests.push(request);
+                    notes.absorb(request_notes);
+                }
                 Err(reason) => return ParseOutcome::Invalid { raw, reason },
             }
         }
@@ -458,21 +1012,24 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
             reason: "delegation block contained no requests".into(),
         }
     } else {
-        ParseOutcome::Parsed(requests)
+        ParseOutcome::Parsed(NormalizedRequests { requests, notes })
     }
 }
 
-fn request_from_value(value: Value) -> Result<DelegationRequest, String> {
-    if value.get("schemaVersion").is_some() || value.get("objective").is_some() {
-        validate_schema_version(&value, "delegation")?;
+fn request_from_value(mut value: Value) -> Result<(DelegationRequest, Normalizations), String> {
+    if value.get("objective").is_some() {
+        // Normalize before deserializing: the model owns the objective, Bridge
+        // owns the envelope.
+        let notes = normalize_delegation(&mut value);
         let request: DelegationRequest =
             serde_json::from_value(value).map_err(|error| error.to_string())?;
         request.validate()?;
-        Ok(request)
+        Ok((request, notes))
     } else {
-        serde_json::from_value::<LegacyDirective>(value)
+        let request = serde_json::from_value::<LegacyDirective>(value)
             .map_err(|error| error.to_string())?
-            .into_typed()
+            .into_typed()?;
+        Ok((request, Normalizations::default()))
     }
 }
 
@@ -492,7 +1049,7 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         };
     }
     let raw = blocks[0].body.clone();
-    let value = match serde_json::from_str::<Value>(&raw) {
+    let mut value = match serde_json::from_str::<Value>(&raw) {
         Ok(value) => value,
         Err(error) => {
             return ParseOutcome::Invalid {
@@ -501,9 +1058,9 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
             }
         }
     };
-    if let Err(reason) = validate_schema_version(&value, "worker-result") {
-        return ParseOutcome::Invalid { raw, reason };
-    }
+    // Same boundary as delegation: fold the vocabulary and fill the transport
+    // fields before deserializing, so a spelling difference is not a lost result.
+    normalize_worker_result(&mut value);
     let result = match serde_json::from_value::<WorkerResult>(value) {
         Ok(result) => result,
         Err(error) => {
@@ -517,18 +1074,6 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         Ok(()) => ParseOutcome::Parsed(result),
         Err(reason) => ParseOutcome::Invalid { raw, reason },
     }
-}
-
-fn validate_schema_version(value: &Value, envelope: &str) -> Result<(), String> {
-    let Some(version) = value.get("schemaVersion").and_then(Value::as_u64) else {
-        return Err(format!("{envelope} schemaVersion must be an integer"));
-    };
-    if version != SCHEMA_VERSION as u64 {
-        return Err(format!(
-            "unsupported {envelope} schema version {version}; expected {SCHEMA_VERSION}"
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,6 +1152,61 @@ impl ResultRepairTracker {
     }
 }
 
+/// How much of an unreadable worker message is carried forward as evidence.
+/// Enough to be worth reading; never an unbounded transcript pasted into a
+/// parent's context.
+pub const MAX_PRESERVED_PROSE_BYTES: usize = 1_200;
+
+/// A result for output Bridge could not read, with the worker's own words kept.
+///
+/// The old behaviour reported `failed` with "the raw worker response was
+/// excluded from parent context" — which threw away possibly-good work and told
+/// the orchestrator the task had failed, so it retried a task that may have
+/// succeeded. This says what actually happened, and keeps the prose.
+pub fn protocol_invalid_result(raw: &str, reason: &str) -> WorkerResult {
+    let prose = strip_worker_result(raw);
+    let prose = prose.trim();
+    let excerpt = if prose.is_empty() {
+        None
+    } else {
+        Some(truncate_on_char_boundary(prose, MAX_PRESERVED_PROSE_BYTES))
+    };
+    WorkerResult {
+        schema_version: SCHEMA_VERSION,
+        status: WorkerResultStatus::ProtocolInvalid,
+        summary: match &excerpt {
+            Some(excerpt) => format!(
+                "The worker's result could not be read ({reason}). Its own words, unverified:\n\n{excerpt}"
+            ),
+            None => format!("The worker's result could not be read ({reason}), and it left no prose."),
+        },
+        files_changed: Vec::new(),
+        tests: Vec::new(),
+        decisions: Vec::new(),
+        risks: vec![
+            "This is a transport failure, not a task outcome: nothing here has been verified"
+                .into(),
+        ],
+        remaining_work: vec![
+            "Confirm what the worker actually did before treating this objective as done".into(),
+        ],
+        suggested_next_action: SuggestedNextAction::FollowUp,
+        suggested_role: None,
+        suggested_task: None,
+    }
+}
+
+fn truncate_on_char_boundary(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut cut = max_bytes;
+    while !value.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &value[..cut])
+}
+
 pub fn worker_result_repair_prompt(reason: &str) -> String {
     format!(
         r#"Your previous final output could not be parsed ({reason}). This is your one repair turn. Do not perform more work. Return exactly one fenced `bridge-worker-result` JSON object matching schemaVersion 1 with: status, summary, filesChanged, tests, decisions, risks, remainingWork, suggestedNextAction, and optional suggestedRole/suggestedTask. Do not add prose outside the fence."#
@@ -619,17 +1219,20 @@ pub fn worker_result_repair_prompt(reason: &str) -> String {
 /// "the subagent returned no results". The message names the failing reason and
 /// the exact accepted vocabulary so the orchestrator can re-emit a valid request.
 pub fn invalid_request_feedback(reason: &str) -> String {
+    // Deliberately shorter than it was. Bridge now fills in schemaVersion,
+    // writeMode, capabilityTier, effort, and outputContract, and folds role
+    // spellings — so listing that whole vocabulary back at the model was
+    // teaching it to author fields it does not own. What is left is what only
+    // the orchestrator can supply.
     format!(
-        r#"Your last `bridge-delegate` request was rejected before any worker started: {reason}. No worker ran, so there is no result coming.
+        r#"Your last `bridge-delegate` request could not be used, so no worker started and no result is coming: {reason}.
 
-Re-emit exactly one corrected `bridge-delegate` JSON object. Accepted values:
-- role: research | implementation | verification | planning | documentation
-- capabilityTier: fast | standard | strong
-- effort: low | medium | high | xhigh
-- writeMode: readOnly (research/verification/planning/documentation) | isolated (implementation) | shared | full — there is no `none`
-- outputContract: research-result | implementation-result | verification-result | decision-result | documentation-result (match the role)
+Re-emit one corrected `bridge-delegate` JSON object. You only need to supply the meaning of the work:
+- objective: what the worker must accomplish (required, non-empty)
+- role: research | implementation | verification | planning | documentation (common synonyms are understood)
+- acceptanceCriteria, knownFacts, decisions, relevantFiles, ownedPaths, verification: optional context
 
-Fix only the invalid field, keep the rest of the request, add no extra keys, and do not restate this guidance to the user."#
+Bridge supplies the schema version, write mode, capability tier, effort, and output contract, and enforces path scope and permissions regardless of what a request asks for. Do not restate this guidance to the user."#
     )
 }
 
@@ -671,9 +1274,16 @@ fn strip_machine_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> Strin
 
 pub fn protocol(depth: i64) -> String {
     if depth >= DEFAULT_MAX_DEPTH {
+        // A bounded request, not a prohibition. The old wording told the worker
+        // it could not delegate and then required an exact closed-vocabulary
+        // value to say it needed help — so a worker that had done real work
+        // could lose all of it over one word. Bridge derives the role now; the
+        // worker only has to describe what it needs.
         return r#"## Bridge worker topology
 
-You are a depth-one worker. Do not spawn or directly delegate to another worker. If more specialization is required, return a typed worker result with `status: "needs_delegation"`, `suggestedRole`, and `suggestedTask`; the parent and Rust policy gate decide what happens next."#
+You are a depth-one worker: you do not spawn workers yourself. You may ask for **one** focused specialist through your result — return `status: "needs_delegation"` with a `suggestedTask` describing what is needed. `suggestedRole` is optional; Bridge derives it. The parent and the Rust policy gate decide whether the specialist runs, under the same depth, path-scope, and budget limits that apply to you.
+
+Always report the work you already completed in the same result. Asking for help never means discarding your own findings."#
             .into();
     }
     r#"## Delegating work (Bridge typed protocol v1)
@@ -699,7 +1309,7 @@ pub fn worker_contract(role: WorkerRole, depth: i64) -> String {
     format!(
         r#"You are a Bridge {role:?} worker assigned one focused objective.
 
-Complete only the supplied objective. Do not directly delegate. If blocked on another specialist, return `needs_delegation` to the parent.
+Complete only the supplied objective. You do not spawn workers yourself; if you need one focused specialist, say so in your result with `status: "needs_delegation"` and a `suggestedTask`.
 
 End with exactly one fenced `bridge-worker-result` JSON object matching schemaVersion 1:
 
@@ -920,7 +1530,7 @@ mod tests {
         let expected = request();
         let encoded = serde_json::to_string(&expected).unwrap();
         let text = format!("Plan:\n```bridge-delegate\n{encoded}\n```");
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(&text) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(&text) else {
             panic!("typed request did not parse");
         };
         assert_eq!(requests, vec![expected.clone()]);
@@ -985,14 +1595,38 @@ mod tests {
     }
 
     #[test]
-    fn needs_delegation_requires_suggestion() {
+    fn needs_delegation_asks_for_a_task_not_a_vocabulary_word() {
         let mut needs = result(WorkerResultStatus::NeedsDelegation);
         assert!(needs.validate().is_ok());
+        // Previously this was an error. A worker that had done real work should
+        // not lose it for failing to guess a closed enum value; Bridge derives
+        // the role instead.
         needs.suggested_role = None;
-        assert!(needs.validate().unwrap_err().contains("suggestedRole"));
-        needs.suggested_role = Some(WorkerRole::Verification);
+        assert!(needs.validate().is_ok(), "suggestedRole is derived, not demanded");
+        // What it needs done is the one thing Bridge cannot infer.
         needs.suggested_task = Some(" ".into());
         assert!(needs.validate().unwrap_err().contains("suggestedTask"));
+    }
+
+    #[test]
+    fn an_escalation_without_a_role_gets_one_derived_from_what_it_asked_for() {
+        for (task, expected) in [
+            ("verify the migration under load", WorkerRole::Verification),
+            ("research how the provider paginates", WorkerRole::Research),
+            ("document the new flag", WorkerRole::Documentation),
+            ("decide between the two schemas", WorkerRole::Planning),
+            ("wire the retry into the client", WorkerRole::Implementation),
+        ] {
+            let text = format!(
+                "```bridge-worker-result\n{{\"status\":\"escalate\",\"summary\":\"needs a specialist\",\"suggestedTask\":\"{task}\"}}\n```"
+            );
+            let ParseOutcome::Parsed(parsed) = parse_worker_result(&text) else {
+                panic!("escalation without a role did not parse: {task}");
+            };
+            assert_eq!(parsed.status, WorkerResultStatus::NeedsDelegation);
+            assert_eq!(parsed.suggested_role, Some(expected), "{task}");
+            assert_eq!(parsed.suggested_next_action, SuggestedNextAction::FollowUp);
+        }
     }
 
     #[test]
@@ -1000,7 +1634,7 @@ mod tests {
         let text = r#"```bridge-delegate
 {"harness":"anthropic","model":"fable","effort":"ultra","task":"Refactor auth","context":"Keep the public API stable"}
 ```"#;
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(text) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(text) else {
             panic!("legacy directive did not parse");
         };
         assert_eq!(requests.len(), 1);
@@ -1136,13 +1770,18 @@ mod tests {
     }
 
     #[test]
-    fn flat_protocol_forbids_worker_delegation() {
+    fn a_depth_one_worker_may_ask_for_one_specialist_without_spawning_it() {
         assert_eq!(DEFAULT_MAX_DEPTH, 1);
         assert!(protocol(0).contains("Default topology is flat"));
         assert!(protocol(0).contains("schemaVersion"));
-        assert!(protocol(1).contains("Do not spawn or directly delegate"));
-        assert!(protocol(1).contains("needs_delegation"));
+        // Still cannot spawn: the depth limit is unchanged and stays in Rust.
+        assert!(protocol(1).contains("you do not spawn workers yourself"));
         assert!(!protocol(1).contains("```bridge-delegate"));
+        // But it is told how to ask, and told that asking costs it nothing.
+        assert!(protocol(1).contains("needs_delegation"));
+        assert!(protocol(1).contains("`suggestedRole` is optional"));
+        assert!(protocol(1).contains("never means discarding your own findings"));
+        assert!(protocol(1).contains("policy gate"));
     }
 
     #[test]
@@ -1166,7 +1805,7 @@ mod tests {
         assert!(briefing.contains("cargo test auth"));
         assert!(briefing.contains("bridge-worker-result"));
         assert!(briefing.contains("schemaVersion"));
-        assert!(briefing.contains("Do not directly delegate"));
+        assert!(briefing.contains("you need one focused specialist"));
         assert!(briefing.contains("```mermaid"));
         assert!(briefing.contains("sandboxed iframe"));
         assert!(briefing.contains("entry-evidence-1"));
@@ -1195,13 +1834,25 @@ mod tests {
             ParseOutcome::Invalid { .. }
         ));
         let valid = serde_json::to_string(&request()).unwrap();
+        // One unusable member still rejects the whole block: partially
+        // dispatching a batch would leave the orchestrator guessing which
+        // workers exist. An empty objective is the case Bridge cannot fill in.
         let mixed = format!(
-            "```bridge-delegate\n[{valid},{{\"schemaVersion\":1,\"objective\":\"missing fields\"}}]\n```"
+            "```bridge-delegate\n[{valid},{{\"objective\":\"   \"}}]\n```"
         );
         assert!(matches!(
             parse_delegation_requests(&mixed),
             ParseOutcome::Invalid { .. }
         ));
+        // A member missing only transport fields is not unusable — Bridge owns
+        // those, so the batch goes through.
+        let sparse = format!(
+            "```bridge-delegate\n[{valid},{{\"objective\":\"Add a regression test\",\"role\":\"verification\"}}]\n```"
+        );
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(&sparse) else {
+            panic!("a request carrying only semantics was rejected");
+        };
+        assert_eq!(requests.len(), 2);
         assert_eq!(
             parse_delegation_requests("ordinary prose"),
             ParseOutcome::Absent
@@ -1209,25 +1860,237 @@ mod tests {
     }
 
     #[test]
-    fn invalid_write_mode_none_is_rejected_and_feedback_names_valid_values() {
-        // Regression: `writeMode:"none"` is a natural but invalid choice for a
-        // read-only role. It must be rejected (so no worker starts on a bad
-        // request) and the corrective feedback must name the accepted values.
+    fn write_mode_none_is_read_as_read_only_rather_than_failing_the_request() {
+        // `writeMode:"none"` is what a model naturally writes for a read-only
+        // role. It used to fail the request, cost a correction turn, and start
+        // no worker. It means readOnly; Bridge reads it that way.
         let request = r#"```bridge-delegate
-{"schemaVersion":1,"role":"research","objective":"x","acceptanceCriteria":["y"],"writeMode":"none","capabilityTier":"standard","effort":"medium","outputContract":"research-result"}
+{"role":"research","objective":"map the delegation tree","writeMode":"none"}
 ```"#;
-        let ParseOutcome::Invalid { reason, .. } = parse_delegation_requests(request) else {
-            panic!("writeMode:none was not rejected");
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
+            panic!("writeMode:none was still rejected");
         };
+        assert_eq!(requests[0].write_mode, WriteMode::ReadOnly);
+        assert_eq!(requests[0].output_contract, OutputContract::ResearchResult);
+    }
+
+    #[test]
+    fn a_read_only_role_cannot_buy_write_access_with_a_generous_wire_format() {
+        // The point of the clamp. Opening the format must not open the
+        // permissions: whatever the model asks for, a research worker reads.
+        for asked in ["full", "shared", "isolated", "danger-full-access"] {
+            let request = format!(
+                "```bridge-delegate\n{{\"role\":\"researcher\",\"objective\":\"read the store\",\"writeMode\":\"{asked}\"}}\n```"
+            );
+            let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(&request) else {
+                panic!("{asked} did not parse");
+            };
+            assert_eq!(
+                requests[0].write_mode,
+                WriteMode::ReadOnly,
+                "a research worker asked for {asked} and must still be read-only"
+            );
+        }
+        // An implementation worker keeps the write mode it is entitled to.
+        let request = r#"```bridge-delegate
+{"role":"implementer","objective":"add the retry"}
+```"#;
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
+            panic!("implementation request did not parse");
+        };
+        assert_eq!(requests[0].role, WorkerRole::Implementation);
+        assert_eq!(requests[0].write_mode, WriteMode::Isolated);
+    }
+
+    #[test]
+    fn a_request_carrying_only_semantics_gets_its_transport_from_rust() {
+        // The whole authority argument in one assertion: the model wrote an
+        // objective and a role, and Bridge produced a complete, valid request.
+        let request = r#"```bridge-delegate
+{"role":"implementation","objective":"Add refresh-token rotation"}
+```"#;
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
+            panic!("a semantics-only request was rejected");
+        };
+        let parsed = &requests[0];
+        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
+        assert_eq!(parsed.write_mode, WriteMode::Isolated);
+        assert_eq!(parsed.capability_tier, CapabilityTier::Standard);
+        assert_eq!(parsed.effort, Effort::Medium);
+        assert_eq!(parsed.output_contract, OutputContract::ImplementationResult);
+        assert_eq!(parsed.acceptance_criteria.len(), 1);
+        assert!(parsed.known_facts.is_empty());
+        assert!(parsed.owned_paths.is_empty());
+        parsed.validate().expect("the derived request is valid");
+    }
+
+    #[test]
+    fn role_spellings_a_model_actually_writes_all_land_somewhere() {
+        for (written, expected) in [
+            ("implementer", WorkerRole::Implementation),
+            ("coder", WorkerRole::Implementation),
+            ("implementation-verifier", WorkerRole::Verification),
+            ("reviewer", WorkerRole::Verification),
+            ("QA", WorkerRole::Verification),
+            ("researcher", WorkerRole::Research),
+            ("orchestrator", WorkerRole::Planning),
+            ("architect", WorkerRole::Planning),
+            ("docs", WorkerRole::Documentation),
+            ("Technical Writer", WorkerRole::Documentation),
+        ] {
+            assert_eq!(WorkerRole::parse(written), Some(expected), "{written}");
+        }
+        // Widened, not opened: a role Bridge does not have is still no role.
+        assert_eq!(WorkerRole::parse("security-auditor"), None);
+        assert_eq!(WorkerRole::parse(""), None);
+    }
+
+    #[test]
+    fn result_vocabulary_a_model_actually_writes_all_lands_somewhere() {
+        for (written, expected) in [
+            ("success", WorkerResultStatus::Completed),
+            ("done", WorkerResultStatus::Completed),
+            ("error", WorkerResultStatus::Failed),
+            ("escalate", WorkerResultStatus::NeedsDelegation),
+            ("needs-delegation", WorkerResultStatus::NeedsDelegation),
+            ("aborted", WorkerResultStatus::Cancelled),
+            ("stuck", WorkerResultStatus::Blocked),
+        ] {
+            assert_eq!(WorkerResultStatus::parse(written), Some(expected), "{written}");
+        }
+        for (written, expected) in [
+            ("delegate_implementation", SuggestedNextAction::FollowUp),
+            ("escalate", SuggestedNextAction::FollowUp),
+            ("continue", SuggestedNextAction::FollowUp),
+            ("done", SuggestedNextAction::Finish),
+            ("ask_user", SuggestedNextAction::RequestApproval),
+        ] {
+            assert_eq!(SuggestedNextAction::parse(written), Some(expected), "{written}");
+        }
+        // An unreadable suggestion falls back to one derived from the status
+        // rather than failing a result that reported real work.
+        let text = r#"```bridge-worker-result
+{"status":"success","summary":"tests pass","suggestedNextAction":"celebrate"}
+```"#;
+        let ParseOutcome::Parsed(parsed) = parse_worker_result(text) else {
+            panic!("an unreadable suggestion failed the result");
+        };
+        assert_eq!(parsed.status, WorkerResultStatus::Completed);
+        assert_eq!(parsed.suggested_next_action, SuggestedNextAction::Finish);
+    }
+
+    #[test]
+    fn unreadable_output_is_protocol_invalid_and_keeps_the_workers_own_words() {
+        let prose = "I refactored the token store and cargo test auth is green, but I forgot the fence.";
+        let result = protocol_invalid_result(prose, "missing bridge-worker-result block");
+        assert_eq!(result.status, WorkerResultStatus::ProtocolInvalid);
+        assert!(result.is_protocol_invalid());
+        // The two properties that matter: not a task failure, and not a retry.
         assert!(
-            reason.contains("readOnly"),
-            "reason should list valid variants: {reason}"
+            !result.is_retryable(),
+            "a formatting mistake must not buy another paid turn"
         );
-        let feedback = invalid_request_feedback(&reason);
-        assert!(feedback.contains(&reason));
-        assert!(feedback.contains("readOnly"));
-        assert!(feedback.contains("there is no `none`"));
-        assert!(feedback.contains("No worker ran"));
+        // And the work is not thrown away just because the envelope was wrong.
+        assert!(result.summary.contains("cargo test auth is green"));
+        assert!(result.summary.contains("could not be read"));
+        assert!(result.risks.iter().any(|risk| risk.contains("nothing here has been verified")));
+        result.validate().expect("the preserved result is still valid");
+
+        // A worker that said nothing at all is described honestly too.
+        let empty = protocol_invalid_result("", "worker finished without a text summary");
+        assert_eq!(empty.status, WorkerResultStatus::ProtocolInvalid);
+        assert!(empty.summary.contains("left no prose"));
+        empty.validate().unwrap();
+    }
+
+    #[test]
+    fn preserved_prose_is_bounded() {
+        let huge = "x".repeat(MAX_PRESERVED_PROSE_BYTES * 3);
+        let result = protocol_invalid_result(&huge, "invalid worker-result JSON");
+        assert!(
+            result.summary.len() < MAX_PRESERVED_PROSE_BYTES + 300,
+            "a parent's context is not a place to paste a transcript"
+        );
+        assert!(result.summary.contains('…'));
+    }
+
+    /// The exact envelope shapes the production database recorded as failures.
+    ///
+    /// Every one of these cost a worker, a correction turn, or both. The
+    /// assertion is that none of them is a task failure any more: each either
+    /// parses into usable work, or is classified `protocol_invalid` — and
+    /// neither outcome is retryable.
+    #[test]
+    fn the_historical_failure_corpus_no_longer_reads_as_task_failure() {
+        let requests = [
+            // invalid suggestedRole vocabulary, mirrored on the request side
+            r#"{"role":"implementer","objective":"Fix the migration guard"}"#,
+            // unknown field
+            r#"{"role":"research","objective":"Find the stall","confidence":"medium"}"#,
+            // writeMode a read-only role should never have been asked to author
+            r#"{"role":"verification","objective":"Re-run the suite","writeMode":"none"}"#,
+            // a guessed schema version
+            r#"{"schemaVersion":2,"role":"planning","objective":"Choose a store"}"#,
+        ];
+        for body in requests {
+            let text = format!("```bridge-delegate\n{body}\n```");
+            let ParseOutcome::Parsed(parsed) = parse_delegation_requests(&text) else {
+                panic!("historical request still rejected: {body}");
+            };
+            parsed.requests[0].validate().expect(body);
+            // And what Bridge did on the model's behalf is on the record, not
+            // applied invisibly.
+            assert!(
+                !parsed.notes.is_empty(),
+                "a rescued request should say what was rescued: {body}"
+            );
+        }
+
+        let results = [
+            // invalid suggestedRole
+            r#"{"status":"needs_delegation","summary":"needs a specialist","suggestedRole":"implementation-verifier","suggestedTask":"verify the fix"}"#,
+            // invalid suggestedNextAction
+            r#"{"status":"completed","summary":"done","suggestedNextAction":"delegate_implementation"}"#,
+            // unknown field
+            r#"{"status":"completed","summary":"done","tokensUsed":1234}"#,
+            // a status in the model's own words
+            r#"{"status":"success","summary":"all green"}"#,
+        ];
+        for body in results {
+            let text = format!("```bridge-worker-result\n{body}\n```");
+            let ParseOutcome::Parsed(parsed) = parse_worker_result(&text) else {
+                panic!("historical result still rejected: {body}");
+            };
+            assert!(
+                !parsed.is_protocol_invalid(),
+                "this one is usable, not transport noise: {body}"
+            );
+            assert!(
+                !parsed.is_retryable(),
+                "a usable result must not look retryable: {body}"
+            );
+        }
+
+        // The one shape normalization genuinely cannot rescue: no fence at all.
+        // It is reported as transport, not as a failed task, and not retried.
+        let unfenced = "I finished the work but wrote no result block.";
+        assert_eq!(parse_worker_result(unfenced), ParseOutcome::Absent);
+        let classified = protocol_invalid_result(unfenced, "missing bridge-worker-result block");
+        assert_eq!(classified.status, WorkerResultStatus::ProtocolInvalid);
+        assert!(!classified.is_retryable());
+    }
+
+    #[test]
+    fn correction_feedback_still_names_what_a_request_must_carry() {
+        // Genuinely unusable requests still get feedback, and it still says no
+        // worker ran — the correction path did not disappear, it got rarer.
+        let feedback = invalid_request_feedback("objective must not be empty");
+        assert!(feedback.contains("objective must not be empty"));
+        assert!(feedback.contains("no worker started"));
+        assert!(feedback.contains("objective: what the worker must accomplish"));
+        // And it stops teaching the model to author fields Bridge owns.
+        assert!(!feedback.contains("capabilityTier: fast"));
+        assert!(feedback.contains("Bridge supplies the schema version"));
     }
 
     #[test]
@@ -1239,21 +2102,28 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_schema_version_precedes_unknown_field_error() {
+    fn a_wrong_schema_version_and_an_extra_field_are_transport_noise_not_failures() {
+        // Both of these used to fail the envelope. There is one schema version
+        // and Bridge owns it, so a model guessing `2` is a spelling mistake in
+        // a field it should never have had to write; an extra explanatory key is
+        // the model being helpful. Neither is a reason to discard the work.
         let request = r#"```bridge-delegate
-{"schemaVersion":2,"objective":"future","futureField":true}
+{"schemaVersion":2,"objective":"future","futureField":true,"why":"explaining myself"}
 ```"#;
-        let ParseOutcome::Invalid { reason, .. } = parse_delegation_requests(request) else {
-            panic!("future request was not rejected");
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
+            panic!("a request with transport noise was rejected");
         };
-        assert!(reason.contains("unsupported delegation schema version 2"));
+        assert_eq!(requests[0].schema_version, SCHEMA_VERSION);
+        assert_eq!(requests[0].objective, "future");
 
         let result = r#"```bridge-worker-result
-{"schemaVersion":2,"status":"completed","futureField":true}
+{"schemaVersion":2,"status":"completed","summary":"did the thing","confidence":"high"}
 ```"#;
-        let ParseOutcome::Invalid { reason, .. } = parse_worker_result(result) else {
-            panic!("future result was not rejected");
+        let ParseOutcome::Parsed(parsed) = parse_worker_result(result) else {
+            panic!("a result with transport noise was rejected");
         };
-        assert!(reason.contains("unsupported worker-result schema version 2"));
+        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
+        assert_eq!(parsed.status, WorkerResultStatus::Completed);
+        assert_eq!(parsed.summary, "did the thing");
     }
 }

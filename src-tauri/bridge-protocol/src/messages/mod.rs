@@ -163,9 +163,11 @@ typed_methods![
     (UpdateChatModel, UpdateChatModelParams, BridgeState),
     (PrepareTurn, PrepareTurnParams, SanitizedTurn),
     (SendTurn, SendTurnParams, UnitResult),
+    (SubmitInput, SubmitInputParams, SubmitInputResult),
     (CompactSession, CompactSessionParams, UnitResult),
     (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
+    (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
     (StopSession, StopSessionParams, BridgeState),
     // memory

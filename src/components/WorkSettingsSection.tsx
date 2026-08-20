@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Save } from "lucide-react";
 import { bridgeApi } from "../api";
+import { CONNECTOR_LOGOS } from "./connectorLogos";
 import type {
   WorkBriefingOptions,
   WorkBriefingProfile,
@@ -35,6 +36,10 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
   const [draft, setDraft] = useState<WorkSettings>();
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Whether the user is narrowing to specific tools. Local state because the
+  // stored shape cannot say "narrowed to nothing": an empty list means read
+  // everything, so the in-between moment while boxes are being picked lives here.
+  const [narrowed, setNarrowed] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -43,6 +48,7 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
         if (!active) return;
         setSnapshot(stored);
         setDraft(structuredClone(stored.settings));
+        setNarrowed(stored.settings.enabledConnectorInstances.length > 0);
         setOptions(briefing);
       })
       .catch(error => onError(error instanceof Error ? error.message : String(error)));
@@ -88,6 +94,7 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
       const stored = await bridgeApi.writeWorkSettings(draft);
       setSnapshot(stored);
       setDraft(structuredClone(stored.settings));
+      setNarrowed(stored.settings.enabledConnectorInstances.length > 0);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1600);
     } catch (error) {
@@ -159,11 +166,15 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
                 onChange={event => {
                   const next = supported.find(harness => harness.id === event.target.value);
                   if (!next) return;
+                  // Connector instance ids are harness-specific, so switching
+                  // harness drops any narrowing along with the model choice.
+                  setNarrowed(false);
                   setDraft(
                     value =>
                       value && {
                         ...value,
                         briefing: { harness: next.id, model: next.defaultModel ?? "", effort: null },
+                        enabledConnectorInstances: [],
                       },
                   );
                 }}
@@ -231,6 +242,94 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
           </div>
         )}
 
+        {briefingOn && chosen && chosen.connectors.length > 0 && (
+          <div className="mt-5 border-t border-border/60 pt-4">
+            <h4 className="text-[12px] font-semibold text-foreground">What it reads</h4>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              The tools {chosen.label} has connected. The briefing only ever reads; a tool
+              needing sign-in is reconnected in {chosen.label} itself.
+            </p>
+            <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={!narrowed}
+                onChange={event => {
+                  const everything = event.target.checked;
+                  setNarrowed(!everything);
+                  setDraft(
+                    value =>
+                      value && {
+                        ...value,
+                        // Narrowing starts from every signed-in tool checked;
+                        // "everything" is stored as the empty list so tools
+                        // connected later are read without another visit here.
+                        enabledConnectorInstances: everything
+                          ? []
+                          : chosen.connectors
+                              .filter(connector => connector.connected !== false)
+                              .map(connector => connector.id),
+                      },
+                  );
+                }}
+              />
+              Everything connected — including tools added later
+            </label>
+            {narrowed && (
+              <ul className="mt-2 space-y-1.5 pl-0.5">
+                {chosen.connectors.map(connector => {
+                  const Logo = CONNECTOR_LOGOS[connector.family];
+                  const checked = draft.enabledConnectorInstances.includes(connector.id);
+                  const needsAuth = connector.connected === false;
+                  return (
+                    <li key={connector.id}>
+                      <label
+                        className={cn(
+                          "flex items-center gap-2 text-xs",
+                          needsAuth ? "text-muted-foreground/60" : "text-foreground",
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked && !needsAuth}
+                          disabled={needsAuth}
+                          onChange={event =>
+                            setDraft(
+                              value =>
+                                value && {
+                                  ...value,
+                                  enabledConnectorInstances: event.target.checked
+                                    ? [...value.enabledConnectorInstances, connector.id]
+                                    : value.enabledConnectorInstances.filter(id => id !== connector.id),
+                                },
+                            )
+                          }
+                        />
+                        {Logo && (
+                          <span aria-hidden="true" className="text-muted-foreground">
+                            <Logo size={12} />
+                          </span>
+                        )}
+                        <span>{connector.id}</span>
+                        {needsAuth && (
+                          <span className="text-[10.5px] text-muted-foreground">
+                            — needs sign-in in {chosen.label}
+                          </span>
+                        )}
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {narrowed && draft.enabledConnectorInstances.length === 0 && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Pick at least one tool, or switch back to everything — a briefing with
+                nothing to read has nothing to say.
+              </p>
+            )}
+          </div>
+        )}
+
         {refused.length > 0 && (
           <div className="mt-4 space-y-1">
             {refused.map(harness => (
@@ -288,7 +387,11 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
       <div className="mt-5 flex items-center gap-2">
         <button
           type="button"
-          disabled={busy || (briefingOn && !draft.briefing?.model)}
+          disabled={
+            busy ||
+            (briefingOn && !draft.briefing?.model) ||
+            (briefingOn && narrowed && draft.enabledConnectorInstances.length === 0)
+          }
           onClick={() => void save()}
           className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"
         >

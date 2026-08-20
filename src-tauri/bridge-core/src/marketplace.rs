@@ -115,6 +115,11 @@ pub struct MarketplaceAppAuthState {
 pub struct ClaudeSdkConfiguration {
     pub plugins: Vec<String>,
     pub mcp_servers: BTreeMap<String, Value>,
+    /// What `mcp list` said about each server's health: `Some(true)` connected,
+    /// `Some(false)` failed or needing authentication, `None` when the line
+    /// carried no verdict. Advisory only — a briefing run still records the
+    /// truth per source from its own tool results.
+    pub connector_health: BTreeMap<String, Option<bool>>,
 }
 
 pub fn catalog() -> MarketplaceCatalog {
@@ -153,16 +158,15 @@ pub fn claude_sdk_configuration() -> ClaudeSdkConfiguration {
             })
     })
     .unwrap_or_default();
-    let mcp_servers = bounded_output(&binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
+    let mcp_list = bounded_output(&binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
         .ok()
         .filter(|output| output.status.success())
-        .map(|output| {
-            parse_claude_native_connector_configs(&String::from_utf8_lossy(&output.stdout))
-        })
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default();
     ClaudeSdkConfiguration {
         plugins,
-        mcp_servers,
+        mcp_servers: parse_claude_native_connector_configs(&mcp_list),
+        connector_health: parse_claude_connector_health(&mcp_list),
     }
 }
 
@@ -926,6 +930,38 @@ fn parse_claude_mcp_auth_states(output: &str) -> Vec<MarketplaceAppAuthState> {
         .collect()
 }
 
+/// The health verdict `mcp list` prints at the end of each server line, keyed
+/// by the same connector ids `parse_claude_native_connector_configs` keeps.
+/// The CLI's vocabulary: `✓ Connected`, `✗ Failed to connect`,
+/// `⚠ Needs authentication`. A line saying none of these carries no verdict.
+fn parse_claude_connector_health(output: &str) -> BTreeMap<String, Option<bool>> {
+    parse_claude_native_connector_configs(output)
+        .into_keys()
+        .map(|connector_id| {
+            let verdict = output
+                .lines()
+                .find(|line| line.trim_start().starts_with(&connector_id))
+                .map(str::to_lowercase)
+                .and_then(|line| {
+                    // Failure markers first: "failed to connect" must never
+                    // read as connected off a substring.
+                    if line.contains('✗')
+                        || line.contains('⚠')
+                        || line.contains("failed")
+                        || line.contains("needs authentication")
+                    {
+                        Some(false)
+                    } else if line.contains('✓') || line.contains('✔') || line.contains("connected") {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                });
+            (connector_id, verdict)
+        })
+        .collect()
+}
+
 fn parse_claude_native_connector_configs(output: &str) -> BTreeMap<String, Value> {
     output
         .lines()
@@ -1462,6 +1498,20 @@ mod tests {
             configs["claude.ai Notion"]["url"],
             "https://mcp.example/notion"
         );
+    }
+
+    #[test]
+    fn connector_health_reads_the_verdict_from_each_servers_own_line() {
+        let health = parse_claude_connector_health(
+            "claude.ai Notion: https://mcp.example/notion - ✔ Connected\n\
+             claude.ai Slack: https://mcp.example/slack - ! Needs authentication\n\
+             claude.ai GitHub: https://mcp.example/github - ✘ Failed to connect\n\
+             claude.ai Quiet: https://mcp.example/quiet\n",
+        );
+        assert_eq!(health["claude.ai Notion"], Some(true));
+        assert_eq!(health["claude.ai Slack"], Some(false), "needing auth is not connected");
+        assert_eq!(health["claude.ai GitHub"], Some(false));
+        assert_eq!(health["claude.ai Quiet"], None, "no verdict is not a verdict");
     }
 
     #[test]
