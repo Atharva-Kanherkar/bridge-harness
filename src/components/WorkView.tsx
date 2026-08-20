@@ -27,8 +27,11 @@ import {
   orderTasks,
   sourceLabel,
   taskAnnouncement,
+  taskRoute,
   type TaskAction,
 } from "./workTasks";
+import { logoForSourceKind } from "./connectorLogos";
+import { lastRunLine, toolsReadLine } from "./workDashboard";
 
 // The Work board. Prop-driven: it is handed a board and four callbacks and holds no
 // data of its own, so every state below is reachable from a test without a backend.
@@ -83,6 +86,12 @@ export type WorkViewProps = {
   onTogglePin?: (task: WorkTask) => Promise<WorkActionOutcome>;
   /** Open a task's evidence. The target is rechecked in Rust before anything opens. */
   onOpenEvidence?: (task: WorkTask) => void;
+  /** Follow a row where it belongs: Code for a workspace-bound task, Work otherwise.
+   * Routed by `taskRoute`, from the task's own fields — never a model-authored URL. */
+  onOpenTask?: (task: WorkTask) => void;
+  /** Trigger a briefing run. Refresh re-reads the board; this asks a model to rebuild
+   * the suggested half, so it is its own affordance. */
+  onRunBriefing?: () => void;
 };
 
 function Chip({ children }: { children: React.ReactNode }) {
@@ -219,11 +228,13 @@ function TaskRow({
   onTaskAction,
   onTogglePin,
   onOpenEvidence,
+  onOpenTask,
 }: {
   task: WorkTask;
   onTaskAction?: (task: WorkTask, action: TaskAction) => Promise<WorkActionOutcome>;
   onTogglePin?: (task: WorkTask) => Promise<WorkActionOutcome>;
   onOpenEvidence?: (task: WorkTask) => void;
+  onOpenTask?: (task: WorkTask) => void;
 }) {
   const [failure, setFailure] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -248,11 +259,22 @@ function TaskRow({
   );
 
   const openable = hasOpenableEvidence(task);
+  // The real connector's mark, inline SVG only. Never load-bearing: the source is
+  // also named in text right below, so an unrecognised family loses nothing.
+  const Logo = logoForSourceKind(task.sourceKind);
+  // A row bound to a workspace routes to Code. Anything else belongs to Work,
+  // which the reader is already on — so only the Code route draws an affordance.
+  const route = taskRoute(task);
+  const routable = route.kind === "code" && onOpenTask !== undefined;
   return (
     <li className="flex flex-wrap gap-3 rounded-xl border border-border bg-card pr-3 sm:flex-nowrap sm:py-2.5">
       <span aria-hidden="true" className="w-[3px] shrink-0 self-stretch rounded-r-sm bg-info" />
       <span aria-hidden="true" className="mt-2.5 flex size-6.5 shrink-0 items-center justify-center rounded-md bg-muted sm:mt-0.5">
-        <Sparkles size={14} strokeWidth={1.7} className="text-muted-foreground" />
+        {Logo ? (
+          <span className="text-muted-foreground"><Logo size={13} /></span>
+        ) : (
+          <Sparkles size={14} strokeWidth={1.7} className="text-muted-foreground" />
+        )}
       </span>
       <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -269,7 +291,18 @@ function TaskRow({
         </div>
         <p className="mt-0.5 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere]">
           <span className="sr-only">{taskAnnouncement(task)}</span>
-          <span aria-hidden="true">{task.title}</span>
+          {routable ? (
+            <button
+              type="button"
+              aria-label={`Open ${task.title} in Code`}
+              onClick={() => onOpenTask(task)}
+              className="text-left underline-offset-2 transition-colors hover:underline"
+            >
+              <span aria-hidden="true">{task.title}</span>
+            </button>
+          ) : (
+            <span aria-hidden="true">{task.title}</span>
+          )}
         </p>
         <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{task.why}</p>
         {failure && (
@@ -374,7 +407,7 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
   );
 }
 
-export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date(), onTaskAction, onTogglePin, onOpenEvidence }: WorkViewProps) {
+export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date(), onTaskAction, onTogglePin, onOpenEvidence, onOpenTask, onRunBriefing }: WorkViewProps) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const [hiddenShown, setHiddenShown] = useState(false);
   const bands = useMemo(() => bandFacts(board?.facts ?? []), [board]);
@@ -409,13 +442,31 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
                   : `${count} ${count === 1 ? "thing needs" : "things need"} you. Nothing was started to build this list.`}
           </p>
         </div>
-        <div className="ml-auto shrink-0">
+        <div className="ml-auto flex shrink-0 gap-1.5">
+          {onRunBriefing && board !== undefined && board.suggestions.state !== "not_configured" && board.suggestions.state !== "running" && (
+            <GhostButton onClick={onRunBriefing}>
+              <Sparkles size={12} strokeWidth={1.8} aria-hidden="true" />
+              Run briefing
+            </GhostButton>
+          )}
           <GhostButton onClick={onRefresh}>
             <RefreshCw size={12} strokeWidth={1.8} aria-hidden="true" />
             Refresh
           </GhostButton>
         </div>
       </header>
+
+      {/* The dashboard strip: when the last run was, how it ended, and which tools
+          it actually read — from the run's own coverage, never the model's word.
+          No secrets and no raw provider errors reach this line. */}
+      {board !== undefined && (board.latestRun || board.suggestions.state === "running") && (
+        <div aria-label="Briefing status" className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2">
+          <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">{lastRunLine(board.latestRun, now)}</span>{" "}
+            {toolsReadLine(board.sources)}
+          </p>
+        </div>
+      )}
 
       {showNotice && (
         <div className="mx-5 mb-2.5 flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-2">
@@ -509,6 +560,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
                   onTaskAction={onTaskAction}
                   onTogglePin={onTogglePin}
                   onOpenEvidence={onOpenEvidence}
+                  onOpenTask={onOpenTask}
                 />
               ))}
             </ul>
@@ -534,6 +586,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
                     onTaskAction={onTaskAction}
                     onTogglePin={onTogglePin}
                     onOpenEvidence={onOpenEvidence}
+                    onOpenTask={onOpenTask}
                   />
                 ))}
               </ul>

@@ -451,6 +451,8 @@ mod tests {
                 limits: limits(),
                 idempotency_key: None,
                 started_at: T0.into(),
+                lease_owner: None,
+                lease_expires_at: None,
             },
         )
         .unwrap();

@@ -75,6 +75,8 @@ pub mod work_brief_parser;
 pub mod work_briefing_config;
 pub mod work_brief_runner;
 pub mod work_brief_store;
+pub mod work_briefing_live;
+pub mod work_briefing_trigger;
 pub mod work_connectors;
 pub mod work_evidence;
 pub mod work_fingerprint;
