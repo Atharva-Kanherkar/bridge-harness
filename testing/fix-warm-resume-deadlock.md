@@ -26,6 +26,13 @@ on stale data.
    deadlock, the resumed worker is invisible under the new orchestrator and
    its result routes to a possibly dead parent.
 
+3. **Crash-stopped sessions keep their turn id.** The boot cleanup in
+   `store::open` marks working/waiting sessions stopped without clearing
+   `active_turn_id`, and the composer renders Stop/Steer from exactly that
+   field — so every crashed turn leaves a session whose composer permanently
+   offers to stop nothing. Six such rows existed on the live store, the oldest
+   from July.
+
 ## Functional Behavior
 
 - Promoting a reused worker (hot `stopped→resuming→working`, cold
@@ -35,6 +42,9 @@ on stale data.
   `sessions.parent_session_id`/`depth` at the resuming orchestrator, clears
   `sessions.ended_at`, and resets `result_status` to `pending` (existing
   behavior preserved).
+- Opening the store clears `active_turn_id` on every session it force-stops
+  and reconciles any terminal-status session still carrying one, so a
+  composer only offers Stop/Steer when a turn is actually live.
 
 ## Unit Tests
 
@@ -44,6 +54,8 @@ on stale data.
   events recorded.
 - `activate_reused_worker` re-parents both rows, clears `ended_at`, resets
   `result_status`, and re-encodes the compatibility key.
+- Reopening the store leaves no non-live session with an `active_turn_id`,
+  covering both the force-stop path and rows damaged by earlier crashes.
 
 ## Integration / Smoke
 
