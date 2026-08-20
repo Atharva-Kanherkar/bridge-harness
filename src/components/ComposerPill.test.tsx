@@ -154,7 +154,10 @@ describe("ComposerPill", () => {
 
   describe("inline suggestions", () => {
     const putCaretAtEnd = (value: string) => {
-      act(() => textarea().setSelectionRange(value.length, value.length));
+      act(() => {
+        textarea().setSelectionRange(value.length, value.length);
+        textarea().dispatchEvent(new Event("select", { bubbles: true }));
+      });
     };
 
     it("renders ghost text after the draft when the caret is at the end", () => {
@@ -169,8 +172,10 @@ describe("ComposerPill", () => {
 
     it("hides the ghost text once the caret has moved away from the end", () => {
       render({ value: "let's ship the release", suggestion: " notes" });
-      act(() => textarea().setSelectionRange(0, 0));
-      render({ value: "let's ship the release", suggestion: " notes" });
+      act(() => {
+        textarea().setSelectionRange(0, 0);
+        textarea().dispatchEvent(new Event("select", { bubbles: true }));
+      });
 
       // "notes" must not appear as ghost text once the caret is no longer
       // trailing the draft — the continuation would land in the wrong place.
@@ -204,6 +209,19 @@ describe("ComposerPill", () => {
       });
 
       expect(onAcceptSuggestion).not.toHaveBeenCalled();
+    });
+
+    it("does not accept Tab after the caret moves away, even before a re-render", () => {
+      const onAcceptSuggestion = vi.fn();
+      render({ value: "draft", suggestion: " continues", onAcceptSuggestion });
+      putCaretAtEnd("draft");
+
+      act(() => textarea().setSelectionRange(0, 0));
+      const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event); });
+
+      expect(onAcceptSuggestion).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
     });
 
     it("does nothing on Tab when there is no suggestion to accept", () => {

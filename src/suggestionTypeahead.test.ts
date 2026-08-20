@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import type { SuggestCompletionResult } from "./protocol/generated/protocol";
@@ -104,5 +105,24 @@ describe("scheduleSuggestion", () => {
     await Promise.resolve();
 
     expect(onResult).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("drops an in-flight response when the schedule is cancelled, including turning the toggle off", async () => {
+    const onResult = vi.fn();
+    const generation = { current: 0 };
+    let resolveInFlight: (value: SuggestCompletionResult) => void = () => {};
+    const request = vi.fn(() => new Promise<SuggestCompletionResult>(resolve => { resolveInFlight = resolve; }));
+    const cancel = scheduleSuggestion({ text: "hello", enabled: true, request, onResult, generation });
+    vi.advanceTimersByTime(400);
+    expect(request).toHaveBeenCalledTimes(1);
+
+    cancel();
+    scheduleSuggestion({ text: "hello", enabled: false, request, onResult, generation });
+
+    onResult.mockClear();
+    resolveInFlight(result(" world"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onResult).not.toHaveBeenCalled();
   });
 });

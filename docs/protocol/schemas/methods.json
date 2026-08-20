@@ -394,6 +394,27 @@
       "resultDeferred": "bridge_core::model_profiles::ModelSetupState"
     },
     {
+      "command": "get_suggestion_settings",
+      "domain": "models",
+      "method": "models/get_suggestion_settings",
+      "paramsSchema": null,
+      "resultSchema": "suggestion-settings-snapshot.json"
+    },
+    {
+      "command": "save_suggestion_settings",
+      "domain": "models",
+      "method": "models/save_suggestion_settings",
+      "paramsSchema": "save-suggestion-settings-params.json",
+      "resultSchema": "suggestion-settings-snapshot.json"
+    },
+    {
+      "command": "suggest_completion",
+      "domain": "models",
+      "method": "models/suggest_completion",
+      "paramsSchema": "suggest-completion-params.json",
+      "resultSchema": "suggest-completion-result.json"
+    },
+    {
       "command": "get_config_state",
       "domain": "config",
       "method": "config/get_config_state",
@@ -753,7 +774,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 0
+    "minor": 2
   },
   "reserved": {
     "cancel": "$/cancel",

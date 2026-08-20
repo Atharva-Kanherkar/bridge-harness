@@ -34,7 +34,7 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// rejected: the only ways to make an `acp:` session fit a 0.8 client are to
 /// hide it or to rename it, and both break the guarantee that history never
 /// vanishes and is never re-attributed.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

@@ -40,5 +40,11 @@ export function scheduleSuggestion(options: {
         if (generation.current === mine) onResult(undefined);
       });
   }, options.debounceMs ?? DEBOUNCE_MS);
-  return () => window.clearTimeout(timer);
+  return () => {
+    window.clearTimeout(timer);
+    // Drop an in-flight request, not just the timer. Disabling the toggle
+    // (or switching chats) used to leave `generation` unchanged, so a
+    // response could still paint onto a draft the user had walked away from.
+    if (generation.current === mine) generation.current += 1;
+  };
 }

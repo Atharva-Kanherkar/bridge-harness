@@ -1,5 +1,5 @@
 import type { KeyboardEvent, MutableRefObject, ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Plus, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -68,13 +68,24 @@ export function ComposerPill({
   onAcceptSuggestion,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  // Ghost text only makes sense continuing from where typing left off; once
-  // the caret moves away from the end, the overlay would be misleading.
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  // Ghost text only makes sense continuing from where typing left off. Selection
+  // changes do not re-render on their own, so a click into the middle of the
+  // draft would leave the overlay painted; `caretEpoch` exists only to force a
+  // render when the caret moves. Tab itself reads the caret live, so it cannot
+  // accept a suggestion the overlay has not yet had a chance to hide.
   const caretAtEnd = () => {
     const node = textareaRef.current;
     return !!node && node.selectionStart === value.length && node.selectionEnd === value.length;
   };
+  const [, setCaretEpoch] = useState(0);
   const showSuggestion = !!suggestion && caretAtEnd();
+  const noteCaret = () => setCaretEpoch(n => n + 1);
+  const syncOverlayScroll = () => {
+    const overlay = overlayRef.current;
+    const textarea = textareaRef.current;
+    if (overlay && textarea) overlay.scrollTop = textarea.scrollTop;
+  };
   const isHero = layout === "hero";
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
@@ -114,6 +125,7 @@ export function ComposerPill({
               ends. Sizing must track the textarea exactly, or the seam shows. */}
           {showSuggestion && (
             <div
+              ref={overlayRef}
               aria-hidden="true"
               className={cn(
                 "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words text-[15px] leading-relaxed tracking-[-0.006em]",
@@ -139,10 +151,16 @@ export function ComposerPill({
             aria-controls={autocomplete?.controls}
             aria-activedescendant={autocomplete?.activeDescendant}
             onChange={event => onChange(event.target.value)}
+            onSelect={noteCaret}
+            onClick={noteCaret}
+            onKeyUp={noteCaret}
+            onScroll={syncOverlayScroll}
             onKeyDown={event => {
               onKeyDown?.(event);
               if (event.defaultPrevented) return;
-              if (event.key === "Tab" && showSuggestion && onAcceptSuggestion) {
+              // Read the caret live: `showSuggestion` can lag a click that has
+              // not yet flushed through `onSelect`.
+              if (event.key === "Tab" && suggestion && caretAtEnd() && onAcceptSuggestion) {
                 event.preventDefault();
                 onAcceptSuggestion();
                 return;

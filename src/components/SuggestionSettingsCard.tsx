@@ -90,7 +90,9 @@ export function SuggestionSettingsCard({
           disabled={!draft.enabled || options.length === 0}
           value={current}
           onChange={event => {
-            const [provider, model] = event.target.value.split(":");
+            const separator = event.target.value.indexOf(":");
+            const provider = separator === -1 ? event.target.value : event.target.value.slice(0, separator);
+            const model = separator === -1 ? "" : event.target.value.slice(separator + 1);
             setDraft(value => value && { ...value, provider, model });
           }}
         >

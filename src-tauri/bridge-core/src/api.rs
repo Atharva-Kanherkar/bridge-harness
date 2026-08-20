@@ -16,12 +16,10 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
-<<<<<<< HEAD
     learning_job, learning_router, live_turn, marketplace, memory_ledger, model_profiles, opencode_adapter,
     secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
     suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
->>>>>>> origin/main
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use bridge_protocol::messages as wire;
