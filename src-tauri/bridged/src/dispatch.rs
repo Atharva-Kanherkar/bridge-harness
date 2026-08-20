@@ -244,7 +244,12 @@ pub fn dispatch(
         }
         MethodName::RollbackRoutingPolicy => {
             let p: wire::RollbackRoutingPolicyParams = decode(method, params)?;
-            reply(api::rollback_routing_policy(core, p.target_version, &p.explanation))
+            reply(api::rollback_routing_policy(
+                core,
+                &p.workspace_id,
+                p.target_version,
+                &p.explanation,
+            ))
         }
 
         MethodName::GetModelSetup => reply(api::get_model_setup(core)),
@@ -291,14 +296,17 @@ pub fn dispatch(
         }
         MethodName::ResetAllConfig => reply(api::reset_all_config(core)),
 
-        MethodName::GetLearningState => reply(api::get_learning_state(core)),
+        MethodName::GetLearningState => {
+            let p: wire::GetLearningStateParams = decode(method, params)?;
+            reply(api::get_learning_state(core, &p.workspace_id))
+        }
         MethodName::RunLearning => {
             let p: wire::RunLearningParams = decode(method, params)?;
             let kind = match p.trigger_kind {
                 wire::LocalLearningTriggerKind::Manual => learning_job::LearningTriggerKind::Manual,
                 wire::LocalLearningTriggerKind::InApp => learning_job::LearningTriggerKind::InApp,
             };
-            reply(api::run_learning(core, kind))
+            reply(api::run_learning(core, kind, &p.workspace_id))
         }
         MethodName::CancelLearningRun => {
             let p: wire::CancelLearningRunParams = decode(method, params)?;

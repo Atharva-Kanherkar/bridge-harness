@@ -605,9 +605,9 @@ export const bridgeApi = {
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     return Promise.resolve(structuredClone(mockConfigState));
   },
-  learningState: (): Promise<LearningState> => isTauri() ? call("learning/get_learning_state") as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
-  runLearning: (triggerKind: LocalLearningTriggerKind = "manual"): Promise<LearningRun> => {
-    if (isTauri()) return call("learning/run_learning", { triggerKind }) as Promise<LearningRun>;
+  learningState: (workspaceId: string): Promise<LearningState> => isTauri() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
+  runLearning: (triggerKind: LocalLearningTriggerKind = "manual", workspaceId: string): Promise<LearningRun> => {
+    if (isTauri()) return call("learning/run_learning", { triggerKind, workspaceId }) as Promise<LearningRun>;
     if (mockLearningState.latestRun) {
       const duplicate = { ...structuredClone(mockLearningState.latestRun), triggerKind, duplicate: true };
       return Promise.resolve(duplicate);
@@ -635,8 +635,8 @@ export const bridgeApi = {
     mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
-  rollbackRoutingPolicy: (targetVersion: number, explanation: string): Promise<LearningState> => {
-    if (isTauri()) return call("routing/rollback_routing_policy", { targetVersion, explanation }) as Promise<LearningState>;
+  rollbackRoutingPolicy: (workspaceId: string, targetVersion: number, explanation: string): Promise<LearningState> => {
+    if (isTauri()) return call("routing/rollback_routing_policy", { workspaceId, targetVersion, explanation }) as Promise<LearningState>;
     void targetVersion;
     void explanation;
     mockLearningState.activePolicyVersion += 1;

@@ -1,4 +1,4 @@
-use crate::{routing_policy, BridgeError};
+use crate::{learning_router, routing_policy, BridgeError};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -143,18 +143,49 @@ pub struct LearningState {
     pub canary_policy_version: Option<i64>,
 }
 
-fn active_policy_version(db: &Connection) -> Result<i64, BridgeError> {
-    Ok(db.query_row(
-        "SELECT COALESCE(MAX(version),1) FROM routing_policies WHERE status IN ('active','canary')",
-        [],
-        |row| row.get(0),
-    )?)
+fn active_policy_version(db: &Connection, scope: &str) -> Result<i64, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT version FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
 }
 
-fn evidence_boundary(db: &Connection) -> Result<i64, BridgeError> {
+fn scope_cursor(db: &Connection, scope: &str) -> Result<i64, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT last_evidence_boundary FROM learning_scope_cursors WHERE learning_scope=?1",
+            params![scope],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+fn workspaces_with_outcomes(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT DISTINCT d.workspace_id
+         FROM router_decisions d JOIN router_outcomes o ON o.decision_id=d.id
+         ORDER BY d.workspace_id",
+    )?;
+    let rows = statement.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(BridgeError::from)
+}
+
+/// The scope's own evidence high-water mark. A global rowid here would mint a
+/// fresh idempotency key for every workspace whenever any one of them recorded
+/// an outcome, spawning a noop run per idle workspace on every sweep.
+fn evidence_boundary(db: &Connection, workspace_id: &str) -> Result<i64, BridgeError> {
     Ok(db.query_row(
-        "SELECT COALESCE(MAX(rowid),0) FROM router_outcomes",
-        [],
+        "SELECT COALESCE(MAX(o.rowid),0) FROM router_outcomes o
+         JOIN router_decisions d ON d.id=o.decision_id WHERE d.workspace_id=?1",
+        params![workspace_id],
         |row| row.get(0),
     )?)
 }
@@ -190,21 +221,22 @@ struct EvidenceSummary {
 }
 
 impl EvidenceSummary {
-    fn load(db: &Connection, boundary: i64) -> Result<Self, BridgeError> {
+    fn load(db: &Connection, workspace_id: &str, boundary: i64) -> Result<Self, BridgeError> {
         db.query_row(
             "SELECT COUNT(*),
-                    COALESCE(SUM(CASE WHEN success_state IN ('success','failure') THEN 1 ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN success_state='success' THEN 1 ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN runtime_ms IS NOT NULL THEN runtime_ms ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN runtime_ms IS NOT NULL THEN 1 ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN cost_microusd IS NOT NULL THEN cost_microusd ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN cost_microusd IS NOT NULL THEN 1 ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN retry_count>0 THEN 1 ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN human_intervention THEN 1 ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN confidence_bps IS NOT NULL THEN confidence_bps ELSE 0 END),0),
-                    COALESCE(SUM(CASE WHEN confidence_bps IS NOT NULL THEN 1 ELSE 0 END),0)
-             FROM router_outcomes WHERE rowid<=?1",
-            params![boundary],
+                    COALESCE(SUM(CASE WHEN o.success_state IN ('success','failure') THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.success_state='success' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.runtime_ms IS NOT NULL THEN o.runtime_ms ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.runtime_ms IS NOT NULL THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.cost_microusd IS NOT NULL THEN o.cost_microusd ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.cost_microusd IS NOT NULL THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.retry_count>0 THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.human_intervention THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.confidence_bps IS NOT NULL THEN o.confidence_bps ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.confidence_bps IS NOT NULL THEN 1 ELSE 0 END),0)
+             FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+             WHERE d.workspace_id=?1 AND o.rowid<=?2",
+            params![workspace_id, boundary],
             |row| {
                 Ok(Self {
                     count: row.get(0)?,
@@ -235,6 +267,9 @@ impl EvidenceSummary {
 }
 
 fn active_policy_weights(db: &Connection, version: i64) -> Result<serde_json::Value, BridgeError> {
+    if version <= 0 {
+        return Ok(json!({}));
+    }
     let weights: String = db.query_row(
         "SELECT weights FROM routing_policies WHERE version=?1",
         params![version],
@@ -264,6 +299,7 @@ impl DeferredEvaluationSummary {
 fn record_deferred_model_evaluations(
     db: &Connection,
     learning_run_id: &str,
+    workspace_id: &str,
     previous_boundary: i64,
     boundary: i64,
 ) -> Result<DeferredEvaluationSummary, BridgeError> {
@@ -292,10 +328,10 @@ fn record_deferred_model_evaluations(
         "SELECT d.id,d.parent_session_id,d.actual_provider,o.runtime_ms,o.cost_microusd,o.retry_count,o.edit_count,o.override_signal,
                 COALESCE((SELECT evidence_entry_ids FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='deterministic' ORDER BY e.created_at DESC LIMIT 1),'[]')
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE o.rowid>?1 AND o.rowid<=?2 AND o.success_state='unknown'",
+         WHERE o.rowid>?1 AND o.rowid<=?2 AND d.workspace_id=?3 AND o.success_state='unknown'",
     )?;
     let rows = statement
-        .query_map(params![previous_boundary, boundary], |row| {
+        .query_map(params![previous_boundary, boundary, workspace_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -416,12 +452,15 @@ fn record_deferred_model_evaluations(
 }
 
 fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRun, BridgeError> {
-    let (boundary, base_policy_version, candidate_policy_version): (i64, i64, Option<i64>) = db.query_row(
-        "SELECT evidence_boundary,base_policy_version,candidate_policy_version FROM learning_job_runs WHERE id=?1",
+    let (boundary, base_policy_version, candidate_policy_version, scope): (i64, i64, Option<i64>, String) = db.query_row(
+        "SELECT evidence_boundary,base_policy_version,candidate_policy_version,learning_scope FROM learning_job_runs WHERE id=?1",
         params![id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
-    let summary = EvidenceSummary::load(db, boundary).unwrap_or_default();
+    let summary = learning_router::workspace_id_from_scope(&scope)
+        .ok()
+        .and_then(|workspace_id| EvidenceSummary::load(db, workspace_id, boundary).ok())
+        .unwrap_or_default();
     let report = LearningReport {
         reason: error.to_string(),
         evidence_boundary: boundary,
@@ -467,6 +506,12 @@ fn persist_candidate_policy(
 ) -> Result<i64, BridgeError> {
     let replay_json = serde_json::to_string(&candidate.replay)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let scope: String = db.query_row(
+        "SELECT learning_scope FROM learning_job_runs WHERE id=?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let predecessor: Option<i64> = (base_version > 0).then_some(base_version);
     let transaction = db.unchecked_transaction()?;
     let next_version: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(version),0)+1 FROM routing_policies",
@@ -474,9 +519,9 @@ fn persist_candidate_policy(
         |row| row.get(0),
     )?;
     transaction.execute(
-        "INSERT INTO routing_policies(version,status,predecessor,weights,thresholds,replay_report,created_reason,created_at)
-         VALUES(?1,'candidate',?2,?3,?4,?5,?6,?7)",
-        params![next_version, base_version, candidate.weights.to_string(), candidate.thresholds.to_string(), replay_json, format!("learning candidate from frozen evidence boundary {boundary}"), Utc::now().to_rfc3339()],
+        "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,replay_report,created_reason,created_at)
+         VALUES(?1,'candidate',?2,?3,?4,?5,?6,?7,?8)",
+        params![next_version, predecessor, scope, candidate.weights.to_string(), candidate.thresholds.to_string(), replay_json, format!("learning candidate from frozen evidence boundary {boundary}"), Utc::now().to_rfc3339()],
     )?;
     let linked = transaction.execute(
         "UPDATE learning_job_runs SET candidate_policy_version=?2 WHERE id=?1 AND status='running'",
@@ -494,11 +539,13 @@ fn persist_candidate_policy(
 pub fn run_learning(
     db: &Connection,
     trigger_kind: LearningTriggerKind,
+    workspace_id: &str,
 ) -> Result<LearningRun, BridgeError> {
-    settle_canary(db)?;
-    let boundary = evidence_boundary(db)?;
-    let base_version = active_policy_version(db)?;
-    let key = format!("{DEFAULT_JOB_ID}:{boundary}:{base_version}");
+    let scope = learning_router::workspace_learning_scope(workspace_id)?;
+    settle_canary(db, &scope)?;
+    let boundary = evidence_boundary(db, workspace_id)?;
+    let base_version = active_policy_version(db, &scope)?;
+    let key = format!("{DEFAULT_JOB_ID}:{scope}:{boundary}:{base_version}");
     let now = Utc::now();
     let lease_owner = Uuid::new_v4().to_string();
     if let Some(mut active) = load_active_run(db)? {
@@ -617,9 +664,9 @@ pub fn run_learning(
     let id = Uuid::new_v4().to_string();
     let created_at = now.to_rfc3339();
     let inserted = db.execute(
-        "INSERT OR IGNORE INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,'running',?7,?8,?9,?9)",
-        params![id, DEFAULT_JOB_ID, trigger_kind.as_str(), key, boundary, base_version, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(), created_at],
+        "INSERT OR IGNORE INTO learning_job_runs(id,job_id,learning_scope,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,'running',?8,?9,?10,?10)",
+        params![id, DEFAULT_JOB_ID, scope, trigger_kind.as_str(), key, boundary, base_version, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(), created_at],
     )?;
     if inserted == 0 {
         let mut existing = match load_run_by_key(db, &key)? {
@@ -649,22 +696,37 @@ pub fn run_learning(
     process_run(db, &id, boundary, base_version).or_else(|error| fail_run(db, &id, &error))
 }
 
+/// Sequential per-workspace learning. The global one-active-lease index forbids concurrent runs.
+pub fn run_learning_all_workspaces(
+    db: &Connection,
+    trigger_kind: LearningTriggerKind,
+) -> Result<Option<LearningRun>, BridgeError> {
+    let mut last = None;
+    for workspace_id in workspaces_with_outcomes(db)? {
+        last = Some(run_learning(db, trigger_kind, &workspace_id)?);
+    }
+    Ok(last)
+}
+
 fn process_run(
     db: &Connection,
     id: &str,
     boundary: i64,
     base_version: i64,
 ) -> Result<LearningRun, BridgeError> {
-    let schedule = load_schedule(db)?;
-    let summary = EvidenceSummary::load(db, boundary)?;
-    let previous_boundary: i64 = db.query_row(
-        "SELECT last_evidence_boundary FROM learning_jobs WHERE id=?1",
-        params![DEFAULT_JOB_ID],
+    let scope: String = db.query_row(
+        "SELECT learning_scope FROM learning_job_runs WHERE id=?1",
+        params![id],
         |row| row.get(0),
     )?;
+    let workspace_id = learning_router::workspace_id_from_scope(&scope)?;
+    let schedule = load_schedule(db)?;
+    let summary = EvidenceSummary::load(db, &workspace_id, boundary)?;
+    let previous_boundary = scope_cursor(db, &scope)?;
     let new_evidence_count: i64 = db.query_row(
-        "SELECT COUNT(*) FROM router_outcomes WHERE rowid>?1 AND rowid<=?2",
-        params![previous_boundary, boundary],
+        "SELECT COUNT(*) FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+         WHERE d.workspace_id=?1 AND o.rowid>?2 AND o.rowid<=?3",
+        params![workspace_id, previous_boundary, boundary],
         |row| row.get(0),
     )?;
     let mut candidate_policy_version = None;
@@ -675,8 +737,8 @@ fn process_run(
     let mut evaluation_execution = "not_run".to_owned();
     let canary_pending = schedule.mode == "automatic"
         && db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM routing_policies WHERE status='canary')",
-            [],
+            "SELECT EXISTS(SELECT 1 FROM routing_policies WHERE learning_scope=?1 AND status='canary')",
+            params![scope],
             |row| row.get::<_, bool>(0),
         )?;
     let (status, reason) = if schedule.run_budget_microusd <= 0 || schedule.run_budget_tokens <= 0 {
@@ -703,12 +765,17 @@ fn process_run(
             format!("insufficient new evidence: {new_evidence_count}/{MIN_EVIDENCE_SAMPLES} outcomes since boundary {previous_boundary}"),
         )
     } else {
-        let evaluation_summary =
-            record_deferred_model_evaluations(db, id, previous_boundary, boundary)?;
+        let evaluation_summary = record_deferred_model_evaluations(
+            db,
+            id,
+            &workspace_id,
+            previous_boundary,
+            boundary,
+        )?;
         evaluation_execution = evaluation_summary.execution_status().into();
         consumed_evidence = true;
         let base_weights = active_policy_weights(db, base_version)?;
-        match routing_policy::build_candidate(db, boundary, &base_weights)? {
+        match routing_policy::build_candidate(db, workspace_id, boundary, &base_weights)? {
             None => (LearningRunStatus::Noop, "insufficient value: no supported policy change met the sample and confidence thresholds".into()),
             Some(candidate) if !candidate.replay.passed => {
                 replay_passed = Some(false);
@@ -783,6 +850,14 @@ fn process_run(
         params![id, status.as_str(), serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, candidate_policy_version, replay_passed, promotion_status, completed_at],
     )?;
     if consumed_evidence {
+        transaction.execute(
+            "INSERT INTO learning_scope_cursors(learning_scope,last_evidence_boundary,updated_at)
+             VALUES(?1,?2,?3)
+             ON CONFLICT(learning_scope) DO UPDATE SET
+               last_evidence_boundary=MAX(learning_scope_cursors.last_evidence_boundary,excluded.last_evidence_boundary),
+               updated_at=excluded.updated_at",
+            params![scope, boundary, completed_at],
+        )?;
         transaction.execute(
             "UPDATE learning_jobs SET last_evidence_boundary=MAX(last_evidence_boundary,?2),updated_at=?3 WHERE id=?1",
             params![DEFAULT_JOB_ID, boundary, completed_at],
@@ -903,22 +978,35 @@ fn promote_candidate(
     canary: bool,
 ) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
-    let (current, current_status): (i64, String) = transaction.query_row(
-        "SELECT version,status FROM routing_policies WHERE status IN ('active','canary') LIMIT 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+    let scope: String = transaction.query_row(
+        "SELECT learning_scope FROM learning_job_runs WHERE id=?1",
+        params![run_id],
+        |row| row.get(0),
     )?;
-    if current_status == "canary" {
+    let current: Option<(i64, String)> = transaction
+        .query_row(
+            "SELECT version,status FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if current
+        .as_ref()
+        .is_some_and(|(_, status)| status == "canary")
+    {
         return Err(BridgeError::Invalid(
             "an existing canary must settle or roll back before another policy can promote".into(),
         ));
     }
     let (predecessor, replay): (Option<i64>, Option<String>) = transaction.query_row(
-        "SELECT predecessor,replay_report FROM routing_policies WHERE version=?1 AND status='candidate'",
-        params![candidate_version],
+        "SELECT predecessor,replay_report FROM routing_policies WHERE version=?1 AND status='candidate' AND learning_scope=?2",
+        params![candidate_version, scope],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if predecessor != Some(current) {
+    let current_version = current.map(|(version, _)| version);
+    if predecessor != current_version {
         return Err(BridgeError::Invalid(
             "candidate predecessor is stale; run learning again against the active policy".into(),
         ));
@@ -939,19 +1027,22 @@ fn promote_candidate(
         |row| row.get(0),
     )?;
     let now = Utc::now().to_rfc3339();
-    transaction.execute(
-        "UPDATE routing_policies SET status='archived' WHERE version=?1",
-        params![current],
-    )?;
+    if let Some(current_version) = current_version {
+        transaction.execute(
+            "UPDATE routing_policies SET status='archived' WHERE version=?1 AND learning_scope=?2",
+            params![current_version, scope],
+        )?;
+    }
     let next_status = if canary { "canary" } else { "active" };
     transaction.execute(
-        "UPDATE routing_policies SET status=?2,promoted_at=?3,activation_boundary=?4 WHERE version=?1",
-        params![candidate_version, next_status, now, boundary],
+        "UPDATE routing_policies SET status=?2,promoted_at=?3,activation_boundary=?4 WHERE version=?1 AND learning_scope=?5",
+        params![candidate_version, next_status, now, boundary, scope],
     )?;
+    let from_version = current_version.unwrap_or(candidate_version);
     transaction.execute(
-        "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_run_id,action,actor,explanation,replay_report,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        params![Uuid::new_v4().to_string(), current, candidate_version, run_id, if canary { "canary_started" } else { "promoted" }, actor, if canary { "held-out replay passed; guarded canary started" } else { "held-out replay passed and the user approved promotion" }, replay, now],
+        "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_run_id,learning_scope,action,actor,explanation,replay_report,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![Uuid::new_v4().to_string(), from_version, candidate_version, run_id, scope, if canary { "canary_started" } else { "promoted" }, actor, if canary { "held-out replay passed; guarded canary started" } else { "held-out replay passed and the user approved promotion" }, replay, now],
     )?;
     transaction.execute(
         "UPDATE learning_job_runs SET promotion_status=?2 WHERE id=?1",
@@ -993,6 +1084,7 @@ pub fn approve_run(db: &Connection, id: &str) -> Result<LearningRun, BridgeError
 
 fn rollback_policy_internal(
     db: &Connection,
+    scope: &str,
     target_version: i64,
     actor: &str,
     explanation: &str,
@@ -1004,9 +1096,19 @@ fn rollback_policy_internal(
         ));
     }
     let transaction = db.unchecked_transaction()?;
+    let target_scope: String = transaction.query_row(
+        "SELECT learning_scope FROM routing_policies WHERE version=?1",
+        params![target_version],
+        |row| row.get(0),
+    )?;
+    if target_scope != scope {
+        return Err(BridgeError::Invalid(
+            "rollback target is not in this workspace learning scope".into(),
+        ));
+    }
     let current: i64 = transaction.query_row(
-        "SELECT version FROM routing_policies WHERE status IN ('active','canary') LIMIT 1",
-        [],
+        "SELECT version FROM routing_policies WHERE learning_scope=?1 AND status IN ('active','canary') LIMIT 1",
+        params![scope],
         |row| row.get(0),
     )?;
     if current == target_version {
@@ -1032,18 +1134,18 @@ fn rollback_policy_internal(
     )?;
     let now = Utc::now().to_rfc3339();
     transaction.execute(
-        "UPDATE routing_policies SET status=CASE WHEN status='canary' THEN 'rolled_back' ELSE 'archived' END WHERE version=?1",
-        params![current],
+        "UPDATE routing_policies SET status=CASE WHEN status='canary' THEN 'rolled_back' ELSE 'archived' END WHERE version=?1 AND learning_scope=?2",
+        params![current, scope],
     )?;
     transaction.execute(
-        "INSERT INTO routing_policies(version,status,predecessor,rollback_of,weights,thresholds,replay_report,created_reason,created_at,promoted_at,activation_boundary)
-         VALUES(?1,'active',?2,?3,?4,?5,?6,?7,?8,?8,(SELECT COALESCE(MAX(rowid),0) FROM router_outcomes))",
-        params![next_version, current, target_version, weights, thresholds, replay, format!("rollback to policy v{target_version}: {}", explanation.trim()), now],
+        "INSERT INTO routing_policies(version,status,predecessor,rollback_of,learning_scope,weights,thresholds,replay_report,created_reason,created_at,promoted_at,activation_boundary)
+         VALUES(?1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?9,(SELECT COALESCE(MAX(rowid),0) FROM router_outcomes))",
+        params![next_version, current, target_version, scope, weights, thresholds, replay, format!("rollback to policy v{target_version}: {}", explanation.trim()), now],
     )?;
     transaction.execute(
-        "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_run_id,action,actor,explanation,replay_report,created_at)
-         VALUES(?1,?2,?3,?4,'rollback',?5,?6,?7,?8)",
-        params![Uuid::new_v4().to_string(), current, next_version, learning_run_id, actor, explanation.trim(), replay, now],
+        "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_run_id,learning_scope,action,actor,explanation,replay_report,created_at)
+         VALUES(?1,?2,?3,?4,?5,'rollback',?6,?7,?8,?9)",
+        params![Uuid::new_v4().to_string(), current, next_version, learning_run_id, scope, actor, explanation.trim(), replay, now],
     )?;
     transaction.commit()?;
     Ok(next_version)
@@ -1051,17 +1153,19 @@ fn rollback_policy_internal(
 
 pub fn rollback_policy(
     db: &Connection,
+    workspace_id: &str,
     target_version: i64,
     explanation: &str,
 ) -> Result<i64, BridgeError> {
-    rollback_policy_internal(db, target_version, "user", explanation, None)
+    let scope = learning_router::workspace_learning_scope(workspace_id)?;
+    rollback_policy_internal(db, &scope, target_version, "user", explanation, None)
 }
 
-fn settle_canary(db: &Connection) -> Result<(), BridgeError> {
-    let canary: Option<(i64, i64, i64, String)> = db
+fn settle_canary(db: &Connection, scope: &str) -> Result<(), BridgeError> {
+    let canary: Option<(i64, Option<i64>, i64, String)> = db
         .query_row(
-            "SELECT version,predecessor,COALESCE(activation_boundary,0),replay_report FROM routing_policies WHERE status='canary' LIMIT 1",
-            [],
+            "SELECT version,predecessor,COALESCE(activation_boundary,0),replay_report FROM routing_policies WHERE learning_scope=?1 AND status='canary' LIMIT 1",
+            params![scope],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
@@ -1125,23 +1229,38 @@ fn settle_canary(db: &Connection) -> Result<(), BridgeError> {
         return Ok(());
     }
     if regressed {
-        rollback_policy_internal(
-            db,
-            predecessor,
-            "canary_guardrail",
-            "automatic canary regressed against held-out replay guardrails",
-            None,
-        )?;
+        if let Some(predecessor) = predecessor.filter(|version| *version > 0) {
+            rollback_policy_internal(
+                db,
+                scope,
+                predecessor,
+                "canary_guardrail",
+                "automatic canary regressed against held-out replay guardrails",
+                None,
+            )?;
+        } else {
+            let transaction = db.unchecked_transaction()?;
+            transaction.execute(
+                "UPDATE routing_policies SET status='rolled_back' WHERE version=?1 AND status='canary' AND learning_scope=?2",
+                params![version, scope],
+            )?;
+            transaction.execute(
+                "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_scope,action,actor,explanation,replay_report,created_at)
+                 VALUES(?1,?2,?2,?3,'rollback','canary_guardrail','automatic canary regressed against held-out replay guardrails and had no predecessor policy',?4,?5)",
+                params![Uuid::new_v4().to_string(), version, scope, replay_json, Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
     } else {
         let transaction = db.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE routing_policies SET status='active' WHERE version=?1 AND status='canary'",
-            params![version],
+            "UPDATE routing_policies SET status='active' WHERE version=?1 AND status='canary' AND learning_scope=?2",
+            params![version, scope],
         )?;
         transaction.execute(
-            "INSERT INTO routing_policy_promotions(id,from_version,to_version,action,actor,explanation,replay_report,created_at)
-             VALUES(?1,?2,?2,'canary_completed','canary_guardrail','canary evidence satisfied every regression guardrail',?3,?4)",
-            params![Uuid::new_v4().to_string(), version, replay_json, Utc::now().to_rfc3339()],
+            "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_scope,action,actor,explanation,replay_report,created_at)
+             VALUES(?1,?2,?2,?3,'canary_completed','canary_guardrail','canary evidence satisfied every regression guardrail',?4,?5)",
+            params![Uuid::new_v4().to_string(), version, scope, replay_json, Utc::now().to_rfc3339()],
         )?;
         transaction.commit()?;
     }
@@ -1183,20 +1302,21 @@ pub fn update_schedule(
     load_schedule(db)
 }
 
-pub fn learning_state(db: &Connection) -> Result<LearningState, BridgeError> {
+pub fn learning_state(db: &Connection, workspace_id: &str) -> Result<LearningState, BridgeError> {
+    let scope = learning_router::workspace_learning_scope(workspace_id)?;
     let latest_run = db.query_row(
-        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at FROM learning_job_runs ORDER BY created_at DESC,rowid DESC LIMIT 1",
-        [],
+        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at FROM learning_job_runs WHERE learning_scope=?1 ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        params![scope],
         map_run,
     ).optional()?;
     Ok(LearningState {
         schedule: load_schedule(db)?,
         latest_run,
-        active_policy_version: active_policy_version(db)?,
+        active_policy_version: active_policy_version(db, &scope)?,
         canary_policy_version: db
             .query_row(
-                "SELECT version FROM routing_policies WHERE status='canary' LIMIT 1",
-                [],
+                "SELECT version FROM routing_policies WHERE learning_scope=?1 AND status='canary' LIMIT 1",
+                params![scope],
                 |row| row.get(0),
             )
             .optional()?,
@@ -1229,7 +1349,7 @@ pub fn run_due(db: &Connection, now: DateTime<Utc>) -> Result<Option<LearningRun
         "UPDATE learning_jobs SET next_run_at=?2,updated_at=?3 WHERE id=?1",
         params![DEFAULT_JOB_ID, next.to_rfc3339(), now.to_rfc3339()],
     )?;
-    run_learning(db, LearningTriggerKind::InApp).map(Some)
+    run_learning_all_workspaces(db, LearningTriggerKind::InApp)
 }
 
 pub fn register_trigger(
@@ -1420,7 +1540,22 @@ fn run_external_trigger(
             "external trigger credential reference did not match",
         );
     }
-    let run = run_learning(db, kind)?;
+    let run = run_learning_all_workspaces(db, kind)?;
+    let Some(run) = run else {
+        record_trigger_event(
+            db,
+            None,
+            kind,
+            Some(registration_id),
+            "accepted",
+            Some("registered external wake-up accepted; no workspace had routing outcomes"),
+        )?;
+        return Ok(ExternalTriggerResult {
+            accepted: true,
+            reason: "no workspace evidence".into(),
+            run: None,
+        });
+    };
     record_trigger_event(
         db,
         Some(&run.id),
@@ -1469,11 +1604,15 @@ pub fn run_database(
                 .into(),
         ))
     } else {
-        let run = run_learning(&db, kind)?;
+        let run = run_learning_all_workspaces(&db, kind)?;
         Ok(ExternalTriggerResult {
             accepted: true,
-            reason: "local learning trigger accepted".into(),
-            run: Some(run),
+            reason: if run.is_some() {
+                "local learning trigger accepted".into()
+            } else {
+                "no workspace evidence".into()
+            },
+            run,
         })
     }
 }
@@ -1487,6 +1626,7 @@ fn open_existing_database(database_path: &std::path::Path) -> Result<Connection,
 pub fn run_local_database(
     database_path: &std::path::Path,
     trigger_kind: LearningTriggerKind,
+    workspace_id: &str,
 ) -> Result<LearningRun, BridgeError> {
     if !database_path.is_file() {
         return Err(BridgeError::Invalid(format!(
@@ -1494,7 +1634,11 @@ pub fn run_local_database(
             database_path.display()
         )));
     }
-    run_learning(&open_existing_database(database_path)?, trigger_kind)
+    run_learning(
+        &open_existing_database(database_path)?,
+        trigger_kind,
+        workspace_id,
+    )
 }
 
 pub fn run_due_database(
@@ -1592,15 +1736,33 @@ mod tests {
         cost: Option<i64>,
         policy_version: i64,
     ) {
-        let child = format!("child-{index}");
-        let decision = format!("decision-{index}");
+        add_outcome_in(db, "w", "parent", index, model, success, cost, policy_version);
+    }
+
+    fn add_outcome_in(
+        db: &Connection,
+        workspace_id: &str,
+        parent_session_id: &str,
+        index: i64,
+        model: &str,
+        success: bool,
+        cost: Option<i64>,
+        policy_version: i64,
+    ) {
+        let suffix = if workspace_id == "w" {
+            index.to_string()
+        } else {
+            format!("{workspace_id}-{index}")
+        };
+        let child = format!("child-{suffix}");
+        let decision = format!("decision-{suffix}");
         let candidate_key = format!("codex:{model}");
         let body = RouterDecision {
             schema_version: crate::learning_router::ROUTER_SCHEMA_VERSION,
             id: decision.clone(),
-            workspace_id: "w".into(),
-            parent_session_id: "parent".into(),
-            turn_id: format!("turn-{index}"),
+            workspace_id: workspace_id.into(),
+            parent_session_id: parent_session_id.into(),
+            turn_id: format!("turn-{suffix}"),
             trace_id: Some("trace-learning".into()),
             task_family: "implementation".into(),
             task_fingerprint: "repeated-implementation".into(),
@@ -1625,9 +1787,22 @@ mod tests {
             actual_effort: Some(Effort::Medium),
             created_at: "now".into(),
         };
-        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES(?1,'w','codex','Child','completed','reported','parent')", params![child]).unwrap();
-        db.execute("INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,policy_version,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at) VALUES(?1,'w','parent',?2,'trace-learning','implementation','repeated-implementation',1,'implementer',?3,'codex',?4,'medium',?5,0,?6,?6,?6,?7,'now')", params![decision, format!("turn-{index}"), policy_version, model, if policy_version > 1 { "autonomous" } else { "shadow" }, candidate_key, serde_json::to_string(&body).unwrap()]).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES(?1,?2,'codex','Child','completed','reported',?3)", params![child, workspace_id, parent_session_id]).unwrap();
+        db.execute("INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,policy_version,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at) VALUES(?1,?2,?3,?4,'trace-learning','implementation','repeated-implementation',1,'implementer',?5,'codex',?6,'medium',?7,0,?8,?8,?8,?9,'now')", params![decision, workspace_id, parent_session_id, format!("turn-{suffix}"), policy_version, model, if policy_version > 1 { "autonomous" } else { "shadow" }, candidate_key, serde_json::to_string(&body).unwrap()]).unwrap();
         db.execute("INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,cost_microusd,cost_source,confidence_bps,recorded_at) VALUES(?1,?2,?3,?4,?5,?6,1000,0,0,?7,?8,?9,?10,9000,'now')", params![decision, child, candidate_key, success, if success { "completed" } else { "failed" }, if model == "b" { 100 } else { 200 }, if success { "success" } else { "failure" }, if success { "accepted" } else { "rejected" }, cost, cost.map(|_| "provider_reported")]).unwrap();
+    }
+
+    fn add_workspace(db: &Connection, id: &str) {
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,'p','Pune',?1,?1,?2,'idle','now')",
+            params![id, format!("/tmp/{id}")],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,?2,'codex','Parent','idle','reported')",
+            params![format!("{id}-parent"), id],
+        )
+        .unwrap();
     }
 
     fn add_improving_fixture(db: &Connection, policy_version: i64) {
@@ -1661,10 +1836,36 @@ mod tests {
     }
 
     #[test]
+    fn another_workspaces_evidence_does_not_mint_a_new_run_key() {
+        let db = database();
+        add_workspace(&db, "other");
+        add_outcome(&db, 0, "a", true, Some(100), 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        for index in 0..3 {
+            add_outcome_in(&db, "other", "other-parent", index, "b", true, Some(100), 1);
+        }
+        let second = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(
+            second.duplicate,
+            "an idle workspace must not get a fresh noop run because another desk recorded outcomes"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM learning_job_runs WHERE learning_scope='workspace:w'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn duplicate_triggers_share_one_snapshot_run() {
         let db = database();
-        let first = run_learning(&db, LearningTriggerKind::Manual).unwrap();
-        let second = run_learning(&db, LearningTriggerKind::Codex).unwrap();
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let second = run_learning(&db, LearningTriggerKind::Codex, "w").unwrap();
         assert_eq!(first.id, second.id);
         assert!(second.duplicate);
         assert_eq!(
@@ -1692,7 +1893,7 @@ mod tests {
         )
         .unwrap();
         add_outcome(&db, 1, "a", false, Some(100), 1);
-        let duplicate = run_learning(&db, LearningTriggerKind::Codex).unwrap();
+        let duplicate = run_learning(&db, LearningTriggerKind::Codex, "w").unwrap();
         assert_eq!(duplicate.id, "active");
         assert!(duplicate.duplicate);
         assert_eq!(
@@ -1706,7 +1907,7 @@ mod tests {
     #[test]
     fn insufficient_evidence_is_auditable_noop() {
         let db = database();
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.status, LearningRunStatus::Noop);
         assert!(run.report.unwrap().reason.contains("insufficient evidence"));
     }
@@ -1715,7 +1916,7 @@ mod tests {
     fn recommendation_mode_never_promotes() {
         let db = database();
         add_improving_fixture(&db, 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.status, LearningRunStatus::Completed, "{:?}", run.report);
         assert!(run.candidate_policy_version.is_some());
         assert_eq!(
@@ -1745,7 +1946,7 @@ mod tests {
         schedule.run_budget_microusd = 0;
         update_schedule(&db, &schedule).unwrap();
         assert_eq!(
-            run_learning(&db, LearningTriggerKind::Manual)
+            run_learning(&db, LearningTriggerKind::Manual, "w")
                 .unwrap()
                 .status,
             LearningRunStatus::Noop
@@ -1782,6 +1983,7 @@ mod tests {
         update_schedule(&db, &schedule).unwrap();
         db.execute("UPDATE sessions SET status='working' WHERE id='parent'", [])
             .unwrap();
+        add_outcome(&db, 1, "a", false, Some(100), 1);
         assert!(run_due(&db, now).unwrap().is_none());
         db.execute("UPDATE sessions SET status='idle' WHERE id='parent'", [])
             .unwrap();
@@ -1799,13 +2001,13 @@ mod tests {
         let db = database();
         add_improving_fixture(&db, 1);
         assert_eq!(
-            run_learning(&db, LearningTriggerKind::Manual)
+            run_learning(&db, LearningTriggerKind::Manual, "w")
                 .unwrap()
                 .status,
             LearningRunStatus::Completed
         );
         add_outcome(&db, 100, "b", true, Some(100), 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.status, LearningRunStatus::Noop);
         assert!(run
             .report
@@ -1815,7 +2017,7 @@ mod tests {
         for index in 101..105 {
             add_outcome(&db, index, "b", true, Some(100), 1);
         }
-        let accumulated = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let accumulated = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(accumulated.status, LearningRunStatus::Completed);
         assert_eq!(
             db.query_row(
@@ -1912,7 +2114,7 @@ mod tests {
     fn cost_per_success_requires_complete_provider_costs() {
         let complete = database();
         add_improving_fixture(&complete, 1);
-        let report = run_learning(&complete, LearningTriggerKind::Manual)
+        let report = run_learning(&complete, LearningTriggerKind::Manual, "w")
             .unwrap()
             .report
             .unwrap();
@@ -1927,7 +2129,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        let report = run_learning(&incomplete, LearningTriggerKind::Manual)
+        let report = run_learning(&incomplete, LearningTriggerKind::Manual, "w")
             .unwrap()
             .report
             .unwrap();
@@ -1940,13 +2142,13 @@ mod tests {
         let db = database();
         let now = Utc::now();
         db.execute(
-            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
-             VALUES('stale','default','manual','default:0:1',0,1,'running','old-owner',?1,?2,?2)",
+            "INSERT INTO learning_job_runs(id,job_id,learning_scope,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
+             VALUES('stale','default','workspace:w','manual','default:0:1',0,1,'running','old-owner',?1,?2,?2)",
             params![(now - Duration::minutes(1)).to_rfc3339(), (now - Duration::minutes(20)).to_rfc3339()],
         )
         .unwrap();
         add_outcome(&db, 99, "a", false, Some(100), 1);
-        let recovered = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let recovered = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(recovered.id, "stale");
         assert_eq!(recovered.evidence_boundary, 0);
         assert_eq!(recovered.status, LearningRunStatus::Noop);
@@ -2040,27 +2242,42 @@ mod tests {
         let db = database();
         set_mode(&db, "ask");
         add_improving_fixture(&db, 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.promotion_status, "awaiting_approval");
-        assert_eq!(active_policy_version(&db).unwrap(), 1);
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
         let approved = approve_run(&db, &run.id).unwrap();
         assert_eq!(approved.promotion_status, "promoted");
-        assert_eq!(active_policy_version(&db).unwrap(), 2);
-        let rollback = rollback_policy(&db, 1, "fixture regression").unwrap();
-        assert_eq!(rollback, 3);
-        assert_eq!(active_policy_version(&db).unwrap(), 3);
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert!(
+            rollback_policy(&db, "w", 1, "fixture regression").is_err(),
+            "legacy:global v1 must not be a rollback target for a workspace"
+        );
+        db.execute(
+            "UPDATE routing_policies SET status='archived' WHERE version=2 AND learning_scope='workspace:w'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at,promoted_at)
+             VALUES(3,'active',2,'workspace:w','{}','{}','successor','now','now')",
+            [],
+        )
+        .unwrap();
+        let rollback = rollback_policy(&db, "w", 2, "fixture regression").unwrap();
+        assert_eq!(rollback, 4);
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 4);
         assert_eq!(
             db.query_row(
-                "SELECT predecessor,rollback_of FROM routing_policies WHERE version=3",
+                "SELECT predecessor,rollback_of FROM routing_policies WHERE version=4",
                 [],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .unwrap(),
-            (2, 1)
+            (3, 2)
         );
         assert_eq!(
             db.query_row(
-                "SELECT COUNT(*) FROM routing_policies WHERE status='active'",
+                "SELECT COUNT(*) FROM routing_policies WHERE status='active' AND learning_scope='workspace:w'",
                 [],
                 |row| row.get::<_, i64>(0)
             )
@@ -2074,11 +2291,11 @@ mod tests {
         let db = database();
         set_mode(&db, "ask");
         add_improving_fixture(&db, 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         let cancelled = cancel_run(&db, &run.id).unwrap();
         assert_eq!(cancelled.status, LearningRunStatus::Cancelled);
         assert!(approve_run(&db, &run.id).is_err());
-        assert_eq!(active_policy_version(&db).unwrap(), 1);
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
         assert_eq!(
             db.query_row(
                 "SELECT status FROM routing_policies WHERE version=2",
@@ -2095,7 +2312,7 @@ mod tests {
         let db = database();
         set_mode(&db, "automatic");
         add_improving_fixture(&db, 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.promotion_status, "canary");
         assert_eq!(
             db.query_row(
@@ -2109,8 +2326,8 @@ mod tests {
         for index in 100..105 {
             add_outcome(&db, index, "b", false, Some(2_000), 2);
         }
-        settle_canary(&db).unwrap();
-        assert_eq!(active_policy_version(&db).unwrap(), 3);
+        settle_canary(&db, "workspace:w").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
         assert_eq!(
             db.query_row(
                 "SELECT status FROM routing_policies WHERE version=2",
@@ -2122,12 +2339,12 @@ mod tests {
         );
         assert_eq!(
             db.query_row(
-                "SELECT rollback_of FROM routing_policies WHERE version=3",
+                "SELECT COUNT(*) FROM routing_policies WHERE rollback_of IS NOT NULL AND learning_scope='workspace:w'",
                 [],
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
-            1
+            0
         );
     }
 
@@ -2136,13 +2353,13 @@ mod tests {
         let db = database();
         set_mode(&db, "automatic");
         add_improving_fixture(&db, 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.promotion_status, "canary");
         for index in 100..105 {
             add_outcome(&db, index, "b", true, Some(100), 2);
         }
-        settle_canary(&db).unwrap();
-        assert_eq!(active_policy_version(&db).unwrap(), 2);
+        settle_canary(&db, "workspace:w").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
         assert_eq!(
             db.query_row(
                 "SELECT status FROM routing_policies WHERE version=2",
@@ -2168,13 +2385,13 @@ mod tests {
         let db = database();
         set_mode(&db, "automatic");
         add_improving_fixture(&db, 1);
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(run.promotion_status, "canary");
         for index in 100..105 {
             add_outcome(&db, index, "b", true, None, 2);
         }
-        settle_canary(&db).unwrap();
-        assert_eq!(active_policy_version(&db).unwrap(), 2);
+        settle_canary(&db, "workspace:w").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
         assert_eq!(
             db.query_row(
                 "SELECT status FROM routing_policies WHERE version=2",
@@ -2199,14 +2416,14 @@ mod tests {
     fn failed_run_abandons_its_linked_candidate_atomically() {
         let db = database();
         db.execute(
-            "INSERT INTO routing_policies(version,status,predecessor,weights,thresholds,created_reason,created_at)
-             VALUES(2,'candidate',1,'{}','{}','fixture','now')",
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(2,'candidate',1,'workspace:w','{}','{}','fixture','now')",
             [],
         )
         .unwrap();
         db.execute(
-            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,snapshot_frozen_at,candidate_policy_version,created_at)
-             VALUES('failed-fixture','default','manual','default:0:1',0,1,'running','now',2,'now')",
+            "INSERT INTO learning_job_runs(id,job_id,learning_scope,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,snapshot_frozen_at,candidate_policy_version,created_at)
+             VALUES('failed-fixture','default','workspace:w','manual','default:0:1',0,1,'running','now',2,'now')",
             [],
         )
         .unwrap();
@@ -2233,10 +2450,10 @@ mod tests {
         let db = database();
         set_mode(&db, "automatic");
         add_improving_fixture(&db, 1);
-        let first = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(first.promotion_status, "canary");
         add_outcome(&db, 100, "b", true, Some(100), 2);
-        let second = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let second = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         assert_eq!(second.status, LearningRunStatus::Noop);
         assert!(second
             .report
@@ -2272,7 +2489,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let candidate = routing_policy::build_candidate(&db, 10, &json!({}))
+        let candidate = routing_policy::build_candidate(&db, "w", 10, &json!({}))
             .unwrap()
             .unwrap();
         assert_eq!(candidate.replay.candidate.quality_bps, Some(8_000));
@@ -2296,7 +2513,7 @@ mod tests {
         ] {
             add_outcome(&cost_db, index, model, success, Some(cost), 1);
         }
-        let cost_candidate = routing_policy::build_candidate(&cost_db, 10, &json!({}))
+        let cost_candidate = routing_policy::build_candidate(&cost_db, "w", 10, &json!({}))
             .unwrap()
             .unwrap();
         assert!(!cost_candidate.replay.cost_guard_passed);
@@ -2323,7 +2540,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let unavailable = routing_policy::build_candidate(&unavailable_db, 10, &json!({}))
+        let unavailable = routing_policy::build_candidate(&unavailable_db, "w", 10, &json!({}))
             .unwrap()
             .unwrap();
         assert_eq!(unavailable.replay.unavailable_selections, 2);
@@ -2349,7 +2566,7 @@ mod tests {
              VALUES(1,'evaluator','verification','claude','independent-evaluator','high',0,1,'now')",
             [],
         ).unwrap();
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         let evaluation: (String, String, String) = db.query_row(
             "SELECT evaluator_version,status,bounded_metrics FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
             params![run.id],
@@ -2375,7 +2592,7 @@ mod tests {
         db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('plan','contract',1,'high','{}','now')", []).unwrap();
         db.execute("INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at,completed_at) VALUES('attempt','plan','parent','head','clean','/tmp','verified','codex','now','now')", []).unwrap();
         db.execute("INSERT INTO eval_check_runs(id,attempt_id,check_id,kind,required,status,executor,verifier_family,output_digest,artifact_refs,started_at,completed_at) VALUES('check','attempt','scrutiny','scrutiny',1,'passed','bridge.worker_result','claude','abc123','[\"proof:check\"]','now','now')", []).unwrap();
-        let run = run_learning(&db, LearningTriggerKind::Manual).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
         let evaluation: (String, String, Option<i64>, Option<i64>, String, String) = db.query_row(
             "SELECT evaluator_version,status,score_bps,confidence_bps,evidence_entry_ids,bounded_metrics FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
             params![run.id],
@@ -2389,5 +2606,150 @@ mod tests {
         assert!(evaluation.4.contains("digest:abc123"));
         assert!(evaluation.5.contains("\"toolAccess\":\"none\""));
         assert!(!evaluation.5.contains("detail"));
+    }
+
+    #[test]
+    fn unscoped_run_learning_is_rejected() {
+        let db = database();
+        assert!(run_learning(&db, LearningTriggerKind::Manual, "").is_err());
+        assert!(run_learning(&db, LearningTriggerKind::Manual, "   ").is_err());
+    }
+
+    #[test]
+    fn legacy_global_policy_is_not_selected_after_migration() {
+        let db = database();
+        let scope: String = db
+            .query_row(
+                "SELECT learning_scope FROM routing_policies WHERE version=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scope, "legacy:global");
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
+    }
+
+    #[test]
+    fn policy_learned_in_a_is_not_active_in_b() {
+        let db = database();
+        add_workspace(&db, "other");
+        set_mode(&db, "ask");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        approve_run(&db, &run.id).unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert_eq!(active_policy_version(&db, "workspace:other").unwrap(), 0);
+        assert_eq!(
+            learning_state(&db, "other").unwrap().active_policy_version,
+            0
+        );
+    }
+
+    #[test]
+    fn canary_in_a_does_not_apply_to_b() {
+        let db = database();
+        add_workspace(&db, "other");
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.promotion_status, "canary");
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert_eq!(active_policy_version(&db, "workspace:other").unwrap(), 0);
+    }
+
+    #[test]
+    fn rollback_in_a_does_not_move_b() {
+        let db = database();
+        add_workspace(&db, "other");
+        set_mode(&db, "ask");
+        add_improving_fixture(&db, 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        approve_run(&db, &first.id).unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(99,'active','workspace:other','{}','{}','other desk','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE routing_policies SET status='archived' WHERE version=2 AND learning_scope='workspace:w'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(3,'active',2,'workspace:w','{}','{}','successor','now')",
+            [],
+        )
+        .unwrap();
+        rollback_policy(&db, "w", 2, "keep other workspace still").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:other").unwrap(), 99);
+    }
+
+    #[test]
+    fn scheduled_run_does_not_mix_workspace_evidence() {
+        let db = database();
+        add_workspace(&db, "other");
+        add_improving_fixture(&db, 1);
+        for index in 0..5 {
+            add_outcome_in(&db, "other", "other-parent", index, "a", true, Some(50), 1);
+        }
+        let now = Utc::now();
+        update_schedule(
+            &db,
+            &LearningSchedule {
+                job_id: DEFAULT_JOB_ID.into(),
+                enabled: true,
+                cadence_minutes: 60,
+                next_run_at: Some((now - Duration::minutes(1)).to_rfc3339()),
+                run_budget_microusd: 10_000,
+                run_budget_tokens: 10_000,
+                mode: "manual".into(),
+            },
+        )
+        .unwrap();
+        assert!(run_due(&db, now).unwrap().is_some());
+        let scopes: Vec<String> = db
+            .prepare("SELECT DISTINCT learning_scope FROM learning_job_runs ORDER BY learning_scope")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            scopes,
+            vec!["workspace:other".to_owned(), "workspace:w".to_owned()]
+        );
+    }
+
+    #[test]
+    fn scoped_evidence_window_is_not_diluted_by_other_workspaces() {
+        let db = database();
+        add_workspace(&db, "other");
+        for index in 0..5 {
+            add_outcome_in(&db, "other", "other-parent", index, "b", true, Some(100), 1);
+        }
+        for index in 0..5_000 {
+            add_outcome(&db, index, "a", false, Some(200), 1);
+        }
+        let other =
+            routing_policy::load_evidence(&db, "other", evidence_boundary(&db, "other").unwrap())
+                .unwrap();
+        assert_eq!(
+            other.len(),
+            5,
+            "a small workspace must keep its own last 5 outcomes instead of a global rowid window"
+        );
+        assert!(
+            other.iter().all(|row| row.candidate == "codex:b"),
+            "the surviving rows must be the small workspace's own outcomes, not the newest rows from a busier one"
+        );
+        let flooded =
+            routing_policy::load_evidence(&db, "w", evidence_boundary(&db, "w").unwrap()).unwrap();
+        assert_eq!(flooded.len(), 5_000);
+        assert!(
+            flooded.iter().all(|row| row.candidate == "codex:a"),
+            "a busy workspace must not absorb another workspace's outcomes"
+        );
     }
 }

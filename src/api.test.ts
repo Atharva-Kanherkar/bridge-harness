@@ -61,10 +61,10 @@ describe("SQLite-shaped mock observability", () => {
   });
 
   it("uses one learning runner and reports duplicate triggers as no-ops", async () => {
-    const first = await bridgeApi.runLearning("manual");
+    const first = await bridgeApi.runLearning("manual", "w");
     expect(first).toMatchObject({ status: "noop", duplicate: false });
     expect(first.report?.recommendationOnly).toBe(true);
-    const duplicate = await bridgeApi.runLearning("in_app");
+    const duplicate = await bridgeApi.runLearning("in_app", "w");
     expect(duplicate.id).toBe(first.id);
     expect(duplicate.duplicate).toBe(true);
   });

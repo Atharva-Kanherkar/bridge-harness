@@ -57,12 +57,12 @@ pub struct CandidatePolicy {
 }
 
 #[derive(Debug, Clone)]
-struct EvidenceRow {
+pub(crate) struct EvidenceRow {
     rowid: i64,
     fingerprint: String,
     task_family: String,
     profile_key: String,
-    candidate: String,
+    pub(crate) candidate: String,
     effort: String,
     success: Option<bool>,
     cost_microusd: Option<i64>,
@@ -210,8 +210,11 @@ impl Aggregate {
     }
 }
 
-fn load_evidence(db: &Connection, boundary: i64) -> Result<Vec<EvidenceRow>, BridgeError> {
-    let lower_bound = boundary.saturating_sub(MAX_REPLAY_EVIDENCE_ROWS);
+pub(crate) fn load_evidence(
+    db: &Connection,
+    workspace_id: &str,
+    boundary: i64,
+) -> Result<Vec<EvidenceRow>, BridgeError> {
     let mut statement = db.prepare(
         "SELECT o.rowid,d.task_fingerprint,d.task_family,COALESCE(d.profile_version,0),COALESCE(d.profile_purpose,''),
                 o.candidate,COALESCE(d.actual_effort,''),o.success_state,
@@ -220,9 +223,13 @@ fn load_evidence(db: &Connection, boundary: i64) -> Result<Vec<EvidenceRow>, Bri
                 COALESCE((SELECT e.confidence_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),o.confidence_bps),
                 d.decision
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE o.rowid>?2 AND o.rowid<=?1 ORDER BY o.rowid",
+         WHERE d.workspace_id=?1 AND o.rowid<=?2
+         ORDER BY o.rowid DESC
+         LIMIT ?3",
     )?;
-    let rows = statement.query_map(params![boundary, lower_bound], |row| {
+    let rows = statement.query_map(
+        params![workspace_id, boundary, MAX_REPLAY_EVIDENCE_ROWS],
+        |row| {
         let decision_body = row.get::<_, String>(14)?;
         let decision = serde_json::from_str(&decision_body).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -252,9 +259,11 @@ fn load_evidence(db: &Connection, boundary: i64) -> Result<Vec<EvidenceRow>, Bri
             confidence_bps: row.get(13)?,
             decision,
         })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(BridgeError::from)
+        },
+    )?;
+    let mut evidence = rows.collect::<Result<Vec<_>, _>>().map_err(BridgeError::from)?;
+    evidence.reverse();
+    Ok(evidence)
 }
 
 fn aggregate_key(row: &EvidenceRow) -> String {
@@ -296,10 +305,11 @@ fn metric_guard(candidate: Option<i64>, baseline: Option<i64>, multiplier_bps: i
 
 pub fn build_candidate(
     db: &Connection,
+    workspace_id: &str,
     boundary: i64,
     base_weights: &serde_json::Value,
 ) -> Result<Option<CandidatePolicy>, BridgeError> {
-    let evidence = load_evidence(db, boundary)?;
+    let evidence = load_evidence(db, workspace_id, boundary)?;
     if evidence.len() < MIN_EVIDENCE_SAMPLES as usize {
         return Ok(None);
     }

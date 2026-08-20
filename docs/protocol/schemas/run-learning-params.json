@@ -15,10 +15,14 @@
   "properties": {
     "triggerKind": {
       "$ref": "#/definitions/LocalLearningTriggerKind"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "required": [
-    "triggerKind"
+    "triggerKind",
+    "workspaceId"
   ],
   "title": "RunLearningParams",
   "type": "object"
