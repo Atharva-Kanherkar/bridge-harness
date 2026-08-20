@@ -1,0 +1,11 @@
+# The dev watcher must not watch what the dev command writes.
+#
+# `beforeDevCommand` runs `prepare:browser-host:dev` and `prepare:daemon:dev`,
+# which stage freshly built sidecars into `binaries/`. That directory is inside
+# the watched crate, so staging them looked like a source edit: the watcher
+# rebuilt and restarted the app, which ran `beforeDevCommand` again, which staged
+# them again. The app spent its life restarting, which reads as an app that hangs.
+binaries/
+
+# Build output, for the same reason — cargo writes here while the watcher looks.
+target/

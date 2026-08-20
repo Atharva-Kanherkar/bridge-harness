@@ -36,7 +36,7 @@ function render(overrides: Partial<ComposerPillProps> = {}) {
   act(() => root.render(<ComposerPill {...props(overrides)} />));
 }
 
-const plus = () => container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]')!;
+const plus = () => container.querySelector<HTMLButtonElement>('button[aria-label="Attach a file"]')!;
 const textarea = () => container.querySelector<HTMLTextAreaElement>("textarea")!;
 const stop = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
 
@@ -69,6 +69,23 @@ describe("ComposerPill", () => {
 
     render({});
     expect(plus().disabled).toBe(true);
+  });
+
+  it("says what + does on this surface rather than assuming", () => {
+    render({ onPlusClick: () => {} });
+    // The default is the common case: adding context to a conversation.
+    expect(plus().title).toBe("Attach a file");
+
+    render({ onPlusClick: () => {}, plusLabel: "New workspace" });
+    const structural = container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]')!;
+    expect(structural).not.toBeNull();
+    expect(structural.disabled).toBe(false);
+  });
+
+  it("explains an unavailable + instead of leaving a dead control", () => {
+    render({ onPlusClick: () => {}, plusUnavailableReason: "Connect a folder to this chat to attach files from it" });
+    expect(plus().disabled).toBe(true);
+    expect(plus().title).toBe("Connect a folder to this chat to attach files from it");
   });
 
   it("stays editable while working, with Steer and Stop both reachable", () => {

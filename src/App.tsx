@@ -121,6 +121,7 @@ export function App() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
@@ -751,6 +752,17 @@ export function App() {
     setSlashIndex(0);
     setSlashDismissed(true);
   }
+  // The `+` control: open the file picker rather than doing something
+  // structural. Attaching a file is `@path` in the draft, which the backend
+  // already resolves into trusted application context at submit time — so the
+  // button is a discoverable front door to the mechanism `@` already provides,
+  // not a second one.
+  function attachFile() {
+    setMentionDismissed(false);
+    setMentionIndex(0);
+    setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
+    composerRef.current?.focus();
+  }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
   function applyFileMention(path: string) {
@@ -968,9 +980,11 @@ export function App() {
                     working={!!session?.activeTurnId}
                     activeAction={activeAction}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
-                    // What the control's own label says: open the workspace
-                    // dialog. It must never erase the draft the user is holding.
-                    onPlusClick={() => { setTitle(""); setModal("workspace"); }}
+                    inputRef={composerRef}
+                    onPlusClick={attachFile}
+                    plusUnavailableReason={hasRepo
+                      ? (workspaceFiles.length === 0 ? "No files to attach yet — this chat's folder is still being read" : undefined)
+                      : "Connect a folder to this chat to attach files from it"}
                     trailing={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
@@ -1306,6 +1320,9 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
       disabled={busy || !canStartChat}
+      // There is no conversation or folder here yet, so there is nothing to
+      // attach to. This surface keeps the structural action — and says so.
+      plusLabel="New workspace"
       onPlusClick={onNewWorkspace}
       trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />
