@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 27;
+const LATEST_SCHEMA_VERSION: i64 = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -252,6 +252,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             25 => migration_25_ephemeral_work_evidence(&transaction)?,
             26 => migration_26_briefing_run_leases(&transaction)?,
             27 => migration_27_queued_session_input(&transaction)?,
+            28 => migration_28_evidence_based_retries(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -839,6 +840,36 @@ fn migration_27_queued_session_input(transaction: &Transaction<'_>) -> Result<()
         );
         CREATE INDEX IF NOT EXISTS queued_session_input_pending
             ON queued_session_input(session_id, state, sequence);",
+    )?;
+    Ok(())
+}
+
+/// Retry accounting, so a retry has to be earned rather than assumed.
+///
+/// `worker_retry_budget` is keyed by objective rather than by session: retrying
+/// the same objective through a fresh worker is the same spend, and counting per
+/// session let an identical task be paid for again under a new id.
+/// `recovery_turns` records the three kinds of turn Bridge spends on its own
+/// recovery separately, because "the agent used 40 turns" and "the agent used 12
+/// turns and 28 corrections" are very different bills.
+fn migration_28_evidence_based_retries(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS worker_retry_budget (
+            objective_key TEXT PRIMARY KEY,
+            parent_session_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_signal TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS recovery_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS recovery_turns_by_session
+            ON recovery_turns(session_id, kind);",
     )?;
     Ok(())
 }

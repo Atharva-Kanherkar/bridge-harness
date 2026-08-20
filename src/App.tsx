@@ -711,6 +711,13 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  // Re-run a failed worker's objective because the user asked. The reason it
+  // failed is on the card next to this action, which is the point: Bridge no
+  // longer spends this turn on a cause it cannot show has changed.
+  const retryWorkerTask = useCallback(async (childSessionId: string) => {
+    await bridgeApi.retryWorkerTask(childSessionId);
+    await reload();
+  }, [reload]);
   const waiveCompletion = useCallback(async (attemptId: string, checkIds: string[], reason: string) => {
     const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
     setForest(current => current ? { ...current, completion } : current);
@@ -891,6 +898,7 @@ export function App() {
                   completion={forest?.completion}
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
+                  onRetryWorker={retryWorkerTask}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
                   continuationFidelity={session?.continuationFidelity}

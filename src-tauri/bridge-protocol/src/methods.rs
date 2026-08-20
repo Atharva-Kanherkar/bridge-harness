@@ -67,6 +67,7 @@ methods![
     (SubmitInput, "sessions", "submit_input"),
     (CompactSession, "sessions", "compact_session"),
     (InterruptTurn, "sessions", "interrupt_turn"),
+    (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
     // approvals

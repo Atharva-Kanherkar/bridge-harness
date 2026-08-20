@@ -16,7 +16,8 @@ use crate::{
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     orchestrator, policy, policy_coordinator, prompt_compiler, restoration, secret_interception,
     session_forest, session_input, session_supervisor, skill_marketplace, slash, store,
-    worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
+    worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox,
+    workspace_files,
     worktree_coordinator, BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
@@ -1504,7 +1505,10 @@ fn handle_agent_value(
     // as a distinct row and feed the reason back so the orchestrator re-emits a
     // valid request, rather than going idle with no result the user can see.
     for reason in &pending_invalid_delegations {
-        const MAX_INVALID_REQUEST_CORRECTIONS: u32 = 3;
+        // One, not three. Normalization already ran deterministically and for
+        // free; if a request is still unusable after that, asking the same model
+        // the same way two more times is three paid turns for one mistake.
+        const MAX_INVALID_REQUEST_CORRECTIONS: u32 = 1;
         let attempts = {
             let mut delegations = state.delegations.lock().unwrap();
             let counter = delegations
@@ -1552,6 +1556,12 @@ fn handle_agent_value(
                 .is_some_and(|runtime| runtime.send_turn(&prompt).is_ok());
             let db = state.db.lock().unwrap();
             if delivered {
+                let _ = worker_retry::record_recovery_turn(
+                    &db,
+                    session_id,
+                    worker_retry::RECOVERY_CORRECTION,
+                    reason,
+                );
                 let _ = db.execute(
                     "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
                     params![session_id],
@@ -4141,6 +4151,14 @@ pub fn process_worker_result_output(
                 child_session_id,
                 &reason,
             )?;
+            // A repair is a model turn Bridge chose to spend. Counted apart from
+            // corrections and task retries, because they are different bills.
+            worker_retry::record_recovery_turn(
+                db,
+                child_session_id,
+                worker_retry::RECOVERY_REPAIR,
+                &reason,
+            )?;
             Ok(None)
         }
         delegation::WorkerOutputAction::Unstructured { raw, reason } => {
@@ -4156,6 +4174,143 @@ pub fn process_worker_result_output(
             // succeed", and reporting it as failure is what made an unchanged
             // formatting mistake cost another model turn.
             Ok(Some(delegation::protocol_invalid_result(&raw, &reason)))
+        }
+    }
+}
+
+/// The parent a worker reports to, if it has one.
+fn worker_parent_session(db: &Connection, child_session_id: &str) -> Option<String> {
+    db.query_row(
+        "SELECT parent_session_id FROM sessions WHERE id=?1",
+        params![child_session_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// The retry-budget key for the objective a worker was given.
+///
+/// Keyed on the objective rather than the session, so re-dispatching identical
+/// work through a fresh worker does not buy it a fresh budget. Derived from the
+/// lease's role plus the spawn record's objective — both of which are Bridge's
+/// own writes, not the worker's claims about itself.
+fn worker_objective_key(db: &Connection, child_session_id: &str) -> Option<String> {
+    let parent = worker_parent_session(db, child_session_id)?;
+    let role: String = db
+        .query_row(
+            "SELECT role FROM worker_leases WHERE session_id=?1",
+            params![child_session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "implementation".into());
+    let objective = spawned_request(db, &parent, child_session_id)
+        .map(|request| request.objective)
+        .unwrap_or_else(|| child_session_id.to_owned());
+    Some(worker_retry::objective_key(&parent, &role, &objective))
+}
+
+/// The delegation request a worker was launched with.
+///
+/// Recovered from the parent's own `delegation.spawned` entry, which carries the
+/// request verbatim. That entry is Bridge's record of what it dispatched, so it
+/// is the honest source for both retry accounting and a user-requested retry.
+fn spawned_request(
+    db: &Connection,
+    parent_session_id: &str,
+    child_session_id: &str,
+) -> Option<delegation::DelegationRequest> {
+    let payload: String = db
+        .query_row(
+            "SELECT json_extract(payload,'$.data.request') FROM session_entries
+             WHERE session_id=?1 AND kind='delegation.spawned'
+               AND json_extract(payload,'$.data.childSessionId')=?2
+             ORDER BY sequence DESC LIMIT 1",
+            params![parent_session_id, child_session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    serde_json::from_str(&payload).ok()
+}
+
+/// The turn a worker was dispatched under, so a retry is attributed to the same
+/// piece of the conversation rather than inventing a new one.
+fn spawned_turn_id(
+    db: &Connection,
+    parent_session_id: &str,
+    child_session_id: &str,
+) -> Option<String> {
+    db.query_row(
+        "SELECT json_extract(payload,'$.data.turnId') FROM session_entries
+         WHERE session_id=?1 AND kind='delegation.spawned'
+           AND json_extract(payload,'$.data.childSessionId')=?2
+         ORDER BY sequence DESC LIMIT 1",
+        params![parent_session_id, child_session_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// Re-dispatch a worker's objective because the user asked for it.
+///
+/// The counterpart to the automatic retry Bridge no longer takes on its own. A
+/// declined automatic retry now surfaces the real cause and this action, so the
+/// decision to spend another worker belongs to the person who can see why the
+/// first one failed. It goes through the ordinary launch path, so depth, path
+/// scope, concurrency, and spend limits apply exactly as they did the first time.
+pub fn retry_worker_task(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+) -> Result<(), BridgeError> {
+    let state = core.clone();
+    let (parent, request, turn_id) = {
+        let db = state.db.lock().unwrap();
+        let parent = worker_parent_session(&db, child_session_id).ok_or_else(|| {
+            BridgeError::Invalid("Only a worker launched by an orchestrator can be retried".into())
+        })?;
+        let request = spawned_request(&db, &parent, child_session_id).ok_or_else(|| {
+            BridgeError::Invalid(
+                "Bridge has no record of the request this worker was launched with".into(),
+            )
+        })?;
+        let turn_id = spawned_turn_id(&db, &parent, child_session_id)
+            .unwrap_or_else(|| format!("retry-{}", Uuid::new_v4()));
+        (parent, request, turn_id)
+    };
+    let still_running = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT lifecycle_state NOT IN ('completed','cancelled','failed')
+             FROM worker_runtime WHERE session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if still_running {
+        return Err(BridgeError::Invalid(
+            "This worker has not finished yet; stop it before retrying".into(),
+        ));
+    }
+    {
+        let db = state.db.lock().unwrap();
+        store::event(
+            &db,
+            "supervisor",
+            "worker.retry.requested",
+            child_session_id,
+            &request.objective,
+        )?;
+    }
+    match launch_worker_outcome(core, &parent, &turn_id, &request, true) {
+        WorkerLaunchOutcome::Failed => Err(BridgeError::Invalid(
+            "The retry could not be launched; the reason is on the conversation".into(),
+        )),
+        _ => {
+            core.events.publish(CoreEvent::StateChanged);
+            Ok(())
         }
     }
 }
@@ -4193,20 +4348,42 @@ fn settle_worker_after_result(
     if current.as_deref() != Some("working") {
         return Ok(true);
     }
-    if result.is_retryable() {
-        let retry_count = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)?
+    // A retry has to be earned. The old code retried any typed failure once,
+    // automatically, without asking whether the cause could have changed —
+    // which is how a failing test became a second failing test at full price.
+    let decision = {
+        let db = state.db.lock().unwrap();
+        let retry_count = store::worker_runtime(&db, child_session_id)?
             .map(|runtime| runtime.retry_count)
             .unwrap_or(1);
-        let can_retry_hot = worker_pool::should_retry(
-            result,
-            retry_count,
-            state
-                .adapters
-                .lock()
-                .unwrap()
-                .contains_key(child_session_id),
-        );
-        if can_retry_hot {
+        let spent = worker_objective_key(&db, child_session_id)
+            .map(|key| worker_retry::attempts_spent(&db, &key).unwrap_or(0))
+            .unwrap_or(0);
+        let hot = state
+            .adapters
+            .lock()
+            .unwrap()
+            .contains_key(child_session_id);
+        worker_retry::decide(result, retry_count, hot, spent)
+    };
+    if let worker_retry::RetryDecision::Retry { signal } = &decision {
+        {
+            let db = state.db.lock().unwrap();
+            // Spend the objective's budget before the turn, not after: a crash
+            // between the two must not hand back a free attempt.
+            if let Some((key, parent)) = worker_objective_key(&db, child_session_id)
+                .zip(worker_parent_session(&db, child_session_id))
+            {
+                let _ = worker_retry::consume_attempt(&db, &key, &parent, signal);
+            }
+            let _ = worker_retry::record_recovery_turn(
+                &db,
+                child_session_id,
+                worker_retry::RECOVERY_TASK_RETRY,
+                signal,
+            );
+        }
+        {
             session_supervisor::SessionSupervisor::transition(
                 &state.db.lock().unwrap(),
                 child_session_id,
@@ -4229,9 +4406,18 @@ fn settle_worker_after_result(
                 worker_lifecycle::WorkerLifecycleState::Working,
                 Some("same_process_retry"),
             )?;
-            let sent = state.adapters.lock().unwrap().get(child_session_id).is_some_and(|runtime| {
-                runtime.send_turn("Retry the same assigned task once. Address the failure, rerun verification, and return a typed worker result.").is_ok()
-            });
+            // Name the condition, rather than "retry the same task once". A
+            // worker told only to try again has no reason to do anything
+            // differently, and nothing to check before it does.
+            let prompt = format!(
+                "Bridge classified your previous failure as transient (signal: {signal}), so the condition may have changed. Retry the same assigned task once: re-check that specific failure first, rerun verification, and return a typed worker result. If the cause is not transient after all, say so and stop."
+            );
+            let sent = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(child_session_id)
+                .is_some_and(|runtime| runtime.send_turn(&prompt).is_ok());
             if sent {
                 return Ok(false);
             }
@@ -4248,6 +4434,23 @@ fn settle_worker_after_result(
                 Some("terminal_failure_reported"),
             )?;
             return Ok(true);
+        }
+    } else if matches!(
+        result.status,
+        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::ProtocolInvalid
+    ) {
+        // Declined. Recorded with the reason, because "we did not retry, and
+        // here is why" is the fact the orchestrator and the user need — and the
+        // one an automatic hidden turn used to replace.
+        if let worker_retry::RetryDecision::Decline { reason } = &decision {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "supervisor",
+                "worker.retry.declined",
+                child_session_id,
+                reason,
+            );
         }
     }
     let (next, warm_until) = match result.status {
@@ -4686,11 +4889,23 @@ fn report_to_parent(
             .and_then(|evidence| evidence.get("adoptionState"))
             .and_then(serde_json::Value::as_str)
             == Some(worker_adoption::STATE_PENDING);
+            // The real cause, classified from evidence, travels with the result.
+        // "The subagent failed" with no reason is what left the orchestrator
+        // guessing and the user watching a stall.
+        let failure = matches!(
+            result.status,
+            delegation::WorkerResultStatus::Failed
+                | delegation::WorkerResultStatus::ProtocolInvalid
+                | delegation::WorkerResultStatus::Blocked
+        )
+        .then(|| worker_retry::classify(&result));
         let routing_notice = serde_json::json!({
         "type": "bridge-worker-evidence",
         "evidenceId": report.evidence_id,
         "status": result.status.as_str(),
         "summary": result.summary,
+        "failureClass": failure.as_ref().map(worker_retry::FailureClass::as_str),
+        "failureCause": failure.as_ref().map(worker_retry::FailureClass::cause),
         "completion": completion,
         // Derived from Git, not from the worker: the exact checkout, branch,
         // revision, dirty state, and diffstat behind this claim.
@@ -4721,7 +4936,19 @@ fn report_to_parent(
                 status: Some("completed".into()),
                 title: Some("Worker result".into()),
                 text: Some(result.summary.clone()),
-                data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str(), "repository": evidence_payload, "awaitsAdoption": awaits_adoption}),
+                data: serde_json::json!({
+                    "childSessionId": child_session_id,
+                    "evidenceId": report.evidence_id,
+                    "delivered": delivered,
+                    "status": result.status.as_str(),
+                    "repository": evidence_payload,
+                    "awaitsAdoption": awaits_adoption,
+                    "failureClass": failure.as_ref().map(worker_retry::FailureClass::as_str),
+                    "failureCause": failure.as_ref().map(worker_retry::FailureClass::cause),
+                    // Bridge will not spend this turn by itself any more, so the
+                    // card offers it to the person who can see why it failed.
+                    "canRetry": failure.is_some(),
+                }),
             };
             if let Ok(stored) = store::session_event(
                 &db,
@@ -6820,6 +7047,205 @@ mod submit_input_tests {
         assert_eq!(
             session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
             0
+        );
+    }
+}
+
+#[cfg(test)]
+mod retry_settlement_tests {
+    use super::*;
+    use crate::model::WorkerRuntimeRecord;
+
+    /// A worker with a live provider process, so the retry path is reachable and
+    /// what it does (or does not) send is observable.
+    struct SpyRuntime {
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl adapters::AdapterRuntime for SpyRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "spy"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
+        fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+            self.sent.lock().unwrap().push(text.to_owned());
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
+    fn core_with_working_worker() -> (tempfile::TempDir, Arc<BridgeCore>, Arc<Mutex<Vec<String>>>) {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind) VALUES('parent','w','codex','Parent','working','reported',0,'orchestrator')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,kind) VALUES('child','w','claude','Implementation','working','reported','parent',1,'workspace')", []).unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','standard','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(
+                &db,
+                &WorkerRuntimeRecord {
+                    session_id: "child".into(),
+                    parent_session_id: "parent".into(),
+                    lifecycle_state: "working".into(),
+                    task_family: "implementation".into(),
+                    compatibility_key: "key".into(),
+                    result_status: "pending".into(),
+                    retry_count: 0,
+                    warm_until: None,
+                    worktree_path: None,
+                    worktree_branch: None,
+                    last_result: None,
+                    last_activity_at: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .unwrap();
+        }
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let core = Arc::new(core);
+        core.adapters
+            .lock()
+            .unwrap()
+            .insert("child".into(), Box::new(SpyRuntime { sent: sent.clone() }));
+        (fixture, core, sent)
+    }
+
+    fn failed(summary: &str) -> delegation::WorkerResult {
+        delegation::WorkerResult {
+            schema_version: delegation::SCHEMA_VERSION,
+            status: delegation::WorkerResultStatus::Failed,
+            summary: summary.into(),
+            files_changed: Vec::new(),
+            tests: Vec::new(),
+            decisions: Vec::new(),
+            risks: Vec::new(),
+            remaining_work: Vec::new(),
+            suggested_next_action: delegation::SuggestedNextAction::FollowUp,
+            suggested_role: None,
+            suggested_task: None,
+        }
+    }
+
+    fn declined_reason(core: &Arc<BridgeCore>) -> Option<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT body FROM events WHERE kind='worker.retry.declined' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    #[test]
+    fn an_unexplained_failure_spends_no_turn_and_says_why() {
+        let (_fixture, core, sent) = core_with_working_worker();
+        let settled = settle_worker_after_result(&core, "child", &failed("Could not finish")).unwrap();
+
+        assert!(settled, "the worker is terminal, not waiting on a retry");
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "Bridge must not pay for a turn against a cause it cannot show has changed"
+        );
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(reason.contains("permanent"), "{reason}");
+    }
+
+    #[test]
+    fn a_failed_check_is_never_retried_however_the_prose_reads() {
+        let (_fixture, core, sent) = core_with_working_worker();
+        let mut result = failed("The provider timed out once and an assertion failed");
+        result.tests = vec![delegation::WorkerTestResult {
+            command: "cargo test store".into(),
+            status: delegation::TestStatus::Failed,
+            detail: None,
+        }];
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+        assert!(sent.lock().unwrap().is_empty());
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(reason.contains("cargo test store"), "{reason}");
+    }
+
+    #[test]
+    fn a_formatting_failure_is_terminal_and_free() {
+        let (_fixture, core, sent) = core_with_working_worker();
+        let result = delegation::protocol_invalid_result(
+            "I finished but wrote no fence.",
+            "missing bridge-worker-result block",
+        );
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "an unchanged formatting cause must not trigger a model turn"
+        );
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(reason.contains("not a task failure"), "{reason}");
+    }
+
+    #[test]
+    fn a_transient_failure_retries_once_naming_the_condition_and_then_stops() {
+        let (_fixture, core, sent) = core_with_working_worker();
+        let result = failed("Connection reset by peer while streaming from the provider");
+
+        // First: worth one attempt, and the instruction says what to re-check
+        // rather than "retry the same task once".
+        assert!(
+            !settle_worker_after_result(&core, "child", &result).unwrap(),
+            "the worker is retrying, so it is not settled"
+        );
+        let prompt = sent.lock().unwrap().first().cloned().expect("a retry turn was sent");
+        assert!(prompt.contains("connection reset"), "{prompt}");
+        assert!(prompt.contains("transient"), "{prompt}");
+        assert!(
+            prompt.contains("If the cause is not transient after all"),
+            "the worker is given a way to stop rather than loop: {prompt}"
+        );
+
+        // The objective's budget was spent, and the condition was recorded.
+        {
+            let db = core.db.lock().unwrap();
+            let key = worker_objective_key(&db, "child").expect("the objective has a key");
+            assert_eq!(worker_retry::attempts_spent(&db, &key).unwrap(), 1);
+            assert_eq!(
+                worker_retry::recovery_turn_counts(&db, "child").unwrap(),
+                vec![(worker_retry::RECOVERY_TASK_RETRY.to_owned(), 1)],
+                "a task retry is counted apart from corrections and repairs"
+            );
+        }
+
+        // Second time round, the same objective is out of budget.
+        let sent_before = sent.lock().unwrap().len();
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            sent_before,
+            "one automatic attempt per objective, not one per result"
         );
     }
 }

@@ -32,6 +32,7 @@ export type BridgeMethod =
   | "sessions/submit_input"
   | "sessions/compact_session"
   | "sessions/interrupt_turn"
+  | "sessions/retry_worker_task"
   | "sessions/refresh_account_usage"
   | "sessions/stop_session"
   | "approvals/resolve_approval"
@@ -135,6 +136,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/submit_input", domain: "sessions", command: "submit_input" },
   { method: "sessions/compact_session", domain: "sessions", command: "compact_session" },
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
+  { method: "sessions/retry_worker_task", domain: "sessions", command: "retry_worker_task" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
   { method: "sessions/stop_session", domain: "sessions", command: "stop_session" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
@@ -288,6 +290,7 @@ export interface BridgeMethodParams {
   "sessions/submit_input": SubmitInputParams;
   "sessions/compact_session": CompactSessionParams;
   "sessions/interrupt_turn": InterruptTurnParams;
+  "sessions/retry_worker_task": RetryWorkerTaskParams;
   "sessions/refresh_account_usage": undefined;
   "sessions/stop_session": StopSessionParams;
   "approvals/resolve_approval": ResolveApprovalParams;
@@ -393,6 +396,7 @@ export interface BridgeMethodResults {
   "sessions/submit_input": SubmitInputResult;
   "sessions/compact_session": UnitResult;
   "sessions/interrupt_turn": UnitResult;
+  "sessions/retry_worker_task": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
   "sessions/stop_session": BridgeState;
   "approvals/resolve_approval": UnitResult;
@@ -1344,6 +1348,10 @@ export interface CompactSessionParams {
 
 export interface InterruptTurnParams {
   sessionId: string;
+}
+
+export interface RetryWorkerTaskParams {
+  childSessionId: string;
 }
 
 export interface StopSessionParams {

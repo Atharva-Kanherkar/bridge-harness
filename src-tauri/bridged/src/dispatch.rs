@@ -135,6 +135,10 @@ pub fn dispatch(
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))
         }
+        MethodName::RetryWorkerTask => {
+            let p: wire::RetryWorkerTaskParams = decode(method, params)?;
+            reply(api::retry_worker_task(core, &p.child_session_id))
+        }
         MethodName::InterruptTurn => {
             let p: wire::InterruptTurnParams = decode(method, params)?;
             reply(api::interrupt_turn(core, &p.session_id))

@@ -928,6 +928,21 @@ async fn replay_session_events(
     .await
 }
 
+/// Re-dispatch a finished worker's objective at the user's request. Bridge no
+/// longer takes this turn on its own for a cause it cannot show has changed, so
+/// the decision belongs to whoever can see why the worker failed.
+#[tauri::command]
+async fn retry_worker_task(
+    child_session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Worker retry", move || {
+        api::retry_worker_task(&core, &child_session_id)
+    })
+    .await
+}
+
 #[tauri::command]
 async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
     api::interrupt_turn(state.inner(), &session_id)
@@ -1290,6 +1305,7 @@ pub fn run() {
             write_workspace_file,
             compact_session,
             interrupt_turn,
+            retry_worker_task,
             refresh_account_usage,
             resolve_approval,
             stop_session,

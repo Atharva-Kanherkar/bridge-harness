@@ -191,6 +191,19 @@ pub struct InterruptTurnParams {
     pub session_id: String,
 }
 
+/// `sessions/retry_worker_task` — re-dispatch a finished worker's objective
+/// because the user asked for it.
+///
+/// The counterpart to the automatic retry Bridge no longer takes on its own: the
+/// worker's failure now reaches the user with its real cause, and this is the
+/// action offered alongside it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetryWorkerTaskParams {
+    /// The worker whose objective should run again.
+    pub child_session_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactSessionParams {
@@ -375,6 +388,15 @@ mod tests {
         assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({})).is_err());
         assert!(serde_json::from_value::<UpdateChatModelParams>(json!({"sessionId": "s"})).is_err());
         assert!(serde_json::from_value::<InterruptTurnParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<RetryWorkerTaskParams>(json!({})).is_err());
+        assert!(
+            serde_json::from_value::<RetryWorkerTaskParams>(json!({"sessionId": "s"})).is_err(),
+            "a retry names the worker, not the session asking"
+        );
+        assert_eq!(
+            serde_json::to_value(RetryWorkerTaskParams { child_session_id: "w-1".into() }).unwrap(),
+            json!({"childSessionId": "w-1"})
+        );
         assert!(serde_json::from_value::<StartSessionParams>(json!({})).is_err());
         assert!(serde_json::from_value::<StartChatParams>(json!({})).is_err());
         assert!(serde_json::from_value::<StopSessionParams>(json!({})).is_err());

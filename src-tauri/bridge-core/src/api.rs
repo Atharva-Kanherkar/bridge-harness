@@ -369,6 +369,16 @@ pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), B
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)
 }
 
+/// Run a finished worker's objective again because the user asked. Goes through
+/// the ordinary launch path, so every policy limit applies as it did the first
+/// time.
+pub fn retry_worker_task(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+) -> Result<(), BridgeError> {
+    live_turn::retry_worker_task(core, child_session_id)
+}
+
 pub fn interrupt_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     core.interrupt_turn(session_id)
 }

@@ -906,6 +906,9 @@ export const bridgeApi = {
     return { disposition: "startedNewTurn", interceptions: [] };
   },
   interruptTurn: (sessionId: string): Promise<void> => isTauri() ? unit(call("sessions/interrupt_turn", { sessionId })) : Promise.resolve(),
+  // The user's half of the retry decision. Bridge stopped taking this turn on
+  // its own for a cause it cannot show has changed.
+  retryWorkerTask: (childSessionId: string): Promise<void> => isTauri() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),
   refreshAccountUsage: (): Promise<void> => isTauri() ? unit(call("sessions/refresh_account_usage")) : Promise.resolve(),
   resolveApproval: async (sessionId: string, eventId: number, decision: ApprovalDecision): Promise<void> => {
     if (isTauri()) return unit(call("approvals/resolve_approval", { sessionId, eventId, decision }));
