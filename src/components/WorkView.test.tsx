@@ -585,3 +585,117 @@ describe("suggested work", () => {
     expect(text()).not.toContain("Nothing needs you");
   });
 });
+
+describe("the briefing dashboard", () => {
+  const suggested = (overrides: Partial<WorkTask> = {}): WorkTask => ({
+    id: "task-v1:abc",
+    fingerprint: "v1:abc",
+    connectorInstanceId: "slack-work",
+    canonicalResourceId: "slack:slack-work:1.1",
+    sourceKind: "slack.message",
+    title: "Reply to Priya",
+    why: "She asked twice and nobody answered.",
+    rank: 1,
+    confidenceBps: 8_200,
+    state: "active",
+    pinned: false,
+    snoozedUntil: null,
+    evidenceDigest: "d".repeat(64),
+    evidenceTarget: { kind: "externalLink", url: "https://app.slack.com/archives/C1/p1", host: "app.slack.com" },
+    evidenceObservedAt: "2026-08-19T11:59:00.000Z",
+    missCount: 0,
+    workspaceId: null,
+    createdAt: "2026-08-19T11:00:00.000Z",
+    updatedAt: "2026-08-19T11:00:00.000Z",
+    ...overrides,
+  });
+
+  const run = {
+    id: "run-1",
+    trigger: "manual",
+    status: "succeeded",
+    profileReference: "claude/haiku",
+    sessionId: null,
+    outputDigest: "a".repeat(64),
+    failureCode: null,
+    failureDetail: null,
+    usage: null,
+    startedAt: "2026-08-19T11:48:00.000Z",
+    completedAt: "2026-08-19T11:48:41.000Z",
+  } as const;
+
+  it("summarises the last run and which tools it read, without provider text", () => {
+    render({
+      board: board([fact()], {
+        latestRun: run as never,
+        sources: [
+          { connectorInstanceId: "slack-work", connectorFamily: "slack", status: "succeeded", detail: null, observedAt: null },
+          { connectorInstanceId: "gmail-1", connectorFamily: "gmail", status: "auth_required", detail: null, observedAt: null },
+        ],
+      }),
+    });
+    expect(text()).toContain("Last briefing 11m ago · completed.");
+    expect(text()).toContain("Read Slack");
+    expect(text()).toContain("Gmail needs sign-in — reconnect it in your harness");
+  });
+
+  it("names a failed run by its stable code and says the board is untouched", () => {
+    render({
+      board: board([fact()], {
+        latestRun: { ...run, status: "failed", failureCode: "evidence_invalid", failureDetail: "raw provider text that must not render" } as never,
+      }),
+    });
+    expect(text()).toContain("failed (evidence_invalid)");
+    expect(text()).toContain("The previous board is untouched");
+    expect(text()).not.toContain("raw provider text");
+  });
+
+  it("shows no dashboard when no briefing has ever run", () => {
+    render({ board: board([fact()]) });
+    expect(text()).not.toContain("Last briefing");
+    expect(text()).not.toContain("No briefing has run yet");
+  });
+
+  it("offers Run briefing only when one is configured and not already running", () => {
+    const onRunBriefing = vi.fn();
+    render({ board: board([fact()], { suggestions: { state: "ready", detail: null } }), onRunBriefing });
+    expect(buttonNamed("Run briefing")).toBeTruthy();
+    buttonNamed("Run briefing")?.click();
+    expect(onRunBriefing).toHaveBeenCalledTimes(1);
+
+    render({ board: board([fact()], { suggestions: { state: "not_configured", detail: null } }), onRunBriefing });
+    expect(buttonNamed("Run briefing")).toBeFalsy();
+    render({ board: board([fact()], { suggestions: { state: "running", detail: null } }), onRunBriefing });
+    expect(buttonNamed("Run briefing")).toBeFalsy();
+  });
+
+  it("renders the real connector mark inline with the source still named in text", () => {
+    render({ board: board([], { tasks: [suggested()] }), onTaskAction: ok as never });
+    const row = host.querySelector("ul[aria-label='Suggested work'] li")!;
+    const mark = row.querySelector("svg");
+    expect(mark).toBeTruthy();
+    expect(mark?.getAttribute("viewBox")).toBe("0 0 122.8 122.8");
+    // The glyph is never load-bearing: the family is named in words beside it.
+    expect(row.textContent).toContain("Slack · slack-work");
+    // Inline only — nothing on the page points at an external asset. (The
+    // xmlns namespace on lucide icons is not a fetch.)
+    expect(host.querySelector("img")).toBeNull();
+    expect(host.querySelectorAll("[src], [href], use, image")).toHaveLength(0);
+  });
+
+  it("routes a workspace-bound task to Code and gives everything else no route", () => {
+    const onOpenTask = vi.fn();
+    render({
+      board: board([], { tasks: [suggested({ id: "t-repo", workspaceId: "w-1", title: "Fix the flaky test" }), suggested({ id: "t-chat", title: "Reply to Priya" })] }),
+      onTaskAction: ok as never,
+      onOpenTask,
+    });
+    const routed = buttons().find(button => button.getAttribute("aria-label")?.includes("Fix the flaky test"));
+    expect(routed).toBeTruthy();
+    expect(routed?.getAttribute("aria-label")).toContain("in Code");
+    routed?.click();
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    expect(onOpenTask.mock.calls[0][0].id).toBe("t-repo");
+    expect(buttons().some(button => button.getAttribute("aria-label")?.includes("Reply to Priya"))).toBe(false);
+  });
+});

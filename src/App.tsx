@@ -12,7 +12,7 @@ import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import type { WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
-import type { TaskAction } from "./components/workTasks";
+import { taskRoute, type TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
@@ -478,6 +478,48 @@ export function App() {
     }
   }, []);
 
+  // A row routes by what the task is: a workspace-bound task opens Code on the
+  // most recent session in that workspace; everything else belongs to Work,
+  // which the reader is already on. The route comes from the task's own fields
+  // (taskRoute) — never from a model-authored URL.
+  const openWorkTask = useCallback((task: WorkTask): void => {
+    const route = taskRoute(task);
+    if (route.kind !== "code") return;
+    const inWorkspace = visibleSessions.find(item => item.workspaceId === route.workspaceId);
+    if (inWorkspace) {
+      openSession(inWorkspace.id);
+      return;
+    }
+    setView("workspace");
+    setParadigm("single");
+  }, [visibleSessions]);
+
+  // Ask for a fresh briefing, then follow the board while the run lands. The
+  // receipt is not the result — the run settles on its own thread — so all this
+  // does is surface a refusal and re-read.
+  const runWorkBriefing = useCallback(async (trigger: "manual" | "focus"): Promise<void> => {
+    try {
+      const receipt = await bridgeApi.runWorkBriefing(trigger);
+      if (receipt.outcome === "refused" && trigger === "manual") {
+        setWorkRefreshError(receipt.detail ?? receipt.code ?? "the briefing was refused");
+      }
+    } catch (error) {
+      if (trigger === "manual") setWorkRefreshError(errorMessage(error));
+    }
+    void readWorkBoard();
+  }, [readWorkBoard]);
+
+  // The opt-in focus trigger. Gated on the stored settings the board carries, so
+  // a user who never opted in gets no background model run from switching apps.
+  useEffect(() => {
+    const onFocus = () => {
+      if (!workBoardRef.current?.settings.refreshOnFocus) return;
+      void runWorkBriefing("focus");
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [runWorkBriefing]);
+
   // Two of the four actions are navigation and two are calls. A board button must
   // never answer an approval on the user's behalf — it takes them to where the
   // decision is made — while a fast-forward and a re-measure are Bridge's own work
@@ -779,6 +821,8 @@ export function App() {
         onTaskAction={runWorkTaskAction}
         onTogglePin={toggleWorkTaskPin}
         onOpenEvidence={task => void openWorkTaskEvidence(task)}
+        onOpenTask={openWorkTask}
+        onRunBriefing={() => void runWorkBriefing("manual")}
       /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}

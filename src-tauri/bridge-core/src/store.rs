@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 27;
+const LATEST_SCHEMA_VERSION: i64 = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -250,8 +250,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             23 => migration_23_session_title_source(&transaction)?,
             24 => migration_24_work_board(&transaction)?,
             25 => migration_25_ephemeral_work_evidence(&transaction)?,
-            26 => migration_26_learning_scope(&transaction)?,
-            27 => migration_27_session_entry_fts(&transaction)?,
+            26 => migration_26_briefing_run_leases(&transaction)?,
+            27 => migration_27_learning_scope(&transaction)?,
+            28 => migration_28_session_entry_fts(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -795,12 +796,35 @@ fn migration_25_ephemeral_work_evidence(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
+/// The durable lease that makes racing briefing triggers safe: one active run,
+/// heartbeated by its owner, reclaimable by compare-and-swap once the lease
+/// expires, and a cancellation flag the run loop polls. Columns rather than a
+/// new table because a lease without a run is meaningless — it is the run row
+/// that is leased.
+fn migration_26_briefing_run_leases(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    // Guarded per column: the repair path replays migrations over a database
+    // whose tables may already carry them, and a blind ALTER would refuse the
+    // whole replay over a column that is exactly what it should be.
+    for (column, definition) in [
+        ("lease_owner", "TEXT"),
+        ("lease_expires_at", "TEXT"),
+        ("cancellation_requested", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !column_exists(transaction, "work_brief_runs", column)? {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE work_brief_runs ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 /// Scope learned routing policies to a workspace. Existing rows become
 /// `legacy:global`, which live routing never selects. The unique live-policy
 /// index stays "one active or canary", now per scope rather than globally —
 /// the previous constant-expression unique index already made those two
 /// statuses mutually exclusive, so the backfill cannot collide.
-fn migration_26_learning_scope(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+fn migration_27_learning_scope(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(
         transaction,
         "routing_policies",
@@ -834,7 +858,7 @@ fn migration_26_learning_scope(transaction: &Transaction<'_>) -> Result<(), Brid
     Ok(())
 }
 
-fn migration_27_session_entry_fts(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+fn migration_28_session_entry_fts(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::session_recall::install_fts(transaction)
 }
 

@@ -245,6 +245,11 @@ typed_methods![
     (WorkTaskPin, TaskPinParams, UnitResult),
     (WorkTaskPrepareSession, TaskPrepareSessionParams, WorkTaskDraft),
     (WorkTaskOpenEvidence, TaskOpenEvidenceParams, WorkEvidenceTarget),
+    (ReadWorkSettings, _, WorkSettingsSnapshot),
+    (WriteWorkSettings, WriteSettingsParams, WorkSettingsSnapshot),
+    (WorkBriefingOptions, _, WorkBriefingOptions),
+    (RunWorkBriefing, RunBriefingParams, WorkBriefReceipt),
+    (CancelWorkBriefing, _, WorkBriefReceipt),
     // skills
     (SkillCatalog, _, _),
     (SkillSuggestions, SkillSuggestionsParams, _),

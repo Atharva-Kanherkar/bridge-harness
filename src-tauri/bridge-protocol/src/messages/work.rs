@@ -444,6 +444,95 @@ pub struct WorkBoard {
     pub suggestions: WorkSuggestions,
 }
 
+// ---------------------------------------------------------------------------
+// Settings round-trip and the briefing surface
+// ---------------------------------------------------------------------------
+
+/// `work/read_settings` and `work/write_settings` result.
+///
+/// `configured` is the row's existence, not its contents: a fresh install reads
+/// defaults with `configured: false`, while a user who wrote settings with no
+/// briefing profile reads `configured: true` — briefing explicitly off, which is
+/// a different stored state from never having set it up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkSettingsSnapshot {
+    pub configured: bool,
+    pub settings: WorkSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteSettingsParams {
+    pub settings: WorkSettings,
+}
+
+/// One model a briefing could run on, as Settings offers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkBriefingModel {
+    pub id: String,
+    pub label: String,
+    /// The capability tier, `fast` being the cheapest capable one.
+    pub tier: String,
+    /// Whether this is the model a briefing defaults to on this harness.
+    pub default_for_briefing: bool,
+}
+
+/// One harness as the briefing Settings surface sees it: certified or refused,
+/// with the refusal reason stated rather than the harness hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkBriefingHarness {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+    /// Whether the adapter passed the briefing conformance gate.
+    pub supported: bool,
+    /// The gate's own reason when it refused. Never a substitute suggestion.
+    pub reason: Option<String>,
+    /// The cheapest capable model — the Fast-tier default — chosen here because
+    /// the resolver deliberately refuses to invent a model at run time.
+    pub default_model: Option<String>,
+    pub models: Vec<WorkBriefingModel>,
+}
+
+/// `work/briefing_options`'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkBriefingOptions {
+    pub harnesses: Vec<WorkBriefingHarness>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunBriefingParams {
+    pub trigger: WorkBriefTrigger,
+}
+
+/// What a trigger got: a run it started, a run somebody else already holds, or
+/// a refusal with a stable code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBriefReceiptOutcome {
+    Started,
+    /// Another trigger's run is active; this one observes it rather than racing.
+    Observed,
+    Refused,
+}
+
+/// `work/run_briefing` and `work/cancel_briefing` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkBriefReceipt {
+    pub outcome: WorkBriefReceiptOutcome,
+    pub run_id: Option<String>,
+    /// A stable code for a refusal — `not_configured`, `cooldown`,
+    /// `provider_unsupported` — never payload or provider text.
+    pub code: Option<String>,
+    pub detail: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +757,87 @@ mod tests {
             }))
             .is_err(),
             "the briefing profile is not a place to smuggle a credential"
+        );
+    }
+
+    #[test]
+    fn a_settings_snapshot_separates_configured_from_its_contents() {
+        // The two states the write path must keep apart: defaults nobody wrote,
+        // and briefing explicitly off.
+        let fresh = WorkSettingsSnapshot { configured: false, settings: settings() };
+        let switched_off = WorkSettingsSnapshot { configured: true, settings: settings() };
+        assert_ne!(fresh, switched_off);
+        let wire = serde_json::to_value(&switched_off).unwrap();
+        assert_eq!(wire["configured"], json!(true));
+        assert_eq!(wire["settings"]["briefing"], json!(null));
+        assert_eq!(round_trip(&switched_off), switched_off);
+    }
+
+    #[test]
+    fn briefing_options_carry_the_refusal_reason_and_the_cheapest_default() {
+        let options = WorkBriefingOptions {
+            harnesses: vec![
+                WorkBriefingHarness {
+                    id: "claude".into(),
+                    label: "Claude".into(),
+                    available: true,
+                    supported: true,
+                    reason: None,
+                    default_model: Some("haiku".into()),
+                    models: vec![WorkBriefingModel {
+                        id: "haiku".into(),
+                        label: "Claude Haiku".into(),
+                        tier: "fast".into(),
+                        default_for_briefing: true,
+                    }],
+                },
+                WorkBriefingHarness {
+                    id: "codex".into(),
+                    label: "Codex".into(),
+                    available: true,
+                    supported: false,
+                    reason: Some("no per-tool authority".into()),
+                    default_model: None,
+                    models: Vec::new(),
+                },
+            ],
+        };
+        let wire = serde_json::to_value(&options).unwrap();
+        assert_eq!(wire["harnesses"][0]["defaultModel"], json!("haiku"));
+        assert_eq!(wire["harnesses"][0]["models"][0]["defaultForBriefing"], json!(true));
+        assert_eq!(wire["harnesses"][1]["supported"], json!(false));
+        assert_eq!(wire["harnesses"][1]["reason"], json!("no per-tool authority"));
+        assert_eq!(round_trip(&options), options);
+    }
+
+    #[test]
+    fn a_run_receipt_round_trips_and_refuses_unknown_params() {
+        let receipt = WorkBriefReceipt {
+            outcome: WorkBriefReceiptOutcome::Refused,
+            run_id: None,
+            code: Some("cooldown".into()),
+            detail: Some("the last run finished 4 minutes ago".into()),
+        };
+        let wire = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(wire["outcome"], json!("refused"));
+        assert_eq!(wire["runId"], json!(null));
+        assert_eq!(round_trip(&receipt), receipt);
+
+        let params: RunBriefingParams =
+            serde_json::from_value(json!({"trigger": "focus"})).unwrap();
+        assert_eq!(params.trigger, WorkBriefTrigger::Focus);
+        assert!(
+            serde_json::from_value::<RunBriefingParams>(
+                json!({"trigger": "focus", "force": true})
+            )
+            .is_err(),
+            "an unknown params field is rejected, not silently honoured"
+        );
+        assert!(
+            serde_json::from_value::<WriteSettingsParams>(
+                json!({"settings": serde_json::to_value(settings()).unwrap(), "actor": "model"})
+            )
+            .is_err()
         );
     }
 

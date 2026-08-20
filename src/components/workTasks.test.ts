@@ -9,6 +9,7 @@ import {
   orderTasks,
   sourceLabel,
   taskAnnouncement,
+  taskRoute,
 } from "./workTasks";
 
 function task(overrides: Partial<WorkTask> = {}): WorkTask {
@@ -156,5 +157,12 @@ describe("evidence affordance", () => {
     expect(evidenceLabel(task({
       evidenceTarget: { kind: "externalLink", url: "https://github.com/o/r/pull/1", host: "github.com" },
     }))).toBe("Open on github.com");
+  });
+});
+
+describe("taskRoute", () => {
+  it("routes a workspace-bound task to Code and everything else to Work", () => {
+    expect(taskRoute({ workspaceId: "w-1" })).toEqual({ kind: "code", workspaceId: "w-1" });
+    expect(taskRoute({ workspaceId: null })).toEqual({ kind: "work" });
   });
 });

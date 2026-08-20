@@ -11,7 +11,9 @@
 //! DB commit, per the event contract) — never through a host event system.
 
 use crate::events::CoreEvent;
-use crate::model::{AdapterDescriptor, AgentEvent, BridgeState, Harness, SessionForestSnapshot};
+use crate::model::{
+    AdapterDescriptor, AgentEvent, BridgeState, CapabilityTier, Harness, SessionForestSnapshot,
+};
 use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
@@ -1093,6 +1095,160 @@ pub fn work_task_open_evidence(
             Ok(wire::WorkEvidenceTarget::Session { session_id })
         }
     }
+}
+
+/// Work's stored settings, with whether they were ever written.
+pub fn read_work_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
+    work::read_settings(&core.db.lock().unwrap())
+}
+
+/// Persist Work's settings. Validation lives in Rust — `work::validate_settings`
+/// plus the model-catalog check below, which needs the adapter registry that the
+/// store-only module deliberately cannot reach.
+pub fn write_work_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::WriteSettingsParams,
+) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
+    if let Some(briefing) = params.settings.briefing.as_ref() {
+        let descriptors = core.adapter_registry.descriptors();
+        if let Some(descriptor) = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == briefing.harness.as_str())
+        {
+            // An empty catalog is a runtime-discovered one; only a non-empty
+            // catalog can refuse a model by name.
+            if !descriptor.models.is_empty()
+                && !descriptor.models.iter().any(|model| model.id == briefing.model)
+            {
+                return Err(BridgeError::Invalid(format!(
+                    "{} is not a model {} offers",
+                    briefing.model, descriptor.label
+                )));
+            }
+        }
+    }
+    work::write_settings(&core.db.lock().unwrap(), &params.settings)
+}
+
+/// Every registered harness as the briefing Settings surface needs it: certified
+/// or refused with the gate's reason, plus the cheapest capable default model.
+pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOptions {
+    let harnesses = core
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .map(|descriptor| {
+            let certification = crate::briefing_policy::certify_briefing(
+                &descriptor.id,
+                descriptor.version.as_deref(),
+            );
+            let supported = certification.is_ok();
+            // The cheapest capable model is the Fast-tier default. Chosen here,
+            // at the settings layer, because `resolve_briefing` deliberately
+            // refuses to invent a model at run time.
+            let default_model = supported
+                .then(|| {
+                    core.adapter_registry
+                        .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
+                        .ok()
+                        .map(|resolution| resolution.actual_model)
+                })
+                .flatten();
+            wire::WorkBriefingHarness {
+                supported,
+                reason: certification.err().map(|unsupported| unsupported.reason()),
+                default_model,
+                models: descriptor
+                    .models
+                    .iter()
+                    .map(|model| wire::WorkBriefingModel {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        tier: model.tier.as_str().to_owned(),
+                        default_for_briefing: model.tier == CapabilityTier::Fast
+                            && model.default_for_tier,
+                    })
+                    .collect(),
+                id: descriptor.id,
+                label: descriptor.label,
+                available: descriptor.available,
+            }
+        })
+        .collect();
+    wire::WorkBriefingOptions { harnesses }
+}
+
+/// Trigger a briefing run. Every trigger — this one, app focus, and the cadence
+/// thread — funnels through `work_briefing_trigger::claim`, so racing calls
+/// start at most one run and the others observe it.
+///
+/// Returns immediately: a claimed run executes on its own thread and lands on
+/// the run row, never in this response. The board's `suggestions.state` is how
+/// a client follows it.
+pub fn run_work_briefing(
+    core: &Arc<BridgeCore>,
+    params: &wire::RunBriefingParams,
+) -> Result<wire::WorkBriefReceipt, BridgeError> {
+    let registry = core.adapter_registry.clone();
+    let versions = move |harness: &str| {
+        registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == harness)
+            .and_then(|descriptor| descriptor.version)
+    };
+    let outcome = {
+        let db = core.db.lock().unwrap();
+        crate::work_briefing_trigger::claim(&db, params.trigger, &versions, chrono::Utc::now())?
+    };
+    Ok(match outcome {
+        crate::work_briefing_trigger::ClaimOutcome::Claimed(run) => {
+            let run_id = run.run_id.clone();
+            let worker_core = core.clone();
+            thread::spawn(move || crate::work_briefing_live::execute(&worker_core, run));
+            wire::WorkBriefReceipt {
+                outcome: wire::WorkBriefReceiptOutcome::Started,
+                run_id: Some(run_id),
+                code: None,
+                detail: None,
+            }
+        }
+        crate::work_briefing_trigger::ClaimOutcome::Observed { run_id } => wire::WorkBriefReceipt {
+            outcome: wire::WorkBriefReceiptOutcome::Observed,
+            run_id: Some(run_id),
+            code: None,
+            detail: None,
+        },
+        crate::work_briefing_trigger::ClaimOutcome::Refused { code, detail } => {
+            wire::WorkBriefReceipt {
+                outcome: wire::WorkBriefReceiptOutcome::Refused,
+                run_id: None,
+                code: Some(code),
+                detail: Some(detail),
+            }
+        }
+    })
+}
+
+/// Ask the active briefing run to stop. The run loop notices the flag, stops
+/// the provider, records terminal status and measured usage, and leaves the
+/// last good board intact.
+pub fn cancel_work_briefing(core: &Arc<BridgeCore>) -> Result<wire::WorkBriefReceipt, BridgeError> {
+    let cancelled = crate::work_briefing_trigger::request_cancel(&core.db.lock().unwrap())?;
+    Ok(match cancelled {
+        Some(run_id) => wire::WorkBriefReceipt {
+            outcome: wire::WorkBriefReceiptOutcome::Observed,
+            run_id: Some(run_id),
+            code: None,
+            detail: Some("cancellation requested; the run settles on its own thread".into()),
+        },
+        None => wire::WorkBriefReceipt {
+            outcome: wire::WorkBriefReceiptOutcome::Refused,
+            run_id: None,
+            code: Some("not_running".into()),
+            detail: Some("no briefing run is active".into()),
+        },
+    })
 }
 
 // --- base-branch divergence ----------------------------------------------------

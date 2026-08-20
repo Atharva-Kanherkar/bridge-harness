@@ -232,6 +232,38 @@ pub struct BriefingRuntimePolicy {
     /// The tool list this policy was compiled against, so drift is detectable
     /// rather than something the run discovers by succeeding at the wrong thing.
     compiled_against: Vec<String>,
+    /// Servers whose **read-verb** tools are allowed without per-identity review.
+    ///
+    /// The harness-run briefing's mode: Bridge holds no tool inventory there —
+    /// the harness's own MCP configuration decides what exists — so the scope
+    /// names servers, and the verb rule below decides which of their tools are
+    /// reads. Empty under [`Self::compile`], whose exact-identity semantics are
+    /// unchanged; only [`Self::compile_scoped`] populates it.
+    read_scope_servers: Vec<String>,
+}
+
+/// The name prefixes that make a connector tool a read under a scoped policy.
+/// Anything else — `post_`, `send_`, `create_`, `update_`, `delete_`, and every
+/// verb this list does not name — is denied. Fail closed: an unrecognised verb
+/// is not a read.
+pub const READ_TOOL_VERBS: &[&str] = &["search", "read", "list", "get", "query", "fetch", "find"];
+
+/// Is this bare tool name (the segment after `mcp__<server>__`) a read?
+fn is_read_verb_tool(tool: &str) -> bool {
+    let lowered = tool.to_lowercase();
+    READ_TOOL_VERBS.iter().any(|verb| {
+        lowered == *verb
+            || lowered
+                .strip_prefix(verb)
+                .is_some_and(|rest| rest.starts_with('_') || rest.starts_with('-'))
+    })
+}
+
+/// Split a provider wire name into its `mcp__<server>__<tool>` parts.
+fn split_wire_name(tool: &str) -> Option<(&str, &str)> {
+    let rest = tool.strip_prefix("mcp__")?;
+    let (server, bare) = rest.split_once("__")?;
+    (!server.is_empty() && !bare.is_empty()).then_some((server, bare))
 }
 
 /// Default ceiling on one call's arguments. Generous for a connector query,
@@ -295,6 +327,43 @@ impl BriefingRuntimePolicy {
             limits,
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
             compiled_against,
+            read_scope_servers: Vec::new(),
+        })
+    }
+
+    /// Compile a server-scoped read policy for a harness-run briefing.
+    ///
+    /// No identities are reviewed because Bridge holds no inventory of the
+    /// harness's tools: the harness's own MCP configuration decides what exists.
+    /// Authority is therefore two rules, both fail-closed — the server must be
+    /// in scope, and the tool's name must be a read verb ([`READ_TOOL_VERBS`]).
+    /// Built-ins stay denied exactly as under [`Self::compile`].
+    pub fn compile_scoped(
+        servers: Vec<String>,
+        limits: wire::WorkBriefLimits,
+    ) -> Result<Self, BriefingUnsupported> {
+        if limits.max_wall_seconds <= 0 || limits.max_turns <= 0 || limits.max_tool_calls <= 0 {
+            return Err(BriefingUnsupported::MalformedPolicy {
+                detail: format!(
+                    "limits must all be positive (wall {}s, turns {}, tool calls {})",
+                    limits.max_wall_seconds, limits.max_turns, limits.max_tool_calls
+                ),
+            });
+        }
+        if servers.iter().any(|server| server.trim().is_empty()) {
+            return Err(BriefingUnsupported::MalformedPolicy {
+                detail: "a scoped server has an empty name".into(),
+            });
+        }
+        let mut scope = servers;
+        scope.sort();
+        scope.dedup();
+        Ok(Self {
+            allowed: Vec::new(),
+            limits,
+            max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
+            compiled_against: Vec::new(),
+            read_scope_servers: scope,
         })
     }
 
@@ -336,6 +405,25 @@ impl BriefingRuntimePolicy {
             }
             return ToolDecision::Allow;
         }
+        // The scoped-read rule for harness-run briefings. Checked before the
+        // family lookup because that lookup strips the `mcp__` prefix and would
+        // read `mcp__slack__search` as the built-in search family — but only a
+        // name of the exact `mcp__<server>__<tool>` shape can reach this arm,
+        // so a bare built-in like `Bash` never does.
+        if let Some((server, bare)) = split_wire_name(tool) {
+            if self.read_scope_servers.iter().any(|scoped| scoped == server)
+                && is_read_verb_tool(bare)
+            {
+                if argument_bytes > self.max_argument_bytes {
+                    return ToolDecision::Deny(BriefingDenial::ArgumentsTooLarge {
+                        tool: tool.to_owned(),
+                        bytes: argument_bytes,
+                        limit: self.max_argument_bytes,
+                    });
+                }
+                return ToolDecision::Allow;
+            }
+        }
         // Everything else is refused. Naming the family when we recognize it is
         // for the reader; the refusal does not depend on recognizing it.
         match builtin_family(tool) {
@@ -354,14 +442,21 @@ impl BriefingRuntimePolicy {
         self.allowed.iter().map(BriefingToolIdentity::wire_name).collect()
     }
 
-    /// The connector instances any reviewed tool belongs to. An adapter starts
-    /// only these and no others.
+    /// The connector instances any reviewed tool belongs to, plus the scoped
+    /// read servers. An adapter starts only these and no others.
     pub fn allowed_servers(&self) -> Vec<String> {
         let mut servers: Vec<String> =
             self.allowed.iter().map(|identity| identity.server.clone()).collect();
+        servers.extend(self.read_scope_servers.iter().cloned());
         servers.sort();
         servers.dedup();
         servers
+    }
+
+    /// The servers whose read-verb tools are allowed without per-identity
+    /// review, for the adapter to hand its gate.
+    pub fn read_scope_servers(&self) -> &[String] {
+        &self.read_scope_servers
     }
 
     /// Exact built-in tool identities to hand a provider as an explicit deny-list.
@@ -1704,5 +1799,90 @@ mod tests {
                 "{builtin} is the built-in, not the reviewed connector tool"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The scoped-read mode, for harness-run briefings
+    // -----------------------------------------------------------------------
+
+    fn scoped(servers: &[&str]) -> BriefingRuntimePolicy {
+        BriefingRuntimePolicy::compile_scoped(
+            servers.iter().map(|server| (*server).to_owned()).collect(),
+            limits(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_scoped_policy_allows_only_read_verbs_on_in_scope_servers() {
+        let policy = scoped(&["slack", "gmail"]);
+        for allowed in [
+            "mcp__slack__search_messages",
+            "mcp__slack__read_channel",
+            "mcp__gmail__list",
+            "mcp__gmail__get-thread",
+            "mcp__slack__fetch",
+        ] {
+            assert!(policy.decide(allowed, 10).is_allowed(), "{allowed} is a scoped read");
+        }
+    }
+
+    #[test]
+    fn a_mutating_verb_is_denied_even_on_an_in_scope_server() {
+        let policy = scoped(&["slack", "notion"]);
+        for denied in [
+            "mcp__slack__post_message",
+            "mcp__slack__send_message",
+            "mcp__notion__create_page",
+            "mcp__notion__update_page",
+            "mcp__slack__delete_message",
+            // Fail closed: an unrecognised verb is not a read, even a plausible one.
+            "mcp__slack__summarise_channel",
+            // And a read verb buried mid-name does not count.
+            "mcp__slack__unread_purge",
+        ] {
+            assert!(!policy.decide(denied, 10).is_allowed(), "{denied} must be denied");
+        }
+    }
+
+    #[test]
+    fn an_out_of_scope_server_is_denied_whatever_the_verb() {
+        let policy = scoped(&["slack"]);
+        assert!(!policy.decide("mcp__github__search_issues", 10).is_allowed());
+    }
+
+    #[test]
+    fn builtins_stay_denied_under_a_scoped_policy() {
+        let policy = scoped(&["slack"]);
+        for builtin in ["Bash", "Read", "Write", "WebFetch", "Task", "Skill"] {
+            assert!(!policy.decide(builtin, 10).is_allowed(), "{builtin} stays denied");
+        }
+    }
+
+    #[test]
+    fn scoped_reads_keep_the_argument_ceiling() {
+        let policy = scoped(&["slack"]);
+        let oversized = DEFAULT_MAX_ARGUMENT_BYTES + 1;
+        assert!(matches!(
+            policy.decide("mcp__slack__search_messages", oversized),
+            ToolDecision::Deny(BriefingDenial::ArgumentsTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn scoped_servers_reach_the_adapter_and_a_blank_one_refuses_to_compile() {
+        let policy = scoped(&["slack", "gmail"]);
+        assert_eq!(policy.allowed_servers(), vec!["gmail", "slack"]);
+        assert_eq!(policy.read_scope_servers(), ["gmail", "slack"]);
+        assert!(BriefingRuntimePolicy::compile_scoped(vec!["  ".into()], limits()).is_err());
+    }
+
+    #[test]
+    fn an_exact_review_policy_gains_no_scope() {
+        // The conformance suite's mode is untouched: compile() scopes nothing,
+        // so an unreviewed read on a reviewed tool's own server stays denied.
+        let policy = policy();
+        assert!(policy.read_scope_servers().is_empty());
+        assert!(!policy.decide("mcp__notion__read_page", 10).is_allowed());
     }
 }

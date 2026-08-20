@@ -199,6 +199,75 @@ test("a prompt-injected result cannot widen the gate", async () => {
   assert.equal((await gate("mcp__notion__search", { query: "b" }, {})).behavior, "allow");
 });
 
+// The harness-run mode: no reviewed identities, a server scope whose read-verb
+// tools are allowed. Mirrors compile_scoped in bridge-core/src/briefing_policy.rs.
+const scopedBriefing = {
+  allowedTools: [],
+  allowedServers: [],
+  readScopeServers: ["slack", "gmail"],
+  deniedBuiltins: ["Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "Task", "Skill"],
+  maxArgumentBytes: 256,
+};
+
+test("a scoped gate allows read verbs on in-scope servers only", async () => {
+  const gate = makeBriefingGate(scopedBriefing);
+  for (const tool of [
+    "mcp__slack__search_messages",
+    "mcp__slack__read_channel",
+    "mcp__gmail__list",
+    "mcp__gmail__get-thread",
+  ]) {
+    assert.equal((await gate(tool, { q: "x" }, {})).behavior, "allow", `${tool} is a scoped read`);
+  }
+});
+
+test("a scoped gate denies mutating verbs on an in-scope server", async () => {
+  const gate = makeBriefingGate(scopedBriefing);
+  for (const tool of [
+    "mcp__slack__post_message",
+    "mcp__slack__send_message",
+    "mcp__gmail__create_draft",
+    "mcp__slack__delete_message",
+    // Fail closed: an unrecognised verb is not a read.
+    "mcp__slack__summarise_channel",
+    // A read verb buried mid-name does not count.
+    "mcp__slack__unread_purge",
+  ]) {
+    assert.equal((await gate(tool, {}, {})).behavior, "deny", `${tool} must be denied`);
+  }
+});
+
+test("a scoped gate denies out-of-scope servers and every built-in", async () => {
+  const gate = makeBriefingGate(scopedBriefing);
+  for (const tool of ["mcp__github__search_issues", "Bash", "Read", "WebFetch", "Task"]) {
+    assert.equal((await gate(tool, {}, {})).behavior, "deny", `${tool} must be denied`);
+  }
+});
+
+test("a scoped gate keeps the argument ceiling", async () => {
+  const gate = makeBriefingGate(scopedBriefing);
+  const decision = await gate("mcp__slack__search_messages", { q: "x".repeat(400) }, {});
+  assert.equal(decision.behavior, "deny");
+  assert.match(decision.message, /over the 256-byte limit/);
+});
+
+test("read-scope servers stay reachable through the MCP filter", () => {
+  const options = briefingOptions(scopedBriefing, {
+    slack: { type: "http", url: "https://mcp.example/slack" },
+    gmail: { type: "http", url: "https://mcp.example/gmail" },
+    github: { type: "http", url: "https://mcp.example/github" },
+  });
+  assert.deepEqual(Object.keys(options.mcpServers).sort(), ["gmail", "slack"]);
+});
+
+test("without a scope the gate behaves exactly as before", async () => {
+  // The regression pin for the exact-review mode: an empty readScopeServers
+  // changes no decision the conformance suite already relies on.
+  const gate = makeBriefingGate({ ...briefing, readScopeServers: [] });
+  assert.equal((await gate("mcp__notion__search", { query: "a" }, {})).behavior, "allow");
+  assert.equal((await gate("mcp__notion__read_page", {}, {})).behavior, "deny");
+});
+
 test("briefingOptions is usable directly and matches what buildOptions applies", () => {
   const direct = briefingOptions(briefing, { notion: {} });
   const built = buildOptions({ ...base, briefing, mcpServers: { notion: {} } });

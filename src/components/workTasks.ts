@@ -89,6 +89,15 @@ export function evidenceLabel(task: Pick<WorkTask, "evidenceTarget">): string | 
   return target.kind === "externalLink" ? `Open on ${target.host}` : null;
 }
 
+/** Where clicking a task's row goes, decided by the task's own fields — never by
+ * a model-authored URL. A task bound to a workspace opens Code on it; everything
+ * else belongs to Work, which the reader is already on. */
+export type TaskRoute = { kind: "code"; workspaceId: string } | { kind: "work" };
+
+export function taskRoute(task: Pick<WorkTask, "workspaceId">): TaskRoute {
+  return task.workspaceId ? { kind: "code", workspaceId: task.workspaceId } : { kind: "work" };
+}
+
 /** What a screen reader hears for a task row. Source, confidence and state as words, since
  * none of the three is carried by colour. */
 export function taskAnnouncement(task: WorkTask): string {

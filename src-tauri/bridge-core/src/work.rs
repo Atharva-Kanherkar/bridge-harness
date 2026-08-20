@@ -83,6 +83,126 @@ fn stored_settings(db: &Connection) -> Result<Option<wire::WorkSettings>, Bridge
         .map_err(|error| BridgeError::Invalid(format!("stored Work settings are invalid: {error}")))
 }
 
+/// The settings with their provenance: `configured: false` is a fresh install
+/// reading defaults, `configured: true` with `briefing: None` is a user who
+/// switched briefing off. The write path below is what keeps those two states
+/// distinguishable.
+pub fn read_settings(db: &Connection) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
+    Ok(match stored_settings(db)? {
+        Some(settings) => wire::WorkSettingsSnapshot { configured: true, settings },
+        None => wire::WorkSettingsSnapshot { configured: false, settings: default_settings() },
+    })
+}
+
+/// The bounds the write path enforces. Constants rather than literals in the
+/// checks, so the refusal messages and the rules cannot drift apart.
+pub const MIN_REFRESH_INTERVAL_MINUTES: i64 = 15;
+pub const MAX_REFRESH_INTERVAL_MINUTES: i64 = 1440;
+pub const MAX_COOLDOWN_MINUTES: i64 = 1440;
+pub const MIN_WALL_SECONDS: i64 = 60;
+pub const MAX_WALL_SECONDS: i64 = 3600;
+pub const MAX_TURNS_CEILING: i64 = 64;
+pub const MAX_TOOL_CALLS_CEILING: i64 = 256;
+
+/// Validate a settings payload. This is the authority — the frontend may
+/// pre-empt an obvious mistake, but a payload that bypasses it is refused here
+/// with the same rules.
+pub fn validate_settings(settings: &wire::WorkSettings) -> Result<(), String> {
+    validate_settings_keeping(settings, None)
+}
+
+/// Validate against what is already stored. `stored_briefing` is the profile
+/// the database currently holds: submitting it back unchanged is not making a
+/// choice, so it is exempt from the conformance gate. Without the exemption, a
+/// harness that loses certification after being stored would freeze the whole
+/// settings row — cadence, focus, even turning briefing off would be refused
+/// over a profile the user is not changing. The run-time `resolve_briefing`
+/// still refuses to *run* the uncertified profile, so nothing unsafe executes.
+pub fn validate_settings_keeping(
+    settings: &wire::WorkSettings,
+    stored_briefing: Option<&wire::WorkBriefingProfile>,
+) -> Result<(), String> {
+    if !(0..=MAX_COOLDOWN_MINUTES).contains(&settings.cooldown_minutes) {
+        return Err(format!(
+            "cooldownMinutes must be between 0 and {MAX_COOLDOWN_MINUTES}"
+        ));
+    }
+    if let Some(interval) = settings.refresh_interval_minutes {
+        // The same floor the learning schedule enforces: a background model run
+        // per minute is a subscription drain, not a cadence.
+        if !(MIN_REFRESH_INTERVAL_MINUTES..=MAX_REFRESH_INTERVAL_MINUTES).contains(&interval) {
+            return Err(format!(
+                "refreshIntervalMinutes must be between {MIN_REFRESH_INTERVAL_MINUTES} and {MAX_REFRESH_INTERVAL_MINUTES}"
+            ));
+        }
+    }
+    let limits = &settings.limits;
+    if !(MIN_WALL_SECONDS..=MAX_WALL_SECONDS).contains(&limits.max_wall_seconds) {
+        return Err(format!(
+            "maxWallSeconds must be between {MIN_WALL_SECONDS} and {MAX_WALL_SECONDS}"
+        ));
+    }
+    if !(1..=MAX_TURNS_CEILING).contains(&limits.max_turns) {
+        return Err(format!("maxTurns must be between 1 and {MAX_TURNS_CEILING}"));
+    }
+    if !(1..=MAX_TOOL_CALLS_CEILING).contains(&limits.max_tool_calls) {
+        return Err(format!(
+            "maxToolCalls must be between 1 and {MAX_TOOL_CALLS_CEILING}"
+        ));
+    }
+    if limits.max_output_tokens.is_some_and(|value| value <= 0) {
+        return Err("maxOutputTokens must be positive when set".into());
+    }
+    if limits.cost_ceiling_microusd.is_some_and(|value| value <= 0) {
+        return Err("costCeilingMicrousd must be positive when set".into());
+    }
+    if settings
+        .enabled_connector_instances
+        .iter()
+        .any(|instance| instance.trim().is_empty())
+    {
+        return Err("a connector instance id cannot be blank".into());
+    }
+    if let Some(briefing) = settings.briefing.as_ref() {
+        if briefing.model.trim().is_empty() {
+            return Err("the briefing model cannot be blank".into());
+        }
+        // The conformance gate is the authority on which harnesses may brief.
+        // Refusing here keeps an unsupported harness out of storage entirely,
+        // rather than storing it and skipping every run it would have caused.
+        // The one exemption is the profile already stored, unchanged — see
+        // `validate_settings_keeping`.
+        if stored_briefing != Some(briefing) {
+            crate::briefing_policy::adapter_may_brief(briefing.harness.as_str())
+                .map_err(|unsupported| unsupported.reason())?;
+        }
+    }
+    Ok(())
+}
+
+/// Persist Work's settings. The only production writer.
+pub fn write_settings(
+    db: &Connection,
+    settings: &wire::WorkSettings,
+) -> Result<wire::WorkSettingsSnapshot, BridgeError> {
+    let stored = read_settings(db)?;
+    let stored_briefing = stored.configured.then_some(stored.settings.briefing.as_ref()).flatten();
+    validate_settings_keeping(settings, stored_briefing).map_err(BridgeError::Invalid)?;
+    let payload = serde_json::to_string(settings)
+        .map_err(|error| BridgeError::Invalid(format!("settings could not be serialised: {error}")))?;
+    let now = Utc::now().to_rfc3339();
+    db.execute(
+        "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?4)
+         ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+        rusqlite::params![SETTINGS_KIND, SETTINGS_ID, payload, now],
+    )?;
+    Ok(wire::WorkSettingsSnapshot {
+        configured: true,
+        settings: settings.clone(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Fact projection
 // ---------------------------------------------------------------------------
@@ -616,6 +736,187 @@ mod tests {
             rusqlite::params![SETTINGS_KIND, SETTINGS_ID, payload],
         )
         .unwrap();
+    }
+
+    fn claude_briefing() -> wire::WorkBriefingProfile {
+        wire::WorkBriefingProfile {
+            harness: wire::HarnessId::parse("claude").unwrap(),
+            model: "haiku".into(),
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_reads_defaults_and_is_not_configured() {
+        let db = memory_db();
+        let snapshot = read_settings(&db).unwrap();
+        assert!(!snapshot.configured);
+        assert_eq!(snapshot.settings, default_settings());
+    }
+
+    #[test]
+    fn written_settings_round_trip_and_a_rewrite_is_an_upsert() {
+        let db = memory_db();
+        let mut settings = default_settings();
+        settings.briefing = Some(claude_briefing());
+        settings.refresh_on_focus = true;
+        settings.refresh_interval_minutes = Some(60);
+        let written = write_settings(&db, &settings).unwrap();
+        assert!(written.configured);
+
+        let read = read_settings(&db).unwrap();
+        assert!(read.configured);
+        assert_eq!(read.settings, settings);
+
+        // A second write updates the same row rather than erroring on the key.
+        settings.refresh_interval_minutes = Some(30);
+        write_settings(&db, &settings).unwrap();
+        assert_eq!(read_settings(&db).unwrap().settings.refresh_interval_minutes, Some(30));
+    }
+
+    #[test]
+    fn briefing_switched_off_is_not_the_same_stored_state_as_never_configured() {
+        let db = memory_db();
+        let off = default_settings();
+        assert!(off.briefing.is_none(), "off is expressed as a stored row with no profile");
+        write_settings(&db, &off).unwrap();
+        let stored = read_settings(&db).unwrap();
+        assert!(stored.configured, "the row exists: the user chose this");
+        assert!(stored.settings.briefing.is_none());
+
+        let fresh = read_settings(&memory_db()).unwrap();
+        assert!(!fresh.configured, "no row: nobody chose anything");
+        assert_ne!(stored, fresh);
+    }
+
+    #[test]
+    fn validation_refuses_each_out_of_bounds_field_with_a_reason() {
+        let base = default_settings();
+
+        let mut cooldown = base.clone();
+        cooldown.cooldown_minutes = MAX_COOLDOWN_MINUTES + 1;
+        assert!(validate_settings(&cooldown).unwrap_err().contains("cooldownMinutes"));
+
+        let mut interval = base.clone();
+        interval.refresh_interval_minutes = Some(MIN_REFRESH_INTERVAL_MINUTES - 1);
+        assert!(validate_settings(&interval).unwrap_err().contains("refreshIntervalMinutes"));
+
+        let mut wall = base.clone();
+        wall.limits.max_wall_seconds = MAX_WALL_SECONDS + 1;
+        assert!(validate_settings(&wall).unwrap_err().contains("maxWallSeconds"));
+
+        let mut turns = base.clone();
+        turns.limits.max_turns = 0;
+        assert!(validate_settings(&turns).unwrap_err().contains("maxTurns"));
+
+        let mut calls = base.clone();
+        calls.limits.max_tool_calls = MAX_TOOL_CALLS_CEILING + 1;
+        assert!(validate_settings(&calls).unwrap_err().contains("maxToolCalls"));
+
+        let mut tokens = base.clone();
+        tokens.limits.max_output_tokens = Some(0);
+        assert!(validate_settings(&tokens).unwrap_err().contains("maxOutputTokens"));
+
+        let mut cost = base.clone();
+        cost.limits.cost_ceiling_microusd = Some(-1);
+        assert!(validate_settings(&cost).unwrap_err().contains("costCeilingMicrousd"));
+
+        let mut blank_instance = base.clone();
+        blank_instance.enabled_connector_instances = vec!["  ".into()];
+        assert!(validate_settings(&blank_instance).unwrap_err().contains("connector instance"));
+
+        let mut blank_model = base.clone();
+        blank_model.briefing = Some(wire::WorkBriefingProfile {
+            harness: wire::HarnessId::parse("claude").unwrap(),
+            model: "   ".into(),
+            effort: None,
+        });
+        assert!(validate_settings(&blank_model).unwrap_err().contains("model"));
+    }
+
+    #[test]
+    fn an_uncertified_harness_is_refused_at_write_time_with_the_gates_reason() {
+        // The frontend offers only certified harnesses, but the frontend is not
+        // the authority: a payload naming codex directly is refused here.
+        let db = memory_db();
+        let mut settings = default_settings();
+        settings.briefing = Some(wire::WorkBriefingProfile {
+            harness: wire::HarnessId::parse("codex").unwrap(),
+            model: "gpt-5.6-luna".into(),
+            effort: None,
+        });
+        let refused = write_settings(&db, &settings).unwrap_err();
+        let reason = refused.to_string();
+        assert!(reason.contains("codex"), "{reason}");
+        assert!(
+            !read_settings(&db).unwrap().configured,
+            "a refused write stores nothing"
+        );
+    }
+
+    #[test]
+    fn a_stored_profile_that_lost_certification_does_not_freeze_the_settings_row() {
+        // A profile can be certified when stored and uncertified later. Keeping
+        // it unchanged is not making a choice, so cadence edits and turning the
+        // briefing off must still write — only naming it anew is gated.
+        let db = memory_db();
+        let uncertified = wire::WorkBriefingProfile {
+            harness: wire::HarnessId::parse("codex").unwrap(),
+            model: "gpt-5.6-luna".into(),
+            effort: None,
+        };
+        let mut stored = default_settings();
+        stored.briefing = Some(uncertified.clone());
+        // Planted directly, simulating certification lost after storage: the
+        // production writer would have accepted this while the gate passed.
+        db.execute(
+            "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
+             VALUES(?1,?2,?3,'2026-08-19T00:00:00+00:00','2026-08-19T00:00:00+00:00')",
+            rusqlite::params![
+                SETTINGS_KIND,
+                SETTINGS_ID,
+                serde_json::to_string(&stored).unwrap()
+            ],
+        )
+        .unwrap();
+
+        // Changing the cadence while keeping the stored profile writes.
+        let mut cadence_edit = stored.clone();
+        cadence_edit.refresh_interval_minutes = Some(60);
+        write_settings(&db, &cadence_edit).unwrap();
+        assert_eq!(
+            read_settings(&db).unwrap().settings.refresh_interval_minutes,
+            Some(60)
+        );
+
+        // Turning the briefing off writes: null names no harness at all.
+        let mut off = cadence_edit.clone();
+        off.briefing = None;
+        write_settings(&db, &off).unwrap();
+        assert_eq!(read_settings(&db).unwrap().settings.briefing, None);
+
+        // Naming the uncertified harness *again* is a new choice, and refused.
+        let mut renamed = off;
+        renamed.briefing = Some(uncertified);
+        let refused = write_settings(&db, &renamed).unwrap_err();
+        assert!(refused.to_string().contains("codex"), "{refused}");
+    }
+
+    #[test]
+    fn an_invalid_write_never_reaches_storage() {
+        let db = memory_db();
+        let mut settings = default_settings();
+        settings.briefing = Some(claude_briefing());
+        write_settings(&db, &settings).unwrap();
+
+        let mut broken = settings.clone();
+        broken.limits.max_turns = 0;
+        assert!(write_settings(&db, &broken).is_err());
+        assert_eq!(
+            read_settings(&db).unwrap().settings,
+            settings,
+            "the stored settings are the last valid write"
+        );
     }
 
     /// A project, workspace, and session, so the foreign keys the projections
