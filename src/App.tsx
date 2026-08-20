@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -752,16 +752,29 @@ export function App() {
     setSlashIndex(0);
     setSlashDismissed(true);
   }
-  // The `+` control: open the file picker rather than doing something
-  // structural. Attaching a file is `@path` in the draft, which the backend
-  // already resolves into trusted application context at submit time — so the
-  // button is a discoverable front door to the mechanism `@` already provides,
-  // not a second one.
-  function attachFile() {
-    setMentionDismissed(false);
-    setMentionIndex(0);
-    setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
-    composerRef.current?.focus();
+  // The `+` control: the system file dialog, so any file on the machine can be
+  // attached to any chat — including one with no folder connected. The chosen
+  // paths become `@path` mentions, which the backend reads as bounded,
+  // secret-sanitized, untrusted context at submit time. The draft is never
+  // touched, only added to.
+  async function attachFile() {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      // No system dialog outside the desktop shell; fall back to the workspace
+      // picker `@` drives rather than doing nothing.
+      setMentionDismissed(false);
+      setMentionIndex(0);
+      setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
+      composerRef.current?.focus();
+      return;
+    }
+    try {
+      const picked = await open({ multiple: true, title: "Attach files" });
+      if (picked == null) return;
+      const paths = (Array.isArray(picked) ? picked : [picked]).filter(path => typeof path === "string");
+      if (paths.length === 0) return;
+      setComposer(current => paths.reduce(appendFileMention, current));
+    } catch (e) { setError(errorMessage(e)); }
+    finally { composerRef.current?.focus(); }
   }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
@@ -981,10 +994,7 @@ export function App() {
                     activeAction={activeAction}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
                     inputRef={composerRef}
-                    onPlusClick={attachFile}
-                    plusUnavailableReason={hasRepo
-                      ? (workspaceFiles.length === 0 ? "No files to attach yet — this chat's folder is still being read" : undefined)
-                      : "Connect a folder to this chat to attach files from it"}
+                    onPlusClick={() => void attachFile()}
                     trailing={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
