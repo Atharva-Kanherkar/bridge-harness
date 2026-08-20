@@ -65,7 +65,7 @@ export function RouterSettingsDialog({
     if (!open || !workspaceId) return;
     let active = true;
     setBusy(true);
-    Promise.all([bridgeApi.routerPreferences(workspaceId), bridgeApi.modelSetup(), bridgeApi.learningState()]).then(([value, setup, learningState]) => {
+    Promise.all([bridgeApi.routerPreferences(workspaceId), bridgeApi.modelSetup(), bridgeApi.learningState(workspaceId)]).then(([value, setup, learningState]) => {
       if (!active) return;
       setPreferences(value);
       setExcludedHarnesses((value.excludedHarnesses ?? []).join(", "));
@@ -105,8 +105,8 @@ export function RouterSettingsDialog({
   const runNow = async () => {
     setRunning(true);
     try {
-      await bridgeApi.runLearning("manual");
-      setLearning(await bridgeApi.learningState());
+      await bridgeApi.runLearning("manual", workspaceId);
+      setLearning(await bridgeApi.learningState(workspaceId));
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -131,7 +131,7 @@ export function RouterSettingsDialog({
     setRunning(true);
     try {
       await bridgeApi.approveLearningRun(learning.latestRun.id);
-      setLearning(await bridgeApi.learningState());
+      setLearning(await bridgeApi.learningState(workspaceId));
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setRunning(false); }
   };
@@ -140,7 +140,7 @@ export function RouterSettingsDialog({
     setRunning(true);
     try {
       await bridgeApi.cancelLearningRun(learning.latestRun.id);
-      setLearning(await bridgeApi.learningState());
+      setLearning(await bridgeApi.learningState(workspaceId));
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setRunning(false); }
   };
@@ -149,7 +149,7 @@ export function RouterSettingsDialog({
     if (!targetVersion) return;
     setRunning(true);
     try {
-      setLearning(await bridgeApi.rollbackRoutingPolicy(targetVersion, "User requested rollback from adaptive-learning settings"));
+      setLearning(await bridgeApi.rollbackRoutingPolicy(workspaceId, targetVersion, "User requested rollback from adaptive-learning settings"));
     } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setRunning(false); }
   };

@@ -81,21 +81,30 @@ where
     }
 
     let mut candidate = PolicyConfig::default();
+    let mut workspace: Option<String> = None;
     let remaining = args.collect::<Vec<_>>();
-    match remaining.as_slice() {
-        [] => {}
-        [flag, path] if flag == "--candidate" => {
-            let body = fs::read_to_string(path)
-                .map_err(|error| format!("cannot read candidate config {path}: {error}"))?;
-            candidate = serde_json::from_str(&body)
-                .map_err(|error| format!("invalid candidate config {path}: {error}"))?;
+    let mut index = 0;
+    while index < remaining.len() {
+        let value = remaining.get(index + 1).ok_or_else(|| usage(&program))?;
+        match remaining[index].as_str() {
+            "--candidate" => {
+                let body = fs::read_to_string(value)
+                    .map_err(|error| format!("cannot read candidate config {value}: {error}"))?;
+                candidate = serde_json::from_str(&body)
+                    .map_err(|error| format!("invalid candidate config {value}: {error}"))?;
+            }
+            "--workspace" => workspace = Some(value.clone()),
+            _ => return Err(usage(&program)),
         }
-        _ => return Err(usage(&program)),
+        index += 2;
     }
 
     let loaded = load_database(Path::new(&database))?;
     let report = replay(loaded, candidate);
-    let realized_outcome_replay = load_realized_outcome_replay(Path::new(&database))?;
+    let realized_outcome_replay = match workspace.as_deref() {
+        Some(workspace_id) => load_realized_outcome_replay(Path::new(&database), workspace_id)?,
+        None => None,
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&FullReplayReport {
@@ -109,7 +118,12 @@ where
 
 fn load_realized_outcome_replay(
     path: &Path,
+    workspace_id: &str,
 ) -> Result<Option<crate::routing_policy::CandidatePolicy>, String> {
+    let workspace_id = workspace_id.trim();
+    if workspace_id.is_empty() {
+        return Err("realized-outcome replay requires a non-empty --workspace".into());
+    }
     let db = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -122,21 +136,22 @@ fn load_realized_outcome_replay(
             |row| row.get(0),
         )
         .map_err(|error| format!("cannot freeze realized-outcome boundary: {error}"))?;
+    let scope = format!("workspace:{workspace_id}");
     let weights: String = db
         .query_row(
-            "SELECT weights FROM routing_policies WHERE status IN ('active','canary') LIMIT 1",
-            [],
+            "SELECT weights FROM routing_policies WHERE learning_scope=?1 AND status IN ('active','canary') LIMIT 1",
+            [scope],
             |row| row.get(0),
         )
         .map_err(|error| format!("cannot load active learned policy: {error}"))?;
     let weights = serde_json::from_str(&weights)
         .map_err(|error| format!("active learned policy weights are invalid: {error}"))?;
-    crate::routing_policy::build_candidate(&db, boundary, &weights)
+    crate::routing_policy::build_candidate(&db, workspace_id, boundary, &weights)
         .map_err(|error| format!("realized-outcome replay failed: {error}"))
 }
 
 fn usage(program: &str) -> String {
-    format!("usage: {program} <bridge.db> [--candidate <policy-config.json>]")
+    format!("usage: {program} <bridge.db> [--workspace <workspace-id>] [--candidate <policy-config.json>]")
 }
 
 fn load_database(path: &Path) -> Result<LoadedCases, String> {

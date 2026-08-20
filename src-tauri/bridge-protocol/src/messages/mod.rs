@@ -211,7 +211,7 @@ typed_methods![
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
     // adaptive learning
-    (GetLearningState, _, _),
+    (GetLearningState, GetLearningStateParams, _),
     (RunLearning, RunLearningParams, _),
     (CancelLearningRun, CancelLearningRunParams, _),
     (UpdateLearningSchedule, UpdateLearningScheduleParams, LearningSchedule),

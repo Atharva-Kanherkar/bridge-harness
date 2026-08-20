@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 28;
+const LATEST_SCHEMA_VERSION: i64 = 29;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -432,6 +432,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             26 => migration_26_briefing_run_leases(&transaction)?,
             27 => migration_27_queued_session_input(&transaction)?,
             28 => migration_28_evidence_based_retries(&transaction)?,
+            29 => migration_29_learning_scope(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -995,6 +996,45 @@ fn migration_26_briefing_run_leases(transaction: &Transaction<'_>) -> Result<(),
             ))?;
         }
     }
+    Ok(())
+}
+
+/// Scope learned routing policies to a workspace. Existing rows become
+/// `legacy:global`, which live routing never selects. The unique live-policy
+/// index stays "one active or canary", now per scope rather than globally —
+/// the previous constant-expression unique index already made those two
+/// statuses mutually exclusive, so the backfill cannot collide.
+fn migration_29_learning_scope(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "routing_policies",
+        "learning_scope",
+        "TEXT NOT NULL DEFAULT 'legacy:global'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_job_runs",
+        "learning_scope",
+        "TEXT NOT NULL DEFAULT 'legacy:global'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_policy_promotions",
+        "learning_scope",
+        "TEXT NOT NULL DEFAULT 'legacy:global'",
+    )?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS learning_scope_cursors (
+            learning_scope TEXT PRIMARY KEY,
+            last_evidence_boundary INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_router_decisions_workspace_family
+            ON router_decisions(workspace_id,task_family,created_at);
+        DROP INDEX IF EXISTS idx_routing_policy_active;
+        CREATE UNIQUE INDEX idx_routing_policy_active
+            ON routing_policies(learning_scope) WHERE status IN ('active','canary');",
+    )?;
     Ok(())
 }
 
@@ -3388,6 +3428,7 @@ mod tests {
             "learning_trigger_events",
             "routing_policy_promotions",
             "prompt_compilations",
+            "learning_scope_cursors",
         ] {
             assert!(
                 db.query_row(
@@ -3412,6 +3453,8 @@ mod tests {
             ("learning_job_runs", "lease_expires_at"),
             ("learning_jobs", "last_evidence_boundary"),
             ("learning_jobs", "run_budget_tokens"),
+            ("routing_policies", "learning_scope"),
+            ("learning_job_runs", "learning_scope"),
         ] {
             let exists = db
                 .prepare(&format!("PRAGMA table_info({table})"))
@@ -3624,7 +3667,10 @@ mod tests {
             "DROP TABLE routing_policy_promotions;
              DROP TABLE routing_evaluations;
              DROP TABLE learning_trigger_events;
+             DROP TABLE IF EXISTS learning_scope_cursors;
              DROP INDEX idx_routing_policy_active;
+             ALTER TABLE routing_policies DROP COLUMN learning_scope;
+             ALTER TABLE learning_job_runs DROP COLUMN learning_scope;
              CREATE UNIQUE INDEX idx_routing_policy_active
                 ON routing_policies(status) WHERE status='active';
              CREATE TABLE routing_evaluations (
@@ -3699,6 +3745,68 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert!(active_index_sql.contains("status IN ('active','canary')"));
+        assert!(
+            active_index_sql.contains("learning_scope"),
+            "the live-policy unique index must be per learning_scope: {active_index_sql}"
+        );
+        for (table, column) in [
+            ("routing_policies", "learning_scope"),
+            ("learning_job_runs", "learning_scope"),
+            ("routing_policy_promotions", "learning_scope"),
+        ] {
+            let exists = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .iter()
+                .any(|name| name == column);
+            assert!(exists, "migration 26 did not restore {table}.{column}");
+        }
+        assert!(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='learning_scope_cursors')",
+            [], |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+
+    #[test]
+    fn learning_scope_migration_backfills_legacy_global_and_allows_one_live_policy_per_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        let scope: String = db
+            .query_row(
+                "SELECT learning_scope FROM routing_policies WHERE version=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scope, "legacy:global");
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(2,'active','workspace:a','{}','{}','test','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(3,'active','workspace:b','{}','{}','test','now')",
+            [],
+        )
+        .unwrap();
+        let error = db
+            .execute(
+                "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+                 VALUES(4,'canary','workspace:a','{}','{}','test','now')",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("UNIQUE") || error.contains("unique"),
+            "{error}"
+        );
     }
 
     #[test]
