@@ -860,35 +860,32 @@ fn harness_capacity(
     workspace_id: &str,
 ) -> Result<BTreeMap<String, (bool, bool)>, BridgeError> {
     // Missing or stale observations are unknown, which stays eligible.
-    // Only a live session in this workspace can mark the harness exhausted.
+    // Only a live session in this workspace can mark the harness exhausted —
+    // and any one live session at 100 is enough: electing the newest row let
+    // a just-starting session with no reading yet mask a sibling that is
+    // exhausted right now.
     let sql = format!(
-        "SELECT harness,usage_percent,context_percent FROM sessions
+        "SELECT harness,
+                MIN(CASE WHEN COALESCE(usage_percent,0) < 100 THEN 1 ELSE 0 END),
+                MIN(CASE WHEN COALESCE(context_percent,0) < 100 THEN 1 ELSE 0 END)
+         FROM sessions
          WHERE workspace_id=?1
            AND ended_at IS NULL
            AND status IN ({LIVE_CAPACITY_STATUSES})
-           AND rowid IN (
-             SELECT MAX(rowid) FROM sessions
-             WHERE workspace_id=?1
-               AND ended_at IS NULL
-               AND status IN ({LIVE_CAPACITY_STATUSES})
-             GROUP BY harness
-           )"
+         GROUP BY harness"
     );
     let mut statement = db.prepare(&sql)?;
     let rows = statement.query_map(params![workspace_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
         ))
     })?;
     let mut result = BTreeMap::new();
     for row in rows {
-        let (harness, usage, context) = row?;
-        result.insert(
-            harness,
-            (usage.unwrap_or(0) < 100, context.unwrap_or(0) < 100),
-        );
+        let (harness, usage_ok, context_ok) = row?;
+        result.insert(harness, (usage_ok == 1, context_ok == 1));
     }
     Ok(result)
 }
@@ -2070,6 +2067,28 @@ mod tests {
         let exclusions = claude_exclusions(&db, "turn-ready-quota");
         assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
         assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn a_new_starting_row_does_not_mask_a_live_exhausted_sibling() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-full','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+             VALUES('just-starting','w','claude','Starting','starting','estimated')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false)),
+            "any live session at 100 exhausts, however new its siblings are"
+        );
     }
 
     #[test]
