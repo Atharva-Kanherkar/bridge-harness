@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Check, ChevronRight, Code2, LoaderCircle, Monitor, Moon, Plus, RotateCcw, Save, Settings2, Shield, Sun, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronRight, Code2, LoaderCircle, Monitor, Moon, Plus, RotateCcw, Save, Settings2, Shield, Sparkles, Sun, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, ReasoningEffort } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
+import { WorkSettingsSection } from "./WorkSettingsSection";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { cn } from "@/lib/utils";
 
-type Section = "agents" | "harnesses" | "models" | "appearance";
+type Section = "agents" | "harnesses" | "models" | "work" | "appearance";
 
 const roles: { id: AgentRole; label: string }[] = [
   { id: "orchestrator", label: "Orchestrator" }, { id: "research", label: "Research" },
@@ -209,6 +210,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
         <SectionButton active={section === "agents"} icon={<Bot size={15} />} label="Agents" onClick={() => setSection("agents")} />
         <SectionButton active={section === "harnesses"} icon={<Code2 size={15} />} label="Harnesses" onClick={() => setSection("harnesses")} />
         <SectionButton active={section === "models"} icon={<Settings2 size={15} />} label="Role models" onClick={() => setSection("models")} />
+        <SectionButton active={section === "work"} icon={<Sparkles size={15} />} label="Work" onClick={() => setSection("work")} />
         <SectionButton active={section === "appearance"} icon={<Sun size={15} />} label="Appearance" onClick={() => setSection("appearance")} />
         <div className="mt-4 rounded-2xl border border-border/70 bg-foreground/[0.025] p-3"><Shield size={14} className="text-success"/><p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Prompts change behavior, never permissions. Existing running sessions keep their current configuration until restarted.</p></div>
       </nav>
@@ -227,6 +229,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
           </section>}
         </div>}
         {section === "appearance" && <AppearanceSection />}
+        {section === "work" && <WorkSettingsSection onError={onError} />}
         {section === "harnesses" && config && <div className="mx-auto max-w-4xl">
           <div className="mb-5"><h2 className="font-display text-lg font-semibold">Harness configuration</h2><p className="mt-1 text-xs text-muted-foreground">Defaults apply to new sessions. Provider credentials stay in each harness’s own credential store.</p></div>
           {/* Runtime installation, above configuration: whether an agent is

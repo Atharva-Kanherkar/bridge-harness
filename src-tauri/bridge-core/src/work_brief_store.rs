@@ -31,6 +31,10 @@ pub struct RunStart {
     /// index is what enforces it.
     pub idempotency_key: Option<String>,
     pub started_at: String,
+    /// The durable lease, when this run is claimed by a worker. Both set or both
+    /// absent: an owner with no expiry could never be reclaimed after a crash.
+    pub lease_owner: Option<String>,
+    pub lease_expires_at: Option<String>,
 }
 
 fn trigger_str(trigger: wire::WorkBriefTrigger) -> &'static str {
@@ -116,8 +120,8 @@ pub fn begin_run(db: &Connection, start: &RunStart) -> Result<(), BridgeError> {
         "INSERT INTO work_brief_runs(
              id,trigger_kind,status,profile_reference,session_id,
              max_wall_seconds,max_turns,max_tool_calls,max_output_tokens,cost_ceiling_microusd,
-             idempotency_key,started_at)
-         VALUES(?1,?2,'running',?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             idempotency_key,started_at,lease_owner,lease_expires_at)
+         VALUES(?1,?2,'running',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![
             start.run_id,
             trigger_str(start.trigger),
@@ -130,6 +134,8 @@ pub fn begin_run(db: &Connection, start: &RunStart) -> Result<(), BridgeError> {
             start.limits.cost_ceiling_microusd,
             start.idempotency_key,
             start.started_at,
+            start.lease_owner,
+            start.lease_expires_at,
         ],
     )?;
     Ok(())
@@ -404,6 +410,8 @@ mod tests {
             limits: limits(),
             idempotency_key: None,
             started_at: STARTED.into(),
+            lease_owner: None,
+            lease_expires_at: None,
         }
     }
 

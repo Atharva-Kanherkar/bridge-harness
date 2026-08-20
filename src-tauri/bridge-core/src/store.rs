@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 25;
+const LATEST_SCHEMA_VERSION: i64 = 26;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -250,6 +250,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             23 => migration_23_session_title_source(&transaction)?,
             24 => migration_24_work_board(&transaction)?,
             25 => migration_25_ephemeral_work_evidence(&transaction)?,
+            26 => migration_26_briefing_run_leases(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -790,6 +791,29 @@ fn migration_25_ephemeral_work_evidence(transaction: &Transaction<'_>) -> Result
          CREATE INDEX idx_work_evidence_resource
             ON work_evidence(connector_instance_id,canonical_resource_id);",
     )?;
+    Ok(())
+}
+
+/// The durable lease that makes racing briefing triggers safe: one active run,
+/// heartbeated by its owner, reclaimable by compare-and-swap once the lease
+/// expires, and a cancellation flag the run loop polls. Columns rather than a
+/// new table because a lease without a run is meaningless — it is the run row
+/// that is leased.
+fn migration_26_briefing_run_leases(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    // Guarded per column: the repair path replays migrations over a database
+    // whose tables may already carry them, and a blind ALTER would refuse the
+    // whole replay over a column that is exactly what it should be.
+    for (column, definition) in [
+        ("lease_owner", "TEXT"),
+        ("lease_expires_at", "TEXT"),
+        ("cancellation_requested", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !column_exists(transaction, "work_brief_runs", column)? {
+            transaction.execute_batch(&format!(
+                "ALTER TABLE work_brief_runs ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
