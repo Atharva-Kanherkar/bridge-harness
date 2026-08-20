@@ -73,8 +73,18 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         params![now],
     )?;
     connection.execute(
-        "UPDATE sessions SET status='stopped', ended_at=?1 WHERE status IN ('working','waiting')",
+        "UPDATE sessions SET status='stopped', ended_at=?1, active_turn_id=NULL WHERE status IN ('working','waiting')",
         params![now],
+    )?;
+    // The invariant the composer renders from: a session in a terminal state
+    // has no active turn. Crash recoveries used to stop sessions without
+    // clearing the turn id, and each one left a composer stuck on Stop/Steer
+    // with nothing running — so reconcile rows already damaged that way too.
+    connection.execute(
+        "UPDATE sessions SET active_turn_id=NULL
+         WHERE active_turn_id IS NOT NULL
+           AND status IN ('stopped','failed','completed','cancelled','ready')",
+        [],
     )?;
     connection.execute(
         "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting')",
@@ -3180,6 +3190,46 @@ mod tests {
         bytes[0] ^= 0xff;
         std::fs::write(&snapshot, bytes).unwrap();
         assert!(!verify_history_snapshot(&snapshot, &manifest).unwrap());
+    }
+
+    #[test]
+    fn opening_clears_active_turns_on_every_non_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        {
+            let db = open(&path).unwrap();
+            for (id, status, turn) in [
+                ("interrupted", "working", "turn-a"),
+                ("crash-stopped", "stopped", "turn-b"),
+                ("idle", "ready", "turn-c"),
+            ] {
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,active_turn_id) VALUES(?1,NULL,'claude','Session',?2,'reported',?3)",
+                    params![id, status, turn],
+                )
+                .unwrap();
+            }
+        }
+        let db = open(&path).unwrap();
+        let stale: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE active_turn_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stale, 0,
+            "no non-live session may keep an active turn: the composer renders Stop/Steer from it"
+        );
+        let interrupted: String = db
+            .query_row(
+                "SELECT status FROM sessions WHERE id='interrupted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(interrupted, "stopped");
     }
 
     #[test]

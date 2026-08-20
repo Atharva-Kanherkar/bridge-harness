@@ -2107,6 +2107,55 @@ pub fn reserve_worker_launch(
     )
 }
 
+/// Promote a reused hot worker whose process survived: `stopped -> resuming ->
+/// working`. Each transition takes and releases the store lock in its own
+/// statement. Never chain these into one expression: the first call's
+/// temporary guard lives to the end of the whole chain, so a second
+/// `state.db.lock()` inside `.and_then` re-locks the held mutex on the same
+/// thread and parks the launch forever — with every other store user queued
+/// behind it. That was the daemon-wide freeze on the resume route.
+pub(crate) fn promote_stopped_hot_worker(
+    state: &BridgeCore,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let resuming = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Resuming,
+        Some("compatible_hot_task"),
+    );
+    resuming?;
+    let working = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("hot_process_reused"),
+    );
+    working.map(|_| ())
+}
+
+/// Promote a checkpoint-restored worker: `restored -> working`, one lock per
+/// statement for the same reason as [`promote_stopped_hot_worker`].
+pub(crate) fn promote_restored_worker(
+    state: &BridgeCore,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let restored = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Restored,
+        Some("checkpoint_fallback"),
+    );
+    restored?;
+    let working = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("checkpoint_restored"),
+    );
+    working.map(|_| ())
+}
+
 pub fn launch_worker_outcome(
     core: &Arc<BridgeCore>,
     parent_session_id: &str,
@@ -2552,21 +2601,9 @@ pub fn launch_worker_outcome(
                 &reservation.session_id,
                 worker_lifecycle::WorkerLifecycleState::Working,
                 Some("compatible_hot_task"),
-            ),
-            Some("stopped") => session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                worker_lifecycle::WorkerLifecycleState::Resuming,
-                Some("compatible_hot_task"),
             )
-            .and_then(|_| {
-                session_supervisor::SessionSupervisor::transition(
-                    &state.db.lock().unwrap(),
-                    &reservation.session_id,
-                    worker_lifecycle::WorkerLifecycleState::Working,
-                    Some("hot_process_reused"),
-                )
-            }),
+            .map(|_| ()),
+            Some("stopped") => promote_stopped_hot_worker(&state, &reservation.session_id),
             _ => Err(BridgeError::Invalid(
                 "compatible hot worker is not reusable".into(),
             )),
@@ -2576,6 +2613,8 @@ pub fn launch_worker_outcome(
                 &state.db.lock().unwrap(),
                 &reservation.session_id,
                 &reservation.workspace_id,
+                parent_session_id,
+                reservation.depth,
                 directive,
             )
         });
@@ -3046,21 +3085,7 @@ pub fn launch_worker_outcome(
             )
             .map(|_| ())
         }
-        WorkerActivation::CheckpointRestored => session_supervisor::SessionSupervisor::transition(
-            &state.db.lock().unwrap(),
-            &session_id,
-            worker_lifecycle::WorkerLifecycleState::Restored,
-            Some("checkpoint_fallback"),
-        )
-        .and_then(|_| {
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("checkpoint_restored"),
-            )
-        })
-        .map(|_| ()),
+        WorkerActivation::CheckpointRestored => promote_restored_worker(&state, &session_id),
     };
     if let Err(error) = transition_result {
         runtime.stop(adapters::ShutdownReason::Failed);
@@ -3253,6 +3278,8 @@ pub fn launch_worker_outcome(
             &state.db.lock().unwrap(),
             &session_id,
             &reservation.workspace_id,
+            parent_session_id,
+            reservation.depth,
             directive,
         ) {
             runtime.stop(adapters::ShutdownReason::Failed);
@@ -6407,6 +6434,79 @@ fn record_shutdown_reason(
         session_id,
         reason.as_str(),
     )
+}
+
+#[cfg(test)]
+mod reuse_promotion_tests {
+    use super::{promote_restored_worker, promote_stopped_hot_worker};
+    use crate::{runtime::BridgeCore, BridgeError};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn seeded_core(lifecycle: &str) -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            for id in ["parent-1", "worker-1"] {
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,NULL,'claude','Session','working','reported')",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+            }
+            db.execute(
+                "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker-1','parent-1',?1,'research','key','2026-08-20T00:00:00Z')",
+                rusqlite::params![lifecycle],
+            )
+            .unwrap();
+        }
+        (scratch, core)
+    }
+
+    /// A reintroduced chained lock deadlocks the promotion thread; the
+    /// watchdog turns that into a test failure instead of a hung suite.
+    fn promote_with_watchdog(
+        run: impl FnOnce() -> Result<(), BridgeError> + Send + 'static,
+    ) -> Result<(), BridgeError> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(run());
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("promotion must complete: a timeout here is the chained-lock deadlock again")
+    }
+
+    fn lifecycle_state(core: &BridgeCore) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT lifecycle_state FROM worker_runtime WHERE session_id='worker-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn restored_worker_promotes_to_working_without_deadlocking() {
+        let (_scratch, core) = seeded_core("resuming");
+        let for_thread = core.clone();
+        promote_with_watchdog(move || promote_restored_worker(&for_thread, "worker-1"))
+            .expect("restored promotion succeeds");
+        assert_eq!(lifecycle_state(&core), "working");
+    }
+
+    #[test]
+    fn stopped_hot_worker_promotes_to_working_without_deadlocking() {
+        let (_scratch, core) = seeded_core("stopped");
+        let for_thread = core.clone();
+        promote_with_watchdog(move || promote_stopped_hot_worker(&for_thread, "worker-1"))
+            .expect("hot promotion succeeds");
+        assert_eq!(lifecycle_state(&core), "working");
+    }
 }
 
 #[cfg(test)]

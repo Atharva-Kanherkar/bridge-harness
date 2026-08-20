@@ -279,13 +279,22 @@ impl WorkerPool {
         db: &Connection,
         session_id: &str,
         workspace_id: &str,
+        parent_session_id: &str,
+        depth: i64,
         request: &DelegationRequest,
     ) -> Result<(), BridgeError> {
         let key = WorkerCompatibilityKey::for_request(workspace_id, request)?.encode()?;
         let now = Utc::now().to_rfc3339();
+        // A reused worker answers to the orchestrator that resumed it. Leaving
+        // the previous parent in place hides the worker from the new session's
+        // tree and routes its result to a parent that may no longer exist.
         db.execute(
-            "UPDATE worker_runtime SET result_status='pending',warm_until=NULL,compatibility_key=?2,updated_at=?3 WHERE session_id=?1",
-            rusqlite::params![session_id, key, now],
+            "UPDATE worker_runtime SET result_status='pending',warm_until=NULL,compatibility_key=?2,parent_session_id=?4,updated_at=?3 WHERE session_id=?1",
+            rusqlite::params![session_id, key, now, parent_session_id],
+        )?;
+        db.execute(
+            "UPDATE sessions SET parent_session_id=?2,depth=?3,ended_at=NULL WHERE id=?1",
+            rusqlite::params![session_id, parent_session_id, depth],
         )?;
         db.execute(
             "UPDATE worker_leases SET role=?2,capability_tier=?3,task_family=?4,owned_paths=?5,write_mode=?6,lease_status='active',expires_at=NULL,updated_at=?7 WHERE session_id=?1",
@@ -334,6 +343,51 @@ mod tests {
             harness: None,
             model: None,
         }
+    }
+
+    #[test]
+    fn activating_a_reused_worker_reparents_it_to_the_resuming_orchestrator() {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        for id in ["old-parent", "new-parent"] {
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,NULL,'claude','Orchestrator','ready','reported')",
+                rusqlite::params![id],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,ended_at) VALUES('worker-1',NULL,'claude','Research · standard','restored','reported','old-parent',1,'2026-08-19T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('worker-1','old-parent','restored','research','stale-key','reported','2026-08-18T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        WorkerPool::activate_reused_worker(&db, "worker-1", "workspace-1", "new-parent", 1, &request())
+            .unwrap();
+
+        let (runtime_parent, result_status): (String, String) = db
+            .query_row(
+                "SELECT parent_session_id,result_status FROM worker_runtime WHERE session_id='worker-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(runtime_parent, "new-parent", "results must route to the resuming parent");
+        assert_eq!(result_status, "pending", "a stale reported status would swallow the new result");
+        let (session_parent, depth, ended_at): (String, i64, Option<String>) = db
+            .query_row(
+                "SELECT parent_session_id,depth,ended_at FROM sessions WHERE id='worker-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(session_parent, "new-parent", "the tree must show the worker under the new parent");
+        assert_eq!(depth, 1);
+        assert_eq!(ended_at, None, "a resumed worker is not ended");
     }
 
     #[test]
