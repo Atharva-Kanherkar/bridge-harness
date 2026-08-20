@@ -11,6 +11,11 @@ export type ComposerPillProps = {
   placeholder?: string;
   disabled?: boolean;
   working?: boolean;
+  /// What submitting does while the agent is working. `steer` means the provider
+  /// takes the words into the turn in flight; `queue` means they are held and
+  /// delivered at its next phase boundary. Omitted keeps the composer read-only
+  /// during a turn, for surfaces that genuinely cannot be steered.
+  activeAction?: "steer" | "queue";
   onStop?: () => void;
   onPlusClick?: () => void;
   trailing?: ReactNode;
@@ -18,6 +23,8 @@ export type ComposerPillProps = {
   layout?: "hero" | "dock";
   autocomplete?: { controls: string; activeDescendant?: string };
 };
+
+const ACTIVE_ACTION_LABEL = { steer: "Steer", queue: "Queue" } as const;
 
 export function ComposerPill({
   value,
@@ -27,6 +34,7 @@ export function ComposerPill({
   placeholder = "Ask Bridge…",
   disabled,
   working,
+  activeAction,
   onStop,
   onPlusClick,
   trailing,
@@ -36,7 +44,13 @@ export function ComposerPill({
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isHero = layout === "hero";
-  const canSend = !disabled && !working && value.trim().length > 0;
+  // A working agent is exactly when supervision is worth the most, so a turn in
+  // flight no longer locks the composer. Where an active turn cannot take input
+  // at all (`activeAction` omitted) the old behaviour stands.
+  const steerable = !!working && !!activeAction;
+  const locked = !!disabled || (!!working && !activeAction);
+  const canSend = !locked && value.trim().length > 0;
+  const submitLabel = steerable ? ACTIVE_ACTION_LABEL[activeAction] : "Send";
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -66,7 +80,7 @@ export function ComposerPill({
           value={value}
           rows={1}
           placeholder={placeholder}
-          disabled={disabled || working}
+          disabled={locked}
           role={autocomplete ? "combobox" : undefined}
           aria-autocomplete={autocomplete ? "list" : undefined}
           aria-expanded={autocomplete ? true : undefined}
@@ -103,7 +117,10 @@ export function ComposerPill({
 
           <div className="flex items-center gap-2">
             {trailing}
-            {working && onStop ? (
+            {/* Stop and submit are separate actions, and while a turn is running
+                both are present: sending guidance must never read as cancelling
+                the work. */}
+            {working && onStop && (
               <button
                 type="button"
                 onClick={onStop}
@@ -112,18 +129,22 @@ export function ComposerPill({
               >
                 <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
               </button>
-            ) : (
+            )}
+            {(!working || steerable) && (
               <button
                 type="submit"
                 disabled={!canSend}
                 className={cn(
-                  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-opacity duration-150 active:scale-95",
+                  "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
+                  steerable ? "px-3 text-[13px] font-medium" : "w-9",
                   canSend
                     ? "bg-primary text-primary-foreground hover:opacity-90"
                     : "bg-accent text-muted-foreground/70",
                 )}
-                aria-label="Send"
+                aria-label={submitLabel}
+                title={activeAction === "queue" && working ? "Held until the current step finishes" : undefined}
               >
+                {steerable && <span>{submitLabel}</span>}
                 <ArrowUp className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
               </button>
             )}

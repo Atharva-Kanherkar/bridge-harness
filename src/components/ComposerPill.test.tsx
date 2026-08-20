@@ -71,6 +71,62 @@ describe("ComposerPill", () => {
     expect(plus().disabled).toBe(true);
   });
 
+  it("stays editable while working, with Steer and Stop both reachable", () => {
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    render({ value: "use the other API", working: true, activeAction: "steer", onSubmit, onStop });
+
+    // The whole point: a working agent is when supervision is worth the most.
+    expect(textarea().disabled).toBe(false);
+    const submit = container.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!;
+    expect(submit.disabled).toBe(false);
+    expect(stop()).not.toBeNull();
+
+    act(() => submit.click());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    // Sending guidance must never read as cancelling the work.
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("says Queue when the provider cannot take input mid-turn", () => {
+    render({ value: "also update the docs", working: true, activeAction: "queue", onStop: () => {} });
+
+    const submit = container.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!;
+    expect(submit.disabled).toBe(false);
+    expect(submit.title).toBe("Held until the current step finishes");
+    expect(container.querySelector('button[aria-label="Steer"]')).toBeNull();
+  });
+
+  it("submits on Enter during an active turn", () => {
+    const onSubmit = vi.fn();
+    render({ value: "steer me", working: true, activeAction: "steer", onSubmit, onStop: () => {} });
+
+    act(() => {
+      textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("locks the composer during a turn only where nothing can be submitted", () => {
+    // A surface with no active-turn action keeps the old read-only behaviour, so
+    // dropping `activeAction` cannot silently promise steering.
+    render({ value: "draft", working: true, onStop: () => {} });
+
+    expect(textarea().disabled).toBe(true);
+    expect(container.querySelector('button[aria-label="Send"]')).toBeNull();
+    expect(stop()).not.toBeNull();
+  });
+
+  it("refuses an empty submission whatever the turn is doing", () => {
+    const onSubmit = vi.fn();
+    render({ value: "   ", working: true, activeAction: "steer", onSubmit, onStop: () => {} });
+
+    const submit = container.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!;
+    expect(submit.disabled).toBe(true);
+    act(() => submit.click());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("keeps Stop reachable while working", () => {
     const onStop = vi.fn();
     render({ value: "draft", working: true, onStop });

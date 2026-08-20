@@ -5304,14 +5304,15 @@ fn prepare_input(
             // The conversation these follow-ups belonged to is gone; delivering
             // them into a fresh provider session would be delivering them to
             // someone else.
-            let discarded = session_input::discard_for_session(&db, session_id)?;
-            if discarded > 0 {
+            for discarded in session_input::discard_for_session(&db, session_id)? {
+                // One row per dropped follow-up: the client folds these to know
+                // what is still waiting, and a summary would not name which.
                 let _ = store::event(
                     &db,
                     "session",
                     "session.input.discarded",
                     session_id,
-                    &format!("{discarded} queued follow-up(s) dropped with the cleared session"),
+                    &discarded,
                 );
             }
             drop(db);
@@ -5359,16 +5360,41 @@ fn prepare_input(
     }))
 }
 
+/// How prepared text reached the provider. The stamp rides on the persisted
+/// user message so the conversation can say what happened, and it decides
+/// whether a message needs persisting at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryMode {
+    /// A normal turn the user started.
+    Submitted,
+    /// Guidance folded into a turn already in flight.
+    Steered,
+    /// A follow-up that was queued earlier and is being sent now. Its message
+    /// was persisted when the user submitted it, so persisting again here would
+    /// show the same words twice in the transcript.
+    QueuedDelivery,
+}
+
+impl DeliveryMode {
+    const fn stamp(self) -> &'static str {
+        match self {
+            Self::Submitted => "submitted",
+            Self::Steered => "steered",
+            Self::QueuedDelivery => "queued_delivered",
+        }
+    }
+
+    const fn persists_user_message(self) -> bool {
+        !matches!(self, Self::QueuedDelivery)
+    }
+}
+
 /// Hand prepared text to the live provider and record it in the conversation.
-///
-/// `delivery` names how the text got here — `submitted`, `steered`, or
-/// `queued` — and rides on the persisted user event so the UI can show a queued
-/// follow-up turning into a delivered one instead of guessing.
 fn deliver_prepared_input(
     core: &Arc<BridgeCore>,
     session_id: &str,
     prepared: &PreparedInput,
-    delivery: &str,
+    delivery: DeliveryMode,
 ) -> Result<(), BridgeError> {
     let state = core;
     let adapters = state.adapters.lock().unwrap();
@@ -5389,21 +5415,23 @@ fn deliver_prepared_input(
     }
     drop(adapters);
     let db = state.db.lock().unwrap();
-    let adapter_id: String = db.query_row(
-        "SELECT harness FROM sessions WHERE id=?1",
-        params![session_id],
-        |r| r.get(0),
-    )?;
     // Claude stream-json does not reliably echo the submitted user turn; persist
-    // it locally.
-    if let Some(event) = persist_submitted_user_turn_with_delivery(
-        &db,
-        session_id,
-        &adapter_id,
-        &prepared.display_text,
-        delivery,
-    )? {
-        core.events.publish(CoreEvent::Agent(event));
+    // it locally. A queued follow-up was already persisted at submission time.
+    if delivery.persists_user_message() {
+        let adapter_id: String = db.query_row(
+            "SELECT harness FROM sessions WHERE id=?1",
+            params![session_id],
+            |r| r.get(0),
+        )?;
+        if let Some(event) = persist_submitted_user_turn_with_delivery(
+            &db,
+            session_id,
+            &adapter_id,
+            &prepared.display_text,
+            delivery.stamp(),
+        )? {
+            core.events.publish(CoreEvent::Agent(event));
+        }
     }
     let _ = db.execute(
         "UPDATE sessions SET status='working' WHERE id=?1",
@@ -5503,10 +5531,10 @@ fn submit_input_internal(
 
     match route {
         session_input::InputRoute::NewTurn => {
-            deliver_prepared_input(core, &session_id, &prepared, "submitted")?;
+            deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Submitted)?;
         }
         session_input::InputRoute::Steer => {
-            deliver_prepared_input(core, &session_id, &prepared, "steered")?;
+            deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Steered)?;
             let db = state.db.lock().unwrap();
             let _ = store::event(
                 &db,
@@ -5625,7 +5653,7 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
         outbound: queued.display_text.clone(),
         interceptions: Vec::new(),
     };
-    match deliver_prepared_input(core, session_id, &prepared, "queued_delivered") {
+    match deliver_prepared_input(core, session_id, &prepared, DeliveryMode::QueuedDelivery) {
         Ok(()) => {
             let db = state.db.lock().unwrap();
             let _ = session_input::mark_delivered(&db, &queued.id);
@@ -5673,17 +5701,36 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
         session_input::recover_claimed(&db).unwrap_or_default()
     };
     for input in stranded {
-        let db = core.db.lock().unwrap();
-        let _ = store::event(
-            &db,
-            "session",
-            "session.input.abandoned",
-            &input.session_id,
-            &format!(
-                "A follow-up may not have reached the agent before Bridge restarted: {}",
-                input.display_text
-            ),
-        );
+        let harness = {
+            let db = core.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "session",
+                "session.input.abandoned",
+                &input.session_id,
+                &input.id,
+            );
+            db.query_row(
+                "SELECT harness FROM sessions WHERE id=?1",
+                params![input.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        };
+        // The audit row above is for the client's fold; this is for the person.
+        // They wrote those words, so they get told the agent may never have seen
+        // them rather than being left to wonder.
+        if let Some(harness) = harness {
+            let _ = emit_local_assistant(
+                &core,
+                &input.session_id,
+                &harness,
+                &format!(
+                    "This follow-up may not have reached the agent before Bridge restarted, so it was not re-sent: “{}”",
+                    input.display_text
+                ),
+            );
+        }
     }
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
@@ -6735,6 +6782,37 @@ mod submit_input_tests {
                 .unwrap();
             assert_eq!(stored, 0, "{expected:?} must not queue a raw secret either");
         }
+    }
+
+    #[test]
+    fn a_queued_follow_up_appears_in_the_transcript_exactly_once() {
+        let (_fixture, core) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "also update the docs".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        assert!(drain_queued_input(&core, "chat"));
+
+        // Persisted when the user submitted it, delivered later: one message in
+        // durable history, not the same words twice.
+        let messages: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries
+                 WHERE session_id='chat' AND kind='user.message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(messages, 1);
     }
 
     #[test]

@@ -235,18 +235,37 @@ pub fn recover_claimed(db: &Connection) -> Result<Vec<QueuedInput>, BridgeError>
     Ok(stranded)
 }
 
-/// Drop a session's waiting input. `/clear` and session teardown mean the
-/// conversation the follow-up belonged to is gone.
-pub fn discard_for_session(db: &Connection, session_id: &str) -> Result<usize, BridgeError> {
-    Ok(db.execute(
-        "UPDATE queued_session_input SET state=?2 WHERE session_id=?1 AND state IN (?3,?4)",
-        params![
-            session_id,
-            STATE_ABANDONED,
-            STATE_QUEUED,
-            STATE_CLAIMING
-        ],
-    )?)
+/// Drop a session's waiting input, returning the rows that were dropped.
+///
+/// `/clear` and session teardown mean the conversation the follow-up belonged to
+/// is gone. The ids come back so the caller can record one durable row per
+/// dropped follow-up — the client folds those rows to decide what is still
+/// waiting, and a summary count would not tell it which.
+pub fn discard_for_session(db: &Connection, session_id: &str) -> Result<Vec<String>, BridgeError> {
+    let ids = {
+        let mut statement = db.prepare(
+            "SELECT id FROM queued_session_input
+             WHERE session_id=?1 AND state IN (?2,?3) ORDER BY sequence",
+        )?;
+        let rows = statement
+            .query_map(params![session_id, STATE_QUEUED, STATE_CLAIMING], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    if !ids.is_empty() {
+        db.execute(
+            "UPDATE queued_session_input SET state=?2 WHERE session_id=?1 AND state IN (?3,?4)",
+            params![
+                session_id,
+                STATE_ABANDONED,
+                STATE_QUEUED,
+                STATE_CLAIMING
+            ],
+        )?;
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -386,7 +405,7 @@ mod tests {
         enqueue(&db, "s-1", "mine", "mine").unwrap();
         enqueue(&db, "s-2", "theirs", "theirs").unwrap();
 
-        assert_eq!(discard_for_session(&db, "s-1").unwrap(), 1);
+        assert_eq!(discard_for_session(&db, "s-1").unwrap().len(), 1);
         assert_eq!(next_queued(&db, "s-1").unwrap(), None);
         assert!(next_queued(&db, "s-2").unwrap().is_some());
     }
