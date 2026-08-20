@@ -18,6 +18,12 @@ A background worker's in-session approval card renders on the *worker's* convers
 
 `waiting` is excluded from the stall watchdog because it is legitimately idle, so it has its own deadline (`WORKER_APPROVAL_TIMEOUT_SECONDS`, 30 minutes). Past it the worker is resolved to a terminal `blocked` typed result naming the unanswered approval, which releases the parent. Entering and leaving `waiting` always moves the durable `waiting_since` stamp, so a resolved approval cannot leave an expired-looking timestamp behind.
 
+### Mid-run visibility
+
+A worker is not a black box between spawn and its typed result. Every routing notice Bridge sends a parent carries a `fleet` digest — per live child: lifecycle, task family, retry count, the one-line `progress_summary` derived from the child's own event stream, and any waiting reason. On demand, the orchestrator emits one fenced `bridge-peek` block (`{}` for all children, `{"sessionId":"…"}` for one) and Bridge replies with a `bridge-worker-activity` digest that adds each worker's most recent durable tool calls and messages, head-truncated and capped (`PEEK_MAX_ENTRIES`).
+
+The digest is host-built from `worker_runtime` and `session_entries`; the model never sees, and must never request, a raw worker transcript. Digest text is evidence about the worker, not instructions to the parent. The same data feeds the user's side: Mission Control tiles show `progress_summary` and waiting reasons, and the worker detail view replays the child's durable event log merged with the live stream.
+
 ## Stale base branches
 
 `RepositoryDivergence` compares a conversation entry's saved local stamp with the current local tree; both sides can be months behind the default branch and still read "aligned". A separate check measures the workspace against the best available fetched ref for its upstream or default branch — tracked upstream first, then `origin/HEAD`, then a conventional local default — and reports ahead/behind counts, the compared ref's own age, and whether a fetch was attempted and succeeded, so an offline stale ref is never presented as current truth.

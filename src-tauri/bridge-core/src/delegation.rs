@@ -572,6 +572,10 @@ fn is_worker_result_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("worker") && tag.contains("result")
 }
 
+fn is_peek_tag(tag: &str) -> bool {
+    tag.contains("bridge") && tag.contains("peek")
+}
+
 /// What the host filled in, corrected, or ignored on the model's behalf.
 ///
 /// Recorded rather than applied silently: a normalized envelope has to be
@@ -1033,6 +1037,63 @@ fn request_from_value(mut value: Value) -> Result<(DelegationRequest, Normalizat
     }
 }
 
+/// How many recent worker events a peek digest carries per worker by default,
+/// and the most a request may ask for. The reply is a bounded digest, never a
+/// transcript.
+pub const PEEK_DEFAULT_ENTRIES: usize = 10;
+pub const PEEK_MAX_ENTRIES: usize = 25;
+
+/// A mid-run observability request from the orchestrator: "what are my
+/// workers doing right now?" Bridge answers with a host-built digest of the
+/// runtime rows and each worker's recent durable events — the model never
+/// sees a raw transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PeekRequest {
+    /// One child session to inspect; every live child when omitted.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Recent events per worker; clamped to [1, PEEK_MAX_ENTRIES].
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl PeekRequest {
+    pub fn entry_limit(&self) -> usize {
+        (self.limit.unwrap_or(PEEK_DEFAULT_ENTRIES as u32) as usize).clamp(1, PEEK_MAX_ENTRIES)
+    }
+}
+
+pub fn parse_peek_request(text: &str) -> ParseOutcome<PeekRequest> {
+    let blocks = fenced_blocks(text, is_peek_tag);
+    if blocks.is_empty() {
+        return ParseOutcome::Absent;
+    }
+    if blocks.len() != 1 {
+        return ParseOutcome::Invalid {
+            raw: blocks.iter().map(|block| block.body.as_str()).collect::<Vec<_>>().join("\n"),
+            reason: "expected at most one bridge-peek block per message".into(),
+        };
+    }
+    let raw = blocks[0].body.clone();
+    // A bare ```bridge-peek``` fence means "everything, defaults" — the common
+    // case should not require remembering a JSON shape.
+    if raw.trim().is_empty() || raw.trim() == "{}" {
+        return ParseOutcome::Parsed(PeekRequest::default());
+    }
+    match serde_json::from_str::<PeekRequest>(&raw) {
+        Ok(request) => ParseOutcome::Parsed(request),
+        Err(error) => ParseOutcome::Invalid {
+            raw,
+            reason: format!("invalid bridge-peek JSON: {error}"),
+        },
+    }
+}
+
+pub fn strip_peek(text: &str) -> String {
+    strip_machine_blocks(text, is_peek_tag)
+}
+
 pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
     let blocks = fenced_blocks(text, is_worker_result_tag);
     if blocks.is_empty() {
@@ -1294,7 +1355,17 @@ Delegate only focused, non-trivial work. Emit one fenced `bridge-delegate` JSON 
 {"schemaVersion":1,"role":"implementation","objective":"Add refresh-token rotation","acceptanceCriteria":["Old refresh tokens become invalid","Existing auth tests remain green"],"knownFacts":[],"decisions":["Use the existing SQLite token store"],"evidenceIds":[],"relevantFiles":["src/auth/store.rs"],"ownedPaths":["src/auth/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["cargo test auth"],"outputContract":"implementation-result","harness":"codex"}
 ```
 
-After emitting a request, stop and wait. Default topology is flat: the worker cannot directly spawn another worker. Do trivial work in the parent."#
+After emitting a request, stop and wait. Default topology is flat: the worker cannot directly spawn another worker. Do trivial work in the parent.
+
+## Checking on your workers (bridge-peek)
+
+While workers run you are not blind. Bridge attaches a compact `fleet` digest (per worker: lifecycle, task family, current activity, waiting reason) to the routing notices it sends you. To inspect on demand — for example when the user asks how far along the work is — emit one fenced `bridge-peek` block and stop:
+
+```bridge-peek
+{}
+```
+
+Optional fields: `{"sessionId":"<one child>","limit":10}`. Bridge replies with a `bridge-worker-activity` notice: each worker's runtime state plus its most recent tool calls and messages, as a bounded host-built digest. Use it to answer the user concretely; never ask a worker itself for status, and never present the digest as your own work."#
         .into()
 }
 
@@ -1746,6 +1817,37 @@ mod tests {
         };
         assert_eq!(raw, "bad output");
         assert!(reason.contains("same-session repair could not be delivered"));
+    }
+
+    #[test]
+    fn peek_requests_parse_from_bare_fences_json_and_reject_garbage() {
+        let bare = "Checking progress.\n```bridge-peek\n```\n";
+        assert_eq!(parse_peek_request(bare), ParseOutcome::Parsed(PeekRequest::default()));
+        assert_eq!(strip_peek(bare), "Checking progress.");
+
+        let empty_object = "```bridge-peek\n{}\n```";
+        assert_eq!(parse_peek_request(empty_object), ParseOutcome::Parsed(PeekRequest::default()));
+
+        let targeted = "```bridge-peek\n{\"sessionId\":\"child-1\",\"limit\":50}\n```";
+        let ParseOutcome::Parsed(request) = parse_peek_request(targeted) else {
+            panic!("targeted peek did not parse");
+        };
+        assert_eq!(request.session_id.as_deref(), Some("child-1"));
+        // The limit is a request, not authority: it clamps to the digest cap.
+        assert_eq!(request.entry_limit(), PEEK_MAX_ENTRIES);
+        assert_eq!(PeekRequest::default().entry_limit(), PEEK_DEFAULT_ENTRIES);
+
+        assert!(matches!(
+            parse_peek_request("```bridge-peek\n{\"unknownField\":true}\n```"),
+            ParseOutcome::Invalid { .. }
+        ));
+        assert!(matches!(
+            parse_peek_request("```bridge-peek\n{}\n```\n```bridge-peek\n{}\n```"),
+            ParseOutcome::Invalid { .. }
+        ));
+        assert_eq!(parse_peek_request("no blocks here"), ParseOutcome::Absent);
+        // A delegate block is not a peek block.
+        assert_eq!(parse_peek_request("```bridge-delegate\n{}\n```"), ParseOutcome::Absent);
     }
 
     #[test]
