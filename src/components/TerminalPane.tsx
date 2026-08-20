@@ -2,8 +2,7 @@ import { useEffect, useRef } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { bridgeApi } from "../api";
-
-const scrollback = new Map<string, string>();
+import { rememberScrollback, scrollbackFor } from "../terminalScrollback";
 
 /** First design token that resolves on the live document, or undefined. */
 function token(styles: CSSStyleDeclaration, ...names: string[]): string | undefined {
@@ -71,14 +70,14 @@ export function TerminalPane({ workspaceId }: { workspaceId?: string }) {
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
     const theme = new MutationObserver(() => { term.options.theme = terminalTheme(); });
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
-    const previous = scrollback.get(workspaceId); if (previous) term.write(previous);
+    const previous = scrollbackFor(workspaceId); if (previous) term.write(previous);
     else if (!("__TAURI_INTERNALS__" in window)) term.writeln("\x1b[90mBridge workspace shell · terminal is isolated from the agent conversation.\x1b[0m\r\n$ ");
     void bridgeApi.openTerminal(workspaceId).catch(error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`));
     const data = term.onData(value => void bridgeApi.writeTerminal(workspaceId, value));
     const resize = new ResizeObserver(() => { fit.fit(); void bridgeApi.resizeTerminal(workspaceId, term.rows, term.cols); }); resize.observe(host.current);
     let unlisten: (() => void) | undefined;
     void bridgeApi.onTerminal(chunk => {
-      const buffered = `${scrollback.get(chunk.sessionId) ?? ""}${chunk.data}`; scrollback.set(chunk.sessionId, buffered.slice(-1_000_000));
+      rememberScrollback(chunk.sessionId, chunk.data);
       if (chunk.sessionId === workspaceId) term.write(chunk.data);
     }).then(fn => { unlisten = fn; });
     return () => { unlisten?.(); theme.disconnect(); resize.disconnect(); data.dispose(); term.dispose(); };
