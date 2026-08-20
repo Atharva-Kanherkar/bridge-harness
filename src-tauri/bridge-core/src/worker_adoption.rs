@@ -342,7 +342,15 @@ pub fn reconcile_with_derived_evidence(
         ));
     }
     let claims_changes = !result.files_changed.is_empty();
-    if result.status == WorkerResultStatus::Completed && claims_changes && evidence.is_empty() {
+    // A handoff makes the same claim a `completed` result does, and its change
+    // set is what decides whether a completion gate opens over it, so an
+    // unsupported claim has to be recorded here too.
+    if matches!(
+        result.status,
+        WorkerResultStatus::Completed | WorkerResultStatus::NeedsDelegation
+    ) && claims_changes
+        && evidence.is_empty()
+    {
         mismatches.push(format!(
             "reported {} changed file(s) but {} shows no commit past {} and a clean tree",
             result.files_changed.len(),
@@ -380,10 +388,11 @@ pub fn reconcile_with_derived_evidence(
     let mut reconciled = result.clone();
     // The completion plan is built from `filesChanged`, so it must be the
     // repository's list, not the worker's. A worker cannot suppress a required
-    // build or test by omitting a path.
-    if !derived.is_empty() {
-        reconciled.files_changed = derived.clone();
-    }
+    // build or test by omitting a path — nor invent one by naming a file it never
+    // touched, which is why the empty list replaces a claim too. Skipping the
+    // assignment when Git found nothing left the worker's prose standing as the
+    // change set, and a change set is what opens a gate.
+    reconciled.files_changed = derived.clone();
     // Empty or out-of-scope evidence behind a `completed` claim is not a warning
     // to pass along; it is a failed claim.
     let fatal = mismatches
@@ -1550,6 +1559,44 @@ mod tests {
         assert_eq!(evidence.commits.len(), 1);
         assert_eq!(evidence.branch.as_deref(), Some("bridge/worker-child"));
         assert!(evidence.diffstat().contains("1 file(s) changed"));
+    }
+
+    /// A handoff makes the same claim a `completed` result does, and its change
+    /// set decides whether a completion gate opens over it. The derived list used
+    /// to replace the claim only when Git found something, so a fabricated
+    /// `filesChanged` survived a clean tree and could open a gate over nothing.
+    #[test]
+    fn a_fabricated_change_set_cannot_open_a_gate() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        lease(&fixture, "[\"src/**\"]");
+        assert!(worker.exists());
+
+        let mut handoff = completed(&["src/router.rs", "src/router.test.ts"]);
+        handoff.status = WorkerResultStatus::NeedsDelegation;
+        handoff.suggested_task = Some("verify the router change".into());
+        handoff.suggested_role = Some(crate::delegation::WorkerRole::Verification);
+        let reconciled = reconcile_result_with_repository(&fixture.db, "child", &handoff);
+
+        assert!(
+            reconciled.result.files_changed.is_empty(),
+            "the repository shows nothing, so the change set is empty: {:?}",
+            reconciled.result.files_changed
+        );
+        assert!(reconciled
+            .mismatches
+            .iter()
+            .any(|mismatch| mismatch.contains("shows no commit past")));
+        // The status survives: downgrading a handoff would discard the follow-up
+        // it asked for, and with an empty change set it can no longer open a gate.
+        assert_eq!(
+            reconciled.result.status,
+            WorkerResultStatus::NeedsDelegation
+        );
+        assert_eq!(
+            reconciled.result.suggested_task.as_deref(),
+            Some("verify the router change")
+        );
     }
 
     #[test]
