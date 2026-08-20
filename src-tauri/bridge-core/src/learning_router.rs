@@ -24,6 +24,13 @@ pub const ROUTER_SCHEMA_VERSION: u32 = 2;
 pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
 pub const LEGACY_GLOBAL_SCOPE: &str = "legacy:global";
 const PRIOR_WEIGHT: i64 = 4;
+/// Sessions that can still report *current* quota/context. Ended, ready, and
+/// idle rows are stale snapshots: missing capacity is unknown, which stays
+/// eligible rather than permanently excluding the harness. This is the same
+/// live set the workspace-status rollup uses in live_turn.rs; the two must
+/// not drift.
+const LIVE_CAPACITY_STATUSES: &str =
+    "'working','waiting','starting','checkpointing','resuming','warm','restored'";
 
 /// Stable learning-policy key for a workspace. Direct chats have no workspace
 /// and must not share a NULL/`legacy:global` bucket.
@@ -43,9 +50,7 @@ pub fn workspace_id_from_scope(scope: &str) -> Result<&str, BridgeError> {
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| {
-            BridgeError::Invalid(format!(
-                "learning scope {scope} is not a workspace scope"
-            ))
+            BridgeError::Invalid(format!("learning scope {scope} is not a workspace scope"))
         })
 }
 
@@ -854,26 +859,33 @@ fn harness_capacity(
     db: &Connection,
     workspace_id: &str,
 ) -> Result<BTreeMap<String, (bool, bool)>, BridgeError> {
-    let mut statement = db.prepare(
-        "SELECT harness,usage_percent,context_percent FROM sessions
-         WHERE workspace_id=?1 AND rowid IN (
-           SELECT MAX(rowid) FROM sessions WHERE workspace_id=?1 GROUP BY harness
-         )",
-    )?;
+    // Missing or stale observations are unknown, which stays eligible.
+    // Only a live session in this workspace can mark the harness exhausted —
+    // and any one live session at 100 is enough: electing the newest row let
+    // a just-starting session with no reading yet mask a sibling that is
+    // exhausted right now.
+    let sql = format!(
+        "SELECT harness,
+                MIN(CASE WHEN COALESCE(usage_percent,0) < 100 THEN 1 ELSE 0 END),
+                MIN(CASE WHEN COALESCE(context_percent,0) < 100 THEN 1 ELSE 0 END)
+         FROM sessions
+         WHERE workspace_id=?1
+           AND ended_at IS NULL
+           AND status IN ({LIVE_CAPACITY_STATUSES})
+         GROUP BY harness"
+    );
+    let mut statement = db.prepare(&sql)?;
     let rows = statement.query_map(params![workspace_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
         ))
     })?;
     let mut result = BTreeMap::new();
     for row in rows {
-        let (harness, usage, context) = row?;
-        result.insert(
-            harness,
-            (usage.unwrap_or(0) < 100, context.unwrap_or(0) < 100),
-        );
+        let (harness, usage_ok, context_ok) = row?;
+        result.insert(harness, (usage_ok == 1, context_ok == 1));
     }
     Ok(result)
 }
@@ -1987,10 +1999,7 @@ mod tests {
         let error = route(&db, "direct", "turn", &request(), &descriptors())
             .unwrap_err()
             .to_string();
-        assert!(
-            error.contains("without a workspace"),
-            "{error}"
-        );
+        assert!(error.contains("without a workspace"), "{error}");
     }
 
     #[test]
@@ -2017,5 +2026,101 @@ mod tests {
         assert!(load_histories(&db, "other", "implementation")
             .unwrap()
             .is_empty());
+    }
+
+    fn claude_exclusions(db: &Connection, turn: &str) -> Vec<CandidateExclusion> {
+        route(db, "parent", turn, &request(), &descriptors())
+            .unwrap()
+            .decision
+            .candidates
+            .into_iter()
+            .find(|item| item.candidate.harness == "claude")
+            .unwrap()
+            .exclusions
+    }
+
+    #[test]
+    fn ended_session_at_full_usage_does_not_exhaust_later_routes() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent,ended_at)
+             VALUES('old-claude','w','claude','Old','completed','reported',100,100,'now')",
+            [],
+        )
+        .unwrap();
+        assert!(harness_capacity(&db, "w").unwrap().get("claude").is_none());
+        let exclusions = claude_exclusions(&db, "turn-stale-quota");
+        assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn ready_session_at_full_usage_is_unknown_not_excluded() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('ready-claude','w','claude','Ready','ready','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert!(harness_capacity(&db, "w").unwrap().get("claude").is_none());
+        let exclusions = claude_exclusions(&db, "turn-ready-quota");
+        assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn a_new_starting_row_does_not_mask_a_live_exhausted_sibling() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-full','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+             VALUES('just-starting','w','claude','Starting','starting','estimated')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false)),
+            "any live session at 100 exhausts, however new its siblings are"
+        );
+    }
+
+    #[test]
+    fn restored_session_at_full_usage_still_exhausts() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('restored-claude','w','claude','Restored','restored','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false))
+        );
+    }
+
+    #[test]
+    fn live_session_at_full_usage_still_exhausts() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-claude','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false))
+        );
+        let exclusions = claude_exclusions(&db, "turn-live-quota");
+        assert!(exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(exclusions.contains(&CandidateExclusion::ContextExhausted));
     }
 }
