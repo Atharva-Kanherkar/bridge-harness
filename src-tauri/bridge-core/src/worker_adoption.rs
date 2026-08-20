@@ -807,9 +807,37 @@ fn settle(db: &Connection, session_id: &str, state: &str, detail: &str) -> Resul
     Ok(())
 }
 
+/// Every other live session running inside this checkout.
+///
+/// A verifier is bound to the implementation worker's worktree at launch, in its
+/// own `worker_runtime` row — a different session, with no binding of its own on
+/// that path. `worker_is_reusable` asks only about the worker that *wrote* there,
+/// so adoption (and the terminal-worktree maintenance pass) could remove the
+/// directory a reserved or running verifier was about to read.
+fn live_borrowers(
+    db: &Connection,
+    binding_row: &WorkerRepositoryBinding,
+) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT r.session_id FROM worker_runtime r
+         LEFT JOIN sessions s ON s.id=r.session_id
+         WHERE r.worktree_path=?1 AND r.session_id<>?2
+           AND (COALESCE(s.status,'') IN ('starting','working','resuming','checkpointing','waiting','warm','restored')
+                OR r.lifecycle_state IN ('starting','working','resuming','checkpointing','waiting','warm','restored'))
+         ORDER BY r.session_id",
+    )?;
+    let rows = statement.query_map(
+        params![binding_row.worktree_path, binding_row.session_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(BridgeError::from)
+}
+
 /// Remove a child worktree whose state is terminal. A dirty worktree is left in
 /// place: `safe_remove_worker_worktree` refuses it, and silently discarding
-/// uncommitted work would be worse than leaking a directory.
+/// uncommitted work would be worse than leaking a directory. So is a worktree
+/// another live worker is running in — see [`live_borrowers`].
 fn release_worktree(
     db: &Connection,
     binding_row: &WorkerRepositoryBinding,
@@ -820,6 +848,20 @@ fn release_worktree(
     }
     let worker = Path::new(&binding_row.worktree_path);
     if !worker.exists() {
+        return Ok(());
+    }
+    let borrowers = live_borrowers(db, binding_row)?;
+    if !borrowers.is_empty() {
+        let _ = store::event(
+            db,
+            "worktree",
+            "worker.worktree_retained",
+            &binding_row.session_id,
+            &format!(
+                "cannot remove worker worktree while {} is still running in it",
+                borrowers.join(", ")
+            ),
+        );
         return Ok(());
     }
     match git::safe_remove_worker_worktree(
@@ -1322,6 +1364,59 @@ mod tests {
             STATE_PENDING
         );
         assert!(adopt(&fixture.db, "child").is_ok());
+    }
+
+    /// A verifier runs in the implementation worker's checkout, in its own
+    /// session, with no binding of its own on that path. Asking only whether the
+    /// worker that *wrote* there is still reusable let adoption remove the
+    /// directory the verifier was about to read.
+    #[test]
+    fn a_worktree_another_live_worker_runs_in_is_retained() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        // A verifier bound to the implementation worker's checkout, reserved and
+        // about to start.
+        fixture.db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('verifier','w','codex','Verification','starting','reported','parent',1)", []).unwrap();
+        fixture.db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES('verifier','parent','starting','verification','key','pending',0,?1,'now')", params![worker.to_string_lossy()]).unwrap();
+
+        adopt(&fixture.db, "child").unwrap();
+        assert!(
+            worker.exists(),
+            "the verifier's checkout must survive the adoption of the work it is verifying"
+        );
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 0);
+        assert!(fixture
+            .db
+            .query_row(
+                "SELECT body FROM events WHERE kind='worker.worktree_retained' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .contains("verifier"));
+
+        // Once verification is terminal, the worktree is collected.
+        fixture
+            .db
+            .execute(
+                "UPDATE sessions SET status='stopped' WHERE id='verifier'",
+                [],
+            )
+            .unwrap();
+        fixture
+            .db
+            .execute(
+                "UPDATE worker_runtime SET lifecycle_state='completed' WHERE session_id='verifier'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 1);
+        assert!(!worker.exists());
     }
 
     /// A warm worker is idle, not finished: it can be resumed into this exact
