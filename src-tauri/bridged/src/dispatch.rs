@@ -127,9 +127,17 @@ pub fn dispatch(
             let p: wire::SendTurnParams = decode(method, params)?;
             reply(api::send_turn(core, p.session_id, p.text))
         }
+        MethodName::SubmitInput => {
+            let p: wire::SubmitInputParams = decode(method, params)?;
+            reply(api::submit_input(core, p.session_id, p.text))
+        }
         MethodName::CompactSession => {
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))
+        }
+        MethodName::RetryWorkerTask => {
+            let p: wire::RetryWorkerTaskParams = decode(method, params)?;
+            reply(api::retry_worker_task(core, &p.child_session_id))
         }
         MethodName::InterruptTurn => {
             let p: wire::InterruptTurnParams = decode(method, params)?;

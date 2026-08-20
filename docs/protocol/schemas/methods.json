@@ -156,6 +156,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "submit_input",
+      "domain": "sessions",
+      "method": "sessions/submit_input",
+      "paramsSchema": "submit-input-params.json",
+      "resultSchema": "submit-input-result.json"
+    },
+    {
       "command": "compact_session",
       "domain": "sessions",
       "method": "sessions/compact_session",
@@ -167,6 +174,13 @@
       "domain": "sessions",
       "method": "sessions/interrupt_turn",
       "paramsSchema": "interrupt-turn-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "retry_worker_task",
+      "domain": "sessions",
+      "method": "sessions/retry_worker_task",
+      "paramsSchema": "retry-worker-task-params.json",
       "resultSchema": "unit-result.json"
     },
     {
