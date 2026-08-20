@@ -22,6 +22,11 @@ use std::{
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
+    /// Live event-queue pressure for diagnostics; `None` for providers
+    /// without a bounded frame queue.
+    fn event_queue_metrics(&self) -> Option<crate::frame_queue::QueueMetricsSnapshot> {
+        None
+    }
     fn current_turn(&self) -> Arc<Mutex<Option<String>>>;
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
     /// Send a user turn with trusted, application-owned context that must not

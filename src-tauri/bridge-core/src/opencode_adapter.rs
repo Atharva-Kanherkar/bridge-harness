@@ -93,6 +93,7 @@ pub struct OpenCodeRuntime {
     current_turn: Arc<Mutex<Option<String>>>,
     shutting_down: Arc<AtomicBool>,
     stopped: bool,
+    queue_metrics: crate::frame_queue::QueueMetrics,
 }
 
 pub struct StartedOpenCode {
@@ -241,7 +242,8 @@ fn launch(
     }
 
     let shutting_down = Arc::new(AtomicBool::new(false));
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver, queue_metrics) =
+        crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
     if let Err(error) = spawn_event_stream(
         client.clone(),
         base_url.clone(),
@@ -273,6 +275,7 @@ fn launch(
             current_turn: Arc::new(Mutex::new(None)),
             shutting_down,
             stopped: false,
+            queue_metrics,
         },
         reader: ChannelReader::new(receiver),
         startup_messages,
@@ -476,7 +479,7 @@ fn spawn_event_stream(
     base_url: String,
     directory: String,
     session_id: String,
-    sender: mpsc::Sender<String>,
+    sender: crate::frame_queue::FrameSender,
     shutting_down: Arc<AtomicBool>,
 ) -> Result<(), BridgeError> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -517,7 +520,22 @@ fn spawn_event_stream(
                 .pointer("/properties/sessionID")
                 .and_then(Value::as_str)
                 == Some(session_id.as_str());
-            if belongs_to_session && sender.send(format!("{value}\n")).is_err() {
+            if !belongs_to_session {
+                continue;
+            }
+            // Streaming deltas are the only sheddable frames: their terminal
+            // `message.part.updated` carries the complete content. Everything
+            // else is durable and back-pressures this socket when the
+            // consumer stalls, instead of buffering without bound.
+            let transient =
+                value.get("type").and_then(Value::as_str) == Some("message.part.delta");
+            let frame = format!("{value}\n");
+            let delivered = if transient {
+                sender.send_transient(frame).map(|_| ())
+            } else {
+                sender.send_durable(frame)
+            };
+            if delivered.is_err() {
                 break;
             }
         }
@@ -531,7 +549,7 @@ fn spawn_event_stream(
                     "error": { "message": "OpenCode event stream disconnected unexpectedly" }
                 }
             });
-            let _ = sender.send(format!("{error_event}\n"));
+            let _ = sender.send_durable(format!("{error_event}\n"));
         }
     });
     ready_receiver
@@ -612,6 +630,9 @@ impl AdapterRuntime for OpenCodeRuntime {
     }
     fn provider_session_id(&self) -> &str {
         &self.session_id
+    }
+    fn event_queue_metrics(&self) -> Option<crate::frame_queue::QueueMetricsSnapshot> {
+        Some(self.queue_metrics.snapshot())
     }
     fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
         self.current_turn.clone()
@@ -1193,13 +1214,13 @@ fn model_strength(model: &OpenCodeModel) -> f64 {
 }
 
 pub struct ChannelReader {
-    receiver: mpsc::Receiver<String>,
+    receiver: crate::frame_queue::FrameReceiver,
     buffer: Vec<u8>,
     position: usize,
 }
 
 impl ChannelReader {
-    fn new(receiver: mpsc::Receiver<String>) -> Self {
+    fn new(receiver: crate::frame_queue::FrameReceiver) -> Self {
         Self {
             receiver,
             buffer: Vec::new(),
