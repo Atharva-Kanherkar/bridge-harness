@@ -2341,13 +2341,25 @@ pub fn launch_worker_outcome(
                     &reason,
                 );
                 drop(db);
-                abort_unbindable_verifier(core, &reservation, parent_session_id, &reason);
+                abort_unbindable_verifier(
+                    core,
+                    &reservation,
+                    parent_session_id,
+                    "verification_target",
+                    &reason,
+                );
                 return WorkerLaunchOutcome::Failed;
             }
             Err(error) => {
                 let reason =
                     format!("Could not bind verifier to the implementation revision: {error}");
-                abort_unbindable_verifier(core, &reservation, parent_session_id, &reason);
+                abort_unbindable_verifier(
+                    core,
+                    &reservation,
+                    parent_session_id,
+                    "database",
+                    &reason,
+                );
                 return WorkerLaunchOutcome::Failed;
             }
         }
@@ -4053,6 +4065,7 @@ fn abort_unbindable_verifier(
     core: &Arc<BridgeCore>,
     reservation: &WorkerLaunchReservation,
     parent_session_id: &str,
+    phase: &str,
     reason: &str,
 ) {
     {
@@ -4066,7 +4079,7 @@ fn abort_unbindable_verifier(
         // reason for the parent to sit in `waiting`.
         let _ = completion::reconcile_parent_readiness(&db, parent_session_id);
     }
-    report_worker_launch_failure(core, parent_session_id, "verification_target", reason);
+    report_worker_launch_failure(core, parent_session_id, phase, reason);
 }
 
 fn delete_reserved_worker(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
@@ -7503,6 +7516,7 @@ mod verification_binding_tests {
             &core,
             &reservation(),
             "parent",
+            "verification_target",
             &completion::verification_target_unavailable_reason(),
         );
         let db = core.db.lock().unwrap();
