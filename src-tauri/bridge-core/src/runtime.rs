@@ -36,6 +36,7 @@ pub struct BridgeCore {
     pub telemetry_db: Mutex<rusqlite::Connection>,
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    pub reader_launches: Mutex<HashMap<String, Arc<Mutex<bool>>>>,
     pub adapter_registry: Arc<adapters::AdapterRegistry>,
     /// Which backend serves each agent. The registry executes; this decides
     /// what may execute, and what a session recorded last time.
@@ -214,6 +215,7 @@ impl BridgeCore {
             ),
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
+            reader_launches: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
             backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             catalog: Arc::new(
@@ -318,6 +320,7 @@ impl BridgeCore {
             telemetry_db: Mutex::new(telemetry_connection),
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
+            reader_launches: Mutex::new(HashMap::new()),
             adapter_registry,
             backend_resolver: Arc::new(backend_resolver),
             catalog: Arc::new(loaded.catalog),

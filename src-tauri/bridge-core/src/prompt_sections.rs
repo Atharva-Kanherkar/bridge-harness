@@ -420,7 +420,9 @@ pub(crate) fn append_reset_all_revisions(db: &Connection) -> Result<(), BridgeEr
         ids
     };
     for id in ids {
-        let key = key_from_configuration_id(&id)?;
+        let Ok(key) = key_from_configuration_id(&id) else {
+            continue;
+        };
         append_revision(
             db,
             &key,
@@ -450,6 +452,12 @@ pub(crate) fn install_revision_store(transaction: &Transaction<'_>) -> Result<()
             CHECK(
                 (operation='restore' AND restored_from_revision_id IS NOT NULL)
                 OR (operation!='restore' AND restored_from_revision_id IS NULL)
+            ),
+            CHECK(
+                operation='restore'
+                OR (operation='override' AND state='overridden')
+                OR (operation='delete' AND state='deleted')
+                OR (operation='reset' AND state='default')
             ),
             CHECK(
                 (target='orchestrator' AND section_id IN ('bridge_role','delegation_protocol'))
@@ -637,6 +645,7 @@ mod tests {
         .unwrap();
         for unsafe_text in [
             "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+            "api_key=0123456789abcdef0123456789abcdef",
             "Call /credential-proxy/session/reference with x-bridge-proxy-auth.",
         ] {
             assert!(save_override(&db, &key, unsafe_text)
@@ -657,6 +666,21 @@ mod tests {
             PromptSectionState::Default
         );
         assert_eq!(revisions(&db, &key).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn revision_operations_must_match_their_recorded_state() {
+        let db = db();
+        let error = db
+            .execute(
+                "INSERT INTO prompt_section_revisions(
+                    target,section_id,operation,state,content,created_at
+                 ) VALUES('orchestrator','bridge_role','delete','overridden','contradiction','now')",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("CHECK constraint failed"), "{error}");
     }
 
     #[test]
@@ -700,5 +724,23 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].operation, PromptSectionOperation::Reset);
         assert_eq!(history[1].state, PromptSectionState::Default);
+    }
+
+    #[test]
+    fn agent_reset_all_recovers_from_an_unknown_prompt_section_key() {
+        let db = db();
+        db.execute(
+            "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
+             VALUES('prompt_section','future:unknown','{\"state\":\"deleted\"}','now','now')",
+            [],
+        )
+        .unwrap();
+
+        agent_config::reset_all(&db).unwrap();
+
+        let remaining: i64 = db
+            .query_row("SELECT COUNT(*) FROM configuration_entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 }

@@ -77,7 +77,7 @@ static DETECTORS: LazyLock<Vec<Detector>> = LazyLock::new(|| {
         ),
         Detector::new(
             "credential_assignment",
-            r#"(?x)\b(?:[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9._~+/=-]{12,2048})["']?"#,
+            r#"(?ix)\b(?:[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9._~+/=-]{12,2048})["']?"#,
         ),
     ]
 });
@@ -224,15 +224,20 @@ mod tests {
     fn intercepts_bearer_and_assignment_values_without_removing_context() {
         let bearer = "abcdefghijklmnop123456";
         let assigned = "0123456789abcdefghijklmnop";
-        let input = format!("Authorization: Bearer {bearer}\nGITHUB_TOKEN={assigned}");
+        let lowercase = "fedcba9876543210fedcba9876543210";
+        let input = format!(
+            "Authorization: Bearer {bearer}\nGITHUB_TOKEN={assigned}\napi_key={lowercase}"
+        );
         let sanitized = sanitize(&input);
         assert!(sanitized
             .text
             .starts_with("Authorization: Bearer [secret:sec_"));
         assert!(sanitized.text.contains("GITHUB_TOKEN=[secret:sec_"));
+        assert!(sanitized.text.contains("api_key=[secret:sec_"));
         assert!(!sanitized.text.contains(bearer));
         assert!(!sanitized.text.contains(assigned));
-        assert_eq!(sanitized.interceptions.len(), 2);
+        assert!(!sanitized.text.contains(lowercase));
+        assert_eq!(sanitized.interceptions.len(), 3);
     }
 
     #[test]

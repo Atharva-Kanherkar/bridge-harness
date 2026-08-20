@@ -395,6 +395,15 @@ impl BridgeCore {
     /// Remove and stop a session's live adapter runtime, if any. Blocking —
     /// hosts place this on their blocking pool.
     pub fn stop_session_adapter(&self, session_id: &str, reason: adapters::ShutdownReason) {
+        if let Some(gate) = self
+            .reader_launches
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+        {
+            *gate.lock().unwrap() = false;
+        }
         if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }

@@ -138,7 +138,13 @@ pub struct PromptLintWarning {
 pub fn lint_required_markers(text: &str) -> Vec<PromptLintWarning> {
     REQUIRED_MARKERS
         .iter()
-        .filter(|marker| !text.contains(**marker))
+        .filter(|marker| {
+            if **marker == "bridge-delegate" {
+                !text.contains("```bridge-delegate")
+            } else {
+                !text.contains(**marker)
+            }
+        })
         .map(|marker| PromptLintWarning {
             marker,
             message: if *marker == "bridge-delegate" {
@@ -201,7 +207,14 @@ mod tests {
         let default = orchestrator::briefing();
         assert!(lint_required_markers(&default).is_empty());
 
-        let edited = default.replace("bridge-delegate", "delegation-block");
+        let fence_start = default.find("```bridge-delegate").unwrap();
+        let fence_end = default[fence_start + 3..]
+            .find("```")
+            .map(|offset| fence_start + 3 + offset + 3)
+            .unwrap();
+        let mut edited = default.clone();
+        edited.replace_range(fence_start..fence_end, "");
+        assert!(edited.contains("bridge-delegate"));
         let warnings = lint_required_markers(&edited);
         let delegation = warnings
             .iter()

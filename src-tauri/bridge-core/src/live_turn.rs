@@ -146,28 +146,45 @@ fn orchestrator_context_event(
     tier: CapabilityTier,
     model: Option<&str>,
 ) -> agent::NormalizedEvent {
-    let bridge_role = stack
+    let section_ids = stack
         .sections
         .iter()
-        .find(|section| section.id == prompts::BRIDGE_ROLE_SECTION_ID)
-        .map(|section| section.text.clone());
-    let deleted = bridge_role.is_none();
+        .map(|section| section.id.as_str())
+        .collect::<Vec<_>>();
+    let deleted_section_ids = stack
+        .target
+        .section_ids()
+        .iter()
+        .copied()
+        .filter(|id| !section_ids.contains(id))
+        .collect::<Vec<_>>();
+    let all_deleted = stack.sections.is_empty();
+    let text = if all_deleted {
+        "All Bridge-stable orchestrator sections are deleted for this prompt launch.".into()
+    } else {
+        stack
+            .sections
+            .iter()
+            .map(|section| format!("## {}\n{}", section.id, section.text))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
     agent::NormalizedEvent {
         kind: "session.context".into(),
         item_id: Some("orchestrator-briefing".into()),
         role: Some("system".into()),
         status: Some("ready".into()),
-        title: Some(if deleted {
+        title: Some(if all_deleted {
             "Orchestrator routing policy removed".into()
         } else {
             "Orchestrator routing policy".into()
         }),
-        text: Some(bridge_role.unwrap_or_else(|| {
-            "The `bridge_role` section is deleted for this prompt launch.".into()
-        })),
+        text: Some(text),
         data: serde_json::json!({
             "source": "capability-policy",
-            "sectionState": if deleted { "deleted" } else { "active" },
+            "sectionState": if all_deleted { "deleted" } else { "active" },
+            "sectionIds": section_ids,
+            "deletedSectionIds": deleted_section_ids,
             "requestedTier": tier,
             "runtimeModel": model
         }),
@@ -453,7 +470,7 @@ mod prompt_section_tests {
     }
 
     #[test]
-    fn durable_context_uses_the_effective_bridge_role_and_records_deletion() {
+    fn durable_context_records_the_effective_stack_and_section_deletions() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let key = prompt_sections::PromptSectionKey::new(
             prompts::PromptTarget::Orchestrator,
@@ -469,10 +486,40 @@ mod prompt_section_tests {
             CapabilityTier::Standard,
             Some("model"),
         );
-        assert_eq!(event.text.as_deref(), Some("Custom durable policy"));
+        assert!(event.text.as_deref().unwrap().contains("Custom durable policy"));
+        assert!(event
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("delegation_protocol"));
         assert_eq!(event.data["sectionState"], "active");
 
         prompt_sections::delete_section(&db, &key).unwrap();
+        let deleted =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let event = orchestrator_context_event(
+            &deleted,
+            CapabilityTier::Standard,
+            Some("model"),
+        );
+        assert_eq!(event.data["sectionState"], "active");
+        assert_eq!(
+            event.data["deletedSectionIds"],
+            serde_json::json!(["bridge_role"])
+        );
+        assert!(event
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("delegation_protocol"));
+        assert!(!event.text.as_deref().unwrap().contains("starter orchestrator"));
+
+        let protocol_key = prompt_sections::PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::DELEGATION_PROTOCOL_SECTION_ID,
+        )
+        .unwrap();
+        prompt_sections::delete_section(&db, &protocol_key).unwrap();
         let deleted =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
         let event = orchestrator_context_event(
@@ -485,14 +532,14 @@ mod prompt_section_tests {
             .text
             .as_deref()
             .unwrap()
-            .contains("`bridge_role` section is deleted"));
-        assert!(!event.text.as_deref().unwrap().contains("starter orchestrator"));
+            .contains("All Bridge-stable orchestrator sections are deleted"));
     }
 
     #[test]
     fn invalidating_a_launch_prevents_its_reader_from_settling_a_replacement() {
-        let db = store::open(Path::new(":memory:")).unwrap();
-        db.execute(
+        let scratch = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(scratch.path());
+        core.db.lock().unwrap().execute(
             "INSERT INTO sessions(
                 id,workspace_id,harness,label,status,metric_source,started_at,provider_session_id
              ) VALUES('session',NULL,'codex','Orchestrator','working','reported','launch-one','provider-one')",
@@ -500,20 +547,29 @@ mod prompt_section_tests {
         )
         .unwrap();
         assert!(reader_launch_is_current(
-            &db,
+            &core.db.lock().unwrap(),
             "session",
             "launch-one",
             "provider-one"
         ));
 
-        invalidate_reader_launch(&db, "session").unwrap();
+        invalidate_reader_launch(&core, "session").unwrap();
 
         assert!(!reader_launch_is_current(
-            &db,
+            &core.db.lock().unwrap(),
             "session",
             "launch-one",
             "provider-one"
         ));
+        assert_eq!(
+            core.db.lock().unwrap().query_row(
+                "SELECT status FROM sessions WHERE id='session'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "stopped"
+        );
     }
 }
 
@@ -764,7 +820,7 @@ pub fn start_session(
             )?;
             return store::state(&db);
         }
-        invalidate_reader_launch(&state.db.lock().unwrap(), &session_id)?;
+        invalidate_reader_launch(state, &session_id)?;
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         }
@@ -1038,6 +1094,7 @@ pub fn start_session(
     spawn_reader_thread(
         core.clone(),
         session_id.clone(),
+        adapter_id.to_owned(),
         started_at,
         thread_id,
         process_id,
@@ -1210,7 +1267,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             )?;
             return store::state(&db);
         }
-        invalidate_reader_launch(&state.db.lock().unwrap(), &session_id)?;
+        invalidate_reader_launch(state, &session_id)?;
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         }
@@ -1383,6 +1440,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     spawn_reader_thread(
         core.clone(),
         session_id.clone(),
+        adapter_id.to_owned(),
         started_at,
         thread_id,
         process_id,
@@ -1406,12 +1464,47 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
 
 /// Drive one structured session's stdout: normalize every frame, then on exit
 /// mark the session stopped and unblock any parent that was waiting on it.
-fn invalidate_reader_launch(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
+fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), BridgeError> {
+    deactivate_reader_launch(core, session_id);
+    let harness = core.db.lock().unwrap().query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    let provider_session_id = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|runtime| runtime.provider_session_id().to_owned());
+    if let Some(provider_session_id) = provider_session_id.filter(|id| !id.is_empty()) {
+        core.adapter_registry
+            .forget_session(&harness, &provider_session_id);
+    }
+    let db = core.db.lock().unwrap();
     db.execute(
-        "UPDATE sessions SET started_at=NULL WHERE id=?1",
+        "UPDATE sessions
+         SET started_at=NULL,status='stopped',ended_at=?2,active_turn_id=NULL
+         WHERE id=?1",
+        params![session_id, Utc::now().to_rfc3339()],
+    )?;
+    db.execute(
+        "UPDATE workspaces
+         SET status=CASE WHEN EXISTS(
+             SELECT 1 FROM sessions
+             WHERE workspace_id=workspaces.id
+               AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')
+         ) THEN 'working' ELSE 'stopped' END
+         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
         params![session_id],
     )?;
     Ok(())
+}
+
+fn deactivate_reader_launch(core: &BridgeCore, session_id: &str) {
+    if let Some(gate) = core.reader_launches.lock().unwrap().get(session_id).cloned() {
+        *gate.lock().unwrap() = false;
+    }
 }
 
 fn reader_launch_is_current(
@@ -1428,15 +1521,47 @@ fn reader_launch_is_current(
     .unwrap_or(false)
 }
 
+fn cleanup_reader_state(
+    core: &BridgeCore,
+    session_id: &str,
+    adapter_id: &str,
+    provider_session_id: &str,
+    tracks_worker: bool,
+) {
+    let active_provider = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|runtime| runtime.provider_session_id().to_owned());
+    if !provider_session_id.is_empty() && active_provider.as_deref() != Some(provider_session_id) {
+        core.adapter_registry
+            .forget_session(adapter_id, provider_session_id);
+    }
+    if tracks_worker && active_provider.is_none() {
+        core.worker_activity.lock().unwrap().remove(session_id);
+        core.worker_activity_persisted
+            .lock()
+            .unwrap()
+            .remove(session_id);
+    }
+}
+
 fn spawn_reader_thread(
     core: Arc<BridgeCore>,
     session_id: String,
+    launch_adapter_id: String,
     launch_started_at: String,
     launch_provider_session_id: String,
     launch_process_id: u32,
     current_turn: Arc<Mutex<Option<String>>>,
     mut reader: Box<dyn BufRead + Send>,
 ) {
+    let launch_gate = Arc::new(Mutex::new(true));
+    core.reader_launches
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), launch_gate.clone());
     thread::spawn(move || {
         let tracks_worker = store::worker_runtime(&core.clone().db.lock().unwrap(), &session_id)
             .ok()
@@ -1452,6 +1577,10 @@ fn spawn_reader_thread(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    let launch_active = launch_gate.lock().unwrap();
+                    if !*launch_active {
+                        break;
+                    }
                     // Every line proves liveness — refresh the heartbeat before
                     // normalization so tool-run and reasoning frames all count.
                     if tracks_worker {
@@ -1461,6 +1590,15 @@ fn spawn_reader_thread(
                         handle_agent_value(&core, &session_id, &current_turn, &value);
                     }
                 }
+            }
+        }
+        {
+            let mut launches = core.reader_launches.lock().unwrap();
+            if launches
+                .get(&session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &launch_gate))
+            {
+                launches.remove(&session_id);
             }
         }
         let state = core.clone();
@@ -1478,13 +1616,20 @@ fn spawn_reader_thread(
                 .flatten()
         };
         let Some(mut exited_runtime) = exited_runtime else {
+            cleanup_reader_state(
+                &state,
+                &session_id,
+                &launch_adapter_id,
+                &launch_provider_session_id,
+                tracks_worker,
+            );
             return;
         };
 
         // Hold the database guard from generation check through all session
         // mutations. A replacement launch either invalidates this generation
         // first, or waits and then overwrites this launch's terminal state.
-        let (harness, workspace) = {
+        let workspace = {
             let db = state.db.lock().unwrap();
             let is_current_launch = reader_launch_is_current(
                 &db,
@@ -1493,6 +1638,14 @@ fn spawn_reader_thread(
                 &launch_provider_session_id,
             );
             if !is_current_launch {
+                drop(db);
+                cleanup_reader_state(
+                    &state,
+                    &session_id,
+                    &launch_adapter_id,
+                    &launch_provider_session_id,
+                    tracks_worker,
+                );
                 return;
             }
             let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id);
@@ -1500,10 +1653,10 @@ fn spawn_reader_thread(
                 .ok()
                 .flatten()
                 .is_some();
-            let (harness, workspace): (String, Option<String>) = match db.query_row(
-                "SELECT harness,workspace_id FROM sessions WHERE id=?1",
+            let workspace: Option<String> = match db.query_row(
+                "SELECT workspace_id FROM sessions WHERE id=?1",
                 params![session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             ) {
                 Ok(session) => session,
                 Err(_) => return,
@@ -1511,24 +1664,15 @@ fn spawn_reader_thread(
             if !is_worker {
                 let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
             }
-            (harness, workspace)
+            workspace
         };
-        // The runtime is gone either way (user stop or process exit), so drop
-        // the adapter's normalization state for this provider session — those
-        // maps otherwise grow for the life of the process.
-        if !launch_provider_session_id.is_empty() {
-            state
-                .adapter_registry
-                .forget_session(&harness, &launch_provider_session_id);
-        }
-        if tracks_worker {
-            state.worker_activity.lock().unwrap().remove(&session_id);
-            state
-                .worker_activity_persisted
-                .lock()
-                .unwrap()
-                .remove(&session_id);
-        }
+        cleanup_reader_state(
+            &state,
+            &session_id,
+            &launch_adapter_id,
+            &launch_provider_session_id,
+            tracks_worker,
+        );
         let failure_context = exited_runtime.failure_context();
         notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
         if let Some(workspace) = workspace {
@@ -2286,6 +2430,7 @@ fn finish_worker_checkpoint(
         checkpointing
     };
     if should_stop {
+        deactivate_reader_launch(&state, session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
@@ -2302,6 +2447,7 @@ fn finish_orchestrator_shutdown(
     reason: adapters::ShutdownReason,
 ) {
     let state = core.clone();
+    deactivate_reader_launch(&state, session_id);
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
         runtime.stop(reason);
     }
@@ -3356,10 +3502,7 @@ pub fn launch_worker_outcome(
             .contains_key(&reservation.session_id)
         && !hot_prompt_compatible
     {
-        let _ = invalidate_reader_launch(
-            &state.db.lock().unwrap(),
-            &reservation.session_id,
-        );
+        let _ = invalidate_reader_launch(&state, &reservation.session_id);
         if let Some(mut runtime) = state
             .adapters
             .lock()
@@ -3900,6 +4043,7 @@ pub fn launch_worker_outcome(
     spawn_reader_thread(
         core.clone(),
         session_id.clone(),
+        harness.clone(),
         started_at,
         thread_id,
         process_id,
@@ -4841,6 +4985,7 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
         )
         .unwrap_or(false);
     if terminal {
+        deactivate_reader_launch(&state, child_session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
             runtime.stop(adapters::ShutdownReason::Completed);
         }
@@ -7175,6 +7320,7 @@ pub fn stop_session(
             ));
         }
         report_to_parent(&core, &session_id, &result);
+        deactivate_reader_launch(state, &session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::UserCancelled);
         }
@@ -7243,6 +7389,7 @@ pub fn stop_session(
             }
         }
     }
+    deactivate_reader_launch(state, &session_id);
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
