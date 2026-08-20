@@ -26,7 +26,7 @@
     "action": {
       "$ref": "#/definitions/AutomationAction"
     },
-    "automationId": {
+    "id": {
       "description": "The automation's id in its native store.",
       "type": "string"
     },
@@ -36,7 +36,7 @@
   },
   "required": [
     "action",
-    "automationId",
+    "id",
     "provider"
   ],
   "title": "ExecuteAutomationActionParams",

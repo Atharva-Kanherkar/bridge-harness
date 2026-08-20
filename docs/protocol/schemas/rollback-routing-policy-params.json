@@ -11,11 +11,15 @@
       "description": "The policy version to make active again.",
       "format": "int64",
       "type": "integer"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "required": [
     "explanation",
-    "targetVersion"
+    "targetVersion",
+    "workspaceId"
   ],
   "title": "RollbackRoutingPolicyParams",
   "type": "object"

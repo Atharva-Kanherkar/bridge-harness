@@ -470,19 +470,6 @@ pub struct SessionHead {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskKnowledge {
-    pub id: String,
-    pub workspace_id: String,
-    pub session_id: Option<String>,
-    pub kind: String,
-    pub body: String,
-    pub source_entry_id: Option<String>,
-    pub superseded_by: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkerLease {
     pub session_id: String,
     pub workspace_id: String,

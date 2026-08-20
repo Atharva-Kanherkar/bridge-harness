@@ -177,6 +177,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "search_session_entries",
+      "domain": "sessions",
+      "method": "sessions/search_session_entries",
+      "paramsSchema": "search-session-entries-params.json",
+      "resultSchema": "search-session-entries-result.json"
+    },
+    {
       "command": "interrupt_turn",
       "domain": "sessions",
       "method": "sessions/interrupt_turn",
@@ -203,6 +210,27 @@
       "method": "sessions/stop_session",
       "paramsSchema": "stop-session-params.json",
       "resultSchema": "bridge-state.json"
+    },
+    {
+      "command": "save_memory_record",
+      "domain": "memory",
+      "method": "memory/save_memory_record",
+      "paramsSchema": "save-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "list_memory_records",
+      "domain": "memory",
+      "method": "memory/list_memory_records",
+      "paramsSchema": "list-memory-records-params.json",
+      "resultSchema": "list-memory-records-result.json"
+    },
+    {
+      "command": "delete_memory_record",
+      "domain": "memory",
+      "method": "memory/delete_memory_record",
+      "paramsSchema": "delete-memory-record-params.json",
+      "resultSchema": "memory-record.json"
     },
     {
       "command": "resolve_approval",
@@ -366,6 +394,27 @@
       "resultDeferred": "bridge_core::model_profiles::ModelSetupState"
     },
     {
+      "command": "get_suggestion_settings",
+      "domain": "models",
+      "method": "models/get_suggestion_settings",
+      "paramsSchema": null,
+      "resultSchema": "suggestion-settings-snapshot.json"
+    },
+    {
+      "command": "save_suggestion_settings",
+      "domain": "models",
+      "method": "models/save_suggestion_settings",
+      "paramsSchema": "save-suggestion-settings-params.json",
+      "resultSchema": "suggestion-settings-snapshot.json"
+    },
+    {
+      "command": "suggest_completion",
+      "domain": "models",
+      "method": "models/suggest_completion",
+      "paramsSchema": "suggest-completion-params.json",
+      "resultSchema": "suggest-completion-result.json"
+    },
+    {
       "command": "get_config_state",
       "domain": "config",
       "method": "config/get_config_state",
@@ -439,7 +488,7 @@
       "command": "get_learning_state",
       "domain": "learning",
       "method": "learning/get_learning_state",
-      "paramsSchema": null,
+      "paramsSchema": "get-learning-state-params.json",
       "resultDeferred": "bridge_core::learning_job::LearningState"
     },
     {
@@ -739,7 +788,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 0
+    "minor": 2
   },
   "reserved": {
     "cancel": "$/cancel",

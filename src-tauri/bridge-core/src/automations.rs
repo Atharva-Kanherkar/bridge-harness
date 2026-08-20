@@ -19,10 +19,14 @@ use crate::BridgeError;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 /// How many run-history rows ride along per Codex automation.
 const MAX_RUNS_PER_AUTOMATION: usize = 20;
@@ -77,6 +81,7 @@ pub struct AutomationSchedule {
 #[serde(rename_all = "camelCase")]
 pub struct AutomationRun {
     pub id: String,
+    pub automation_id: String,
     pub status: String,
     pub title: Option<String>,
     pub summary: Option<String>,
@@ -145,6 +150,8 @@ fn claude_lock_path(home: &Path) -> PathBuf {
 struct ClaudeTaskFile {
     #[serde(default)]
     tasks: Vec<serde_json::Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The fields Claude Code's own reader requires; everything else on the raw
@@ -282,12 +289,25 @@ fn edit_claude_tasks(
         let mut file: ClaudeTaskFile = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|error| BridgeError::Invalid(format!("{} is unreadable: {error}", path.display())))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ClaudeTaskFile { tasks: Vec::new() },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ClaudeTaskFile {
+                tasks: Vec::new(),
+                extra: serde_json::Map::new(),
+            },
             Err(error) => return Err(BridgeError::Io(error)),
         };
         mutate(&mut file.tasks)?;
         let tmp = path.with_extension("json.bridge-tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(&file).expect("schedule file serializes"))?;
+        let _ = fs::remove_file(&tmp);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut tmp_file = options.open(&tmp)?;
+        if let Ok(metadata) = fs::metadata(&path) {
+            fs::set_permissions(&tmp, metadata.permissions())?;
+        }
+        tmp_file.write_all(&serde_json::to_vec_pretty(&file).expect("schedule file serializes"))?;
+        tmp_file.sync_all()?;
         fs::rename(&tmp, &path)?;
         Ok(())
     })();
@@ -301,9 +321,33 @@ fn codex_sqlite_dir(home: &Path) -> PathBuf {
     home.join(".codex").join("sqlite")
 }
 
-/// Every database under `~/.codex/sqlite` that carries an `automations`
-/// table. The app has shipped differently named files across channels, so
-/// membership is decided by schema, not filename.
+/// Every database under `~/.codex/sqlite` that carries the Codex automation
+/// and run-history schemas. The app has shipped differently named files across
+/// channels, so membership is decided by schema, not filename.
+fn has_codex_automation_schema(db: &Connection) -> bool {
+    const AUTOMATION_COLUMNS: [&str; 12] = [
+        "id", "name", "prompt", "status", "next_run_at", "last_run_at", "cwds", "rrule", "model",
+        "reasoning_effort", "created_at", "updated_at",
+    ];
+    const RUN_COLUMNS: [&str; 7] = [
+        "thread_id", "automation_id", "status", "thread_title", "inbox_title", "inbox_summary",
+        "created_at",
+    ];
+    table_has_columns(db, "automations", &AUTOMATION_COLUMNS)
+        && table_has_columns(db, "automation_runs", &RUN_COLUMNS)
+}
+
+fn table_has_columns(db: &Connection, table: &str, required: &[&str]) -> bool {
+    let Ok(mut statement) = db.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+    let columns: HashSet<String> = rows.flatten().collect();
+    required.iter().all(|column| columns.contains(*column))
+}
+
 fn codex_automation_dbs(home: &Path) -> Vec<PathBuf> {
     let dir = codex_sqlite_dir(home);
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -315,14 +359,7 @@ fn codex_automation_dbs(home: &Path) -> Vec<PathBuf> {
         .filter(|path| path.extension().is_some_and(|extension| extension == "db"))
         .filter(|path| {
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .and_then(|db| {
-                    db.query_row(
-                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='automations'",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )
-                })
-                .map(|count| count > 0)
+                .map(|db| has_codex_automation_schema(&db))
                 .unwrap_or(false)
         })
         .collect();
@@ -342,7 +379,7 @@ fn codex_automations(home: &Path) -> (AutomationProviderState, Vec<UnifiedAutoma
         return (
             AutomationProviderState {
                 provider: AutomationProvider::Codex,
-                available: dir.is_dir(),
+                available: false,
                 detail,
                 count: 0,
             },
@@ -431,6 +468,7 @@ fn codex_runs(db: &Connection, automation_id: &str) -> Result<Vec<AutomationRun>
         .query_map(rusqlite::params![automation_id, MAX_RUNS_PER_AUTOMATION as i64], |row| {
             Ok(AutomationRun {
                 id: row.get(0)?,
+                automation_id: automation_id.to_string(),
                 status: row.get(1)?,
                 title: row.get(2)?,
                 summary: row.get(3)?,
@@ -513,7 +551,10 @@ pub fn execute(
 fn codex_execute(home: &Path, id: &str, action: AutomationAction) -> Result<String, BridgeError> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     for path in codex_automation_dbs(home) {
-        let db = Connection::open(&path)?;
+        let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        if !has_codex_automation_schema(&db) {
+            continue;
+        }
         let changed = match action {
             AutomationAction::Pause => db.execute(
                 "UPDATE automations SET status='PAUSED', updated_at=?2 WHERE id=?1",
@@ -696,6 +737,7 @@ mod tests {
         assert_eq!(codex.schedule.human, "Daily at 03:15");
         assert_eq!(codex.cwds, vec!["/tmp/repo".to_string()]);
         assert_eq!(codex.runs.len(), 1);
+        assert_eq!(codex.runs[0].automation_id, "auto-1");
         assert!(codex.can_pause);
         let opencode = catalog.providers.iter().find(|state| state.provider == AutomationProvider::OpenCode).unwrap();
         assert!(!opencode.available);
@@ -713,21 +755,55 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_sqlite_database_is_not_treated_as_codex_automations() {
+        let home = fixture_home();
+        let dir = home.path().join(".codex").join("sqlite");
+        fs::create_dir_all(&dir).unwrap();
+        let db = Connection::open(dir.join("unrelated.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE automations (
+                id TEXT, name TEXT, prompt TEXT, status TEXT, next_run_at INTEGER,
+                last_run_at INTEGER, cwds TEXT, rrule TEXT, model TEXT,
+                reasoning_effort TEXT, created_at INTEGER, updated_at INTEGER
+            );",
+        )
+        .unwrap();
+        drop(db);
+
+        let catalog = catalog(home.path());
+        let codex = catalog
+            .providers
+            .iter()
+            .find(|state| state.provider == AutomationProvider::Codex)
+            .unwrap();
+        assert!(!codex.available);
+        assert!(catalog.automations.is_empty());
+    }
+
+    #[test]
     fn claude_delete_removes_exactly_the_named_task_and_preserves_unknown_fields() {
         let home = fixture_home();
-        write_claude_tasks(
-            home.path(),
-            serde_json::json!([
-                {"id": "task-1", "cron": "7 9 * * *", "prompt": "a", "createdAt": 1, "customField": "keep-me"},
-                {"id": "task-2", "cron": "0 12 * * *", "prompt": "b", "createdAt": 2},
-            ]),
-        );
+        let dir = home.path().join(".claude");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("scheduled_tasks.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tasks": [
+                    {"id": "task-1", "cron": "7 9 * * *", "prompt": "a", "createdAt": 1, "customField": "keep-me"},
+                    {"id": "task-2", "cron": "0 12 * * *", "prompt": "b", "createdAt": 2}
+                ],
+                "futureMetadata": {"keep": true}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         execute(home.path(), AutomationProvider::Claude, "task-2", AutomationAction::Delete).unwrap();
         let raw: serde_json::Value =
             serde_json::from_slice(&fs::read(claude_tasks_path(home.path())).unwrap()).unwrap();
         let tasks = raw.get("tasks").unwrap().as_array().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].get("customField").unwrap(), "keep-me");
+        assert_eq!(raw["futureMetadata"], serde_json::json!({"keep": true}));
         assert!(!claude_lock_path(home.path()).exists(), "lock released");
     }
 

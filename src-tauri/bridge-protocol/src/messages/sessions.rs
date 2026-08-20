@@ -86,6 +86,10 @@ pub struct ReplaySessionEventsParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 1_000))]
     pub limit: Option<u32>,
+    /// Return the newest `limit` durable events, still ordered oldest to
+    /// newest. Intended for bounded activity surfaces, not cursor recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail: Option<bool>,
 }
 
 /// Structured provider data accepted by normalized events.
@@ -226,6 +230,40 @@ pub struct RetryWorkerTaskParams {
 #[serde(rename_all = "camelCase")]
 pub struct CompactSessionParams {
     pub session_id: String,
+}
+
+pub const DEFAULT_RECALL_HIT_LIMIT: u32 = 20;
+pub const MAX_RECALL_HIT_LIMIT: u32 = 50;
+
+/// FTS5 recall over `session_entries`. `sessionId` is required; there is no
+/// workspace-wide search on this method.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchSessionEntriesParams {
+    pub session_id: String,
+    pub query: String,
+    /// Omitted requests use 20; the server rejects values outside 1..=50.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 50))]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRecallHit {
+    pub entry_id: String,
+    pub kind: String,
+    pub sequence: i64,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSessionEntriesResult {
+    pub session_id: String,
+    pub query: String,
+    pub hits: Vec<SessionRecallHit>,
 }
 
 /// Mirrors `bridge_core::secret_interception::SecretInterception` — one
@@ -443,5 +481,26 @@ mod tests {
             "afterSequence is required"
         );
         assert!(serde_json::from_value::<CompactSessionParams>(json!({"session_id": "s"})).is_err());
+        assert!(
+            serde_json::from_value::<SearchSessionEntriesParams>(json!({"sessionId": "s"}))
+                .is_err(),
+            "query is required"
+        );
+        assert!(
+            serde_json::from_value::<SearchSessionEntriesParams>(json!({
+                "sessionId": "s",
+                "query": "decide",
+                "workspaceId": "w"
+            }))
+            .is_err(),
+            "recall cannot take a workspace scope"
+        );
+        assert!(
+            serde_json::from_value::<SearchSessionEntriesParams>(json!({
+                "sessionId": "s",
+                "query": "decide"
+            }))
+            .is_ok()
+        );
     }
 }

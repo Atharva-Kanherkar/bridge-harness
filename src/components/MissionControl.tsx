@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Bot, Check, Clock3, CornerDownRight, GitBranch, LayoutGrid, LoaderCircle, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import { cn } from "@/lib/utils";
@@ -241,7 +241,31 @@ export function MissionControl({
   const running = agents.filter(agent => isRunning(agent.tone)).length;
   const waiting = agents.filter(agent => isWaiting(agent.tone)).length;
   const broken = agents.filter(agent => isBroken(agent.tone)).length;
-  const detail = detailSessionId ? agents.find(agent => agent.session.id === detailSessionId) : undefined;
+  const detailSession = detailSessionId
+    ? sessions.find(session => session.id === detailSessionId && !!session.parentSessionId)
+    : undefined;
+  const detailRuntime = detailSession
+    ? runtimes.find(runtime => runtime.sessionId === detailSession.id)
+    : undefined;
+  const closeDetail = useCallback(() => setDetailSessionId(undefined), []);
+
+  if (detailSession) {
+    return (
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <WorkerDetail
+          key={detailSession.id}
+          session={detailSession}
+          runtime={detailRuntime}
+          liveEvents={events}
+          now={effectiveNow}
+          fullscreen={fullscreen}
+          onToggleFullscreen={onToggleFullscreen}
+          onClose={closeDetail}
+          onFocusSession={onFocusSession}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col animate-page-mount">
@@ -269,7 +293,10 @@ export function MissionControl({
                 agent={agent}
                 active={agent.session.id === activeSessionId}
                 now={effectiveNow}
-                onFocus={() => setDetailSessionId(agent.session.id)}
+                onFocus={() => {
+                  if (agent.session.parentSessionId) setDetailSessionId(agent.session.id);
+                  else onFocusSession(agent.session.id);
+                }}
               />
             ))}
           </div>
@@ -282,18 +309,6 @@ export function MissionControl({
             <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">Start a chat or delegate work, and every live agent will appear here as its own window.</p>
           </div>
         </div>
-      )}
-      {detail && (
-        <WorkerDetail
-          session={detail.session}
-          runtime={detail.runtime}
-          liveEvents={events}
-          now={effectiveNow}
-          fullscreen={fullscreen}
-          onToggleFullscreen={onToggleFullscreen}
-          onClose={() => setDetailSessionId(undefined)}
-          onFocusSession={onFocusSession}
-        />
       )}
     </div>
   );

@@ -14,11 +14,11 @@ use crate::sessions;
 use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
-    orchestrator, policy, policy_coordinator, prompt_compiler, restoration, secret_interception,
-    session_forest, session_input, session_supervisor, skill_marketplace, slash, store,
-    worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox,
-    workspace_files,
-    worktree_coordinator, BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
+    memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
+    secret_interception, session_forest, session_input, session_recall, session_supervisor,
+    skill_marketplace, slash, store, worker_adoption, worker_guard, worker_lifecycle,
+    worker_pool, worker_retry, worker_sandbox, workspace_files, worktree_coordinator,
+    BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
 use bridge_protocol::messages as wire;
@@ -1422,7 +1422,7 @@ fn handle_agent_value(
                 // thread cannot persist and publish sequence N+1 before N.
                 state.events.publish(CoreEvent::Agent(event));
             }
-            if session_kind == "worker" {
+            if own_depth > 0 {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
                         "UPDATE worker_runtime SET progress_summary=?2 WHERE session_id=?1 AND result_status='pending'",
@@ -1567,10 +1567,26 @@ fn handle_agent_value(
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(core, session_id, turn_id, directive, true);
     }
-    // Answer a peek after launches, so a just-spawned worker is already in
-    // the digest the orchestrator reads.
-    if let Some(peek) = &pending_peek {
-        deliver_worker_activity_digest(core, session_id, peek);
+    if let Some(peek) = pending_peek {
+        state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_peeks
+            .insert(session_id.to_owned(), peek);
+    }
+    // The assistant message and turn completion are separate provider frames.
+    // Reply only after completion instead of racing active-turn steering.
+    if turn_completed {
+        let peek = state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_peeks
+            .remove(session_id);
+        if let Some(peek) = peek {
+            deliver_worker_activity_digest(core, session_id, &peek);
+        }
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -2152,6 +2168,55 @@ pub fn reserve_worker_launch(
     )
 }
 
+/// Promote a reused hot worker whose process survived: `stopped -> resuming ->
+/// working`. Each transition takes and releases the store lock in its own
+/// statement. Never chain these into one expression: the first call's
+/// temporary guard lives to the end of the whole chain, so a second
+/// `state.db.lock()` inside `.and_then` re-locks the held mutex on the same
+/// thread and parks the launch forever — with every other store user queued
+/// behind it. That was the daemon-wide freeze on the resume route.
+pub(crate) fn promote_stopped_hot_worker(
+    state: &BridgeCore,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let resuming = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Resuming,
+        Some("compatible_hot_task"),
+    );
+    resuming?;
+    let working = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("hot_process_reused"),
+    );
+    working.map(|_| ())
+}
+
+/// Promote a checkpoint-restored worker: `restored -> working`, one lock per
+/// statement for the same reason as [`promote_stopped_hot_worker`].
+pub(crate) fn promote_restored_worker(
+    state: &BridgeCore,
+    session_id: &str,
+) -> Result<(), BridgeError> {
+    let restored = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Restored,
+        Some("checkpoint_fallback"),
+    );
+    restored?;
+    let working = session_supervisor::SessionSupervisor::transition(
+        &state.db.lock().unwrap(),
+        session_id,
+        worker_lifecycle::WorkerLifecycleState::Working,
+        Some("checkpoint_restored"),
+    );
+    working.map(|_| ())
+}
+
 pub fn launch_worker_outcome(
     core: &Arc<BridgeCore>,
     parent_session_id: &str,
@@ -2597,21 +2662,9 @@ pub fn launch_worker_outcome(
                 &reservation.session_id,
                 worker_lifecycle::WorkerLifecycleState::Working,
                 Some("compatible_hot_task"),
-            ),
-            Some("stopped") => session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                worker_lifecycle::WorkerLifecycleState::Resuming,
-                Some("compatible_hot_task"),
             )
-            .and_then(|_| {
-                session_supervisor::SessionSupervisor::transition(
-                    &state.db.lock().unwrap(),
-                    &reservation.session_id,
-                    worker_lifecycle::WorkerLifecycleState::Working,
-                    Some("hot_process_reused"),
-                )
-            }),
+            .map(|_| ()),
+            Some("stopped") => promote_stopped_hot_worker(&state, &reservation.session_id),
             _ => Err(BridgeError::Invalid(
                 "compatible hot worker is not reusable".into(),
             )),
@@ -2621,6 +2674,8 @@ pub fn launch_worker_outcome(
                 &state.db.lock().unwrap(),
                 &reservation.session_id,
                 &reservation.workspace_id,
+                parent_session_id,
+                reservation.depth,
                 directive,
             )
         });
@@ -3091,21 +3146,7 @@ pub fn launch_worker_outcome(
             )
             .map(|_| ())
         }
-        WorkerActivation::CheckpointRestored => session_supervisor::SessionSupervisor::transition(
-            &state.db.lock().unwrap(),
-            &session_id,
-            worker_lifecycle::WorkerLifecycleState::Restored,
-            Some("checkpoint_fallback"),
-        )
-        .and_then(|_| {
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("checkpoint_restored"),
-            )
-        })
-        .map(|_| ()),
+        WorkerActivation::CheckpointRestored => promote_restored_worker(&state, &session_id),
     };
     if let Err(error) = transition_result {
         runtime.stop(adapters::ShutdownReason::Failed);
@@ -3298,6 +3339,8 @@ pub fn launch_worker_outcome(
             &state.db.lock().unwrap(),
             &session_id,
             &reservation.workspace_id,
+            parent_session_id,
+            reservation.depth,
             directive,
         ) {
             runtime.stop(adapters::ShutdownReason::Failed);
@@ -3605,11 +3648,13 @@ pub fn notify_parent_child_left_waiting(
     let Some(context) = child_approval_context(&state.db.lock().unwrap(), child_session_id) else {
         return;
     };
+    let fleet = fleet_digest(&state.db.lock().unwrap(), &context.parent_session_id);
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-unblocked",
         "childSessionId": child_session_id,
         "label": context.label,
         "outcome": outcome,
+        "fleet": fleet,
         "instruction": "The worker's approval was resolved and it is running again. Keep waiting for its typed result."
     })
     .to_string();
@@ -3780,6 +3825,7 @@ fn report_worker_launch_awaiting_approval(
     pending: &PendingApproval,
 ) {
     let state = core.clone();
+    let fleet = fleet_digest(&state.db.lock().unwrap(), parent_session_id);
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-launch-awaiting-approval",
         "approvalId": pending.approval_id,
@@ -3790,6 +3836,7 @@ fn report_worker_launch_awaiting_approval(
         "objective": directive.objective,
         "ownedPaths": directive.owned_paths,
         "writeMode": policy::write_mode_name(directive.write_mode),
+        "fleet": fleet,
         "instruction": "A user approval card is pending for this delegation. The worker has NOT failed and may still start. Do not re-delegate this objective and do not emit new work for it. Stop this turn and wait; Bridge resumes you with the child session id once the user decides."
     })
     .to_string();
@@ -3827,6 +3874,7 @@ pub fn report_delegation_approval_declined(
     request: &delegation::DelegationRequest,
 ) {
     let state = core.clone();
+    let fleet = fleet_digest(&state.db.lock().unwrap(), parent_session_id);
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-launch-declined",
         "approvalId": approval_id,
@@ -3834,6 +3882,7 @@ pub fn report_delegation_approval_declined(
         "decision": decision,
         "label": request.label(),
         "ownedPaths": request.owned_paths,
+        "fleet": fleet,
         "instruction": "The user declined this write scope. No worker started and none will. Do not retry the same scope. Either narrow the paths, delegate read-only, or tell the user what you need."
     })
     .to_string();
@@ -3882,12 +3931,14 @@ pub fn report_approved_launch_adopted(
     queued: bool,
 ) {
     let state = core.clone();
+    let fleet = fleet_digest(&state.db.lock().unwrap(), parent_session_id);
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-launch-approved",
         "approvalId": approval_id,
         "turnId": turn_id,
         "childSessionId": child_session_id,
         "queued": queued,
+        "fleet": fleet,
         "instruction": if queued {
             "The user approved the write scope. The worker is queued behind active work and will start automatically. Wait for its typed result."
         } else {
@@ -3926,10 +3977,12 @@ fn report_worker_launch_failure(
     reason: &str,
 ) {
     let state = core.clone();
+    let fleet = fleet_digest(&state.db.lock().unwrap(), parent_session_id);
     let routing_notice = serde_json::json!({
         "type": "bridge-worker-launch-failed",
         "phase": phase,
         "reason": reason,
+        "fleet": fleet,
         "instruction": "No worker started. Do not wait for a result. Tell the user what failed, then retry only if a different route can address the failure."
     })
     .to_string();
@@ -4664,14 +4717,27 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
     let rows = db
         .prepare(
             "SELECT r.session_id,s.label,r.lifecycle_state,r.task_family,r.retry_count,
-                    r.result_status,r.progress_summary,r.waiting_reason,r.waiting_since,r.last_activity_at
-             FROM worker_runtime r JOIN sessions s ON s.id=r.session_id
+                    r.result_status,r.progress_summary,r.waiting_reason,r.waiting_since,r.last_activity_at,
+                    COALESCE(l.role,'unknown'),s.started_at
+             FROM worker_runtime r
+             JOIN sessions s ON s.id=r.session_id
+             LEFT JOIN worker_leases l ON l.session_id=r.session_id
              WHERE r.parent_session_id=?1 AND r.result_status='pending'
              ORDER BY s.rowid LIMIT ?2",
         )
         .and_then(|mut statement| {
             statement
                 .query_map(params![parent_session_id, FLEET_DIGEST_MAX_WORKERS as i64], |row| {
+                    let started_at = row.get::<_, Option<String>>(11)?;
+                    let elapsed_seconds = started_at
+                        .as_deref()
+                        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                        .map(|started| {
+                            Utc::now()
+                                .signed_duration_since(started.with_timezone(&Utc))
+                                .num_seconds()
+                                .max(0)
+                        });
                     Ok(serde_json::json!({
                         "sessionId": row.get::<_, String>(0)?,
                         "label": row.get::<_, String>(1)?,
@@ -4683,6 +4749,8 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
                         "waitingReason": row.get::<_, Option<String>>(7)?,
                         "waitingSince": row.get::<_, Option<String>>(8)?,
                         "lastActivityAt": row.get::<_, Option<String>>(9)?,
+                        "role": row.get::<_, String>(10)?,
+                        "elapsedSeconds": elapsed_seconds,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()
@@ -4718,7 +4786,9 @@ fn worker_activity_digest(
         let Some(child_id) = worker.get("sessionId").and_then(|value| value.as_str()).map(str::to_owned) else { continue };
         let recent: Vec<serde_json::Value> = db
             .prepare(
-                "SELECT kind, COALESCE(json_extract(payload,'$.title'), json_extract(payload,'$.text'), '')
+                "SELECT kind, COALESCE(json_extract(payload,'$.title'), ''),
+                        COALESCE(json_extract(payload,'$.text'), ''),
+                        COALESCE(json_extract(payload,'$.status'), '')
                  FROM session_entries
                  WHERE session_id=?1 AND kind IN ('tool.started','tool.completed','assistant.message')
                  ORDER BY sequence DESC LIMIT ?2",
@@ -4726,14 +4796,26 @@ fn worker_activity_digest(
             .and_then(|mut statement| {
                 statement
                     .query_map(params![child_id, limit as i64], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
                     })?
                     .collect::<Result<Vec<_>, _>>()
             })
             .unwrap_or_default()
             .into_iter()
             .rev()
-            .map(|(kind, text)| serde_json::json!({"kind": kind, "text": digest_line(&text)}))
+            .map(|(kind, title, text, status)| {
+                serde_json::json!({
+                    "kind": kind,
+                    "title": digest_line(&title),
+                    "text": digest_line(&text),
+                    "status": digest_line(&status),
+                })
+            })
             .collect();
         worker["recent"] = serde_json::Value::Array(recent);
     }
@@ -5778,6 +5860,58 @@ fn prepare_input(
             )?;
             return Ok(InputPreparation::Handled { interceptions });
         }
+        slash::SlashDispatch::Recall { query } => {
+            let text = if query.trim().is_empty() {
+                "Usage: /recall <words to find in this chat>. Search only looks at this session."
+                    .to_string()
+            } else {
+                let db = state.db.lock().unwrap();
+                let result = session_recall::search(&db, &session_id, &query, None)?;
+                session_recall::format_reply(&result)
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Pin { body } => {
+            let text = if body.trim().is_empty() {
+                "Usage: /pin <text>. Saves an about-me pin on this machine (`account:local`). Not this chat, not the helper picker."
+                    .to_string()
+            } else if !sanitized_input.interceptions.is_empty() {
+                "Memory pins cannot store credentials. Nothing was saved.".to_string()
+            } else {
+                let db = state.db.lock().unwrap();
+                match memory_ledger::save(&db, &body, None, Some(&session_id)) {
+                    Ok(record) => memory_ledger::format_saved(&record),
+                    Err(error) => error.to_string(),
+                }
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Pins => {
+            let db = state.db.lock().unwrap();
+            let result = memory_ledger::list(&db, memory_ledger::account_memory_scope())?;
+            emit_local_assistant(
+                core,
+                &session_id,
+                &session_harness,
+                &memory_ledger::format_list(&result),
+            )?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Unpin { selector } => {
+            let text = if selector.trim().is_empty() {
+                "Usage: /unpin <id>. `/pins` lists ids.".to_string()
+            } else {
+                let db = state.db.lock().unwrap();
+                match memory_ledger::forget_by_selector(&db, &selector) {
+                    Ok(record) => memory_ledger::format_forgotten(&record),
+                    Err(error) => error.to_string(),
+                }
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
         slash::SlashDispatch::Compact { .. } => {
             let prompt = state.begin_manual_compaction(session_id)?;
             send_internal_checkpoint_turn(core, session_id, &prompt)?;
@@ -6581,6 +6715,79 @@ fn record_shutdown_reason(
 }
 
 #[cfg(test)]
+mod reuse_promotion_tests {
+    use super::{promote_restored_worker, promote_stopped_hot_worker};
+    use crate::{runtime::BridgeCore, BridgeError};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn seeded_core(lifecycle: &str) -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            for id in ["parent-1", "worker-1"] {
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,NULL,'claude','Session','working','reported')",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+            }
+            db.execute(
+                "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker-1','parent-1',?1,'research','key','2026-08-20T00:00:00Z')",
+                rusqlite::params![lifecycle],
+            )
+            .unwrap();
+        }
+        (scratch, core)
+    }
+
+    /// A reintroduced chained lock deadlocks the promotion thread; the
+    /// watchdog turns that into a test failure instead of a hung suite.
+    fn promote_with_watchdog(
+        run: impl FnOnce() -> Result<(), BridgeError> + Send + 'static,
+    ) -> Result<(), BridgeError> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(run());
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("promotion must complete: a timeout here is the chained-lock deadlock again")
+    }
+
+    fn lifecycle_state(core: &BridgeCore) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT lifecycle_state FROM worker_runtime WHERE session_id='worker-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn restored_worker_promotes_to_working_without_deadlocking() {
+        let (_scratch, core) = seeded_core("resuming");
+        let for_thread = core.clone();
+        promote_with_watchdog(move || promote_restored_worker(&for_thread, "worker-1"))
+            .expect("restored promotion succeeds");
+        assert_eq!(lifecycle_state(&core), "working");
+    }
+
+    #[test]
+    fn stopped_hot_worker_promotes_to_working_without_deadlocking() {
+        let (_scratch, core) = seeded_core("stopped");
+        let for_thread = core.clone();
+        promote_with_watchdog(move || promote_stopped_hot_worker(&for_thread, "worker-1"))
+            .expect("hot promotion succeeds");
+        assert_eq!(lifecycle_state(&core), "working");
+    }
+}
+
+#[cfg(test)]
 mod worker_output_tests {
     use super::latest_worker_output;
     use crate::session_forest::{EntryKind, SessionForest};
@@ -6673,7 +6880,8 @@ mod peek_digest_tests {
         .unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth) VALUES('parent','w','codex','Parent','working','reported',0)", []).unwrap();
-        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('child','w','claude','Implementation','working','reported','parent',1)", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,parent_session_id,depth) VALUES('child','w','claude','Implementation','working','2026-08-20T00:00:00Z','reported','parent',1)", []).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','standard','implementation','[]','isolated','active','now','now')", []).unwrap();
         store::upsert_worker_runtime(
             &db,
             &WorkerRuntimeRecord {
@@ -6713,6 +6921,8 @@ mod peek_digest_tests {
         assert_eq!(rows[0]["sessionId"], "child");
         assert_eq!(rows[0]["currentActivity"], "Running: cargo test");
         assert_eq!(rows[0]["lifecycle"], "working");
+        assert_eq!(rows[0]["role"], "implementation");
+        assert!(rows[0]["elapsedSeconds"].as_i64().is_some());
         // A reported worker is settled business, not fleet status.
         db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='child'", []).unwrap();
         assert!(fleet_digest(&db, "parent").as_array().unwrap().is_empty());

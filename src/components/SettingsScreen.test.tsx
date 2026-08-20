@@ -4,7 +4,7 @@ import { SettingsScreen } from "./SettingsScreen";
 
 describe("SettingsScreen", () => {
   it("exposes the configuration areas before asynchronous data loads", () => {
-    const html = renderToStaticMarkup(<SettingsScreen adapters={[]} onModelSetupChange={() => undefined} onError={() => undefined} />);
+    const html = renderToStaticMarkup(<SettingsScreen adapters={[]} onModelSetupChange={() => undefined} onSuggestionSettingsChange={() => undefined} onError={() => undefined} />);
     expect(html).toContain("Settings");
     expect(html).toContain("Agents");
     expect(html).toContain("Harnesses");

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Clock, LoaderCircle, Pause, Play, RefreshCw, Trash2, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, UnifiedAutomation } from "../types";
@@ -19,15 +19,39 @@ function relativeTime(epochMs: number | null, now: number): string | null {
 export function AutomationsPanel({ initialCatalog }: { initialCatalog?: AutomationCatalog } = {}) {
   const [catalog, setCatalog] = useState<AutomationCatalog | undefined>(initialCatalog);
   const [provider, setProvider] = useState<AutomationProvider | "all">("all");
+  const [status, setStatus] = useState<UnifiedAutomation["status"] | "all">("all");
   const [expanded, setExpanded] = useState<string>();
   const [confirmDelete, setConfirmDelete] = useState<UnifiedAutomation>();
   const [results, setResults] = useState<AutomationActionResult[]>([]);
   const [failure, setFailure] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(!initialCatalog);
+  const refreshGeneration = useRef(0);
   const now = Date.now();
-  const refresh = useCallback(async () => { try { setCatalog(await bridgeApi.automationCatalog()); setFailure(undefined); } catch (error) { setFailure(error instanceof Error ? error.message : String(error)); } }, []);
+  const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
+    try {
+      const next = await bridgeApi.automationCatalog();
+      if (generation !== refreshGeneration.current) return;
+      setCatalog(next);
+      setFailure(undefined);
+    } catch (error) {
+      if (generation === refreshGeneration.current) {
+        setFailure(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (generation === refreshGeneration.current) setLoading(false);
+    }
+  }, []);
   useEffect(() => { void refresh(); }, [refresh]);
-  const automations = useMemo(() => (catalog?.automations ?? []).filter(automation => provider === "all" || automation.provider === provider), [catalog, provider]);
+  const automations = useMemo(
+    () => (catalog?.automations ?? []).filter(
+      automation => (provider === "all" || automation.provider === provider)
+        && (status === "all" || automation.status === status),
+    ),
+    [catalog, provider, status],
+  );
   const act = async (automation: UnifiedAutomation, action: AutomationAction) => {
     setBusy(true); setFailure(undefined);
     try { const result = await bridgeApi.executeAutomationAction(automation.provider, automation.id, action); setResults(current => [...current, result]); await refresh(); }
@@ -38,10 +62,14 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
     <main className="mx-auto w-full max-w-5xl px-3 pb-16 pt-8 sm:px-6 sm:pt-12">
       <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-foreground sm:text-[32px]">Automations</h1><p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">Every scheduled job your agents already run — Claude Code and Codex schedules, one view. Each app stays the scheduler.</p></div><Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={11}/>Refresh</Button></div>
       <div className="mt-5 flex flex-wrap items-center gap-2">{(catalog?.providers ?? []).map(state => <span key={state.provider} title={state.detail} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium ${state.available ? "border-border bg-muted text-muted-foreground" : "border-border bg-muted text-muted-foreground/50"}`}><span className={`h-1.5 w-1.5 rounded-full ${state.available ? "bg-success" : "bg-muted-foreground/40"}`}/>{providerLabel(state.provider)}{state.available ? ` · ${state.count}` : " · unavailable"}</span>)}</div>
-      <div className="mt-5 u-segmented w-fit">{(["all", "claude", "codex"] as const).map(value => <button key={value} data-active={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <div className="u-segmented w-fit" aria-label="Filter automations by provider">{(["all", "claude", "codex"] as const).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>
+        <div className="u-segmented w-fit" aria-label="Filter automations by status">{(["all", "active", "paused"] as const).map(value => <button type="button" key={value} data-active={status === value} aria-pressed={status === value} onClick={() => setStatus(value)} className="u-segmented-item">{value === "all" ? "All statuses" : value[0].toUpperCase() + value.slice(1)}</button>)}</div>
+      </div>
       {failure && <div className="mt-3 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[10.5px] text-destructive"><AlertTriangle className="mt-0.5 shrink-0" size={12}/><span className="min-w-0 break-words">{failure}</span></div>}
-      {!catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Reading local schedules…</div>}
-      {catalog && automations.length === 0 && <p className="py-16 text-center text-xs text-muted-foreground/70">No automations yet. Schedule one in Claude Code or Codex and it appears here.</p>}
+      {loading && !catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Reading local schedules…</div>}
+      {!loading && !catalog && <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center text-xs text-muted-foreground"><p>Bridge could not read the local schedules.</p><Button size="xs" variant="secondary" onClick={() => void refresh()}><RefreshCw size={11}/>Try again</Button></div>}
+      {catalog && automations.length === 0 && <p className="py-16 text-center text-xs text-muted-foreground/70">{catalog.automations.length === 0 ? "No automations yet. Schedule one in Claude Code or Codex and it appears here." : "No automations match these filters."}</p>}
       {catalog && automations.length > 0 && <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">{automations.map(automation => {
         const key = `${automation.provider}:${automation.id}`;
         const open = expanded === key;

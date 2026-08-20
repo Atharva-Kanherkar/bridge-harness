@@ -32,7 +32,7 @@ pub enum AutomationAction {
 pub struct ExecuteAutomationActionParams {
     pub provider: AutomationProvider,
     /// The automation's id in its native store.
-    pub automation_id: String,
+    pub id: String,
     pub action: AutomationAction,
 }
 
@@ -46,12 +46,12 @@ mod tests {
     fn automation_params_round_trip() {
         let params = ExecuteAutomationActionParams {
             provider: AutomationProvider::Codex,
-            automation_id: "auto-1".into(),
+            id: "auto-1".into(),
             action: AutomationAction::Pause,
         };
         assert_eq!(
             serde_json::to_value(&params).unwrap(),
-            json!({"provider": "codex", "automationId": "auto-1", "action": "pause"})
+            json!({"provider": "codex", "id": "auto-1", "action": "pause"})
         );
         assert_eq!(round_trip(&params), params);
     }
@@ -60,7 +60,7 @@ mod tests {
     fn automation_params_reject_unknown_fields() {
         let error = serde_json::from_value::<ExecuteAutomationActionParams>(json!({
             "provider": "claude",
-            "automationId": "task-1",
+            "id": "task-1",
             "action": "delete",
             "extra": true,
         }))

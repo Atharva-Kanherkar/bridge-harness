@@ -1062,6 +1062,16 @@ impl PeekRequest {
     pub fn entry_limit(&self) -> usize {
         (self.limit.unwrap_or(PEEK_DEFAULT_ENTRIES as u32) as usize).clamp(1, PEEK_MAX_ENTRIES)
     }
+
+    fn has_valid_session_id(&self) -> bool {
+        self.session_id.as_deref().is_none_or(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+    }
 }
 
 pub fn parse_peek_request(text: &str) -> ParseOutcome<PeekRequest> {
@@ -1082,7 +1092,11 @@ pub fn parse_peek_request(text: &str) -> ParseOutcome<PeekRequest> {
         return ParseOutcome::Parsed(PeekRequest::default());
     }
     match serde_json::from_str::<PeekRequest>(&raw) {
-        Ok(request) => ParseOutcome::Parsed(request),
+        Ok(request) if request.has_valid_session_id() => ParseOutcome::Parsed(request),
+        Ok(_) => ParseOutcome::Invalid {
+            raw,
+            reason: "bridge-peek sessionId must be 1-128 identifier characters".into(),
+        },
         Err(error) => ParseOutcome::Invalid {
             raw,
             reason: format!("invalid bridge-peek JSON: {error}"),
@@ -1839,6 +1853,14 @@ mod tests {
 
         assert!(matches!(
             parse_peek_request("```bridge-peek\n{\"unknownField\":true}\n```"),
+            ParseOutcome::Invalid { .. }
+        ));
+        let oversized = format!(
+            "```bridge-peek\n{{\"sessionId\":\"{}\"}}\n```",
+            "x".repeat(129)
+        );
+        assert!(matches!(
+            parse_peek_request(&oversized),
             ParseOutcome::Invalid { .. }
         ));
         assert!(matches!(

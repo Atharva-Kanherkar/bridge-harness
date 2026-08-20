@@ -14,7 +14,7 @@ const catalog: AutomationCatalog = {
       id: "auto-1", provider: "codex", name: "Nightly dependency audit", prompt: "Audit dependencies.",
       schedule: { kind: "rrule", expression: "FREQ=DAILY;BYHOUR=3;BYMINUTE=15", human: "Daily at 03:15" }, status: "paused", recurring: true,
       createdAt: 1_800_000_100_000, nextRunAt: null, lastRunAt: null, cwds: ["/tmp/repo"], model: "gpt-5.3-codex", effort: "high", canPause: true,
-      runs: [{ id: "thread-1", status: "COMPLETED", title: "Deps clean", summary: "No CVEs", createdAt: 1_800_000_050_000 }],
+      runs: [{ id: "thread-1", automationId: "auto-1", status: "COMPLETED", title: "Deps clean", summary: "No CVEs", createdAt: 1_800_000_050_000 }],
     },
   ],
   providers: [
@@ -32,6 +32,9 @@ describe("AutomationsPanel", () => {
     expect(html).toContain("Nightly dependency audit");
     expect(html).toContain("Daily at 03:15");
     expect(html).toContain("paused");
+    expect(html).toContain('aria-label="Filter automations by provider"');
+    expect(html).toContain('aria-label="Filter automations by status"');
+    expect(html).toContain("All statuses");
   });
 
   it("shows the provider strip with availability, including unsupported OpenCode", () => {

@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 const MAX_FEED_ITEMS = 500;
 const MAX_FEED_TEXT_BYTES = 500_000;
 const BACKFILL_LIMIT = 1000;
+const MAX_CACHED_WORKERS = 8;
+const workerFeedCache = new Map<string, AgentEvent[]>();
 
 const toneText: Record<WorkerTone, string> = {
   working: "text-success",
@@ -29,17 +31,40 @@ function eventKey(event: AgentEvent): string {
   return event.sequence > 0 ? `seq:${event.sequence}` : `id:${event.id}`;
 }
 
+function projectFeedEvent(event: AgentEvent): AgentEvent {
+  return { ...event, data: {}, providerMeta: {} };
+}
+
 function boundFeed(events: AgentEvent[]): AgentEvent[] {
   let kept = events.slice(-MAX_FEED_ITEMS);
   let bytes = 0;
+  const encoder = new TextEncoder();
   for (let index = kept.length - 1; index >= 0; index -= 1) {
-    bytes += (kept[index].text?.length ?? 0) + (kept[index].title?.length ?? 0);
+    bytes += encoder.encode(kept[index].text ?? "").byteLength + encoder.encode(kept[index].title ?? "").byteLength;
     if (bytes > MAX_FEED_TEXT_BYTES) {
       kept = kept.slice(index + 1);
       break;
     }
   }
   return kept;
+}
+
+function cachedFeed(sessionId: string): AgentEvent[] | undefined {
+  const cached = workerFeedCache.get(sessionId);
+  if (!cached) return undefined;
+  workerFeedCache.delete(sessionId);
+  workerFeedCache.set(sessionId, cached);
+  return cached;
+}
+
+function cacheFeed(sessionId: string, events: AgentEvent[]) {
+  workerFeedCache.delete(sessionId);
+  workerFeedCache.set(sessionId, boundFeed(events.map(projectFeedEvent)));
+  while (workerFeedCache.size > MAX_CACHED_WORKERS) {
+    const oldest = workerFeedCache.keys().next().value;
+    if (oldest === undefined) break;
+    workerFeedCache.delete(oldest);
+  }
 }
 
 function FeedIcon({ event }: { event: AgentEvent }) {
@@ -82,30 +107,29 @@ export function WorkerDetail({
   /** Test seam: pre-loaded durable events, skipping the backfill fetch. */
   initialEvents?: AgentEvent[];
 }) {
-  const [backfill, setBackfill] = useState<AgentEvent[]>(initialEvents ?? []);
-  const [loading, setLoading] = useState(!initialEvents);
+  const seed = initialEvents ?? cachedFeed(session.id);
+  const [backfill, setBackfill] = useState<AgentEvent[]>(() => (seed ?? []).map(projectFeedEvent));
+  const [loading, setLoading] = useState(seed === undefined);
   const [failure, setFailure] = useState<string>();
   const feedRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const stickToBottom = useRef(true);
 
   useEffect(() => {
-    if (initialEvents) return;
+    if (initialEvents !== undefined) return;
     let cancelled = false;
-    setLoading(true);
-    setBackfill([]);
+    if (!workerFeedCache.has(session.id)) {
+      setLoading(true);
+      setBackfill([]);
+    }
     (async () => {
       try {
-        // Page forward until the log is drained or the overlay's own budget
-        // is reached; the feed bound below drops the oldest anyway.
-        let cursor = 0;
-        let collected: AgentEvent[] = [];
-        for (;;) {
-          const page = await bridgeApi.replaySessionEvents(session.id, cursor, BACKFILL_LIMIT);
-          if (cancelled) return;
-          collected = boundFeed([...collected, ...page]);
-          if (page.length < BACKFILL_LIMIT) break;
-          cursor = page[page.length - 1].sequence;
-        }
+        // Ask the store for one bounded tail window. Walking from sequence zero
+        // would rescan an arbitrarily long worker history on every reopen.
+        const page = await bridgeApi.replaySessionEvents(session.id, 0, BACKFILL_LIMIT, true);
+        if (cancelled) return;
+        const collected = boundFeed(page.map(projectFeedEvent));
+        cacheFeed(session.id, collected);
         setBackfill(collected);
         setFailure(undefined);
       } catch (error) {
@@ -120,25 +144,41 @@ export function WorkerDetail({
   const feed = useMemo(() => {
     const seen = new Set(backfill.map(eventKey));
     const merged = [...backfill];
+    const replayHighWater = backfill.reduce((highest, event) => Math.max(highest, event.sequence), 0);
     for (const event of liveEvents) {
-      if (event.sessionId !== session.id || seen.has(eventKey(event))) continue;
+      if (
+        event.sessionId !== session.id
+        || seen.has(eventKey(event))
+        || (event.sequence > 0 && event.sequence <= replayHighWater)
+      ) continue;
       seen.add(eventKey(event));
-      merged.push(event);
+      merged.push(projectFeedEvent(event));
     }
     return boundFeed(merged.filter(event => feedLabel(event)));
   }, [backfill, liveEvents, session.id]);
+
+  useEffect(() => cacheFeed(session.id, feed), [feed, session.id]);
 
   useEffect(() => {
     const element = feedRef.current;
     if (element && stickToBottom.current) element.scrollTop = element.scrollHeight;
   }, [feed.length]);
 
+  useEffect(() => {
+    closeRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
   const status = workerStatus(session, runtime);
   const result = runtime?.lastResult;
   return (
-    <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background animate-page-mount" role="dialog" aria-label={`Worker ${session.title || session.label}`}>
+    <div className="flex min-h-0 flex-1 flex-col bg-background animate-page-mount" role="dialog" aria-modal="true" aria-label={`Worker ${session.title || session.label}`}>
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
-        <button type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Mission Control"><X size={14}/></button>
+        <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Mission Control"><X size={14}/></button>
         <h1 className="m-0 min-w-0 truncate font-display text-sm font-semibold tracking-tight text-foreground">{session.title || session.label}</h1>
         <span className={cn("shrink-0 text-[8.5px] font-semibold tracking-[0.07em]", toneText[status.tone])}>{status.label}</span>
         <span className="flex-1" />

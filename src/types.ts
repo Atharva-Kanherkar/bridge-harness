@@ -79,6 +79,10 @@ export type {
   SkillProvider,
   SlashCommand,
   SlashCommandResolve,
+  SearchSessionEntriesResult,
+  SessionRecallHit,
+  MemoryRecord,
+  ListMemoryRecordsResult,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,
@@ -180,6 +184,7 @@ export interface LearningRun {
 export interface LearningState {
   schedule: LearningSchedule; latestRun: LearningRun | null;
   activePolicyVersion: number; canaryPolicyVersion: number | null;
+  rollbackTargetVersion: number | null;
 }
 
 export interface MarketplaceVariant {
@@ -228,7 +233,7 @@ export interface SkillActionResult {
 
 export interface AutomationSchedule { kind: "cron" | "rrule" | string; expression: string; human: string }
 export interface AutomationRun {
-  id: string; status: string; title: string | null; summary: string | null; createdAt: number | null;
+  id: string; automationId: string; status: string; title: string | null; summary: string | null; createdAt: number | null;
 }
 export interface UnifiedAutomation {
   id: string; provider: AutomationProvider; name: string; prompt: string; schedule: AutomationSchedule;

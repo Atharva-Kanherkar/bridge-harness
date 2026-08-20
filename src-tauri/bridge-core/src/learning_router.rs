@@ -22,7 +22,37 @@ use uuid::Uuid;
 
 pub const ROUTER_SCHEMA_VERSION: u32 = 2;
 pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
+pub const LEGACY_GLOBAL_SCOPE: &str = "legacy:global";
 const PRIOR_WEIGHT: i64 = 4;
+/// Sessions that can still report *current* quota/context. Ended, ready, and
+/// idle rows are stale snapshots: missing capacity is unknown, which stays
+/// eligible rather than permanently excluding the harness. This is the same
+/// live set the workspace-status rollup uses in live_turn.rs; the two must
+/// not drift.
+const LIVE_CAPACITY_STATUSES: &str =
+    "'working','waiting','starting','checkpointing','resuming','warm','restored'";
+
+/// Stable learning-policy key for a workspace. Direct chats have no workspace
+/// and must not share a NULL/`legacy:global` bucket.
+pub fn workspace_learning_scope(workspace_id: &str) -> Result<String, BridgeError> {
+    let workspace_id = workspace_id.trim();
+    if workspace_id.is_empty() {
+        return Err(BridgeError::Invalid(
+            "learning scope requires a workspace id".into(),
+        ));
+    }
+    Ok(format!("workspace:{workspace_id}"))
+}
+
+pub fn workspace_id_from_scope(scope: &str) -> Result<&str, BridgeError> {
+    scope
+        .strip_prefix("workspace:")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!("learning scope {scope} is not a workspace scope"))
+        })
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -253,18 +283,34 @@ fn repository_revision(db: &Connection, session_id: &str) -> Result<Option<Strin
 
 fn active_policy(
     db: &Connection,
+    workspace_id: &str,
     fingerprint: &str,
 ) -> Result<(i64, BTreeMap<String, String>), BridgeError> {
-    let (mut version, status, predecessor, mut weights): (i64, String, Option<i64>, String) = db.query_row(
-        "SELECT version,status,predecessor,weights FROM routing_policies WHERE status IN ('active','canary') ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    )?;
+    let scope = workspace_learning_scope(workspace_id)?;
+    let Some((mut version, status, predecessor, mut weights)) = db
+        .query_row(
+            "SELECT version,status,predecessor,weights FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok((0, BTreeMap::new()));
+    };
     if status == "canary" && canary_bucket(fingerprint) >= 20 {
         if let Some(predecessor) = predecessor {
             (version, weights) = db.query_row(
-                "SELECT version,weights FROM routing_policies WHERE version=?1",
-                params![predecessor],
+                "SELECT version,weights FROM routing_policies WHERE version=?1 AND learning_scope=?2",
+                params![predecessor, scope],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
         }
@@ -568,14 +614,22 @@ pub fn route(
     request: &DelegationRequest,
     descriptors: &[AdapterDescriptor],
 ) -> Result<RoutedDelegation, BridgeError> {
-    let (workspace_id, trace_id): (String, Option<String>) = db.query_row(
+    let (workspace_id, trace_id): (Option<String>, Option<String>) = db.query_row(
         "SELECT workspace_id,trace_id FROM sessions WHERE id=?1",
         params![parent_session_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let workspace_id = workspace_id
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "learning router cannot route a session without a workspace; direct chats are excluded from policy learning".into(),
+            )
+        })?;
     let fingerprint = task_fingerprint(request);
     let preferences = load_preferences(db, &workspace_id)?;
-    let (policy_version, preferred_candidates) = active_policy(db, &fingerprint)?;
+    let (policy_version, preferred_candidates) = active_policy(db, &workspace_id, &fingerprint)?;
     let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
     let remaining =
         PolicyConfig::default().max_capability_units_per_turn - budget.capability_units_used;
@@ -590,7 +644,7 @@ pub fn route(
     }
     let availability = harness_capacity(db, &workspace_id)?;
     let candidates = build_candidates(descriptors, &profiled_request, &availability);
-    let histories = load_histories(db, policy::role_name(request.role))?;
+    let histories = load_histories(db, &workspace_id, policy::role_name(request.role))?;
     let required_capabilities = vec!["tools".into(), "commands".into()];
     let mut evaluations = evaluate(EvaluationInput {
         candidates,
@@ -805,26 +859,33 @@ fn harness_capacity(
     db: &Connection,
     workspace_id: &str,
 ) -> Result<BTreeMap<String, (bool, bool)>, BridgeError> {
-    let mut statement = db.prepare(
-        "SELECT harness,usage_percent,context_percent FROM sessions
-         WHERE workspace_id=?1 AND rowid IN (
-           SELECT MAX(rowid) FROM sessions WHERE workspace_id=?1 GROUP BY harness
-         )",
-    )?;
+    // Missing or stale observations are unknown, which stays eligible.
+    // Only a live session in this workspace can mark the harness exhausted —
+    // and any one live session at 100 is enough: electing the newest row let
+    // a just-starting session with no reading yet mask a sibling that is
+    // exhausted right now.
+    let sql = format!(
+        "SELECT harness,
+                MIN(CASE WHEN COALESCE(usage_percent,0) < 100 THEN 1 ELSE 0 END),
+                MIN(CASE WHEN COALESCE(context_percent,0) < 100 THEN 1 ELSE 0 END)
+         FROM sessions
+         WHERE workspace_id=?1
+           AND ended_at IS NULL
+           AND status IN ({LIVE_CAPACITY_STATUSES})
+         GROUP BY harness"
+    );
+    let mut statement = db.prepare(&sql)?;
     let rows = statement.query_map(params![workspace_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
         ))
     })?;
     let mut result = BTreeMap::new();
     for row in rows {
-        let (harness, usage, context) = row?;
-        result.insert(
-            harness,
-            (usage.unwrap_or(0) < 100, context.unwrap_or(0) < 100),
-        );
+        let (harness, usage_ok, context_ok) = row?;
+        result.insert(harness, (usage_ok == 1, context_ok == 1));
     }
     Ok(result)
 }
@@ -1166,6 +1227,7 @@ pub fn record_worker_outcome(
 
 fn load_histories(
     db: &Connection,
+    workspace_id: &str,
     task_family: &str,
 ) -> Result<BTreeMap<String, HistoricalOutcome>, BridgeError> {
     let mut statement = db.prepare(
@@ -1174,9 +1236,9 @@ fn load_histories(
                 SUM(CASE WHEN o.retry_count>0 THEN 1 ELSE 0 END),
                 SUM(CASE WHEN o.human_intervention THEN 1 ELSE 0 END)
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE d.task_family=?1 GROUP BY o.candidate",
+         WHERE d.workspace_id=?1 AND d.task_family=?2 GROUP BY o.candidate",
     )?;
-    let rows = statement.query_map(params![task_family], |row| {
+    let rows = statement.query_map(params![workspace_id, task_family], |row| {
         Ok((
             row.get::<_, String>(0)?,
             HistoricalOutcome {
@@ -1501,7 +1563,7 @@ mod tests {
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).unwrap();
-        assert_eq!(evidence.0, 1);
+        assert_eq!(evidence.0, 0);
         assert!(evidence.1 > 2);
         assert_eq!(evidence.2.len(), 64);
         assert!(!evidence.3.is_empty());
@@ -1747,7 +1809,7 @@ mod tests {
             "codex-standard"
         );
         assert_eq!(
-            load_histories(&db, "implementation").unwrap()["codex:codex-standard"].samples,
+            load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"].samples,
             1
         );
     }
@@ -1931,5 +1993,137 @@ mod tests {
             error.contains("no installed harness can run a read_only worker"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn direct_chats_fail_closed_instead_of_joining_a_null_learning_scope() {
+        let db = routing_db();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('direct',NULL,'codex','Direct','working','reported')", []).unwrap();
+        let error = route(&db, "direct", "turn", &request(), &descriptors())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("without a workspace"), "{error}");
+    }
+
+    #[test]
+    fn histories_do_not_cross_workspaces() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('other','Other','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('other-parent','other','codex','Other','working','reported')", []).unwrap();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child-w','w','codex','Worker','completed','reported','parent')", []).unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+             VALUES(?1,'child-w','codex:codex-standard',1,'completed',90,1000,0,0,'success','accepted','now')",
+            params![routed.decision.id],
+        )
+        .unwrap();
+        assert_eq!(
+            load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"].samples,
+            1
+        );
+        assert!(load_histories(&db, "other", "implementation")
+            .unwrap()
+            .is_empty());
+    }
+
+    fn claude_exclusions(db: &Connection, turn: &str) -> Vec<CandidateExclusion> {
+        route(db, "parent", turn, &request(), &descriptors())
+            .unwrap()
+            .decision
+            .candidates
+            .into_iter()
+            .find(|item| item.candidate.harness == "claude")
+            .unwrap()
+            .exclusions
+    }
+
+    #[test]
+    fn ended_session_at_full_usage_does_not_exhaust_later_routes() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent,ended_at)
+             VALUES('old-claude','w','claude','Old','completed','reported',100,100,'now')",
+            [],
+        )
+        .unwrap();
+        assert!(harness_capacity(&db, "w").unwrap().get("claude").is_none());
+        let exclusions = claude_exclusions(&db, "turn-stale-quota");
+        assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn ready_session_at_full_usage_is_unknown_not_excluded() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('ready-claude','w','claude','Ready','ready','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert!(harness_capacity(&db, "w").unwrap().get("claude").is_none());
+        let exclusions = claude_exclusions(&db, "turn-ready-quota");
+        assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn a_new_starting_row_does_not_mask_a_live_exhausted_sibling() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-full','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+             VALUES('just-starting','w','claude','Starting','starting','estimated')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false)),
+            "any live session at 100 exhausts, however new its siblings are"
+        );
+    }
+
+    #[test]
+    fn restored_session_at_full_usage_still_exhausts() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('restored-claude','w','claude','Restored','restored','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false))
+        );
+    }
+
+    #[test]
+    fn live_session_at_full_usage_still_exhausts() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-claude','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false))
+        );
+        let exclusions = claude_exclusions(&db, "turn-live-quota");
+        assert!(exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(exclusions.contains(&CandidateExclusion::ContextExhausted));
     }
 }
