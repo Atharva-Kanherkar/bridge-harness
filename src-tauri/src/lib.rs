@@ -940,6 +940,44 @@ async fn search_session_entries(
     .await
 }
 
+#[tauri::command]
+async fn save_memory_record(
+    body: String,
+    kind: Option<String>,
+    session_id: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Save memory record", move || {
+        api::save_memory_record(&core, &body, kind.as_deref(), session_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_memory_records(
+    scope_key: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("List memory records", move || {
+        api::list_memory_records(&core, &scope_key)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Delete memory record", move || {
+        api::delete_memory_record(&core, &record_id)
+    })
+    .await
+}
+
 /// Replay durable session events after a cursor — the recovery half of the
 /// notify-then-replay event contract.
 #[tauri::command]
@@ -1338,6 +1376,9 @@ pub fn run() {
             write_workspace_file,
             compact_session,
             search_session_entries,
+            save_memory_record,
+            list_memory_records,
+            delete_memory_record,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,
@@ -2187,7 +2228,6 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','stopped','reported')", []).unwrap();
         db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{\"text\":\"one\"}','now'),('e2','s','e1',2,'assistant.message','{\"text\":\"two\"}','now')", []).unwrap();
         db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,latest_checkpoint_entry_id,updated_at) VALUES('s','e2','fresh','e1','now')", []).unwrap();
-        db.execute("INSERT INTO task_knowledge(id,workspace_id,session_id,kind,body,source_entry_id,created_at) VALUES('k','w','s','decision','Keep history','e1','now')", []).unwrap();
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,write_mode,lease_status,created_at,updated_at) VALUES('s','w','implementation','standard','shared','expired','now','now')", []).unwrap();
         db.execute("INSERT INTO usage_ledger(workspace_id,session_id,turn_id,capability_units,source,created_at) VALUES('w','s','turn',3,'test','now')", []).unwrap();
         db
@@ -2252,7 +2292,6 @@ mod tests {
         let db = archive_fixture();
         workspaces::archive_workspace_records(&db, "w", || Ok(())).unwrap();
         for table in [
-            "task_knowledge",
             "worker_leases",
             "session_heads",
             "session_entries",
@@ -2401,7 +2440,6 @@ mod tests {
         });
         assert!(matches!(result, Err(BridgeError::Git(_))));
         for table in [
-            "task_knowledge",
             "worker_leases",
             "session_heads",
             "session_entries",

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -151,6 +151,7 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-10b", "session-1", 12, "workspace.stale_base", { role: "system", status: "warning", title: "Workspace is 67 commits behind origin/main", text: "this workspace is 67 commit(s) behind and 1 ahead of origin/main, measured against a freshly fetched ref; that ref's newest commit is 0 day(s) old", data: { staleBase: true, phase: "workspace_open", choices: ["refresh", "continue"], divergence: { baseRef: "origin/main", baseCommit: "90ce51c", head: "2b43aaad9b36", branch: "bridge/task", ahead: 1, behind: 67, refAgeSeconds: 3600, fetchAttempted: true, fetched: true, dirty: false, unavailableReason: null } } }, "entry-9b"),
   forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
 ];
+const mockMemoryRecords: MemoryRecord[] = [];
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
     sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
@@ -843,6 +844,51 @@ export const bridgeApi = {
         createdAt: entry.createdAt,
       }));
     return { sessionId, query, hits };
+  },
+  saveMemoryRecord: async (body: string, kind?: string | null, sessionId?: string | null): Promise<MemoryRecord> => {
+    if (isTauri()) {
+      return call("memory/save_memory_record", {
+        body,
+        ...(kind ? { kind } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      });
+    }
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("A memory pin needs some text. Empty bodies are not stored.");
+    const now = new Date().toISOString();
+    const record: MemoryRecord = {
+      id: crypto.randomUUID(),
+      scopeKey: "account:local",
+      kind: kind?.trim() || "preference",
+      body: trimmed,
+      provenance: "user_explicit",
+      status: "active",
+      sourceSessionId: sessionId?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockMemoryRecords.unshift(record);
+    return structuredClone(record);
+  },
+  listMemoryRecords: async (scopeKey: string): Promise<ListMemoryRecordsResult> => {
+    if (isTauri()) return call("memory/list_memory_records", { scopeKey });
+    const trimmed = scopeKey.trim();
+    if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    return {
+      scopeKey: trimmed,
+      records: mockMemoryRecords
+        .filter(record => record.scopeKey === trimmed && record.status === "active")
+        .slice(0, 50)
+        .map(record => structuredClone(record)),
+    };
+  },
+  deleteMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/delete_memory_record", { recordId });
+    const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
+    if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
+    record.status = "deleted";
+    record.updatedAt = new Date().toISOString();
+    return structuredClone(record);
   },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return call("projects/add_project", { path });

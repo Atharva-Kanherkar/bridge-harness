@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
-    learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
+    learning_job, learning_router, live_turn, marketplace, memory_ledger, model_profiles, opencode_adapter,
     secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
     verification_pipeline, verified_catalog, work, work_actions, work_observation, work_reconcile,
     work_task_state, worker_adoption,
@@ -402,6 +402,32 @@ pub fn search_session_entries(
     session_recall::search(&db, session_id, query, limit)
 }
 
+pub fn save_memory_record(
+    core: &Arc<BridgeCore>,
+    body: &str,
+    kind: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::save(&db, body, kind, session_id)
+}
+
+pub fn list_memory_records(
+    core: &Arc<BridgeCore>,
+    scope_key: &str,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::list(&db, scope_key)
+}
+
+pub fn delete_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::forget(&db, record_id)
+}
+
 /// Run a finished worker's objective again because the user asked. Goes through
 /// the ordinary launch path, so every policy limit applies as it did the first
 /// time.
@@ -769,7 +795,7 @@ pub fn resolve_slash_command(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?
     };
-    if session_recall::is_bridge_local_slash(name) {
+    if slash::is_bridge_local(name) {
         return Ok(Some(SlashCommandResolve {
             name: name.to_string(),
             harness: session_harness,

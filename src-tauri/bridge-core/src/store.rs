@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 30;
+const LATEST_SCHEMA_VERSION: i64 = 31;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -424,6 +424,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             28 => migration_28_evidence_based_retries(&transaction)?,
             29 => migration_29_learning_scope(&transaction)?,
             30 => migration_30_session_entry_fts(&transaction)?,
+            31 => migration_31_memory_ledger(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1086,6 +1087,10 @@ fn migration_28_evidence_based_retries(transaction: &Transaction<'_>) -> Result<
 
 fn migration_30_session_entry_fts(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::session_recall::install_fts(transaction)
+}
+
+fn migration_31_memory_ledger(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::memory_ledger::install_ledger(transaction)
 }
 
 fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -2354,51 +2359,6 @@ pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionH
     .map_err(BridgeError::from)
 }
 
-pub fn insert_task_knowledge(
-    db: &Connection,
-    knowledge: &TaskKnowledge,
-) -> Result<(), BridgeError> {
-    db.execute(
-        "INSERT INTO task_knowledge(id,workspace_id,session_id,kind,body,source_entry_id,superseded_by,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![
-            knowledge.id,
-            knowledge.workspace_id,
-            knowledge.session_id,
-            knowledge.kind,
-            knowledge.body,
-            knowledge.source_entry_id,
-            knowledge.superseded_by,
-            knowledge.created_at,
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn task_knowledge(
-    db: &Connection,
-    workspace_id: &str,
-) -> Result<Vec<TaskKnowledge>, BridgeError> {
-    query_with_params(
-        db,
-        "SELECT id,workspace_id,session_id,kind,body,source_entry_id,superseded_by,created_at
-         FROM task_knowledge WHERE workspace_id=?1 ORDER BY created_at,id",
-        params![workspace_id],
-        |row| {
-            Ok(TaskKnowledge {
-                id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                session_id: row.get(2)?,
-                kind: row.get(3)?,
-                body: row.get(4)?,
-                source_entry_id: row.get(5)?,
-                superseded_by: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        },
-    )
-}
-
 pub fn upsert_worker_lease(db: &Connection, lease: &WorkerLease) -> Result<(), BridgeError> {
     db.execute(
         "INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at)
@@ -3058,7 +3018,7 @@ mod tests {
             "agent_events",
             "session_entries",
             "session_heads",
-            "task_knowledge",
+            "memory_records",
             "worker_leases",
             "worker_runtime",
             "delegation_receipts",
@@ -3385,6 +3345,7 @@ mod tests {
             "prompt_compilations",
             "learning_scope_cursors",
             "session_entry_fts",
+            "memory_records",
         ] {
             assert!(
                 db.query_row(
@@ -4052,9 +4013,8 @@ mod tests {
             "two tasks cannot share a fingerprint"
         );
         insert_task("t-3", None).unwrap();
-        insert_task("t-4", None).expect(
-            "ephemeral tasks have no fingerprint, and SQLite counts NULLs as distinct",
-        );
+        insert_task("t-4", None)
+            .expect("ephemeral tasks have no fingerprint, and SQLite counts NULLs as distinct");
 
         db.execute(
             "INSERT INTO work_fact_cache(kind,cache_key,status,observed_at)
@@ -4091,10 +4051,13 @@ mod tests {
             [],
         )
         .unwrap();
-        db.execute("DELETE FROM work_brief_runs WHERE id='run-1'", []).unwrap();
+        db.execute("DELETE FROM work_brief_runs WHERE id='run-1'", [])
+            .unwrap();
         for table in ["work_brief_sources", "work_evidence"] {
             let remaining: i64 = db
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(remaining, 0, "{table} must not outlive its run");
         }
@@ -4122,7 +4085,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(created, 0, "a half-applied Work schema must not survive the failure");
+        assert_eq!(
+            created, 0,
+            "a half-applied Work schema must not survive the failure"
+        );
     }
 
     #[test]
@@ -4247,33 +4213,10 @@ mod tests {
     }
 
     #[test]
-    fn queries_knowledge_leases_and_usage_ledger() {
+    fn queries_leases_and_usage_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir.path().join("bridge.db")).unwrap();
         seed_workspace(&db);
-        let entry = append_session_entry(
-            &db,
-            "s",
-            None,
-            "user.message",
-            &json!({"text":"remember"}),
-            None,
-            "eligible",
-            None,
-        )
-        .unwrap();
-        let knowledge = TaskKnowledge {
-            id: "k".into(),
-            workspace_id: "w".into(),
-            session_id: Some("s".into()),
-            kind: "decision".into(),
-            body: "Use SQLite".into(),
-            source_entry_id: Some(entry.id),
-            superseded_by: None,
-            created_at: "now".into(),
-        };
-        insert_task_knowledge(&db, &knowledge).unwrap();
-        assert_eq!(task_knowledge(&db, "w").unwrap(), vec![knowledge]);
 
         let lease = WorkerLease {
             session_id: "s".into(),

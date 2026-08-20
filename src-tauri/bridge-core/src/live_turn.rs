@@ -14,11 +14,11 @@ use crate::sessions;
 use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
-    orchestrator, policy, policy_coordinator, prompt_compiler, restoration, secret_interception,
-    session_forest, session_input, session_recall, session_supervisor, skill_marketplace, slash,
-    store, worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_retry,
-    worker_sandbox, workspace_files,
-    worktree_coordinator, BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
+    memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
+    secret_interception, session_forest, session_input, session_recall, session_supervisor,
+    skill_marketplace, slash, store, worker_adoption, worker_guard, worker_lifecycle,
+    worker_pool, worker_retry, worker_sandbox, workspace_files, worktree_coordinator,
+    BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
 use bridge_protocol::messages as wire;
@@ -5563,6 +5563,46 @@ fn prepare_input(
                 let db = state.db.lock().unwrap();
                 let result = session_recall::search(&db, &session_id, &query, None)?;
                 session_recall::format_reply(&result)
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Pin { body } => {
+            let text = if body.trim().is_empty() {
+                "Usage: /pin <text>. Saves an about-me pin on this machine (`account:local`). Not this chat, not the helper picker."
+                    .to_string()
+            } else if !sanitized_input.interceptions.is_empty() {
+                "Memory pins cannot store credentials. Nothing was saved.".to_string()
+            } else {
+                let db = state.db.lock().unwrap();
+                match memory_ledger::save(&db, &body, None, Some(&session_id)) {
+                    Ok(record) => memory_ledger::format_saved(&record),
+                    Err(error) => error.to_string(),
+                }
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Pins => {
+            let db = state.db.lock().unwrap();
+            let result = memory_ledger::list(&db, memory_ledger::account_memory_scope())?;
+            emit_local_assistant(
+                core,
+                &session_id,
+                &session_harness,
+                &memory_ledger::format_list(&result),
+            )?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Unpin { selector } => {
+            let text = if selector.trim().is_empty() {
+                "Usage: /unpin <id>. `/pins` lists ids.".to_string()
+            } else {
+                let db = state.db.lock().unwrap();
+                match memory_ledger::forget_by_selector(&db, &selector) {
+                    Ok(record) => memory_ledger::format_forgotten(&record),
+                    Err(error) => error.to_string(),
+                }
             };
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });

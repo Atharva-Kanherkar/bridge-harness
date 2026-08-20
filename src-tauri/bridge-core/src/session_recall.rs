@@ -198,14 +198,6 @@ fn truncate_snippet(body: &str) -> String {
     }
 }
 
-/// True when Bridge handles the slash locally and must never auto-switch harness.
-pub fn is_bridge_local_slash(name: &str) -> bool {
-    matches!(
-        name,
-        "usage" | "cost" | "stats" | "compact" | "clear" | "new" | "reset" | "recall"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

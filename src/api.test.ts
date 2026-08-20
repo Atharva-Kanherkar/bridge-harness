@@ -200,4 +200,17 @@ describe("suggested-task actions", () => {
     expect(other.hits).toEqual([]);
     await expect(bridgeApi.searchSessionEntries("  ", "hello")).rejects.toThrow("session id");
   });
+
+  it("saves account pins only under account:local and lists by scope", async () => {
+    const saved = await bridgeApi.saveMemoryRecord("I prefer Conventional Commits");
+    expect(saved.scopeKey).toBe("account:local");
+    expect(saved.provenance).toBe("user_explicit");
+    const listed = await bridgeApi.listMemoryRecords("account:local");
+    expect(listed.records.some(record => record.id === saved.id)).toBe(true);
+    expect((await bridgeApi.listMemoryRecords("workspace:other")).records).toEqual([]);
+    await expect(bridgeApi.listMemoryRecords("  ")).rejects.toThrow("scope");
+    const forgotten = await bridgeApi.deleteMemoryRecord(saved.id);
+    expect(forgotten.status).toBe("deleted");
+    expect((await bridgeApi.listMemoryRecords("account:local")).records.some(record => record.id === saved.id)).toBe(false);
+  });
 });

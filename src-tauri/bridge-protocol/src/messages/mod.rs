@@ -28,6 +28,7 @@ mod config;
 mod forest;
 mod learning;
 mod marketplace;
+mod memory;
 mod models;
 mod projects;
 mod routing;
@@ -48,6 +49,7 @@ pub use config::*;
 pub use forest::*;
 pub use learning::*;
 pub use marketplace::*;
+pub use memory::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -169,6 +171,10 @@ typed_methods![
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
     (StopSession, StopSessionParams, BridgeState),
+    // memory
+    (SaveMemoryRecord, SaveMemoryRecordParams, MemoryRecord),
+    (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),
+    (DeleteMemoryRecord, DeleteMemoryRecordParams, MemoryRecord),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
