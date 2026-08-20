@@ -960,20 +960,32 @@ pub const VERIFICATION_TARGET_UNAVAILABLE: &str = "implementation_revision_unava
 /// The checkout a verifier must run in: the repository behind the newest open
 /// completion gate for this task.
 ///
-/// `Ok(None)` is the routing fact "this task has no implementation revision to
-/// verify" — unroutable, but not a database failure, and the two must not reach
-/// the orchestrator as the same sentence.
+/// The newest attempt is selected *first* and only then asked whether it is
+/// live. Filtering by status inside the query let an older `failed` attempt be
+/// handed back while a newer terminal one existed, and `failed` was never a
+/// bindable target anyway — `settle_verification_result` treats it as final and
+/// refuses to re-open it, so a verifier sent there could only die at settlement.
+///
+/// `Ok(None)` is the routing fact "this task has no live gate to verify" —
+/// unroutable, but not a database failure, and the two must not reach the
+/// orchestrator as the same sentence.
 pub fn verification_target_path(
     db: &Connection,
     parent_session_id: &str,
 ) -> Result<Option<String>, BridgeError> {
-    db.query_row(
-        "SELECT repository_path FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested','failed') ORDER BY started_at DESC,rowid DESC LIMIT 1",
-        params![parent_session_id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(BridgeError::from)
+    let newest: Option<(String, String)> = db
+        .query_row(
+            "SELECT status,repository_path FROM eval_attempts WHERE session_id=?1 ORDER BY started_at DESC,rowid DESC LIMIT 1",
+            params![parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    // Matched on the stored status rather than through `parse_verdict`, whose
+    // catch-all reads anything unrecognized as `verifying`. A status Bridge does
+    // not know is not a gate it should send a verifier into.
+    Ok(newest.and_then(|(status, path)| {
+        matches!(status.as_str(), "verifying" | "changes_requested").then_some(path)
+    }))
 }
 
 /// What the orchestrator can actually do about a missing implementation
@@ -2130,6 +2142,47 @@ mod tests {
         // and the bind site reports them differently.
         db.execute("DROP TABLE eval_attempts", []).unwrap();
         assert!(verification_target_path(&db, "s").is_err());
+    }
+
+    /// Only the newest attempt decides, and only two of its statuses are a
+    /// target. The old query filtered inside the SELECT, so an older `failed`
+    /// attempt could be handed back while a newer terminal one existed — and
+    /// `failed` was never bindable to begin with.
+    #[test]
+    fn only_the_newest_live_attempt_is_a_verification_target() {
+        let db = fixture();
+        let mut planned = 0;
+        let mut attempt = |status: &str, path: &str| {
+            planned += 1;
+            let id = format!("attempt-{planned}");
+            let plan_id = format!("plan-{planned}");
+            let contract_id = format!("contract-{planned}");
+            db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES(?1,'w','s',1,'[]',0,'open','now','now')", params![contract_id]).unwrap();
+            db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES(?1,?2,1,'high','{}','now')", params![plan_id, contract_id]).unwrap();
+            db.execute(
+                "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,started_at) VALUES(?1,?2,'s','head','clean',?3,?4,?5)",
+                params![id, plan_id, path, status, format!("2026-08-2{planned}T00:00:00Z")],
+            )
+            .unwrap();
+        };
+        attempt("verifying", "/live/older");
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some("/live/older".into())
+        );
+        for terminal in ["verified", "waived", "superseded", "failed"] {
+            attempt(terminal, "/terminal");
+            assert_eq!(
+                verification_target_path(&db, "s").unwrap(),
+                None,
+                "a newer {terminal} attempt hides the older live one"
+            );
+        }
+        attempt("changes_requested", "/live/newest");
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some("/live/newest".into())
+        );
     }
 
     #[test]
