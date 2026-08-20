@@ -77,7 +77,7 @@ static DETECTORS: LazyLock<Vec<Detector>> = LazyLock::new(|| {
         ),
         Detector::new(
             "credential_assignment",
-            r#"(?ix)\b(?:[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9._~+/=-]{12,2048})["']?"#,
+            r#"(?x)\b(?:[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*|(?i:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|credential))\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9._~+/=-]{12,2048})["']?"#,
         ),
     ]
 });
