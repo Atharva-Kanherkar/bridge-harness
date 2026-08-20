@@ -596,6 +596,10 @@ impl Normalizations {
     pub fn summary(&self) -> String {
         self.0.join("; ")
     }
+
+    fn absorb(&mut self, other: Normalizations) {
+        self.0.extend(other.0);
+    }
 }
 
 /// The fields a delegation request owns semantically. Everything else in the
@@ -955,7 +959,18 @@ const fn test_status_wire_name(status: TestStatus) -> &'static str {
     }
 }
 
-pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationRequest>> {
+/// Parsed requests plus what Bridge filled in or corrected to get them.
+///
+/// The notes travel with the requests rather than being applied silently: a
+/// normalized envelope has to be auditable, and "Bridge clamped writeMode to
+/// readOnly because the role is research" is a fact a session's reader needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedRequests {
+    pub requests: Vec<DelegationRequest>,
+    pub notes: Normalizations,
+}
+
+pub fn parse_delegation_requests(text: &str) -> ParseOutcome<NormalizedRequests> {
     let blocks = fenced_blocks(text, is_delegation_tag);
     if blocks.is_empty() {
         return ParseOutcome::Absent;
@@ -966,6 +981,7 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
         .collect::<Vec<_>>()
         .join("\n");
     let mut requests = Vec::new();
+    let mut notes = Normalizations::default();
     for block in blocks {
         let value = match serde_json::from_str::<Value>(&block.body) {
             Ok(value) => value,
@@ -982,7 +998,10 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
         };
         for value in values {
             match request_from_value(value) {
-                Ok(request) => requests.push(request),
+                Ok((request, request_notes)) => {
+                    requests.push(request);
+                    notes.absorb(request_notes);
+                }
                 Err(reason) => return ParseOutcome::Invalid { raw, reason },
             }
         }
@@ -993,23 +1012,24 @@ pub fn parse_delegation_requests(text: &str) -> ParseOutcome<Vec<DelegationReque
             reason: "delegation block contained no requests".into(),
         }
     } else {
-        ParseOutcome::Parsed(requests)
+        ParseOutcome::Parsed(NormalizedRequests { requests, notes })
     }
 }
 
-fn request_from_value(mut value: Value) -> Result<DelegationRequest, String> {
+fn request_from_value(mut value: Value) -> Result<(DelegationRequest, Normalizations), String> {
     if value.get("objective").is_some() {
         // Normalize before deserializing: the model owns the objective, Bridge
         // owns the envelope.
-        normalize_delegation(&mut value);
+        let notes = normalize_delegation(&mut value);
         let request: DelegationRequest =
             serde_json::from_value(value).map_err(|error| error.to_string())?;
         request.validate()?;
-        Ok(request)
+        Ok((request, notes))
     } else {
-        serde_json::from_value::<LegacyDirective>(value)
+        let request = serde_json::from_value::<LegacyDirective>(value)
             .map_err(|error| error.to_string())?
-            .into_typed()
+            .into_typed()?;
+        Ok((request, Normalizations::default()))
     }
 }
 
@@ -1510,7 +1530,7 @@ mod tests {
         let expected = request();
         let encoded = serde_json::to_string(&expected).unwrap();
         let text = format!("Plan:\n```bridge-delegate\n{encoded}\n```");
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(&text) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(&text) else {
             panic!("typed request did not parse");
         };
         assert_eq!(requests, vec![expected.clone()]);
@@ -1614,7 +1634,7 @@ mod tests {
         let text = r#"```bridge-delegate
 {"harness":"anthropic","model":"fable","effort":"ultra","task":"Refactor auth","context":"Keep the public API stable"}
 ```"#;
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(text) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(text) else {
             panic!("legacy directive did not parse");
         };
         assert_eq!(requests.len(), 1);
@@ -1829,7 +1849,7 @@ mod tests {
         let sparse = format!(
             "```bridge-delegate\n[{valid},{{\"objective\":\"Add a regression test\",\"role\":\"verification\"}}]\n```"
         );
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(&sparse) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(&sparse) else {
             panic!("a request carrying only semantics was rejected");
         };
         assert_eq!(requests.len(), 2);
@@ -1847,7 +1867,7 @@ mod tests {
         let request = r#"```bridge-delegate
 {"role":"research","objective":"map the delegation tree","writeMode":"none"}
 ```"#;
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(request) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
             panic!("writeMode:none was still rejected");
         };
         assert_eq!(requests[0].write_mode, WriteMode::ReadOnly);
@@ -1862,7 +1882,7 @@ mod tests {
             let request = format!(
                 "```bridge-delegate\n{{\"role\":\"researcher\",\"objective\":\"read the store\",\"writeMode\":\"{asked}\"}}\n```"
             );
-            let ParseOutcome::Parsed(requests) = parse_delegation_requests(&request) else {
+            let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(&request) else {
                 panic!("{asked} did not parse");
             };
             assert_eq!(
@@ -1875,7 +1895,7 @@ mod tests {
         let request = r#"```bridge-delegate
 {"role":"implementer","objective":"add the retry"}
 ```"#;
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(request) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
             panic!("implementation request did not parse");
         };
         assert_eq!(requests[0].role, WorkerRole::Implementation);
@@ -1889,7 +1909,7 @@ mod tests {
         let request = r#"```bridge-delegate
 {"role":"implementation","objective":"Add refresh-token rotation"}
 ```"#;
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(request) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
             panic!("a semantics-only request was rejected");
         };
         let parsed = &requests[0];
@@ -2017,7 +2037,13 @@ mod tests {
             let ParseOutcome::Parsed(parsed) = parse_delegation_requests(&text) else {
                 panic!("historical request still rejected: {body}");
             };
-            parsed[0].validate().expect(body);
+            parsed.requests[0].validate().expect(body);
+            // And what Bridge did on the model's behalf is on the record, not
+            // applied invisibly.
+            assert!(
+                !parsed.notes.is_empty(),
+                "a rescued request should say what was rescued: {body}"
+            );
         }
 
         let results = [
@@ -2084,7 +2110,7 @@ mod tests {
         let request = r#"```bridge-delegate
 {"schemaVersion":2,"objective":"future","futureField":true,"why":"explaining myself"}
 ```"#;
-        let ParseOutcome::Parsed(requests) = parse_delegation_requests(request) else {
+        let ParseOutcome::Parsed(NormalizedRequests { requests, .. }) = parse_delegation_requests(request) else {
             panic!("a request with transport noise was rejected");
         };
         assert_eq!(requests[0].schema_version, SCHEMA_VERSION);

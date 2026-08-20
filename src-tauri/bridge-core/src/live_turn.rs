@@ -1278,12 +1278,26 @@ fn handle_agent_value(
             {
                 if let Some(text) = normalized_event.text.clone() {
                     match delegation::parse_delegation_requests(&text) {
-                        delegation::ParseOutcome::Parsed(requests) => {
+                        delegation::ParseOutcome::Parsed(parsed) => {
                             let item_id = normalized_event.item_id.clone().unwrap_or_default();
                             let is_new = store::claim_delegation_receipt(&db, session_id, &item_id)
                                 .unwrap_or(false);
                             let mut accepted_count = 0;
                             if is_new {
+                                // What Bridge filled in on the model's behalf,
+                                // recorded rather than applied silently — a
+                                // clamped write mode is an authority decision
+                                // someone reading this session later has to see.
+                                if !parsed.notes.is_empty() {
+                                    let _ = store::event(
+                                        &db,
+                                        "delegation",
+                                        "delegation.normalized",
+                                        session_id,
+                                        &parsed.notes.summary(),
+                                    );
+                                }
+                                let requests = parsed.requests;
                                 accepted_count = requests.len();
                                 let turn_id = observed_turn_id
                                     .clone()
@@ -6402,7 +6416,12 @@ mod approval_deadline_tests {
 
     fn core_with_waiting_worker(
         waiting_since: Option<&str>,
-    ) -> (tempfile::TempDir, Arc<BridgeCore>) {
+    ) -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let managed_root = managed_root_guard();
         let fixture = tempfile::tempdir().unwrap();
         let core = BridgeCore::boot(crate::BootConfig {
             data_dir: fixture.path().to_path_buf(),
@@ -6444,7 +6463,7 @@ mod approval_deadline_tests {
                 db.execute("UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested' WHERE session_id=?1", params!["child", since]).unwrap();
             }
         }
-        (fixture, Arc::new(core))
+        (fixture, Arc::new(core), managed_root)
     }
 
     /// The stall watchdog deliberately skips `waiting`. Before the approval
@@ -6455,7 +6474,7 @@ mod approval_deadline_tests {
         let expired = (Utc::now()
             - chrono::Duration::seconds(WORKER_APPROVAL_TIMEOUT_SECONDS + 60))
         .to_rfc3339();
-        let (_fixture, core) = core_with_waiting_worker(Some(&expired));
+        let (_fixture, core, _managed_root) = core_with_waiting_worker(Some(&expired));
 
         expire_worker_approvals(&core);
 
@@ -6488,7 +6507,7 @@ mod approval_deadline_tests {
         let expired = (Utc::now()
             - chrono::Duration::seconds(WORKER_APPROVAL_TIMEOUT_SECONDS + 60))
         .to_rfc3339();
-        let (_fixture, core) = core_with_waiting_worker(Some(&expired));
+        let (_fixture, core, _managed_root) = core_with_waiting_worker(Some(&expired));
         // Stand in for the approval resolving between snapshot and action.
         {
             let db = core.db.lock().unwrap();
@@ -6532,7 +6551,7 @@ mod approval_deadline_tests {
     #[test]
     fn a_worker_inside_the_approval_window_is_left_alone() {
         let recent = Utc::now().to_rfc3339();
-        let (_fixture, core) = core_with_waiting_worker(Some(&recent));
+        let (_fixture, core, _managed_root) = core_with_waiting_worker(Some(&recent));
 
         expire_worker_approvals(&core);
 
@@ -6554,7 +6573,7 @@ mod approval_deadline_tests {
         let expired = (Utc::now()
             - chrono::Duration::seconds(WORKER_APPROVAL_TIMEOUT_SECONDS + 60))
         .to_rfc3339();
-        let (_fixture, core) = core_with_waiting_worker(Some(&expired));
+        let (_fixture, core, _managed_root) = core_with_waiting_worker(Some(&expired));
         {
             let db = core.db.lock().unwrap();
             session_supervisor::SessionSupervisor::transition(
@@ -6584,7 +6603,7 @@ mod approval_deadline_tests {
     /// its objective, the command, cwd, and its owned-path scope.
     #[test]
     fn a_child_approval_is_mirrored_onto_the_parent_conversation() {
-        let (_fixture, core) = core_with_waiting_worker(Some(&Utc::now().to_rfc3339()));
+        let (_fixture, core, _managed_root) = core_with_waiting_worker(Some(&Utc::now().to_rfc3339()));
         {
             let db = core.db.lock().unwrap();
             db.execute(
@@ -6631,6 +6650,20 @@ mod approval_deadline_tests {
         assert_eq!(resolved.payload["data"]["childBlocked"], false);
         assert_eq!(resolved.payload["data"]["outcome"], "accept");
     }
+}
+
+/// Serialize a test that boots a core against every other test that touches the
+/// process-wide managed-payload root.
+///
+/// `BridgeCore::boot` registers that root, so two booting tests — or a booting
+/// test and one asserting managed-payload read counts — clobber each other. The
+/// lock is the mechanism `managed_runtime` already provides for this; the guard
+/// has to outlive the whole test, not just the fixture, so fixtures hand it back.
+#[cfg(test)]
+fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
+    crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
 }
 
 #[cfg(test)]
@@ -6693,7 +6726,14 @@ mod submit_input_tests {
         fn stop(&mut self, _: adapters::ShutdownReason) {}
     }
 
-    fn core_with_chat(status: &str) -> (tempfile::TempDir, Arc<BridgeCore>) {
+    type ChatFixture = (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        std::sync::MutexGuard<'static, ()>,
+    );
+
+    fn core_with_chat(status: &str) -> ChatFixture {
+        let managed_root = managed_root_guard();
         let fixture = tempfile::tempdir().unwrap();
         let core = BridgeCore::boot(crate::BootConfig {
             data_dir: fixture.path().to_path_buf(),
@@ -6710,7 +6750,7 @@ mod submit_input_tests {
                 params![status],
             )
             .unwrap();
-        (fixture, Arc::new(core))
+        (fixture, Arc::new(core), managed_root)
     }
 
     fn attach(core: &Arc<BridgeCore>, steering: bool) -> Arc<Mutex<Vec<String>>> {
@@ -6737,7 +6777,7 @@ mod submit_input_tests {
 
     #[test]
     fn an_idle_session_starts_a_normal_turn() {
-        let (_fixture, core) = core_with_chat("ready");
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
         let sent = attach(&core, false);
 
         let outcome = submit_input(&core, "chat".into(), "ship it".into()).unwrap();
@@ -6750,7 +6790,7 @@ mod submit_input_tests {
 
     #[test]
     fn a_steering_capable_provider_takes_guidance_mid_turn() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         let sent = attach(&core, true);
 
         let outcome = submit_input(&core, "chat".into(), "use the other API".into()).unwrap();
@@ -6772,7 +6812,7 @@ mod submit_input_tests {
 
     #[test]
     fn a_provider_that_cannot_steer_gets_a_durable_queue_not_a_second_turn() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         let sent = attach(&core, false);
 
         let outcome = submit_input(&core, "chat".into(), "also update the docs".into()).unwrap();
@@ -6835,7 +6875,7 @@ mod submit_input_tests {
 
     #[test]
     fn a_busy_session_holds_its_queue_until_the_boundary() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         let sent = attach(&core, false);
         submit_input(&core, "chat".into(), "one".into()).unwrap();
         submit_input(&core, "chat".into(), "two".into()).unwrap();
@@ -6866,7 +6906,7 @@ mod submit_input_tests {
 
     #[test]
     fn a_failed_write_postpones_the_follow_up_instead_of_eating_it() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         let handles = attach_handles(&core, false);
         submit_input(&core, "chat".into(), "keep this".into()).unwrap();
         core.db
@@ -6891,7 +6931,7 @@ mod submit_input_tests {
 
     #[test]
     fn worker_sessions_stay_policy_controlled() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, true);
         {
             let db = core.db.lock().unwrap();
@@ -6926,7 +6966,7 @@ mod submit_input_tests {
 
     #[test]
     fn session_commands_need_an_idle_turn_but_still_work_when_idle() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, true);
 
         let error = submit_input(&core, "chat".into(), "/clear".into()).unwrap_err();
@@ -6947,7 +6987,7 @@ mod submit_input_tests {
 
     #[test]
     fn clearing_a_chat_drops_the_follow_ups_that_belonged_to_it() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, false);
         submit_input(&core, "chat".into(), "queued guidance".into()).unwrap();
         core.db
@@ -6977,7 +7017,7 @@ mod submit_input_tests {
                 wire::InputDisposition::QueuedForPhaseBoundary,
             ),
         ] {
-            let (_fixture, core) = core_with_chat(status);
+            let (_fixture, core, _managed_root) = core_with_chat(status);
             let sent = attach(&core, steering);
 
             let outcome =
@@ -7010,7 +7050,7 @@ mod submit_input_tests {
 
     #[test]
     fn a_queued_follow_up_appears_in_the_transcript_exactly_once() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, false);
         submit_input(&core, "chat".into(), "also update the docs".into()).unwrap();
         core.db
@@ -7041,7 +7081,7 @@ mod submit_input_tests {
 
     #[test]
     fn empty_input_is_refused_before_anything_is_queued() {
-        let (_fixture, core) = core_with_chat("working");
+        let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, false);
         assert!(submit_input(&core, "chat".into(), "   ".into()).is_err());
         assert_eq!(
@@ -7085,7 +7125,15 @@ mod retry_settlement_tests {
         fn stop(&mut self, _: adapters::ShutdownReason) {}
     }
 
-    fn core_with_working_worker() -> (tempfile::TempDir, Arc<BridgeCore>, Arc<Mutex<Vec<String>>>) {
+    type WorkerFixture = (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        Arc<Mutex<Vec<String>>>,
+        std::sync::MutexGuard<'static, ()>,
+    );
+
+    fn core_with_working_worker() -> WorkerFixture {
+        let managed_root = managed_root_guard();
         let fixture = tempfile::tempdir().unwrap();
         let core = BridgeCore::boot(crate::BootConfig {
             data_dir: fixture.path().to_path_buf(),
@@ -7130,7 +7178,7 @@ mod retry_settlement_tests {
             .lock()
             .unwrap()
             .insert("child".into(), Box::new(SpyRuntime { sent: sent.clone() }));
-        (fixture, core, sent)
+        (fixture, core, sent, managed_root)
     }
 
     fn failed(summary: &str) -> delegation::WorkerResult {
@@ -7163,7 +7211,7 @@ mod retry_settlement_tests {
 
     #[test]
     fn an_unexplained_failure_spends_no_turn_and_says_why() {
-        let (_fixture, core, sent) = core_with_working_worker();
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
         let settled = settle_worker_after_result(&core, "child", &failed("Could not finish")).unwrap();
 
         assert!(settled, "the worker is terminal, not waiting on a retry");
@@ -7177,7 +7225,7 @@ mod retry_settlement_tests {
 
     #[test]
     fn a_failed_check_is_never_retried_however_the_prose_reads() {
-        let (_fixture, core, sent) = core_with_working_worker();
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
         let mut result = failed("The provider timed out once and an assertion failed");
         result.tests = vec![delegation::WorkerTestResult {
             command: "cargo test store".into(),
@@ -7193,7 +7241,7 @@ mod retry_settlement_tests {
 
     #[test]
     fn a_formatting_failure_is_terminal_and_free() {
-        let (_fixture, core, sent) = core_with_working_worker();
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
         let result = delegation::protocol_invalid_result(
             "I finished but wrote no fence.",
             "missing bridge-worker-result block",
@@ -7210,7 +7258,7 @@ mod retry_settlement_tests {
 
     #[test]
     fn a_transient_failure_retries_once_naming_the_condition_and_then_stops() {
-        let (_fixture, core, sent) = core_with_working_worker();
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
         let result = failed("Connection reset by peer while streaming from the provider");
 
         // First: worth one attempt, and the instruction says what to re-check
