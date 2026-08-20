@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposerPill, type ComposerPillProps } from "./ComposerPill";
@@ -150,5 +150,89 @@ describe("ComposerPill", () => {
 
     act(() => stop()!.click());
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  describe("inline suggestions", () => {
+    const putCaretAtEnd = (value: string) => {
+      act(() => {
+        textarea().setSelectionRange(value.length, value.length);
+        textarea().dispatchEvent(new Event("select", { bubbles: true }));
+      });
+    };
+
+    it("renders ghost text after the draft when the caret is at the end", () => {
+      render({ value: "let's ship the", suggestion: " release" });
+      putCaretAtEnd("let's ship the");
+      // A re-render is needed for the caret-at-end check to observe the
+      // selection set above — mirrors how a real keyup/mouseup would.
+      render({ value: "let's ship the", suggestion: " release" });
+
+      expect(container.textContent).toContain("release");
+    });
+
+    it("hides the ghost text once the caret has moved away from the end", () => {
+      render({ value: "let's ship the release", suggestion: " notes" });
+      act(() => {
+        textarea().setSelectionRange(0, 0);
+        textarea().dispatchEvent(new Event("select", { bubbles: true }));
+      });
+
+      // "notes" must not appear as ghost text once the caret is no longer
+      // trailing the draft — the continuation would land in the wrong place.
+      expect(container.textContent).not.toContain("notes");
+    });
+
+    it("accepts the suggestion on Tab and prevents the browser's own Tab behavior", () => {
+      const onAcceptSuggestion = vi.fn();
+      render({ value: "draft", suggestion: " continues", onAcceptSuggestion });
+      putCaretAtEnd("draft");
+      render({ value: "draft", suggestion: " continues", onAcceptSuggestion });
+
+      const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event); });
+
+      expect(onAcceptSuggestion).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it("yields Tab to a mention/slash popover that already handled it", () => {
+      const onAcceptSuggestion = vi.fn();
+      // The composer's own onKeyDown mirrors what App.tsx does for an open
+      // popover: it claims the key by calling preventDefault first.
+      const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => event.preventDefault();
+      render({ value: "@fi", suggestion: " le.ts", onAcceptSuggestion, onKeyDown });
+      putCaretAtEnd("@fi");
+      render({ value: "@fi", suggestion: " le.ts", onAcceptSuggestion, onKeyDown });
+
+      act(() => {
+        textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      });
+
+      expect(onAcceptSuggestion).not.toHaveBeenCalled();
+    });
+
+    it("does not accept Tab after the caret moves away, even before a re-render", () => {
+      const onAcceptSuggestion = vi.fn();
+      render({ value: "draft", suggestion: " continues", onAcceptSuggestion });
+      putCaretAtEnd("draft");
+
+      act(() => textarea().setSelectionRange(0, 0));
+      const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event); });
+
+      expect(onAcceptSuggestion).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
+
+    it("does nothing on Tab when there is no suggestion to accept", () => {
+      const onAcceptSuggestion = vi.fn();
+      render({ value: "draft", onAcceptSuggestion });
+
+      const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event); });
+
+      expect(onAcceptSuggestion).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
   });
 });

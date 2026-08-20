@@ -26,13 +26,17 @@ export function writeChatScope(scope: ChatScope): void {
  * `bridge_core::work_briefing_config::BRIEFING_SESSION_KIND`. */
 export const BRIEFING_SESSION_KIND = "briefing";
 
+/** The session kind the composer typeahead's hidden warm session uses. Mirrors
+ * `bridge_core::suggestion_engine::SUGGESTION_SESSION_KIND`. */
+export const SUGGESTION_SESSION_KIND = "suggestion";
+
 /** Is this a session Bridge runs for itself, that a human should never meet in a list?
  *
- * A predicate rather than an ordering rule: a briefing session that merely sorted last
- * would still be one keystroke from being opened, resumed, or sent a turn. Its
- * transcript exists to be inspected after a run, not joined during one. */
+ * A predicate rather than an ordering rule: a briefing or suggestion session that
+ * merely sorted last would still be one keystroke from being opened, resumed, or
+ * sent a turn. Its transcript exists to be inspected after a run, not joined during one. */
 export function isHiddenSession(chat: Pick<Session, "kind">): boolean {
-  return chat.kind === BRIEFING_SESSION_KIND;
+  return chat.kind === BRIEFING_SESSION_KIND || chat.kind === SUGGESTION_SESSION_KIND;
 }
 
 /** Everything a human may see, from everything Bridge is running. */

@@ -287,6 +287,16 @@ pub fn dispatch(
         }
         MethodName::ResetModelProfiles => reply(api::reset_model_profiles(core)),
 
+        MethodName::GetSuggestionSettings => reply(api::get_suggestion_settings(core)),
+        MethodName::SaveSuggestionSettings => {
+            let p: wire::SaveSuggestionSettingsParams = decode(method, params)?;
+            reply(api::save_suggestion_settings(core, &p))
+        }
+        MethodName::SuggestCompletion => {
+            let p: wire::SuggestCompletionParams = decode(method, params)?;
+            reply(api::suggest_completion(core, &p))
+        }
+
         MethodName::GetConfigState => reply(api::get_config_state(core)),
         MethodName::SaveHarnessConfig => {
             let p: wire::SaveHarnessConfigParams = decode(method, params)?;

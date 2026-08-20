@@ -10,7 +10,7 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
@@ -28,6 +28,7 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
+import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -137,6 +138,16 @@ export function App() {
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
+  // The composer's inline typeahead. Loaded once and kept fresh by Settings'
+  // own save path (`onSuggestionSettingsChange`) — off by default, so no
+  // request fires until the user opts in.
+  const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
+  const suggestionGeneration = useRef(0);
+  // Shown once per fallback episode, not on every debounce firing while the
+  // configured model stays in cooldown.
+  const [fallbackNotice, setFallbackNotice] = useState<string>();
+  const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
@@ -300,6 +311,42 @@ export function App() {
     const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
     return () => { active = false; window.clearTimeout(timer); };
   }, [composer, session]);
+
+  // The inline typeahead's own settings — loaded once; Settings' save path
+  // keeps this fresh via `onSuggestionSettingsChange`.
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
+
+  // A new configured model/provider earns its own one-time fallback notice.
+  useEffect(() => { fallbackNoticeShownRef.current = false; }, [suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // Debounced draft completion: 400ms after the last keystroke, with a
+  // generation counter so a stale response from an earlier draft can never
+  // overwrite a newer one — the same latest-wins discipline `readWorkBoard`
+  // uses. No request fires with the toggle off, no session, or an empty draft.
+  useEffect(() => scheduleSuggestion({
+    text: composer,
+    enabled: !!suggestionSettings?.settings.enabled && !!session,
+    request: bridgeApi.suggestCompletion,
+    onResult: setDraftSuggestion,
+    generation: suggestionGeneration,
+  }), [composer, session, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // The fallback chip: shown once per episode, not re-shown on every debounce
+  // firing while the configured model stays in its cooldown window.
+  useEffect(() => {
+    if (!draftSuggestion?.usedFallback || fallbackNoticeShownRef.current) return;
+    fallbackNoticeShownRef.current = true;
+    const reason = draftSuggestion.fallbackReason?.replace(/_/g, " ");
+    setFallbackNotice(`Suggestions switched to a fallback model${reason ? ` (${reason})` : ""} while yours is unavailable.`);
+    const timer = window.setTimeout(() => setFallbackNotice(undefined), 6000);
+    return () => window.clearTimeout(timer);
+  }, [draftSuggestion]);
+
+  const acceptSuggestion = useCallback(() => {
+    if (!draftSuggestion?.suggestion) return;
+    setComposer(current => current + draftSuggestion.suggestion);
+    setDraftSuggestion(undefined);
+  }, [draftSuggestion]);
 
   useEffect(() => {
     if (!slashOpen) return;
@@ -897,7 +944,7 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
@@ -984,6 +1031,11 @@ export function App() {
                     <em className="not-italic font-mono text-[11px]"><b className="text-success">+{workspace.additions}</b> <b className="text-destructive">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
+                {fallbackNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
+                    <span>{fallbackNotice}</span>
+                  </div>
+                </div>}
                 {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
                   {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -1021,6 +1073,8 @@ export function App() {
                       controls: "file-mention-listbox",
                       activeDescendant: `file-mention-option-${mentionIndex}`,
                     } : undefined}
+                    suggestion={draftSuggestion?.suggestion}
+                    onAcceptSuggestion={acceptSuggestion}
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}

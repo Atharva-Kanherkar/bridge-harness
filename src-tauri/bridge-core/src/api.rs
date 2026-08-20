@@ -18,8 +18,8 @@ use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, memory_ledger, model_profiles, opencode_adapter,
     secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
-    verification_pipeline, verified_catalog, work, work_actions, work_observation, work_reconcile,
-    work_task_state, worker_adoption,
+    suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
+    work_observation, work_reconcile, work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use bridge_protocol::messages as wire;
@@ -1608,6 +1608,53 @@ pub fn reset_model_profiles(
         &core.db.lock().unwrap(),
         &core.adapter_registry.descriptors(),
     )
+}
+
+// --- inline composer suggestions ---------------------------------------------------
+
+/// The composer typeahead's stored configuration.
+pub fn get_suggestion_settings(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::SuggestionSettingsSnapshot, BridgeError> {
+    suggestion_engine::read_settings(&core.db.lock().unwrap())
+}
+
+/// Persist the typeahead's configuration. Validation lives in Rust —
+/// `suggestion_engine::validate_settings` plus the model-catalog check below,
+/// which needs the adapter registry the store-only module cannot reach. Same
+/// shape as `write_work_settings`.
+pub fn save_suggestion_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveSuggestionSettingsParams,
+) -> Result<wire::SuggestionSettingsSnapshot, BridgeError> {
+    let descriptors = core.adapter_registry.descriptors();
+    if let Some(descriptor) = descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == params.settings.provider)
+    {
+        // An empty catalog is a runtime-discovered one; only a non-empty
+        // catalog can refuse a model by name.
+        if !descriptor.models.is_empty()
+            && !descriptor.models.iter().any(|model| model.id == params.settings.model)
+        {
+            return Err(BridgeError::Invalid(format!(
+                "{} is not a model {} offers",
+                params.settings.model, descriptor.label
+            )));
+        }
+    }
+    suggestion_engine::write_settings(&core.db.lock().unwrap(), &params.settings)
+}
+
+/// Ask the typeahead engine to continue the composer's current draft. Refuses
+/// outright when suggestions are turned off — the caller (the UI's debounce)
+/// is expected not to call this at all in that case, but the refusal is the
+/// authority, not the UI's own gating.
+pub fn suggest_completion(
+    core: &Arc<BridgeCore>,
+    params: &wire::SuggestCompletionParams,
+) -> Result<wire::SuggestCompletionResult, BridgeError> {
+    suggestion_engine::suggest_completion(core, &params.text)
 }
 
 // --- configuration ----------------------------------------------------------------

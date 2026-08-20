@@ -21,7 +21,7 @@ use bridge_protocol::messages as wire;
 
 use crate::{
     agent_config, browser_bridge, completion, delegation, learning_job, learning_router,
-    marketplace, model, model_profiles, skill_marketplace,
+    marketplace, model, model_profiles, skill_marketplace, suggestion_engine,
 };
 
 /// Assert a core DTO and its protocol mirror describe the same document.
@@ -143,6 +143,16 @@ fn mirror_skill_provider(provider: skill_marketplace::SkillProvider) -> wire::Sk
         skill_marketplace::SkillProvider::Codex => wire::SkillProvider::Codex,
         skill_marketplace::SkillProvider::Claude => wire::SkillProvider::Claude,
         skill_marketplace::SkillProvider::OpenCode => wire::SkillProvider::OpenCode,
+    }
+}
+
+fn mirror_suggestion_fallback_reason(
+    reason: suggestion_engine::FallbackReason,
+) -> wire::SuggestionFallbackReason {
+    match reason {
+        suggestion_engine::FallbackReason::UnknownModel => wire::SuggestionFallbackReason::UnknownModel,
+        suggestion_engine::FallbackReason::Unauthorized => wire::SuggestionFallbackReason::Unauthorized,
+        suggestion_engine::FallbackReason::RateLimited => wire::SuggestionFallbackReason::RateLimited,
     }
 }
 
@@ -365,6 +375,17 @@ fn routing_and_profile_enums_share_their_wire_values() {
     }
     for purpose in model_profiles::ProfilePurpose::ALL {
         assert_same_wire_value(&purpose, &mirror_profile_purpose(purpose));
+    }
+}
+
+#[test]
+fn suggestion_fallback_reasons_share_their_wire_values() {
+    for reason in [
+        suggestion_engine::FallbackReason::UnknownModel,
+        suggestion_engine::FallbackReason::Unauthorized,
+        suggestion_engine::FallbackReason::RateLimited,
+    ] {
+        assert_same_wire_value(&reason, &mirror_suggestion_fallback_reason(reason));
     }
 }
 

@@ -107,6 +107,10 @@ methods![
     (RecommendedModelProfiles, "models", "recommended_model_profiles"),
     (SaveModelProfiles, "models", "save_model_profiles"),
     (ResetModelProfiles, "models", "reset_model_profiles"),
+    // inline composer suggestions
+    (GetSuggestionSettings, "models", "get_suggestion_settings"),
+    (SaveSuggestionSettings, "models", "save_suggestion_settings"),
+    (SuggestCompletion, "models", "suggest_completion"),
     // configuration
     (GetConfigState, "config", "get_config_state"),
     (SaveHarnessConfig, "config", "save_harness_config"),
