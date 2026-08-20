@@ -495,6 +495,26 @@ pub struct WorkBriefingHarness {
     /// the resolver deliberately refuses to invent a model at run time.
     pub default_model: Option<String>,
     pub models: Vec<WorkBriefingModel>,
+    /// The connector instances this harness's own configuration holds, so
+    /// Settings can offer narrowing to what actually exists. Discovery, not
+    /// authority: the run's scope is still computed at claim time from the
+    /// harness's live configuration and the stored narrowing.
+    pub connectors: Vec<WorkBriefingConnector>,
+}
+
+/// One connector instance as the harness reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkBriefingConnector {
+    /// The instance id in the harness's configuration — the same id
+    /// `WorkSettings.enabled_connector_instances` narrows by.
+    pub id: String,
+    /// The resolved family (`slack`, `gmail`, …) or `unknown`. Marks and
+    /// evidence anchoring only, never scope authority.
+    pub family: String,
+    /// The harness's own health verdict: connected, needing sign-in, or
+    /// unreported. Advisory — each run records the truth per source.
+    pub connected: Option<bool>,
 }
 
 /// `work/briefing_options`'s result.
@@ -790,6 +810,18 @@ mod tests {
                         tier: "fast".into(),
                         default_for_briefing: true,
                     }],
+                    connectors: vec![
+                        WorkBriefingConnector {
+                            id: "claude.ai Slack".into(),
+                            family: "slack".into(),
+                            connected: Some(true),
+                        },
+                        WorkBriefingConnector {
+                            id: "claude.ai Gmail".into(),
+                            family: "gmail".into(),
+                            connected: Some(false),
+                        },
+                    ],
                 },
                 WorkBriefingHarness {
                     id: "codex".into(),
@@ -799,12 +831,15 @@ mod tests {
                     reason: Some("no per-tool authority".into()),
                     default_model: None,
                     models: Vec::new(),
+                    connectors: Vec::new(),
                 },
             ],
         };
         let wire = serde_json::to_value(&options).unwrap();
         assert_eq!(wire["harnesses"][0]["defaultModel"], json!("haiku"));
         assert_eq!(wire["harnesses"][0]["models"][0]["defaultForBriefing"], json!(true));
+        assert_eq!(wire["harnesses"][0]["connectors"][0]["id"], json!("claude.ai Slack"));
+        assert_eq!(wire["harnesses"][0]["connectors"][1]["connected"], json!(false));
         assert_eq!(wire["harnesses"][1]["supported"], json!(false));
         assert_eq!(wire["harnesses"][1]["reason"], json!("no per-tool authority"));
         assert_eq!(round_trip(&options), options);
