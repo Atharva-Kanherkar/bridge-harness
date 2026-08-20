@@ -503,6 +503,36 @@ async fn reset_model_profiles(
 }
 
 #[tauri::command]
+async fn get_suggestion_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SuggestionSettingsSnapshot, BridgeError> {
+    api::get_suggestion_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_suggestion_settings(
+    state: State<'_, Arc<BridgeCore>>,
+    settings: bridge_protocol::messages::SuggestionSettings,
+) -> Result<bridge_protocol::messages::SuggestionSettingsSnapshot, BridgeError> {
+    api::save_suggestion_settings(
+        state.inner(),
+        &bridge_protocol::messages::SaveSuggestionSettingsParams { settings },
+    )
+}
+
+#[tauri::command]
+async fn suggest_completion(
+    state: State<'_, Arc<BridgeCore>>,
+    text: String,
+) -> Result<bridge_protocol::messages::SuggestCompletionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Inline suggestion", move || {
+        api::suggest_completion(&core, &bridge_protocol::messages::SuggestCompletionParams { text })
+    })
+    .await
+}
+
+#[tauri::command]
 async fn get_config_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
@@ -1276,6 +1306,9 @@ pub fn run() {
             recommended_model_profiles,
             save_model_profiles,
             reset_model_profiles,
+            get_suggestion_settings,
+            save_suggestion_settings,
+            suggest_completion,
             get_config_state,
             save_harness_config,
             reset_harness_config,

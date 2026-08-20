@@ -8,7 +8,8 @@ use crate::events::{CoreEvent, EventBus};
 use crate::{
     adapters, agent_config, agent_integration, backend_binding, binary, browser_bridge,
     credential_broker, delegation, model::AdapterDescriptor, session_supervisor, skill_marketplace,
-    store, verified_catalog, worker_guard, worker_sandbox, BridgeError,
+    store, suggestion_engine::SuggestionEngine, verified_catalog, worker_guard, worker_sandbox,
+    BridgeError,
 };
 use portable_pty::{Child, MasterPty};
 use std::{
@@ -82,6 +83,11 @@ pub struct BridgeCore {
     /// runtimes map — is what keeps a concurrent start from racing a
     /// teardown/commit window and orphaning a live adapter.
     pub lifecycle_claims: Mutex<HashMap<String, &'static str>>,
+    /// The composer typeahead's warm hidden session and fallback cooldowns.
+    /// See `suggestion_engine` for why this lives on `BridgeCore` rather than
+    /// being started fresh per request: process-start latency on every
+    /// keystroke pause would make the feature unusable.
+    pub suggestion_engine: SuggestionEngine,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -230,6 +236,7 @@ impl BridgeCore {
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events: EventBus::new(),
             lifecycle_claims: Mutex::new(HashMap::new()),
+            suggestion_engine: SuggestionEngine::new(),
         }
     }
 
@@ -327,6 +334,7 @@ impl BridgeCore {
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events,
             lifecycle_claims: Mutex::new(HashMap::new()),
+            suggestion_engine: SuggestionEngine::new(),
         })
     }
 }

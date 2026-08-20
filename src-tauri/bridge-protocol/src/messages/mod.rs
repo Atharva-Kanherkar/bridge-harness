@@ -199,6 +199,10 @@ typed_methods![
     (RecommendedModelProfiles, _, RecommendedModelProfilesResult),
     (SaveModelProfiles, SaveModelProfilesParams, _),
     (ResetModelProfiles, _, _),
+    // inline composer suggestions
+    (GetSuggestionSettings, _, SuggestionSettingsSnapshot),
+    (SaveSuggestionSettings, SaveSuggestionSettingsParams, SuggestionSettingsSnapshot),
+    (SuggestCompletion, SuggestCompletionParams, SuggestCompletionResult),
     // configuration
     (GetConfigState, _, ConfigState),
     (SaveHarnessConfig, SaveHarnessConfigParams, ConfigState),

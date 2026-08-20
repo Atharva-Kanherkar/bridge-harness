@@ -34,6 +34,14 @@ export type ComposerPillProps = {
   className?: string;
   layout?: "hero" | "dock";
   autocomplete?: { controls: string; activeDescendant?: string };
+  /// The inline typeahead's continuation of `value`, rendered as ghost text
+  /// right after it. Only ever shown while the caret sits at the end of the
+  /// draft — a suggestion for text the user has since moved away from would
+  /// be misleading, not helpful.
+  suggestion?: string;
+  /// Accept `suggestion` — appends it to `value`. Bound to Tab, and only when
+  /// a suggestion is showing and the caret is still at the end of the draft.
+  onAcceptSuggestion?: () => void;
 };
 
 const ACTIVE_ACTION_LABEL = { steer: "Steer", queue: "Queue" } as const;
@@ -56,8 +64,17 @@ export function ComposerPill({
   className,
   layout = "dock",
   autocomplete,
+  suggestion,
+  onAcceptSuggestion,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Ghost text only makes sense continuing from where typing left off; once
+  // the caret moves away from the end, the overlay would be misleading.
+  const caretAtEnd = () => {
+    const node = textareaRef.current;
+    return !!node && node.selectionStart === value.length && node.selectionEnd === value.length;
+  };
+  const showSuggestion = !!suggestion && caretAtEnd();
   const isHero = layout === "hero";
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
@@ -90,34 +107,57 @@ export function ComposerPill({
           if (canSend) onSubmit();
         }}
       >
-        <textarea
-          ref={node => {
-            textareaRef.current = node;
-            if (inputRef) inputRef.current = node;
-          }}
-          value={value}
-          rows={1}
-          placeholder={placeholder}
-          disabled={locked}
-          role={autocomplete ? "combobox" : undefined}
-          aria-autocomplete={autocomplete ? "list" : undefined}
-          aria-expanded={autocomplete ? true : undefined}
-          aria-controls={autocomplete?.controls}
-          aria-activedescendant={autocomplete?.activeDescendant}
-          onChange={event => onChange(event.target.value)}
-          onKeyDown={event => {
-            onKeyDown?.(event);
-            if (event.defaultPrevented) return;
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              if (canSend) onSubmit();
-            }
-          }}
-          className={cn(
-            "max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70",
-            isHero ? "px-1 py-1" : "px-1 py-0.5",
+        <div className="relative">
+          {/* The mirror overlay: `value` rendered invisibly so it occupies the
+              same box the textarea's own text does, followed by the visible
+              ghost text — which then only ever shows past where the real text
+              ends. Sizing must track the textarea exactly, or the seam shows. */}
+          {showSuggestion && (
+            <div
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words text-[15px] leading-relaxed tracking-[-0.006em]",
+                isHero ? "px-1 py-1" : "px-1 py-0.5",
+              )}
+            >
+              <span className="invisible">{value}</span>
+              <span className="text-muted-foreground/50">{suggestion}</span>
+            </div>
           )}
-        />
+          <textarea
+            ref={node => {
+              textareaRef.current = node;
+              if (inputRef) inputRef.current = node;
+            }}
+            value={value}
+            rows={1}
+            placeholder={placeholder}
+            disabled={locked}
+            role={autocomplete ? "combobox" : undefined}
+            aria-autocomplete={autocomplete ? "list" : undefined}
+            aria-expanded={autocomplete ? true : undefined}
+            aria-controls={autocomplete?.controls}
+            aria-activedescendant={autocomplete?.activeDescendant}
+            onChange={event => onChange(event.target.value)}
+            onKeyDown={event => {
+              onKeyDown?.(event);
+              if (event.defaultPrevented) return;
+              if (event.key === "Tab" && showSuggestion && onAcceptSuggestion) {
+                event.preventDefault();
+                onAcceptSuggestion();
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                if (canSend) onSubmit();
+              }
+            }}
+            className={cn(
+              "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70",
+              isHero ? "px-1 py-1" : "px-1 py-0.5",
+            )}
+          />
+        </div>
 
         <div className="flex items-center justify-between gap-2 px-1">
           <button

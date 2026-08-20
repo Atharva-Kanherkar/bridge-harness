@@ -19,6 +19,9 @@ import type {
   WorkTask,
   WorkTaskDraft,
   WriteWorkspaceFileResult,
+  SuggestCompletionResult,
+  SuggestionSettings,
+  SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
@@ -335,6 +338,13 @@ let mockWorkSettings: WorkSettingsSnapshot = {
   },
 };
 
+// Suggestion (inline typeahead) settings for the browser fallback. Off by
+// default, same as a fresh install's stored default.
+let mockSuggestionSettings: SuggestionSettingsSnapshot = {
+  configured: false,
+  settings: { enabled: false, provider: "claude", model: "haiku" },
+};
+
 const mockBriefingOptions: WorkBriefingOptions = {
   harnesses: [
     {
@@ -550,6 +560,25 @@ export const bridgeApi = {
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
   saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
   resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? call("models/reset_model_profiles") as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  // The composer's inline typeahead. Off by default; `configured: false` is a
+  // fresh install reading defaults, same distinction Work's settings make.
+  getSuggestionSettings: (): Promise<SuggestionSettingsSnapshot> =>
+    isTauri() ? call("models/get_suggestion_settings") : Promise.resolve(structuredClone(mockSuggestionSettings)),
+  // Validation is Rust's; this surface may pre-empt an obvious mistake, but a
+  // payload that bypasses it is refused server-side by the same rules.
+  saveSuggestionSettings: (settings: SuggestionSettings): Promise<SuggestionSettingsSnapshot> => {
+    if (isTauri()) return call("models/save_suggestion_settings", { settings });
+    mockSuggestionSettings = { configured: true, settings: structuredClone(settings) };
+    return Promise.resolve(structuredClone(mockSuggestionSettings));
+  },
+  // Ask the typeahead engine to continue the composer's current draft. The
+  // caller is expected to gate this on the setting being enabled and the
+  // draft being non-empty — this call does not re-check either for the mock.
+  suggestCompletion: (text: string): Promise<SuggestCompletionResult> => {
+    if (isTauri()) return call("models/suggest_completion", { text });
+    const suggestion = text.trim().endsWith("?") || text.length < 3 ? "" : " …";
+    return Promise.resolve({ suggestion, usedFallback: false, fallbackReason: null });
+  },
   configState: (): Promise<ConfigState> => isTauri() ? call("config/get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
   saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
     if (isTauri()) return call("config/save_harness_config", { config });
