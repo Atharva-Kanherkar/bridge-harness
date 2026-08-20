@@ -195,10 +195,14 @@ fn workspaces_with_outcomes(db: &Connection) -> Result<Vec<String>, BridgeError>
         .map_err(BridgeError::from)
 }
 
-fn evidence_boundary(db: &Connection) -> Result<i64, BridgeError> {
+/// The scope's own evidence high-water mark. A global rowid here would mint a
+/// fresh idempotency key for every workspace whenever any one of them recorded
+/// an outcome, spawning a noop run per idle workspace on every sweep.
+fn evidence_boundary(db: &Connection, workspace_id: &str) -> Result<i64, BridgeError> {
     Ok(db.query_row(
-        "SELECT COALESCE(MAX(rowid),0) FROM router_outcomes",
-        [],
+        "SELECT COALESCE(MAX(o.rowid),0) FROM router_outcomes o
+         JOIN router_decisions d ON d.id=o.decision_id WHERE d.workspace_id=?1",
+        params![workspace_id],
         |row| row.get(0),
     )?)
 }
@@ -556,7 +560,7 @@ pub fn run_learning(
 ) -> Result<LearningRun, BridgeError> {
     let scope = learning_router::workspace_learning_scope(workspace_id)?;
     settle_canary(db, &scope)?;
-    let boundary = evidence_boundary(db)?;
+    let boundary = evidence_boundary(db, workspace_id)?;
     let base_version = active_policy_version(db, &scope)?;
     let key = format!("{DEFAULT_JOB_ID}:{scope}:{boundary}:{base_version}");
     let now = Utc::now();
@@ -1867,6 +1871,32 @@ mod tests {
     }
 
     #[test]
+    fn another_workspaces_evidence_does_not_mint_a_new_run_key() {
+        let db = database();
+        add_workspace(&db, "other");
+        add_outcome(&db, 0, "a", true, Some(100), 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        for index in 0..3 {
+            add_outcome_in(&db, "other", "other-parent", index, "b", true, Some(100), 1);
+        }
+        let second = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(
+            second.duplicate,
+            "an idle workspace must not get a fresh noop run because another desk recorded outcomes"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM learning_job_runs WHERE learning_scope='workspace:w'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn duplicate_triggers_share_one_snapshot_run() {
         let db = database();
         let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
@@ -2814,8 +2844,9 @@ mod tests {
         for index in 0..5_000 {
             add_outcome(&db, index, "a", false, Some(200), 1);
         }
-        let boundary = evidence_boundary(&db).unwrap();
-        let other = routing_policy::load_evidence(&db, "other", boundary).unwrap();
+        let other =
+            routing_policy::load_evidence(&db, "other", evidence_boundary(&db, "other").unwrap())
+                .unwrap();
         assert_eq!(
             other.len(),
             5,
@@ -2825,7 +2856,8 @@ mod tests {
             other.iter().all(|row| row.candidate == "codex:b"),
             "the surviving rows must be the small workspace's own outcomes, not the newest rows from a busier one"
         );
-        let flooded = routing_policy::load_evidence(&db, "w", boundary).unwrap();
+        let flooded =
+            routing_policy::load_evidence(&db, "w", evidence_boundary(&db, "w").unwrap()).unwrap();
         assert_eq!(flooded.len(), 5_000);
         assert!(
             flooded.iter().all(|row| row.candidate == "codex:a"),
