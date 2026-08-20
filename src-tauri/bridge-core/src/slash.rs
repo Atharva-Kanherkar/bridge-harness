@@ -28,6 +28,14 @@ pub enum SlashDispatch {
     Compact { focus: Option<String> },
     /// Bridge-handled: clear provider session / start fresh in this chat.
     Clear,
+    /// Bridge-handled: FTS5 recall in this session only.
+    Recall { query: String },
+    /// Bridge-handled: save an about-me pin to `account:local`.
+    Pin { body: String },
+    /// Bridge-handled: list active `account:local` pins.
+    Pins,
+    /// Bridge-handled: tombstone an `account:local` pin.
+    Unpin { selector: String },
     /// Known TUI-only command — tell the user it isn't available here.
     Unsupported { name: String, harness: String },
 }
@@ -36,7 +44,32 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut out: Vec<SlashCommand> = Vec::new();
+    let mut out: Vec<SlashCommand> = vec![
+        SlashCommand {
+            name: "recall".into(),
+            description: "Search this chat's history (this session only)".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "pin".into(),
+            description: "Save an about-me pin on this machine (account:local)".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "pins".into(),
+            description: "List this machine's about-me pins".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "unpin".into(),
+            description: "Forget an about-me pin by id".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+    ];
 
     if available.contains("claude") {
         out.extend(claude_builtins());
@@ -130,6 +163,22 @@ pub fn dispatch(
 
     match name {
         "usage" | "cost" | "stats" => return SlashDispatch::Usage,
+        "recall" => {
+            return SlashDispatch::Recall {
+                query: args.unwrap_or("").to_string(),
+            };
+        }
+        "pin" => {
+            return SlashDispatch::Pin {
+                body: args.unwrap_or("").to_string(),
+            };
+        }
+        "pins" => return SlashDispatch::Pins,
+        "unpin" => {
+            return SlashDispatch::Unpin {
+                selector: args.unwrap_or("").to_string(),
+            };
+        }
         "compact" => {
             return SlashDispatch::Compact {
                 focus: args.map(str::to_string),
@@ -198,6 +247,24 @@ pub fn dispatch(
             text: text.to_string(),
         },
     }
+}
+
+/// True when Bridge handles the slash locally and must never auto-switch harness.
+pub fn is_bridge_local(name: &str) -> bool {
+    matches!(
+        name,
+        "usage"
+            | "cost"
+            | "stats"
+            | "compact"
+            | "clear"
+            | "new"
+            | "reset"
+            | "recall"
+            | "pin"
+            | "pins"
+            | "unpin"
+    )
 }
 
 /// Builtins that are meaningful as a normal provider turn (skills-like or
@@ -624,5 +691,29 @@ mod tests {
             dispatch("/compact focus on errors", "claude", &available),
             SlashDispatch::Compact { focus: Some(_) }
         ));
+        assert!(matches!(
+            dispatch("/recall what did we decide", "claude", &available),
+            SlashDispatch::Recall { query } if query == "what did we decide"
+        ));
+        assert!(matches!(
+            dispatch("/pin I prefer Conventional Commits", "claude", &available),
+            SlashDispatch::Pin { body } if body == "I prefer Conventional Commits"
+        ));
+        assert!(matches!(
+            dispatch("/pins", "codex", &available),
+            SlashDispatch::Pins
+        ));
+        assert!(matches!(
+            dispatch("/unpin abcdef12", "claude", &available),
+            SlashDispatch::Unpin { selector } if selector == "abcdef12"
+        ));
+        assert!(is_bridge_local("pin") && is_bridge_local("pins") && is_bridge_local("unpin"));
+        let catalog = list_commands(&HashSet::new());
+        assert!(catalog
+            .iter()
+            .any(|command| command.name == "recall" && command.harness == "bridge"));
+        assert!(catalog
+            .iter()
+            .any(|command| command.name == "pin" && command.harness == "bridge"));
     }
 }

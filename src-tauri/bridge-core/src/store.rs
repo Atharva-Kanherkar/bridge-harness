@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 28;
+const LATEST_SCHEMA_VERSION: i64 = 31;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -73,8 +73,18 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         params![now],
     )?;
     connection.execute(
-        "UPDATE sessions SET status='stopped', ended_at=?1 WHERE status IN ('working','waiting')",
+        "UPDATE sessions SET status='stopped', ended_at=?1, active_turn_id=NULL WHERE status IN ('working','waiting')",
         params![now],
+    )?;
+    // The invariant the composer renders from: a session in a terminal state
+    // has no active turn. Crash recoveries used to stop sessions without
+    // clearing the turn id, and each one left a composer stuck on Stop/Steer
+    // with nothing running — so reconcile rows already damaged that way too.
+    connection.execute(
+        "UPDATE sessions SET active_turn_id=NULL
+         WHERE active_turn_id IS NOT NULL
+           AND status IN ('stopped','failed','completed','cancelled','ready')",
+        [],
     )?;
     connection.execute(
         "UPDATE workspaces SET status='stopped' WHERE status IN ('working','waiting')",
@@ -422,6 +432,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             26 => migration_26_briefing_run_leases(&transaction)?,
             27 => migration_27_queued_session_input(&transaction)?,
             28 => migration_28_evidence_based_retries(&transaction)?,
+            29 => migration_29_learning_scope(&transaction)?,
+            30 => migration_30_session_entry_fts(&transaction)?,
+            31 => migration_31_memory_ledger(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -988,6 +1001,45 @@ fn migration_26_briefing_run_leases(transaction: &Transaction<'_>) -> Result<(),
     Ok(())
 }
 
+/// Scope learned routing policies to a workspace. Existing rows become
+/// `legacy:global`, which live routing never selects. The unique live-policy
+/// index stays "one active or canary", now per scope rather than globally —
+/// the previous constant-expression unique index already made those two
+/// statuses mutually exclusive, so the backfill cannot collide.
+fn migration_29_learning_scope(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "routing_policies",
+        "learning_scope",
+        "TEXT NOT NULL DEFAULT 'legacy:global'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "learning_job_runs",
+        "learning_scope",
+        "TEXT NOT NULL DEFAULT 'legacy:global'",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "routing_policy_promotions",
+        "learning_scope",
+        "TEXT NOT NULL DEFAULT 'legacy:global'",
+    )?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS learning_scope_cursors (
+            learning_scope TEXT PRIMARY KEY,
+            last_evidence_boundary INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_router_decisions_workspace_family
+            ON router_decisions(workspace_id,task_family,created_at);
+        DROP INDEX IF EXISTS idx_routing_policy_active;
+        CREATE UNIQUE INDEX idx_routing_policy_active
+            ON routing_policies(learning_scope) WHERE status IN ('active','canary');",
+    )?;
+    Ok(())
+}
+
 /// The durable home for user input submitted while a turn was already running.
 ///
 /// A follow-up the user typed must not live only in a UI state hook: a reconnect
@@ -1041,6 +1093,14 @@ fn migration_28_evidence_based_retries(transaction: &Transaction<'_>) -> Result<
             ON recovery_turns(session_id, kind);",
     )?;
     Ok(())
+}
+
+fn migration_30_session_entry_fts(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::session_recall::install_fts(transaction)
+}
+
+fn migration_31_memory_ledger(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::memory_ledger::install_ledger(transaction)
 }
 
 fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -2309,51 +2369,6 @@ pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionH
     .map_err(BridgeError::from)
 }
 
-pub fn insert_task_knowledge(
-    db: &Connection,
-    knowledge: &TaskKnowledge,
-) -> Result<(), BridgeError> {
-    db.execute(
-        "INSERT INTO task_knowledge(id,workspace_id,session_id,kind,body,source_entry_id,superseded_by,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![
-            knowledge.id,
-            knowledge.workspace_id,
-            knowledge.session_id,
-            knowledge.kind,
-            knowledge.body,
-            knowledge.source_entry_id,
-            knowledge.superseded_by,
-            knowledge.created_at,
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn task_knowledge(
-    db: &Connection,
-    workspace_id: &str,
-) -> Result<Vec<TaskKnowledge>, BridgeError> {
-    query_with_params(
-        db,
-        "SELECT id,workspace_id,session_id,kind,body,source_entry_id,superseded_by,created_at
-         FROM task_knowledge WHERE workspace_id=?1 ORDER BY created_at,id",
-        params![workspace_id],
-        |row| {
-            Ok(TaskKnowledge {
-                id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                session_id: row.get(2)?,
-                kind: row.get(3)?,
-                body: row.get(4)?,
-                source_entry_id: row.get(5)?,
-                superseded_by: row.get(6)?,
-                created_at: row.get(7)?,
-            })
-        },
-    )
-}
-
 pub fn upsert_worker_lease(db: &Connection, lease: &WorkerLease) -> Result<(), BridgeError> {
     db.execute(
         "INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,expires_at,created_at,updated_at)
@@ -3013,7 +3028,7 @@ mod tests {
             "agent_events",
             "session_entries",
             "session_heads",
-            "task_knowledge",
+            "memory_records",
             "worker_leases",
             "worker_runtime",
             "delegation_receipts",
@@ -3178,6 +3193,46 @@ mod tests {
     }
 
     #[test]
+    fn opening_clears_active_turns_on_every_non_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        {
+            let db = open(&path).unwrap();
+            for (id, status, turn) in [
+                ("interrupted", "working", "turn-a"),
+                ("crash-stopped", "stopped", "turn-b"),
+                ("idle", "ready", "turn-c"),
+            ] {
+                db.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,active_turn_id) VALUES(?1,NULL,'claude','Session',?2,'reported',?3)",
+                    params![id, status, turn],
+                )
+                .unwrap();
+            }
+        }
+        let db = open(&path).unwrap();
+        let stale: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE active_turn_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stale, 0,
+            "no non-live session may keep an active turn: the composer renders Stop/Steer from it"
+        );
+        let interrupted: String = db
+            .query_row(
+                "SELECT status FROM sessions WHERE id='interrupted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(interrupted, "stopped");
+    }
+
+    #[test]
     fn streamed_hash_matches_whole_file_digest() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("blob");
@@ -3338,6 +3393,9 @@ mod tests {
             "learning_trigger_events",
             "routing_policy_promotions",
             "prompt_compilations",
+            "learning_scope_cursors",
+            "session_entry_fts",
+            "memory_records",
         ] {
             assert!(
                 db.query_row(
@@ -3362,6 +3420,8 @@ mod tests {
             ("learning_job_runs", "lease_expires_at"),
             ("learning_jobs", "last_evidence_boundary"),
             ("learning_jobs", "run_budget_tokens"),
+            ("routing_policies", "learning_scope"),
+            ("learning_job_runs", "learning_scope"),
         ] {
             let exists = db
                 .prepare(&format!("PRAGMA table_info({table})"))
@@ -3574,7 +3634,10 @@ mod tests {
             "DROP TABLE routing_policy_promotions;
              DROP TABLE routing_evaluations;
              DROP TABLE learning_trigger_events;
+             DROP TABLE IF EXISTS learning_scope_cursors;
              DROP INDEX idx_routing_policy_active;
+             ALTER TABLE routing_policies DROP COLUMN learning_scope;
+             ALTER TABLE learning_job_runs DROP COLUMN learning_scope;
              CREATE UNIQUE INDEX idx_routing_policy_active
                 ON routing_policies(status) WHERE status='active';
              CREATE TABLE routing_evaluations (
@@ -3649,6 +3712,68 @@ mod tests {
             |row| row.get(0),
         ).unwrap();
         assert!(active_index_sql.contains("status IN ('active','canary')"));
+        assert!(
+            active_index_sql.contains("learning_scope"),
+            "the live-policy unique index must be per learning_scope: {active_index_sql}"
+        );
+        for (table, column) in [
+            ("routing_policies", "learning_scope"),
+            ("learning_job_runs", "learning_scope"),
+            ("routing_policy_promotions", "learning_scope"),
+        ] {
+            let exists = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .iter()
+                .any(|name| name == column);
+            assert!(exists, "migration 26 did not restore {table}.{column}");
+        }
+        assert!(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='learning_scope_cursors')",
+            [], |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+
+    #[test]
+    fn learning_scope_migration_backfills_legacy_global_and_allows_one_live_policy_per_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        let scope: String = db
+            .query_row(
+                "SELECT learning_scope FROM routing_policies WHERE version=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scope, "legacy:global");
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(2,'active','workspace:a','{}','{}','test','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(3,'active','workspace:b','{}','{}','test','now')",
+            [],
+        )
+        .unwrap();
+        let error = db
+            .execute(
+                "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+                 VALUES(4,'canary','workspace:a','{}','{}','test','now')",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("UNIQUE") || error.contains("unique"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -3938,9 +4063,8 @@ mod tests {
             "two tasks cannot share a fingerprint"
         );
         insert_task("t-3", None).unwrap();
-        insert_task("t-4", None).expect(
-            "ephemeral tasks have no fingerprint, and SQLite counts NULLs as distinct",
-        );
+        insert_task("t-4", None)
+            .expect("ephemeral tasks have no fingerprint, and SQLite counts NULLs as distinct");
 
         db.execute(
             "INSERT INTO work_fact_cache(kind,cache_key,status,observed_at)
@@ -3977,10 +4101,13 @@ mod tests {
             [],
         )
         .unwrap();
-        db.execute("DELETE FROM work_brief_runs WHERE id='run-1'", []).unwrap();
+        db.execute("DELETE FROM work_brief_runs WHERE id='run-1'", [])
+            .unwrap();
         for table in ["work_brief_sources", "work_evidence"] {
             let remaining: i64 = db
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(remaining, 0, "{table} must not outlive its run");
         }
@@ -4008,7 +4135,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(created, 0, "a half-applied Work schema must not survive the failure");
+        assert_eq!(
+            created, 0,
+            "a half-applied Work schema must not survive the failure"
+        );
     }
 
     #[test]
@@ -4133,33 +4263,10 @@ mod tests {
     }
 
     #[test]
-    fn queries_knowledge_leases_and_usage_ledger() {
+    fn queries_leases_and_usage_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir.path().join("bridge.db")).unwrap();
         seed_workspace(&db);
-        let entry = append_session_entry(
-            &db,
-            "s",
-            None,
-            "user.message",
-            &json!({"text":"remember"}),
-            None,
-            "eligible",
-            None,
-        )
-        .unwrap();
-        let knowledge = TaskKnowledge {
-            id: "k".into(),
-            workspace_id: "w".into(),
-            session_id: Some("s".into()),
-            kind: "decision".into(),
-            body: "Use SQLite".into(),
-            source_entry_id: Some(entry.id),
-            superseded_by: None,
-            created_at: "now".into(),
-        };
-        insert_task_knowledge(&db, &knowledge).unwrap();
-        assert_eq!(task_knowledge(&db, "w").unwrap(), vec![knowledge]);
 
         let lease = WorkerLease {
             session_id: "s".into(),

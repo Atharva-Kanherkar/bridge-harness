@@ -16,6 +16,7 @@ import { taskRoute, type TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
+import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
@@ -128,6 +129,8 @@ export function App() {
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [forest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
@@ -212,7 +215,7 @@ export function App() {
     };
   }, [reload]);
   useThemePreference();
-  useEffect(() => { setNavOpen(false); }, [view, selectedSessionId]);
+  useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -745,7 +748,7 @@ export function App() {
         setState(next);
         target = next.sessions.find(item => item.id === target.id) ?? target;
       }
-      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact)(\s|$)/i.test(text);
+      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall|pins|unpin|pin)(\s|$)/i.test(text);
       if (!localOnly && !liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -965,12 +968,29 @@ export function App() {
           fullscreen={fullscreen}
           onToggleFullscreen={() => setFullscreen(value => !value)}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
+          onToggleRecall={() => {
+            setActiveTab("agent");
+            setRecallOpen(open => !open);
+          }}
+          recallOpen={recallOpen}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
         />
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
+              {recallOpen && (
+                <SessionRecallSearch
+                  sessionId={session.id}
+                  onClose={() => { setRecallOpen(false); setHighlightEntryId(null); }}
+                  onJump={entryId => {
+                    setHighlightEntryId(entryId);
+                    requestAnimationFrame(() => {
+                      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    });
+                  }}
+                />
+              )}
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
@@ -990,6 +1010,7 @@ export function App() {
                   working={turnActive}
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
+                  highlightEntryId={highlightEntryId}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />

@@ -28,6 +28,7 @@ mod config;
 mod forest;
 mod learning;
 mod marketplace;
+mod memory;
 mod models;
 mod projects;
 mod routing;
@@ -48,6 +49,7 @@ pub use config::*;
 pub use forest::*;
 pub use learning::*;
 pub use marketplace::*;
+pub use memory::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -164,10 +166,15 @@ typed_methods![
     (SendTurn, SendTurnParams, UnitResult),
     (SubmitInput, SubmitInputParams, SubmitInputResult),
     (CompactSession, CompactSessionParams, UnitResult),
+    (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
     (StopSession, StopSessionParams, BridgeState),
+    // memory
+    (SaveMemoryRecord, SaveMemoryRecordParams, MemoryRecord),
+    (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),
+    (DeleteMemoryRecord, DeleteMemoryRecordParams, MemoryRecord),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
@@ -215,7 +222,7 @@ typed_methods![
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
     // adaptive learning
-    (GetLearningState, _, _),
+    (GetLearningState, GetLearningStateParams, _),
     (RunLearning, RunLearningParams, _),
     (CancelLearningRun, CancelLearningRunParams, _),
     (UpdateLearningSchedule, UpdateLearningScheduleParams, LearningSchedule),

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -84,6 +84,7 @@ let mockLearningState: LearningState = {
   latestRun: null,
   activePolicyVersion: 1,
   canaryPolicyVersion: null,
+  rollbackTargetVersion: null,
 };
 let nextEventId = 20;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
@@ -153,6 +154,7 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-10b", "session-1", 12, "workspace.stale_base", { role: "system", status: "warning", title: "Workspace is 67 commits behind origin/main", text: "this workspace is 67 commit(s) behind and 1 ahead of origin/main, measured against a freshly fetched ref; that ref's newest commit is 0 day(s) old", data: { staleBase: true, phase: "workspace_open", choices: ["refresh", "continue"], divergence: { baseRef: "origin/main", baseCommit: "90ce51c", head: "2b43aaad9b36", branch: "bridge/task", ahead: 1, behind: 67, refAgeSeconds: 3600, fetchAttempted: true, fetched: true, dirty: false, unavailableReason: null } } }, "entry-9b"),
   forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
 ];
+const mockMemoryRecords: MemoryRecord[] = [];
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
     sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
@@ -634,9 +636,9 @@ export const bridgeApi = {
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     return Promise.resolve(structuredClone(mockConfigState));
   },
-  learningState: (): Promise<LearningState> => isTauri() ? call("learning/get_learning_state") as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
-  runLearning: (triggerKind: LocalLearningTriggerKind = "manual"): Promise<LearningRun> => {
-    if (isTauri()) return call("learning/run_learning", { triggerKind }) as Promise<LearningRun>;
+  learningState: (workspaceId: string): Promise<LearningState> => isTauri() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
+  runLearning: (triggerKind: LocalLearningTriggerKind = "manual", workspaceId: string): Promise<LearningRun> => {
+    if (isTauri()) return call("learning/run_learning", { triggerKind, workspaceId }) as Promise<LearningRun>;
     if (mockLearningState.latestRun) {
       const duplicate = { ...structuredClone(mockLearningState.latestRun), triggerKind, duplicate: true };
       return Promise.resolve(duplicate);
@@ -664,8 +666,8 @@ export const bridgeApi = {
     mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
-  rollbackRoutingPolicy: (targetVersion: number, explanation: string): Promise<LearningState> => {
-    if (isTauri()) return call("routing/rollback_routing_policy", { targetVersion, explanation }) as Promise<LearningState>;
+  rollbackRoutingPolicy: (workspaceId: string, targetVersion: number, explanation: string): Promise<LearningState> => {
+    if (isTauri()) return call("routing/rollback_routing_policy", { workspaceId, targetVersion, explanation }) as Promise<LearningState>;
     void targetVersion;
     void explanation;
     mockLearningState.activePolicyVersion += 1;
@@ -847,6 +849,76 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
     emitState();
   },
+  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null): Promise<SearchSessionEntriesResult> => {
+    if (isTauri()) {
+      return call("sessions/search_session_entries", limit != null ? { sessionId, query, limit } : { sessionId, query });
+    }
+    if (!sessionId.trim()) throw new Error("Recall needs a session id; search cannot run across a workspace");
+    const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (!tokens.length) throw new Error("Recall needs a word to search for in this chat");
+    const forest = mockForest(sessionId);
+    const kinds = new Set(["user.message", "assistant.message", "worker.result", "compaction", "checkpoint", "branch.summary"]);
+    const hits = forest.entries
+      .filter(entry => kinds.has(entry.kind))
+      .filter(entry => {
+        const body = `${entry.payload.text ?? ""} ${entry.payload.title ?? ""} ${entry.payload.summary ?? ""}`.toLowerCase();
+        return tokens.every(token => body.includes(token));
+      })
+      .slice(0, limit ?? 20)
+      .map(entry => ({
+        entryId: entry.id,
+        kind: entry.kind,
+        sequence: entry.sequence,
+        snippet: String(entry.payload.text ?? entry.payload.summary ?? entry.payload.title ?? ""),
+        createdAt: entry.createdAt,
+      }));
+    return { sessionId, query, hits };
+  },
+  saveMemoryRecord: async (body: string, kind?: string | null, sessionId?: string | null): Promise<MemoryRecord> => {
+    if (isTauri()) {
+      return call("memory/save_memory_record", {
+        body,
+        ...(kind ? { kind } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      });
+    }
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("A memory pin needs some text. Empty bodies are not stored.");
+    const now = new Date().toISOString();
+    const record: MemoryRecord = {
+      id: crypto.randomUUID(),
+      scopeKey: "account:local",
+      kind: kind?.trim() || "preference",
+      body: trimmed,
+      provenance: "user_explicit",
+      status: "active",
+      sourceSessionId: sessionId?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockMemoryRecords.unshift(record);
+    return structuredClone(record);
+  },
+  listMemoryRecords: async (scopeKey: string): Promise<ListMemoryRecordsResult> => {
+    if (isTauri()) return call("memory/list_memory_records", { scopeKey });
+    const trimmed = scopeKey.trim();
+    if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    return {
+      scopeKey: trimmed,
+      records: mockMemoryRecords
+        .filter(record => record.scopeKey === trimmed && record.status === "active")
+        .slice(0, 50)
+        .map(record => structuredClone(record)),
+    };
+  },
+  deleteMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/delete_memory_record", { recordId });
+    const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
+    if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
+    record.status = "deleted";
+    record.updatedAt = new Date().toISOString();
+    return structuredClone(record);
+  },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return call("projects/add_project", { path });
     const name = path.split("/").filter(Boolean).at(-1) || "Repository";
@@ -985,7 +1057,11 @@ export const bridgeApi = {
   onAdaptersChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe("adapters-changed", handler);
     return () => undefined;
-  }
+  },
+  onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe("learning-job-changed", handler);
+    return () => undefined;
+  },
 };
 
 /* ── Browser-mode file system ──────────────────────────────────────────────

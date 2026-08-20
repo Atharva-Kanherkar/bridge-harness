@@ -16,10 +16,12 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
-    learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
-    secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
+<<<<<<< HEAD
+    learning_job, learning_router, live_turn, marketplace, memory_ledger, model_profiles, opencode_adapter,
+    secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
     suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
+>>>>>>> origin/main
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use bridge_protocol::messages as wire;
@@ -392,6 +394,42 @@ pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), B
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)
 }
 
+pub fn search_session_entries(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    session_recall::search(&db, session_id, query, limit)
+}
+
+pub fn save_memory_record(
+    core: &Arc<BridgeCore>,
+    body: &str,
+    kind: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::save(&db, body, kind, session_id)
+}
+
+pub fn list_memory_records(
+    core: &Arc<BridgeCore>,
+    scope_key: &str,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::list(&db, scope_key)
+}
+
+pub fn delete_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let db = core.db.lock().unwrap();
+    memory_ledger::forget(&db, record_id)
+}
+
 /// Run a finished worker's objective again because the user asked. Goes through
 /// the ordinary launch path, so every policy limit applies as it did the first
 /// time.
@@ -751,7 +789,6 @@ pub fn resolve_slash_command(
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
-    let available = available_adapter_ids(core);
     let (kind, session_harness): (String, String) = {
         let db = core.db.lock().unwrap();
         db.query_row(
@@ -760,6 +797,15 @@ pub fn resolve_slash_command(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?
     };
+    if slash::is_bridge_local(name) {
+        return Ok(Some(SlashCommandResolve {
+            name: name.to_string(),
+            harness: session_harness,
+            kind: "builtin".into(),
+            switch_harness: false,
+        }));
+    }
+    let available = available_adapter_ids(core);
     let catalog = slash::list_commands(&available);
     let matches: Vec<_> = catalog
         .iter()
@@ -1520,11 +1566,12 @@ pub fn update_router_preferences(
 
 pub fn rollback_routing_policy(
     core: &Arc<BridgeCore>,
+    workspace_id: &str,
     target_version: i64,
     explanation: &str,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::rollback_policy(&core.db.lock().unwrap(), target_version, explanation)?;
-    let result = learning_job::learning_state(&core.db.lock().unwrap())?;
+    learning_job::rollback_policy(&core.db.lock().unwrap(), workspace_id, target_version, explanation)?;
+    let result = learning_job::learning_state(&core.db.lock().unwrap(), workspace_id)?;
     core.events.publish(CoreEvent::LearningJobChanged(
         serde_json::to_value(&result).unwrap_or_default(),
     ));
@@ -1726,13 +1773,15 @@ pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigSt
 
 pub fn get_learning_state(
     core: &Arc<BridgeCore>,
+    workspace_id: &str,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::learning_state(&core.db.lock().unwrap())
+    learning_job::learning_state(&core.db.lock().unwrap(), workspace_id)
 }
 
 pub fn run_learning(
     core: &Arc<BridgeCore>,
     trigger_kind: learning_job::LearningTriggerKind,
+    workspace_id: &str,
 ) -> Result<learning_job::LearningRun, BridgeError> {
     if matches!(
         trigger_kind,
@@ -1746,7 +1795,7 @@ pub fn run_learning(
     }
     // Learning runs open their own connection: the run must never hold the
     // global SQLite lock across model evaluation.
-    let run = learning_job::run_local_database(&core.database_path, trigger_kind)?;
+    let run = learning_job::run_local_database(&core.database_path, trigger_kind, workspace_id)?;
     core.events.publish(CoreEvent::LearningJobChanged(
         serde_json::to_value(&run).unwrap_or_default(),
     ));
@@ -1992,7 +2041,9 @@ mod tests {
         // evaluation.
         let source = include_str!("api.rs");
         assert!(
-            source.contains("learning_job::run_local_database(&core.database_path, trigger_kind)")
+            source.contains(
+                "learning_job::run_local_database(&core.database_path, trigger_kind, workspace_id)",
+            )
         );
         let locked_learning_call = [
             "learning_job::run_learning(",

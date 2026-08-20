@@ -75,6 +75,10 @@ export type {
   SkillProvider,
   SlashCommand,
   SlashCommandResolve,
+  SearchSessionEntriesResult,
+  SessionRecallHit,
+  MemoryRecord,
+  ListMemoryRecordsResult,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,
@@ -176,6 +180,7 @@ export interface LearningRun {
 export interface LearningState {
   schedule: LearningSchedule; latestRun: LearningRun | null;
   activePolicyVersion: number; canaryPolicyVersion: number | null;
+  rollbackTargetVersion: number | null;
 }
 
 export interface MarketplaceVariant {

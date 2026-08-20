@@ -139,6 +139,32 @@ pub fn dispatch(
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))
         }
+        MethodName::SearchSessionEntries => {
+            let p: wire::SearchSessionEntriesParams = decode(method, params)?;
+            reply(api::search_session_entries(
+                core,
+                &p.session_id,
+                &p.query,
+                p.limit,
+            ))
+        }
+        MethodName::SaveMemoryRecord => {
+            let p: wire::SaveMemoryRecordParams = decode(method, params)?;
+            reply(api::save_memory_record(
+                core,
+                &p.body,
+                p.kind.as_deref(),
+                p.session_id.as_deref(),
+            ))
+        }
+        MethodName::ListMemoryRecords => {
+            let p: wire::ListMemoryRecordsParams = decode(method, params)?;
+            reply(api::list_memory_records(core, &p.scope_key))
+        }
+        MethodName::DeleteMemoryRecord => {
+            let p: wire::DeleteMemoryRecordParams = decode(method, params)?;
+            reply(api::delete_memory_record(core, &p.record_id))
+        }
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;
             reply(api::retry_worker_task(core, &p.child_session_id))
@@ -244,7 +270,12 @@ pub fn dispatch(
         }
         MethodName::RollbackRoutingPolicy => {
             let p: wire::RollbackRoutingPolicyParams = decode(method, params)?;
-            reply(api::rollback_routing_policy(core, p.target_version, &p.explanation))
+            reply(api::rollback_routing_policy(
+                core,
+                &p.workspace_id,
+                p.target_version,
+                &p.explanation,
+            ))
         }
 
         MethodName::GetModelSetup => reply(api::get_model_setup(core)),
@@ -301,14 +332,17 @@ pub fn dispatch(
         }
         MethodName::ResetAllConfig => reply(api::reset_all_config(core)),
 
-        MethodName::GetLearningState => reply(api::get_learning_state(core)),
+        MethodName::GetLearningState => {
+            let p: wire::GetLearningStateParams = decode(method, params)?;
+            reply(api::get_learning_state(core, &p.workspace_id))
+        }
         MethodName::RunLearning => {
             let p: wire::RunLearningParams = decode(method, params)?;
             let kind = match p.trigger_kind {
                 wire::LocalLearningTriggerKind::Manual => learning_job::LearningTriggerKind::Manual,
                 wire::LocalLearningTriggerKind::InApp => learning_job::LearningTriggerKind::InApp,
             };
-            reply(api::run_learning(core, kind))
+            reply(api::run_learning(core, kind, &p.workspace_id))
         }
         MethodName::CancelLearningRun => {
             let p: wire::CancelLearningRunParams = decode(method, params)?;

@@ -61,10 +61,10 @@ describe("SQLite-shaped mock observability", () => {
   });
 
   it("uses one learning runner and reports duplicate triggers as no-ops", async () => {
-    const first = await bridgeApi.runLearning("manual");
+    const first = await bridgeApi.runLearning("manual", "w");
     expect(first).toMatchObject({ status: "noop", duplicate: false });
     expect(first.report?.recommendationOnly).toBe(true);
-    const duplicate = await bridgeApi.runLearning("in_app");
+    const duplicate = await bridgeApi.runLearning("in_app", "w");
     expect(duplicate.id).toBe(first.id);
     expect(duplicate.duplicate).toBe(true);
   });
@@ -191,5 +191,26 @@ describe("suggested-task actions", () => {
     for (const framing of ["You must", "Your task is", "```"]) {
       expect(prepared.draft).not.toContain(framing);
     }
+  });
+
+  it("recalls only the requested session in the mock forest", async () => {
+    const isolated = await bridgeApi.searchSessionEntries("session-1", "isolated workers");
+    expect(isolated.hits.some(hit => hit.snippet.toLowerCase().includes("isolated"))).toBe(true);
+    const other = await bridgeApi.searchSessionEntries("session-other", "isolated workers");
+    expect(other.hits).toEqual([]);
+    await expect(bridgeApi.searchSessionEntries("  ", "hello")).rejects.toThrow("session id");
+  });
+
+  it("saves account pins only under account:local and lists by scope", async () => {
+    const saved = await bridgeApi.saveMemoryRecord("I prefer Conventional Commits");
+    expect(saved.scopeKey).toBe("account:local");
+    expect(saved.provenance).toBe("user_explicit");
+    const listed = await bridgeApi.listMemoryRecords("account:local");
+    expect(listed.records.some(record => record.id === saved.id)).toBe(true);
+    expect((await bridgeApi.listMemoryRecords("workspace:other")).records).toEqual([]);
+    await expect(bridgeApi.listMemoryRecords("  ")).rejects.toThrow("scope");
+    const forgotten = await bridgeApi.deleteMemoryRecord(saved.id);
+    expect(forgotten.status).toBe("deleted");
+    expect((await bridgeApi.listMemoryRecords("account:local")).records.some(record => record.id === saved.id)).toBe(false);
   });
 });

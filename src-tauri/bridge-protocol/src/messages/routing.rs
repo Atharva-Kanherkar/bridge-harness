@@ -51,6 +51,7 @@ pub struct UpdateRouterPreferencesParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RollbackRoutingPolicyParams {
+    pub workspace_id: String,
     /// The policy version to make active again.
     pub target_version: i64,
     /// Why the rollback happened; recorded with the policy change.
@@ -100,12 +101,13 @@ mod tests {
     #[test]
     fn rollback_params_round_trip() {
         let rollback = RollbackRoutingPolicyParams {
+            workspace_id: "w".into(),
             target_version: 7,
             explanation: "canary regressed".into(),
         };
         assert_eq!(
             serde_json::to_value(&rollback).unwrap(),
-            json!({"targetVersion": 7, "explanation": "canary regressed"})
+            json!({"workspaceId": "w", "targetVersion": 7, "explanation": "canary regressed"})
         );
         assert_eq!(round_trip(&rollback), rollback);
     }
