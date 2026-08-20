@@ -345,6 +345,10 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
+    /// Drop any normalization state kept for `provider_session_id`. Called
+    /// when the session's runtime is gone; adapters without per-session state
+    /// ignore it.
+    fn forget_session(&self, _provider_session_id: &str) {}
 }
 
 pub struct AdapterRegistry {
@@ -481,6 +485,12 @@ impl AdapterRegistry {
             .get(id)
             .map(|adapter| adapter.normalize(value))
             .unwrap_or_default()
+    }
+
+    pub fn forget_session(&self, id: &str, provider_session_id: &str) {
+        if let Some(adapter) = self.adapters.get(id) {
+            adapter.forget_session(provider_session_id);
+        }
     }
 
     pub fn refresh_opencode(
@@ -762,6 +772,14 @@ impl HarnessAdapter for OpenCodeAdapter {
         let state = streams.entry(session_key).or_default();
         agent::normalize_opencode_message_with_state(value, state)
     }
+    fn forget_session(&self, provider_session_id: &str) {
+        // "default" aggregates events that arrive without a session id;
+        // per-session teardown must not evict it.
+        if provider_session_id == "default" {
+            return;
+        }
+        self.streams.lock().unwrap().remove(provider_session_id);
+    }
 }
 
 struct CodexAdapter;
@@ -908,6 +926,12 @@ impl HarnessAdapter for ClaudeAdapter {
         let mut streams = self.streams.lock().unwrap();
         let state = streams.entry(session_key).or_default();
         agent::normalize_claude_message_with_state(value, state)
+    }
+    fn forget_session(&self, provider_session_id: &str) {
+        if provider_session_id == "default" {
+            return;
+        }
+        self.streams.lock().unwrap().remove(provider_session_id);
     }
 }
 
@@ -1126,6 +1150,35 @@ mod tests {
         assert!(process_failure_context(&mut child, &tail).is_none());
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn forget_session_drops_stream_state_but_never_the_default_key() {
+        let adapter = OpenCodeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            settings: RwLock::new(Default::default()),
+            catalog: Arc::new(RwLock::new(None)),
+            catalog_error: Arc::new(RwLock::new(None)),
+        };
+        let with_session = serde_json::json!({
+            "type": "message.updated",
+            "properties": {"sessionID": "ses_1", "info": {"id": "m1", "role": "assistant"}}
+        });
+        let without_session = serde_json::json!({
+            "type": "message.updated",
+            "properties": {"info": {"id": "m2", "role": "assistant"}}
+        });
+        let _ = adapter.normalize(&with_session);
+        let _ = adapter.normalize(&without_session);
+        assert!(adapter.streams.lock().unwrap().contains_key("ses_1"));
+        adapter.forget_session("ses_1");
+        adapter.forget_session("default");
+        let streams = adapter.streams.lock().unwrap();
+        assert!(!streams.contains_key("ses_1"), "the ended session is dropped");
+        assert!(
+            streams.contains_key("default"),
+            "the shared fallback entry survives per-session teardown"
+        );
     }
 
     /// The wrapped child must die when its supervisor is SIGKILLed — the path

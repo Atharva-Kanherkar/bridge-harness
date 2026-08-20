@@ -1001,6 +1001,26 @@ fn spawn_reader_thread(
             &state.db.lock().unwrap(),
             &session_id,
         );
+        // The runtime is gone either way (user stop or process exit), so drop
+        // the adapter's normalization state for this provider session — those
+        // maps otherwise grow for the life of the process.
+        {
+            let identifiers: Option<(String, Option<String>)> = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT harness,provider_session_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            if let Some((harness, Some(provider_session_id))) = identifiers {
+                state
+                    .adapter_registry
+                    .forget_session(&harness, &provider_session_id);
+            }
+        }
         let failure_context = exited_runtime.and_then(|mut runtime| runtime.failure_context());
         notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
         let db = state.db.lock().unwrap();
