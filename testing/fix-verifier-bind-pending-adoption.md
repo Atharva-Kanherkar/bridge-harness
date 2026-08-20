@@ -102,3 +102,108 @@ N/A — no HTTP surface. Manual reproduction, for a reviewer with the desktop ap
    `verifying` (previously `completion: null`).
 4. Delegate the follow-up verification worker; it starts in the implementation
    worktree instead of failing with `Query returned no rows`.
+
+---
+
+# Contract amendment — review round 1
+
+Five verified findings against the first implementation. Each is confirmed
+against the code below, and each amends or replaces a clause above.
+
+## A1 — an unroutable verifier must not poison the gate (was finding 1)
+
+`fail_reserved_worker` synthesizes a `Failed` **verification** result for the
+reserved session. That runs the settle path: `settle_verification_result` finds no
+gate, returns `Err`, and `live_turn` falls back to `completion::record_gate_error`,
+which supersedes every live attempt for the parent and writes a new attempt with
+status `failed` and no `escalation`. `completion_allows_ready` returns `true` for a
+failed verdict **only** when `escalation == VERIFY_DEADLINE_ESCALATION`, so the
+parent is pinned `waiting` forever, and `check_runner::stalled_attempts` cannot
+rescue it because it only considers attempts still in `verifying`/
+`changes_requested`.
+
+Replaces contract item 5. The launch must be **aborted**, not settled:
+`delete_reserved_worker` removes the never-started session, the parent is told
+through `report_worker_launch_failure`, and `reconcile_parent_readiness` runs so
+the parent is not left pinned by a reservation that no longer exists. The same
+applies to a genuine database error on the same path.
+
+- `an_unroutable_verifier_is_aborted_without_a_gate` — no `eval_attempts` row is
+  created, no `worker_runtime`/`worker_leases`/`sessions` row survives for the
+  reserved verifier, and the parent is not left `waiting` on it.
+
+## A2 — Git-derived paths always replace the worker's claim (was finding 2)
+
+`worker_adoption::reconcile_with_derived_evidence` replaces `files_changed` only
+`if !derived.is_empty()`, and downgrades unsupported claims to `Blocked` only for
+`Completed`. A handoff can therefore carry a fabricated `filesChanged` past
+reconciliation with a clean tree and open a gate over nothing.
+
+Amends contract item 1. `files_changed` is replaced with the derived list
+**unconditionally, including an empty list**, and the "reported N files but the
+tree is clean" mismatch is recorded for a handoff too. The fatal downgrade to
+`Blocked` stays limited to `Completed`: downgrading a handoff would discard the
+follow-up it asked for, and with an empty `files_changed` it can no longer open a
+gate anyway.
+
+- `a_fabricated_change_set_cannot_open_a_gate` — a handoff claiming files that
+  Git does not show ends with an empty `files_changed`, a recorded mismatch, and
+  no gate.
+
+## A3 — a partial revision is not a completion candidate (was finding 3)
+
+`opens_completion_gate` accepted every changed `needs_delegation`, including a
+worker asking for another *implementation* worker. A verifier could then drive
+that gate to `Verified` while the requested follow-up never ran, and the parent
+notice carried neither `suggestedRole` nor `suggestedTask`, so the orchestrator
+could not see what was actually asked for.
+
+Replaces contract item 1's status rule. A handoff opens a gate only when the
+worker's own `suggestedRole` is `verification` — "the implementation is done,
+please verify" is a completion candidate; "I need another implementation worker"
+is a partial revision and opens nothing. `suggestedRole` is always populated for
+`needs_delegation` (`delegation.rs` derives it from `suggestedTask` and defaults
+to `implementation`), so the default direction is the safe one.
+
+A partial revision stays fully reported: the routing notice now carries
+`suggestedRole` and `suggestedTask` and instructs the orchestrator to route the
+follow-up the worker asked for. If verification is delegated anyway, A1's typed
+rejection explains why it cannot bind.
+
+- `only_a_handoff_asking_for_verification_opens_a_gate` — `suggestedRole:
+  verification` opens a gate; `implementation`, `research`, and `planning` do not.
+
+## A4 — adoption must not remove a checkout another worker is running in (was finding 4)
+
+`worker_adoption::release_worktree` asks only whether the *implementation* worker
+is reusable. A verifier bound to that path is a different session with no lease
+on it, so adoption — or the `release_terminal_worktrees` maintenance pass — can
+remove the verifier's checkout while verification is reserved or running.
+`git::safe_remove_worker_worktree` refuses a dirty tree, which hides the bug in
+the reported scenario but not once the work is committed.
+
+New clause. `release_worktree` retains the worktree while any **other** live
+session is bound to that path in `worker_runtime`, and records
+`worker.worktree_retained` with the borrower named. This covers both a reserved
+verifier (bound at launch, session `starting`) and a running one.
+
+- `a_worktree_another_live_worker_runs_in_is_retained` — adoption settles the
+  binding but leaves the directory in place while a live verifier is bound to it,
+  and collects it once that verifier is terminal.
+
+## A5 — only a live gate is a verification target (was finding 5)
+
+`verification_target_path` filtered `status IN ('verifying','changes_requested',
+'failed')` and ordered within that filter, so it could hand back a `failed`
+attempt — which `settle_verification_result` treats as terminal and refuses to
+re-open — and could select an *older* failure even when a newer terminal attempt
+existed.
+
+Amends contract item 4. The newest attempt for the session is selected first,
+with no status filter, and a target is returned only when that attempt is
+`verifying` or `changes_requested`. Anything else is `None`, which A1 reports as
+the typed unroutable reason.
+
+- `only_the_newest_live_attempt_is_a_verification_target` — a newer `verified`,
+  `superseded`, or `failed` attempt hides an older `verifying` one, and a `failed`
+  newest attempt is never a target.
