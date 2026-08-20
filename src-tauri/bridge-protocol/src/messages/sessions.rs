@@ -134,6 +134,52 @@ pub struct SendTurnParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmitInputParams {
+    pub session_id: String,
+    pub text: String,
+}
+
+/// What Bridge did with submitted user input. These three modes are the whole
+/// contract: a client that receives anything else is talking to a server it
+/// does not understand, so the enum is closed rather than tolerant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum InputDisposition {
+    /// Nothing was running; the input started a normal turn.
+    StartedNewTurn,
+    /// A turn was running and the provider took the input natively.
+    SteeredActiveTurn,
+    /// A turn was running and the provider cannot take input mid-turn, so the
+    /// input is durably queued for delivery at the next phase boundary.
+    QueuedForPhaseBoundary,
+}
+
+impl InputDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StartedNewTurn => "startedNewTurn",
+            Self::SteeredActiveTurn => "steeredActiveTurn",
+            Self::QueuedForPhaseBoundary => "queuedForPhaseBoundary",
+        }
+    }
+}
+
+/// `sessions/submit_input`'s result. The disposition is what the client renders;
+/// `queuedInputId` names the durable row so the optimistic message can be
+/// reconciled with its delivery, and the interceptions mirror
+/// `sessions/prepare_turn` so a steered or queued message reports replaced
+/// secrets exactly like a new turn does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitInputResult {
+    pub disposition: InputDisposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued_input_id: Option<String>,
+    pub interceptions: Vec<SecretInterception>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StopSessionParams {
     pub session_id: String,
@@ -143,6 +189,19 @@ pub struct StopSessionParams {
 #[serde(rename_all = "camelCase")]
 pub struct InterruptTurnParams {
     pub session_id: String,
+}
+
+/// `sessions/retry_worker_task` — re-dispatch a finished worker's objective
+/// because the user asked for it.
+///
+/// The counterpart to the automatic retry Bridge no longer takes on its own: the
+/// worker's failure now reaches the user with its real cause, and this is the
+/// action offered alongside it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetryWorkerTaskParams {
+    /// The worker whose objective should run again.
+    pub child_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -240,6 +299,12 @@ mod tests {
             serde_json::to_value(&start).unwrap(),
             json!({"workspaceId": "w-1", "harness": "claude"})
         );
+        let submit = SubmitInputParams { session_id: "s-1".into(), text: "steer left".into() };
+        assert_eq!(
+            serde_json::to_value(&submit).unwrap(),
+            json!({"sessionId": "s-1", "text": "steer left"})
+        );
+        assert_eq!(round_trip(&submit), submit);
         let turn = SendTurnParams { session_id: "s-1".into(), text: "ship it".into() };
         assert_eq!(
             serde_json::to_value(&turn).unwrap(),
@@ -256,6 +321,49 @@ mod tests {
         ] {
             assert_eq!(params["sessionId"], json!("s"));
         }
+    }
+
+    #[test]
+    fn submit_input_dispositions_are_a_closed_set() {
+        for (disposition, wire) in [
+            (InputDisposition::StartedNewTurn, "startedNewTurn"),
+            (InputDisposition::SteeredActiveTurn, "steeredActiveTurn"),
+            (InputDisposition::QueuedForPhaseBoundary, "queuedForPhaseBoundary"),
+        ] {
+            assert_eq!(serde_json::to_value(disposition).unwrap(), json!(wire));
+            assert_eq!(disposition.as_str(), wire);
+        }
+        // A client must not be able to invent a fourth mode, and the server
+        // must not be able to ship one without regenerating the contract.
+        assert!(serde_json::from_value::<InputDisposition>(json!("queued")).is_err());
+        assert!(serde_json::from_value::<InputDisposition>(json!("started_new_turn")).is_err());
+
+        let queued = SubmitInputResult {
+            disposition: InputDisposition::QueuedForPhaseBoundary,
+            queued_input_id: Some("q-1".into()),
+            interceptions: vec![SecretInterception {
+                reference: "bridge-secret://1".into(),
+                detector: "openai_api_key".into(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&queued).unwrap()["disposition"],
+            json!("queuedForPhaseBoundary")
+        );
+        assert_eq!(round_trip(&queued), queued);
+
+        let steered = SubmitInputResult {
+            disposition: InputDisposition::SteeredActiveTurn,
+            queued_input_id: None,
+            interceptions: Vec::new(),
+        };
+        let wire = serde_json::to_value(&steered).unwrap();
+        assert_eq!(
+            wire,
+            json!({"disposition": "steeredActiveTurn", "interceptions": []}),
+            "an absent queue id stays off the wire"
+        );
+        assert_eq!(round_trip(&steered), steered);
     }
 
     #[test]
@@ -280,6 +388,15 @@ mod tests {
         assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({})).is_err());
         assert!(serde_json::from_value::<UpdateChatModelParams>(json!({"sessionId": "s"})).is_err());
         assert!(serde_json::from_value::<InterruptTurnParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<RetryWorkerTaskParams>(json!({})).is_err());
+        assert!(
+            serde_json::from_value::<RetryWorkerTaskParams>(json!({"sessionId": "s"})).is_err(),
+            "a retry names the worker, not the session asking"
+        );
+        assert_eq!(
+            serde_json::to_value(RetryWorkerTaskParams { child_session_id: "w-1".into() }).unwrap(),
+            json!({"childSessionId": "w-1"})
+        );
         assert!(serde_json::from_value::<StartSessionParams>(json!({})).is_err());
         assert!(serde_json::from_value::<StartChatParams>(json!({})).is_err());
         assert!(serde_json::from_value::<StopSessionParams>(json!({})).is_err());
@@ -290,6 +407,17 @@ mod tests {
         assert!(
             serde_json::from_value::<SendTurnParams>(json!({"sessionId": "s"})).is_err(),
             "text is required"
+        );
+        assert!(
+            serde_json::from_value::<SubmitInputParams>(json!({"sessionId": "s"})).is_err(),
+            "text is required"
+        );
+        assert!(
+            serde_json::from_value::<SubmitInputParams>(
+                json!({"sessionId": "s", "text": "t", "mode": "steer"})
+            )
+            .is_err(),
+            "the disposition is the server's decision, never a client hint"
         );
         assert!(
             serde_json::from_value::<ReplaySessionEventsParams>(json!({"sessionId": "s"}))

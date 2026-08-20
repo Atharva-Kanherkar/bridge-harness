@@ -18,6 +18,7 @@ import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
+import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
@@ -131,7 +132,7 @@ export function App() {
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
-  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string }[]>([]);
+  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
@@ -226,6 +227,19 @@ export function App() {
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  // What the submit affordance does while this session is working. Read from the
+  // harness's advertised capabilities: a provider that cannot take input
+  // mid-turn gets its follow-up queued, and the button says Queue, not Steer.
+  const activeAction = useMemo(
+    () => activeTurnAction(adapters.find(adapter => adapter.id === session?.harness)?.capabilities),
+    [adapters, session?.harness],
+  );
+  // Folded from the durable event feed, so a reconnect reports the same waiting
+  // follow-ups the composer showed before it.
+  const queuedFollowUpCount = useMemo(
+    () => (session ? queuedFollowUps(session.id, state.events).length : 0),
+    [session, state.events],
+  );
   const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
   const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
   const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
@@ -677,7 +691,14 @@ export function App() {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
       }
-      await bridgeApi.sendTurn(target.id, text);
+      // One call whatever the session is doing. The backend decides between
+      // starting a turn, steering the live one, and durably queueing, and says
+      // which — so the message can be shown in the state it is actually in.
+      const outcome = await bridgeApi.submitInput(target.id, text);
+      if (outcome.disposition !== "startedNewTurn") {
+        const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
+        setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
+      }
       if (localOnly) {
         setPending(current => current.filter(item => item.key !== key));
         await reload();
@@ -690,6 +711,13 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  // Re-run a failed worker's objective because the user asked. The reason it
+  // failed is on the card next to this action, which is the point: Bridge no
+  // longer spends this turn on a cause it cannot show has changed.
+  const retryWorkerTask = useCallback(async (childSessionId: string) => {
+    await bridgeApi.retryWorkerTask(childSessionId);
+    await reload();
+  }, [reload]);
   const waiveCompletion = useCallback(async (attemptId: string, checkIds: string[], reason: string) => {
     const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
     setForest(current => current ? { ...current, completion } : current);
@@ -870,6 +898,7 @@ export function App() {
                   completion={forest?.completion}
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
+                  onRetryWorker={retryWorkerTask}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
                   continuationFidelity={session?.continuationFidelity}
@@ -881,6 +910,15 @@ export function App() {
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
               <div className="relative z-10 flex-none safe-bottom">
+                {/* A follow-up the provider cannot take mid-turn is held, not
+                    dropped. Saying so is the difference between a considered
+                    queue and an agent that ignored you. */}
+                {queuedFollowUpCount > 0 && !isWorkerView && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
+                    <Clock3 size={12} aria-hidden="true" />
+                    <span>{`${queuedFollowUpCount} follow-up${queuedFollowUpCount === 1 ? "" : "s"} queued — sent when this step finishes`}</span>
+                  </div>
+                </div>}
                 {hasRepo && workspace && workspace.dirtyFiles > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs">
                     <FileDiff size={12} aria-hidden="true" />
@@ -928,8 +966,11 @@ export function App() {
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}
+                    activeAction={activeAction}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
-                    onPlusClick={() => { setComposer(""); setSlashDismissed(false); }}
+                    // What the control's own label says: open the workspace
+                    // dialog. It must never erase the draft the user is holding.
+                    onPlusClick={() => { setTitle(""); setModal("workspace"); }}
                     trailing={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}

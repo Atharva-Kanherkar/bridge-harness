@@ -33,6 +33,21 @@ pub trait AdapterRuntime: Send {
     ) -> Result<(), BridgeError> {
         self.send_turn(text)
     }
+    /// Whether this provider can take a user message while one of its own
+    /// turns is still running, and fold it into that turn.
+    ///
+    /// The default is `false` on purpose: for most providers a second
+    /// `turn/start` against a live turn is either rejected or silently races the
+    /// one in flight, so Bridge queues instead of guessing. A provider only
+    /// advertises `true` where its transport is genuinely a stream of user
+    /// messages the running turn consumes.
+    ///
+    /// Keep this in step with the `steering` capability on the harness
+    /// descriptor — that string is how the UI knows to offer Steer instead of
+    /// Queue before the input is submitted.
+    fn supports_active_turn_steering(&self) -> bool {
+        false
+    }
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
     /// Ask the provider to report current subscription rate-limit usage.
@@ -786,6 +801,10 @@ impl HarnessAdapter for ClaudeAdapter {
                 "approvals",
                 "usage",
                 "interrupt",
+                // The sidecar drives one streaming-input query, so a user
+                // message written mid-turn is consumed by the turn in flight
+                // rather than starting a second one.
+                "steering",
             ]
             .into_iter()
             .map(str::to_owned)

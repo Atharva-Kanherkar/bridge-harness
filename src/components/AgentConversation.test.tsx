@@ -183,6 +183,54 @@ describe("AgentConversation", () => {
     expect(html).toContain("This branch&#x27;s context predates the current file state.");
     expect(html).toContain('role="alert"');
   });
+  it("names a worker's real failure cause and offers the retry Bridge stopped taking", () => {
+    const failed = event(20, "delegation.result", {
+      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
+      text: "Could not finish the migration guard.",
+      data: {
+        childSessionId: "w1", delivered: true, status: "failed",
+        failureClass: "permanent",
+        failureCause: "a check the worker ran failed: cargo test store",
+        canRetry: true,
+      },
+    });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[failed]} onRetryWorker={async () => undefined} onOpenSession={() => undefined}/>);
+    // The cause, not "Subagent finished".
+    expect(html).toContain("a check the worker ran failed: cargo test store");
+    expect(html).toContain("Retry this task");
+    expect(html).toContain('role="alert"');
+    expect(html).not.toContain("Subagent finished");
+  });
+
+  it("says plainly when a worker's result could not be read, and does not dress it as a task failure", () => {
+    const unreadable = event(21, "delegation.result", {
+      itemId: "result-w2", role: "system", status: "completed", title: "Worker result",
+      text: "I refactored the store and the tests pass.",
+      data: {
+        childSessionId: "w2", delivered: true, status: "protocol_invalid",
+        failureClass: "protocol_invalid",
+        failureCause: "the worker's result could not be read as a result",
+        canRetry: true,
+      },
+    });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[unreadable]} onRetryWorker={async () => undefined}/>);
+    expect(html).toContain("could not be read");
+    expect(html).toContain("nothing below has been verified");
+    // The worker's own words survive, unverified.
+    expect(html).toContain("the tests pass");
+  });
+
+  it("leaves a successful worker result as the quiet row it was", () => {
+    const done = event(22, "delegation.result", {
+      itemId: "result-w3", role: "system", status: "completed", title: "Worker result",
+      text: "Auth module refactored.",
+      data: { childSessionId: "w3", delivered: true, status: "completed", canRetry: false },
+    });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[done]} onRetryWorker={async () => undefined}/>);
+    expect(html).toContain("Subagent finished");
+    expect(html).not.toContain("Retry this task");
+  });
+
   it("surfaces projected continuation fidelity with stronger mid-turn warning", () => {
     const boundary = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} continuationFidelity="projected_at_boundary"/>);
     expect(boundary).toContain("phase-boundary projection");
