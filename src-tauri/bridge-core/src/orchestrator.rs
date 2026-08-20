@@ -85,42 +85,7 @@ mod tests {
     #[test]
     fn briefing_uses_provider_neutral_typed_routing_vocabulary() {
         let text = briefing();
-        for value in [
-            "research",
-            "implementation",
-            "verification",
-            "planning",
-            "documentation",
-            "fast",
-            "standard",
-            "strong",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "bridge-delegate",
-            "bridge-worker-result",
-            "needs_delegation",
-            "flat topology",
-            "trivial one-shot local actions",
-            "raw worker transcript",
-            "readOnly",
-            "isolated",
-            "shared",
-            "full",
-            "research-result",
-            "implementation-result",
-            "there is no `none`",
-            "structured MCP/API",
-            "attached authenticated tab",
-            "local headless browser",
-            "optional remote browser",
-            "screenshot-first computer use",
-            "automated_test",
-            "untrusted evidence",
-            "```mermaid",
-            "sandboxed iframe",
-        ] {
+        for value in crate::prompts::REQUIRED_MARKERS {
             assert!(text.contains(value), "briefing is missing {value:?}");
         }
         let lower = text.to_ascii_lowercase();
