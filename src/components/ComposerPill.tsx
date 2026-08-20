@@ -92,7 +92,9 @@ export function ComposerPill({
             type="button"
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
             onClick={onPlusClick}
-            disabled={disabled || working || !onPlusClick}
+            // Not gated on `working`: opening a workspace is a shell action, and
+            // an orchestrator mid-turn is exactly when the user reaches for it.
+            disabled={disabled || !onPlusClick}
             aria-label="New workspace"
             title="New workspace"
           >
