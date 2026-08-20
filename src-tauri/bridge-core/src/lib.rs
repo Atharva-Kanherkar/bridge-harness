@@ -45,6 +45,7 @@ pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
+pub mod process_ledger;
 pub mod prompt_compiler;
 pub mod prompts;
 /// Test-only: asserts core DTOs and their bridge-protocol mirrors agree.

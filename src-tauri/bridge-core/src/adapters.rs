@@ -12,6 +12,7 @@ use std::{
     any::Any,
     collections::HashMap,
     io::BufRead,
+    path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex, RwLock},
     thread,
@@ -143,6 +144,60 @@ pub fn process_failure_context(
         (None, Some(tail)) => Some(format!("Provider stderr tail:\n{tail}")),
         (None, None) => None,
     }
+}
+
+pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
+
+/// Kills the wrapped child when the supervisor that spawned it dies. `Drop`
+/// never runs after SIGKILL, a crash, or an aborted test binary, and boot
+/// recovery only helps once something boots again — this monitor closes the
+/// window in between by polling its own parentage and tearing the child down
+/// the moment it is re-parented to init.
+#[cfg(unix)]
+const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
+"$cmd" "$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT
+while kill -0 "$child" 2>/dev/null; do
+  ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+  if [ -z "$ppid" ] || [ "$ppid" -le 1 ]; then
+    kill -TERM "$child" 2>/dev/null
+    sleep 2
+    kill -KILL "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+    exit 143
+  fi
+  sleep 2 &
+  wait $! 2>/dev/null
+done
+wait "$child""#;
+
+/// A `Command` for `executable` wrapped in the parent-death watchdog. The
+/// wrapper shares the child's process group, so group termination and the
+/// existing identity/tracking primitives keep working against the returned
+/// process id; the child's exit status propagates through the wrapper.
+#[cfg(unix)]
+pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
+    if std::env::var_os(PARENT_WATCHDOG_DISABLE_ENV).is_some() {
+        let mut command = Command::new(executable);
+        command.args(args);
+        return command;
+    }
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(PARENT_WATCHDOG_SCRIPT)
+        .arg("bridge-watchdog")
+        .arg(executable);
+    command.args(args);
+    command
+}
+
+#[cfg(not(unix))]
+pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(executable);
+    command.args(args);
+    command
 }
 
 #[cfg(unix)]
@@ -1066,5 +1121,76 @@ mod tests {
         assert!(process_failure_context(&mut child, &tail).is_none());
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// The wrapped child must die when its supervisor is SIGKILLed — the path
+    /// where no destructor, drain, or boot recovery can help — and must stay
+    /// up while the supervisor lives.
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_reaps_child_after_supervisor_sigkill() {
+        use std::time::Instant;
+        let marker = format!("300.0{:03}", std::process::id() % 1000);
+        // An exact-command pattern so neither the watchdog shell nor the
+        // intermediate supervisor (both carry the marker in their argv)
+        // satisfies the liveness probe.
+        let pattern = format!("^/bin/sleep {marker}$");
+        let mut intermediate = Command::new("/bin/sh");
+        intermediate
+            .env("BRIDGE_WATCHDOG_UNDER_TEST", PARENT_WATCHDOG_SCRIPT)
+            .args([
+                "-c",
+                &format!(
+                    "/bin/sh -c 'eval \"$BRIDGE_WATCHDOG_UNDER_TEST\"' bridge-watchdog /bin/sleep {marker} & sleep 600"
+                ),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut intermediate);
+        let mut supervisor = intermediate.spawn().expect("intermediate supervisor spawns");
+
+        let sleeper_running = || {
+            Command::new("pgrep")
+                .args(["-f", &pattern])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !sleeper_running() {
+            assert!(
+                Instant::now() < deadline,
+                "the wrapped child never started"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        // Longer than a watchdog poll interval: a false trigger would have
+        // reaped the child by now.
+        thread::sleep(Duration::from_millis(2_500));
+        assert!(
+            sleeper_running(),
+            "the watchdog must not reap while the supervisor lives"
+        );
+
+        let _ = Command::new("kill")
+            .args(["-KILL", &supervisor.id().to_string()])
+            .status();
+        let _ = supervisor.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while sleeper_running() {
+            assert!(
+                Instant::now() < deadline,
+                "the watchdog must reap the child once the supervisor dies"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
+
+        // The intermediate's own `sleep 600` shares the group; sweep it so the
+        // test leaves nothing behind.
+        let _ = terminate_process_group(supervisor.id());
     }
 }

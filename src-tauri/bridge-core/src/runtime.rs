@@ -248,6 +248,14 @@ impl BridgeCore {
         let connection = store::open(&db_path)?;
         let telemetry_connection = store::open_telemetry(&telemetry_db_path)?;
         session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)?;
+        // Children beyond the per-session claims — discovery and control
+        // servers above all — are reaped from the durable launch ledger, and
+        // pre-ledger opencode orphans by the one-time sweep. Both fail closed
+        // and neither may abort boot: a stuck foreign process is not this
+        // instance's failure.
+        crate::process_ledger::register_ledger_root(config.data_dir.join("process-ledger"));
+        let _ = crate::process_ledger::recover(&connection);
+        let _ = crate::process_ledger::sweep_legacy_opencode_orphans(&connection);
         session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)?;
         // Adoption state must survive restart: a pending row whose worktree is
         // gone would otherwise block its parent forever.

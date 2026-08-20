@@ -80,6 +80,8 @@ pub struct OpenCodeModel {
 
 pub struct OpenCodeRuntime {
     child: Child,
+    // Held so the launch record outlives the child and is removed with it.
+    _ledger: crate::process_ledger::LaunchGuard,
     stderr_tail: crate::adapters::StderrTail,
     client: Option<Client>,
     base_url: String,
@@ -156,15 +158,12 @@ fn launch(
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
-    let mut command = Command::new(&binary);
+    let port_argument = port.to_string();
+    let mut command = crate::adapters::supervised_command(
+        &binary,
+        &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
+    );
     command
-        .args([
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ])
         .current_dir(request.cwd)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
         .env("OPENCODE_SERVER_PASSWORD", &server_password)
@@ -175,6 +174,7 @@ fn launch(
         .stderr(Stdio::piped());
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
+    let ledger = crate::process_ledger::record_launch("opencode.session", request.cwd, child.id());
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let client = match build_authenticated_client(&server_password) {
         Ok(client) => client,
@@ -261,6 +261,7 @@ fn launch(
     Ok(StartedOpenCode {
         runtime: OpenCodeRuntime {
             child,
+            _ledger: ledger,
             stderr_tail,
             client: Some(client),
             base_url,
@@ -912,6 +913,20 @@ fn validate_path_id(kind: &str, value: &str) -> Result<(), BridgeError> {
     })
 }
 
+/// Owns a short-lived control server: the child dies and its launch record
+/// clears on every exit from the scope, unwinding included, instead of only on
+/// the straight-line return path.
+struct ControlServer {
+    child: Child,
+    _ledger: crate::process_ledger::LaunchGuard,
+}
+
+impl Drop for ControlServer {
+    fn drop(&mut self) {
+        stop_child(&mut self.child);
+    }
+}
+
 fn with_control_server<T>(
     executable: &Path,
     directory: &str,
@@ -920,15 +935,12 @@ fn with_control_server<T>(
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let password = uuid::Uuid::new_v4().to_string();
-    let mut command = Command::new(executable);
+    let port_argument = port.to_string();
+    let mut command = crate::adapters::supervised_command(
+        executable,
+        &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
+    );
     command
-        .args([
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ])
         .current_dir(directory)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
         .env("OPENCODE_SERVER_PASSWORD", &password)
@@ -936,18 +948,21 @@ fn with_control_server<T>(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     crate::adapters::configure_process_group(&mut command);
-    let mut child = command.spawn()?;
-    let result = match build_authenticated_client(&password) {
+    let child = command.spawn()?;
+    let ledger = crate::process_ledger::record_launch("opencode.control", directory, child.id());
+    let mut server = ControlServer {
+        child,
+        _ledger: ledger,
+    };
+    match build_authenticated_client(&password) {
         Ok(client) => {
-            let result = wait_until_ready(&client, &base_url, &mut child)
+            let result = wait_until_ready(&client, &base_url, &mut server.child)
                 .and_then(|_| action(&client, &base_url));
             drop_client_safely(client);
             result
         }
         Err(error) => Err(error),
-    };
-    stop_child(&mut child);
-    result
+    }
 }
 
 fn parse_catalog(
