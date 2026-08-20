@@ -93,7 +93,13 @@ pub fn dispatch(
         }
         MethodName::ReplaySessionEvents => {
             let p: wire::ReplaySessionEventsParams = decode(method, params)?;
-            reply(api::replay_session_events(core, &p.session_id, p.after_sequence, p.limit))
+            reply(api::replay_session_events(
+                core,
+                &p.session_id,
+                p.after_sequence,
+                p.limit,
+                p.tail,
+            ))
         }
         MethodName::ActivateSessionEntry => {
             let p: wire::ActivateSessionEntryParams = decode(method, params)?;
@@ -138,6 +144,32 @@ pub fn dispatch(
         MethodName::CompactSession => {
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))
+        }
+        MethodName::SearchSessionEntries => {
+            let p: wire::SearchSessionEntriesParams = decode(method, params)?;
+            reply(api::search_session_entries(
+                core,
+                &p.session_id,
+                &p.query,
+                p.limit,
+            ))
+        }
+        MethodName::SaveMemoryRecord => {
+            let p: wire::SaveMemoryRecordParams = decode(method, params)?;
+            reply(api::save_memory_record(
+                core,
+                &p.body,
+                p.kind.as_deref(),
+                p.session_id.as_deref(),
+            ))
+        }
+        MethodName::ListMemoryRecords => {
+            let p: wire::ListMemoryRecordsParams = decode(method, params)?;
+            reply(api::list_memory_records(core, &p.scope_key))
+        }
+        MethodName::DeleteMemoryRecord => {
+            let p: wire::DeleteMemoryRecordParams = decode(method, params)?;
+            reply(api::delete_memory_record(core, &p.record_id))
         }
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;
@@ -244,7 +276,12 @@ pub fn dispatch(
         }
         MethodName::RollbackRoutingPolicy => {
             let p: wire::RollbackRoutingPolicyParams = decode(method, params)?;
-            reply(api::rollback_routing_policy(core, p.target_version, &p.explanation))
+            reply(api::rollback_routing_policy(
+                core,
+                &p.workspace_id,
+                p.target_version,
+                &p.explanation,
+            ))
         }
 
         MethodName::GetModelSetup => reply(api::get_model_setup(core)),
@@ -255,6 +292,16 @@ pub fn dispatch(
             reply(api::save_model_profiles(core, &profiles))
         }
         MethodName::ResetModelProfiles => reply(api::reset_model_profiles(core)),
+
+        MethodName::GetSuggestionSettings => reply(api::get_suggestion_settings(core)),
+        MethodName::SaveSuggestionSettings => {
+            let p: wire::SaveSuggestionSettingsParams = decode(method, params)?;
+            reply(api::save_suggestion_settings(core, &p))
+        }
+        MethodName::SuggestCompletion => {
+            let p: wire::SuggestCompletionParams = decode(method, params)?;
+            reply(api::suggest_completion(core, &p))
+        }
 
         MethodName::GetConfigState => reply(api::get_config_state(core)),
         MethodName::SaveHarnessConfig => {
@@ -291,14 +338,17 @@ pub fn dispatch(
         }
         MethodName::ResetAllConfig => reply(api::reset_all_config(core)),
 
-        MethodName::GetLearningState => reply(api::get_learning_state(core)),
+        MethodName::GetLearningState => {
+            let p: wire::GetLearningStateParams = decode(method, params)?;
+            reply(api::get_learning_state(core, &p.workspace_id))
+        }
         MethodName::RunLearning => {
             let p: wire::RunLearningParams = decode(method, params)?;
             let kind = match p.trigger_kind {
                 wire::LocalLearningTriggerKind::Manual => learning_job::LearningTriggerKind::Manual,
                 wire::LocalLearningTriggerKind::InApp => learning_job::LearningTriggerKind::InApp,
             };
-            reply(api::run_learning(core, kind))
+            reply(api::run_learning(core, kind, &p.workspace_id))
         }
         MethodName::CancelLearningRun => {
             let p: wire::CancelLearningRunParams = decode(method, params)?;
@@ -448,6 +498,17 @@ pub fn dispatch(
         MethodName::ExecuteSkillChange => {
             let p: wire::ExecuteSkillChangeParams = decode(method, params)?;
             reply(api::execute_skill_change(core, &p.confirmation_id))
+        }
+
+        MethodName::AutomationCatalog => reply(api::automation_catalog(core)),
+        MethodName::ExecuteAutomationAction => {
+            let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
+            reply(api::execute_automation_action(
+                core,
+                into_core(method, &p.provider)?,
+                &p.id,
+                into_core(method, &p.action)?,
+            ))
         }
     }
 }

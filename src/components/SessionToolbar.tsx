@@ -1,4 +1,4 @@
-import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, Settings2, Square } from "lucide-react";
+import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, Search, Settings2, Square } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
@@ -31,6 +31,9 @@ export type SessionToolbarProps = {
   onToggleFullscreen: () => void;
   /** Repo sessions only. */
   onOpenRouterSettings?: () => void;
+  /** Search this chat's forest. Direct chats included. */
+  onToggleRecall?: () => void;
+  recallOpen?: boolean;
   /** Live sessions only. */
   onEnd?: () => void;
   busy?: boolean;
@@ -50,6 +53,8 @@ export function SessionToolbar({
   fullscreen,
   onToggleFullscreen,
   onOpenRouterSettings,
+  onToggleRecall,
+  recallOpen = false,
   onEnd,
   busy = false,
 }: SessionToolbarProps) {
@@ -101,6 +106,22 @@ export function SessionToolbar({
 
       {model && (
         <p className="hidden shrink-0 truncate text-[11px] text-muted-foreground lg:block">{model}</p>
+      )}
+
+      {onToggleRecall && (
+        <button
+          type="button"
+          onClick={onToggleRecall}
+          aria-pressed={recallOpen}
+          aria-label="Search this chat"
+          title="Search this chat"
+          className={cn(
+            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors",
+            recallOpen ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+        >
+          <Search size={15} strokeWidth={1.8} aria-hidden="true" />
+        </button>
       )}
 
       <button

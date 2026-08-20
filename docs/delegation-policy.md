@@ -18,6 +18,12 @@ A background worker's in-session approval card renders on the *worker's* convers
 
 `waiting` is excluded from the stall watchdog because it is legitimately idle, so it has its own deadline (`WORKER_APPROVAL_TIMEOUT_SECONDS`, 30 minutes). Past it the worker is resolved to a terminal `blocked` typed result naming the unanswered approval, which releases the parent. Entering and leaving `waiting` always moves the durable `waiting_since` stamp, so a resolved approval cannot leave an expired-looking timestamp behind.
 
+### Mid-run visibility
+
+A worker is not a black box between spawn and its typed result. Every routing notice Bridge sends a parent carries a `fleet` digest — per live child: lifecycle, task family, retry count, the one-line `progress_summary` derived from the child's own event stream, and any waiting reason. On demand, the orchestrator emits one fenced `bridge-peek` block (`{}` for all children, `{"sessionId":"…"}` for one) and Bridge replies with a `bridge-worker-activity` digest that adds each worker's most recent durable tool calls and messages, head-truncated and capped (`PEEK_MAX_ENTRIES`).
+
+The digest is host-built from `worker_runtime` and `session_entries`; the model never sees, and must never request, a raw worker transcript. Digest text is evidence about the worker, not instructions to the parent. The same data feeds the user's side: Mission Control tiles show `progress_summary` and waiting reasons, and the worker detail view replays the child's durable event log merged with the live stream.
+
 ## Stale base branches
 
 `RepositoryDivergence` compares a conversation entry's saved local stamp with the current local tree; both sides can be months behind the default branch and still read "aligned". A separate check measures the workspace against the best available fetched ref for its upstream or default branch — tracked upstream first, then `origin/HEAD`, then a conventional local default — and reports ahead/behind counts, the compared ref's own age, and whether a fetch was attempted and succeeded, so an offline stale ref is never presented as current truth.
@@ -33,6 +39,8 @@ Provider processes are not reattached after a Bridge supervisor crash. Each Code
 Every worker route now records the complete harness/model candidate inventory, reason-coded exclusions, conservative prediction, baseline, recommendation, executed candidate, deterministic policy outcome, route status, and eventual worker outcome. Predictions combine explicit tier priors with durable task-family outcomes for pass probability, latency, normalized quota cost, and retry risk. Sparse history remains visibly prior-weighted; it never turns missing data into certainty.
 
 The router starts in `shadow` mode per workspace. Shadow recommendations are measured while the baseline route continues to execute. Autonomous mode cannot be enabled until the workspace has at least 20 completed shadow outcomes with fewer than 5% no-route/manual selections. Users may pin or exclude harnesses and models, but preferences cannot revive a candidate excluded by availability, tools, platform, permissions, quota, context, risk, or the deterministic capability-unit budget. Explicit harness/model selections are retained and labeled as manual overrides.
+
+Quota and context exclusions come only from **live** sessions in that workspace (`working`, `waiting`, `starting`, `checkpointing`, `resuming`, `warm`, `restored`, and `ended_at` still null). An ended or ready session that last reported `usage_percent=100` is unknown, which stays eligible — it must not permanently mark the harness `QuotaExhausted` or `ContextExhausted`.
 
 Learning selects a candidate before the existing policy gate; it does not replace that gate. Owned-path provenance, approval, depth, concurrency, worktree, retry, and budget rules in Rust still decide whether the selected route may spawn, resume, queue, or run at all. Failed worker results become negative outcome labels, not permission to alter safety policy. Escalation only moves to a strictly higher eligible capability tier and is terminal after `strong`.
 
@@ -57,13 +65,13 @@ Default limits are three workers per user turn, one strong worker, 24 capability
 New decision-log entries include a versioned snapshot of every deterministic policy input. Replay the persisted log against the current defaults without starting a provider or writing to the database:
 
 ```sh
-cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db
+cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db --workspace WORKSPACE_ID
 ```
 
 To measure a proposed policy, provide a complete JSON `PolicyConfig` using the camel-cased fields in the report:
 
 ```sh
-cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db --candidate candidate-policy.json
+cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db --workspace WORKSPACE_ID --candidate candidate-policy.json
 ```
 
 The JSON report separates exact matches, route/reason transitions, route totals, and capability units assessed. Pre-snapshot decisions are counted as `legacySkipped`; malformed or unknown-version records are listed as invalid instead of becoming silent evidence. This is a structural regression and sensitivity benchmark. Quality, realized provider cost, and savings still require outcome labels and billing data, so the replay report deliberately makes none of those claims.

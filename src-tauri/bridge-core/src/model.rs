@@ -470,19 +470,6 @@ pub struct SessionHead {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskKnowledge {
-    pub id: String,
-    pub workspace_id: String,
-    pub session_id: Option<String>,
-    pub kind: String,
-    pub body: String,
-    pub source_entry_id: Option<String>,
-    pub superseded_by: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct WorkerLease {
     pub session_id: String,
     pub workspace_id: String,
@@ -513,6 +500,15 @@ pub struct WorkerRuntimeRecord {
     pub worktree_branch: Option<String>,
     pub last_result: Option<serde_json::Value>,
     pub last_activity_at: Option<String>,
+    // Written by their own UPDATE statements, never by the upsert: the upsert
+    // races the approval and event paths that maintain them, and a stale DTO
+    // must not clobber a fresher observation.
+    #[serde(default)]
+    pub waiting_since: Option<String>,
+    #[serde(default)]
+    pub waiting_reason: Option<String>,
+    #[serde(default)]
+    pub progress_summary: Option<String>,
     pub updated_at: String,
 }
 

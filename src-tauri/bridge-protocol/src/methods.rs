@@ -67,10 +67,15 @@ methods![
     (SendTurn, "sessions", "send_turn"),
     (SubmitInput, "sessions", "submit_input"),
     (CompactSession, "sessions", "compact_session"),
+    (SearchSessionEntries, "sessions", "search_session_entries"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
+    // memory — explicit named-scope pins; not recall, not the router
+    (SaveMemoryRecord, "memory", "save_memory_record"),
+    (ListMemoryRecords, "memory", "list_memory_records"),
+    (DeleteMemoryRecord, "memory", "delete_memory_record"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     // terminal
@@ -102,6 +107,10 @@ methods![
     (RecommendedModelProfiles, "models", "recommended_model_profiles"),
     (SaveModelProfiles, "models", "save_model_profiles"),
     (ResetModelProfiles, "models", "reset_model_profiles"),
+    // inline composer suggestions
+    (GetSuggestionSettings, "models", "get_suggestion_settings"),
+    (SaveSuggestionSettings, "models", "save_suggestion_settings"),
+    (SuggestCompletion, "models", "suggest_completion"),
     // configuration
     (GetConfigState, "config", "get_config_state"),
     (SaveHarnessConfig, "config", "save_harness_config"),
@@ -169,6 +178,9 @@ methods![
     (SkillSuggestions, "skills", "skill_suggestions"),
     (PreviewSkillChange, "skills", "preview_skill_change"),
     (ExecuteSkillChange, "skills", "execute_skill_change"),
+    // automations — each harness's native scheduled jobs, one catalog
+    (AutomationCatalog, "automations", "automation_catalog"),
+    (ExecuteAutomationAction, "automations", "execute_automation_action"),
 ];
 
 impl MethodName {

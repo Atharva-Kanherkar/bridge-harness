@@ -21,6 +21,7 @@
 
 mod agents;
 mod approvals;
+mod automations;
 mod browser;
 mod common;
 mod completion;
@@ -28,6 +29,7 @@ mod config;
 mod forest;
 mod learning;
 mod marketplace;
+mod memory;
 mod models;
 mod projects;
 mod routing;
@@ -41,6 +43,7 @@ mod workspaces;
 
 pub use agents::*;
 pub use approvals::*;
+pub use automations::*;
 pub use browser::*;
 pub use common::*;
 pub use completion::*;
@@ -48,6 +51,7 @@ pub use config::*;
 pub use forest::*;
 pub use learning::*;
 pub use marketplace::*;
+pub use memory::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -164,10 +168,15 @@ typed_methods![
     (SendTurn, SendTurnParams, UnitResult),
     (SubmitInput, SubmitInputParams, SubmitInputResult),
     (CompactSession, CompactSessionParams, UnitResult),
+    (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
     (StopSession, StopSessionParams, BridgeState),
+    // memory
+    (SaveMemoryRecord, SaveMemoryRecordParams, MemoryRecord),
+    (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),
+    (DeleteMemoryRecord, DeleteMemoryRecordParams, MemoryRecord),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
@@ -199,6 +208,10 @@ typed_methods![
     (RecommendedModelProfiles, _, RecommendedModelProfilesResult),
     (SaveModelProfiles, SaveModelProfilesParams, _),
     (ResetModelProfiles, _, _),
+    // inline composer suggestions
+    (GetSuggestionSettings, _, SuggestionSettingsSnapshot),
+    (SaveSuggestionSettings, SaveSuggestionSettingsParams, SuggestionSettingsSnapshot),
+    (SuggestCompletion, SuggestCompletionParams, SuggestCompletionResult),
     // configuration
     (GetConfigState, _, ConfigState),
     (SaveHarnessConfig, SaveHarnessConfigParams, ConfigState),
@@ -211,7 +224,7 @@ typed_methods![
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
     // adaptive learning
-    (GetLearningState, _, _),
+    (GetLearningState, GetLearningStateParams, _),
     (RunLearning, RunLearningParams, _),
     (CancelLearningRun, CancelLearningRunParams, _),
     (UpdateLearningSchedule, UpdateLearningScheduleParams, LearningSchedule),
@@ -257,6 +270,9 @@ typed_methods![
     (SkillSuggestions, SkillSuggestionsParams, _),
     (PreviewSkillChange, PreviewSkillChangeParams, _),
     (ExecuteSkillChange, ExecuteSkillChangeParams, _),
+    // automations
+    (AutomationCatalog, _, _),
+    (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
 ];
 
 /// The documented exceptions to result typing: every method whose result is
@@ -286,6 +302,8 @@ pub const DEFERRED_RESULTS: &[(MethodName, &str)] = &[
     (MethodName::SkillSuggestions, "Vec<bridge_core::skill_marketplace::CapabilitySuggestion>"),
     (MethodName::PreviewSkillChange, "bridge_core::skill_marketplace::SkillPreview"),
     (MethodName::ExecuteSkillChange, "Vec<bridge_core::skill_marketplace::SkillActionResult>"),
+    (MethodName::AutomationCatalog, "bridge_core::automations::AutomationCatalog"),
+    (MethodName::ExecuteAutomationAction, "bridge_core::automations::AutomationActionResult"),
 ];
 
 impl TypedMethod {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { BRIEFING_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView } from "./sidebarChats";
+import { BRIEFING_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -263,19 +263,20 @@ describe("hidden sessions", () => {
   const chat = (id: string, kind: string | null = null): Session =>
     ({ id, workspaceId: null, harness: "codex", label: id, title: id, status: "idle", kind } as unknown as Session);
 
-  it("hides a briefing run and nothing else", () => {
+  it("hides briefing and suggestion sessions and nothing else", () => {
     expect(isHiddenSession(chat("a", BRIEFING_SESSION_KIND))).toBe(true);
+    expect(isHiddenSession(chat("s", SUGGESTION_SESSION_KIND))).toBe(true);
     for (const kind of [null, "orchestrator", "chat", "worker"]) {
       expect(isHiddenSession(chat("b", kind))).toBe(false);
     }
   });
 
-  it("filters briefing runs out of a list without disturbing the order of the rest", () => {
+  it("filters hidden sessions out of a list without disturbing the order of the rest", () => {
     const chats = [
       chat("first"),
       chat("briefing-1", BRIEFING_SESSION_KIND),
       chat("second", "orchestrator"),
-      chat("briefing-2", BRIEFING_SESSION_KIND),
+      chat("suggestion-1", SUGGESTION_SESSION_KIND),
       chat("third"),
     ];
     expect(visibleChats(chats).map(item => item.id)).toEqual(["first", "second", "third"]);
@@ -297,10 +298,11 @@ describe("hidden sessions", () => {
     }
   });
 
-  it("names the same kind the backend does", () => {
-    // The Rust side owns BRIEFING_SESSION_KIND; if these ever diverge, a briefing run
+  it("names the same kinds the backend does", () => {
+    // The Rust side owns these literals; if they ever diverge, a hidden session
     // becomes visible in the rail, which is the one place it must never appear.
     expect(BRIEFING_SESSION_KIND).toBe("briefing");
+    expect(SUGGESTION_SESSION_KIND).toBe("suggestion");
   });
 
   it("keeps a briefing run out of scope filtering too", () => {

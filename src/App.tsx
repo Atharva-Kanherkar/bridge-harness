@@ -10,12 +10,13 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
+import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
@@ -27,6 +28,7 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
+import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -127,6 +129,8 @@ export function App() {
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [forest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
@@ -134,6 +138,16 @@ export function App() {
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
+  // The composer's inline typeahead. Loaded once and kept fresh by Settings'
+  // own save path (`onSuggestionSettingsChange`) — off by default, so no
+  // request fires until the user opts in.
+  const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
+  const suggestionGeneration = useRef(0);
+  // Shown once per fallback episode, not on every debounce firing while the
+  // configured model stays in cooldown.
+  const [fallbackNotice, setFallbackNotice] = useState<string>();
+  const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
@@ -201,7 +215,7 @@ export function App() {
     };
   }, [reload]);
   useThemePreference();
-  useEffect(() => { setNavOpen(false); }, [view, selectedSessionId]);
+  useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -297,6 +311,42 @@ export function App() {
     const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
     return () => { active = false; window.clearTimeout(timer); };
   }, [composer, session]);
+
+  // The inline typeahead's own settings — loaded once; Settings' save path
+  // keeps this fresh via `onSuggestionSettingsChange`.
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
+
+  // A new configured model/provider earns its own one-time fallback notice.
+  useEffect(() => { fallbackNoticeShownRef.current = false; }, [suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // Debounced draft completion: 400ms after the last keystroke, with a
+  // generation counter so a stale response from an earlier draft can never
+  // overwrite a newer one — the same latest-wins discipline `readWorkBoard`
+  // uses. No request fires with the toggle off, no session, or an empty draft.
+  useEffect(() => scheduleSuggestion({
+    text: composer,
+    enabled: !!suggestionSettings?.settings.enabled && !!session,
+    request: bridgeApi.suggestCompletion,
+    onResult: setDraftSuggestion,
+    generation: suggestionGeneration,
+  }), [composer, session, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // The fallback chip: shown once per episode, not re-shown on every debounce
+  // firing while the configured model stays in its cooldown window.
+  useEffect(() => {
+    if (!draftSuggestion?.usedFallback || fallbackNoticeShownRef.current) return;
+    fallbackNoticeShownRef.current = true;
+    const reason = draftSuggestion.fallbackReason?.replace(/_/g, " ");
+    setFallbackNotice(`Suggestions switched to a fallback model${reason ? ` (${reason})` : ""} while yours is unavailable.`);
+    const timer = window.setTimeout(() => setFallbackNotice(undefined), 6000);
+    return () => window.clearTimeout(timer);
+  }, [draftSuggestion]);
+
+  const acceptSuggestion = useCallback(() => {
+    if (!draftSuggestion?.suggestion) return;
+    setComposer(current => current + draftSuggestion.suggestion);
+    setDraftSuggestion(undefined);
+  }, [draftSuggestion]);
 
   useEffect(() => {
     if (!slashOpen) return;
@@ -698,7 +748,7 @@ export function App() {
         setState(next);
         target = next.sessions.find(item => item.id === target.id) ?? target;
       }
-      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact)(\s|$)/i.test(text);
+      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall|pins|unpin|pin)(\s|$)/i.test(text);
       if (!localOnly && !liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -894,12 +944,14 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
+        fullscreen={fullscreen}
+        onToggleFullscreen={() => setFullscreen(value => !value)}
         onFocusSession={openSession}
       /> : session ? <>
         <SessionToolbar
@@ -918,12 +970,29 @@ export function App() {
           fullscreen={fullscreen}
           onToggleFullscreen={() => setFullscreen(value => !value)}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
+          onToggleRecall={() => {
+            setActiveTab("agent");
+            setRecallOpen(open => !open);
+          }}
+          recallOpen={recallOpen}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
         />
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
+              {recallOpen && (
+                <SessionRecallSearch
+                  sessionId={session.id}
+                  onClose={() => { setRecallOpen(false); setHighlightEntryId(null); }}
+                  onJump={entryId => {
+                    setHighlightEntryId(entryId);
+                    requestAnimationFrame(() => {
+                      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    });
+                  }}
+                />
+              )}
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
@@ -943,6 +1012,7 @@ export function App() {
                   working={turnActive}
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
+                  highlightEntryId={highlightEntryId}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
@@ -961,6 +1031,11 @@ export function App() {
                     <FileDiff size={12} aria-hidden="true" />
                     <span>{`${workspace.dirtyFiles} file${workspace.dirtyFiles === 1 ? "" : "s"}`}</span>
                     <em className="not-italic font-mono text-[11px]"><b className="text-success">+{workspace.additions}</b> <b className="text-destructive">−{workspace.deletions}</b></em>
+                  </div>
+                </div>}
+                {fallbackNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
+                    <span>{fallbackNotice}</span>
                   </div>
                 </div>}
                 {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
@@ -1000,6 +1075,8 @@ export function App() {
                       controls: "file-mention-listbox",
                       activeDescendant: `file-mention-option-${mentionIndex}`,
                     } : undefined}
+                    suggestion={draftSuggestion?.suggestion}
+                    onAcceptSuggestion={acceptSuggestion}
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}

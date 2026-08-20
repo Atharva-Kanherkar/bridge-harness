@@ -6,6 +6,8 @@ import type { AdapterDescriptor, AgentDefinition, AgentRole, ConfigState, Harnes
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
 import { WorkSettingsSection } from "./WorkSettingsSection";
+import { SuggestionSettingsCard } from "./SuggestionSettingsCard";
+import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { cn } from "@/lib/utils";
@@ -60,7 +62,7 @@ function SectionButton({ active, icon, label, onClick }: { active: boolean; icon
   </button>;
 }
 
-export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adapters: AdapterDescriptor[]; onModelSetupChange: (setup: ModelSetupState) => void; onError: (message: string) => void }) {
+export function SettingsScreen({ adapters, onModelSetupChange, onSuggestionSettingsChange, onError }: { adapters: AdapterDescriptor[]; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>("agents");
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
@@ -250,7 +252,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
             </section>;
           })}</div>
         </div>}
-        {section === "models" && modelSetup && <div className="mx-auto max-w-5xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Role model profiles</h2><p className="mt-1 text-xs text-muted-foreground">Provider, model, effort, fallback, learning, cost, and latency for every Bridge role. Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/></div>}
+        {section === "models" && modelSetup && <div className="mx-auto max-w-5xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Role model profiles</h2><p className="mt-1 text-xs text-muted-foreground">Provider, model, effort, fallback, learning, cost, and latency for every Bridge role. Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/><SuggestionSettingsCard adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError}/></div>}
       </div>
     </div>
   </div>;

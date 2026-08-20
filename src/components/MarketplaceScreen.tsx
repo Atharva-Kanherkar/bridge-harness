@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AgentMarketplace } from "./AgentMarketplace";
+import { AutomationsPanel } from "./AutomationsPanel";
 import { SkillMarketplace } from "./SkillMarketplace";
 
 type InstallTarget = MarketplaceProvider | "both";
@@ -294,7 +295,7 @@ function PluginMarketplace() {
   </div>;
 }
 
-const RESOURCES = ["agents", "plugins", "skills"] as const;
+const RESOURCES = ["agents", "plugins", "skills", "automations"] as const;
 type Resource = (typeof RESOURCES)[number];
 
 export function MarketplaceScreen() {
@@ -312,6 +313,7 @@ export function MarketplaceScreen() {
       {resource === "agents" && <AgentMarketplace/>}
       {resource === "plugins" && <PluginMarketplace/>}
       {resource === "skills" && <SkillMarketplace/>}
+      {resource === "automations" && <AutomationsPanel/>}
     </div>
   </div>;
 }

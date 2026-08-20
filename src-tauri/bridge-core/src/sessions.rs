@@ -410,10 +410,16 @@ impl BridgeCore {
         session_id: &str,
         after_sequence: i64,
         limit: Option<u32>,
+        tail: Option<bool>,
     ) -> Result<Vec<AgentEvent>, BridgeError> {
         if after_sequence < 0 {
             return Err(BridgeError::Invalid(
                 "afterSequence must be non-negative".into(),
+            ));
+        }
+        if tail == Some(true) && after_sequence != 0 {
+            return Err(BridgeError::Invalid(
+                "tail replay requires afterSequence=0".into(),
             ));
         }
         let limit = limit.unwrap_or(bridge_protocol::messages::DEFAULT_REPLAY_EVENT_LIMIT);
@@ -424,7 +430,11 @@ impl BridgeCore {
             )));
         }
         let db = self.db.lock().unwrap();
-        store::session_events_after(&db, session_id, after_sequence, limit)
+        if tail == Some(true) {
+            store::session_events_tail(&db, session_id, limit)
+        } else {
+            store::session_events_after(&db, session_id, after_sequence, limit)
+        }
     }
 
     /// The change token for one session's forest, holding the store lock only
@@ -1846,7 +1856,7 @@ mod tests {
         let mut reconnected = core.events.subscribe();
         let raced = persist("raced");
         let replayed = core
-            .replay_session_events(&session_id, last_seen, None)
+            .replay_session_events(&session_id, last_seen, None, None)
             .unwrap();
         let sequences: Vec<i64> = replayed.iter().map(|event| event.sequence).collect();
         assert_eq!(
@@ -1888,35 +1898,43 @@ mod tests {
         );
         // Replaying from the newest cursor is empty; from zero is everything durable.
         assert!(core
-            .replay_session_events(&session_id, after_replay, None)
+            .replay_session_events(&session_id, after_replay, None, None)
             .unwrap()
             .is_empty());
         assert!(
-            core.replay_session_events(&session_id, 0, None)
+            core.replay_session_events(&session_id, 0, None, None)
                 .unwrap()
                 .len()
                 >= 5
         );
         // Unknown sessions replay nothing rather than erroring.
         assert!(core
-            .replay_session_events("no-such-session", 0, None)
+            .replay_session_events("no-such-session", 0, None, None)
             .unwrap()
             .is_empty());
-        assert!(core.replay_session_events(&session_id, -1, None).is_err());
-        assert!(core.replay_session_events(&session_id, 0, Some(0)).is_err());
+        assert!(core.replay_session_events(&session_id, -1, None, None).is_err());
+        assert!(core.replay_session_events(&session_id, 0, Some(0), None).is_err());
         assert!(core
             .replay_session_events(
                 &session_id,
                 0,
                 Some(bridge_protocol::messages::MAX_REPLAY_EVENT_LIMIT + 1),
+                None,
             )
             .is_err());
         assert_eq!(
-            core.replay_session_events(&session_id, 0, Some(2))
+            core.replay_session_events(&session_id, 0, Some(2), None)
                 .unwrap()
                 .len(),
             2,
             "replay pages are bounded by the requested limit"
+        );
+        let tail = core
+            .replay_session_events(&session_id, 0, Some(2), Some(true))
+            .unwrap();
+        assert_eq!(
+            tail.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            vec![raced, after_replay]
         );
     }
 
@@ -1957,7 +1975,7 @@ mod tests {
             (stored, typed.payload)
         };
 
-        let replayed = core.replay_session_events(&session_id, 0, None).unwrap();
+        let replayed = core.replay_session_events(&session_id, 0, None, None).unwrap();
         assert_eq!(replayed[0].item_id.as_deref(), Some("item-1"));
         assert_eq!(replayed[0].title.as_deref(), Some("Title"));
         assert_eq!(replayed[0].data, serde_json::json!([{"nested": 7}]));
@@ -1992,7 +2010,7 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        assert!(core.replay_session_events(&session_id, 0, None).is_err());
+        assert!(core.replay_session_events(&session_id, 0, None, None).is_err());
 
         let db = core.db.lock().unwrap();
         db.execute(
@@ -2004,7 +2022,7 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        assert!(core.replay_session_events(&session_id, 0, None).is_err());
+        assert!(core.replay_session_events(&session_id, 0, None, None).is_err());
     }
 
     #[test]

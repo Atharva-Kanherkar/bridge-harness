@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -19,6 +19,9 @@ import type {
   WorkTask,
   WorkTaskDraft,
   WriteWorkspaceFileResult,
+  SuggestCompletionResult,
+  SuggestionSettings,
+  SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
 import { recommendedProfileDrafts } from "./modelProfiles";
@@ -81,6 +84,7 @@ let mockLearningState: LearningState = {
   latestRun: null,
   activePolicyVersion: 1,
   canaryPolicyVersion: null,
+  rollbackTargetVersion: null,
 };
 let nextEventId = 20;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
@@ -150,6 +154,7 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-10b", "session-1", 12, "workspace.stale_base", { role: "system", status: "warning", title: "Workspace is 67 commits behind origin/main", text: "this workspace is 67 commit(s) behind and 1 ahead of origin/main, measured against a freshly fetched ref; that ref's newest commit is 0 day(s) old", data: { staleBase: true, phase: "workspace_open", choices: ["refresh", "continue"], divergence: { baseRef: "origin/main", baseCommit: "90ce51c", head: "2b43aaad9b36", branch: "bridge/task", ahead: 1, behind: 67, refAgeSeconds: 3600, fetchAttempted: true, fetched: true, dirty: false, unavailableReason: null } } }, "entry-9b"),
   forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
 ];
+const mockMemoryRecords: MemoryRecord[] = [];
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
     sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
@@ -243,6 +248,27 @@ const mockSkills: SkillCatalog = {
 };
 const mockSkillConsents = new Map<string, { skillId: string; action: SkillAction; targets: SkillProvider[] }>();
 
+const mockAutomations: AutomationCatalog = {
+  automations: [
+    {
+      id: "task-1", provider: "claude", name: "Summarize overnight CI failures", prompt: "Summarize overnight CI failures and file issues for new ones.",
+      schedule: { kind: "cron", expression: "7 9 * * 1-5", human: "Weekdays at 09:07" }, status: "active", recurring: true,
+      createdAt: Date.now() - 86_400_000, nextRunAt: null, lastRunAt: Date.now() - 3_600_000, cwds: [], model: null, effort: null, canPause: false, runs: [],
+    },
+    {
+      id: "auto-1", provider: "codex", name: "Nightly dependency audit", prompt: "Audit dependencies for CVEs and report anything actionable.",
+      schedule: { kind: "rrule", expression: "FREQ=DAILY;BYHOUR=3;BYMINUTE=15", human: "Daily at 03:15" }, status: "paused", recurring: true,
+      createdAt: Date.now() - 172_800_000, nextRunAt: Date.now() + 43_200_000, lastRunAt: null, cwds: ["/Users/you/project"], model: "gpt-5.3-codex", effort: "high", canPause: true,
+      runs: [{ id: "thread-1", automationId: "auto-1", status: "COMPLETED", title: "Deps clean", summary: "No CVEs found", createdAt: Date.now() - 90_000_000 }],
+    },
+  ],
+  providers: [
+    { provider: "claude", available: true, detail: "~/.claude/scheduled_tasks.json", count: 1 },
+    { provider: "codex", available: true, detail: "~/.codex/sqlite/codex.db", count: 1 },
+    { provider: "opencode", available: false, detail: "OpenCode has no automations feature", count: 0 },
+  ],
+};
+
 function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
   const version = (mockModelSetup.activeVersion ?? 0) + 1;
   mockModelSetup = {
@@ -333,6 +359,13 @@ let mockWorkSettings: WorkSettingsSnapshot = {
     cooldownMinutes: 15,
     limits: { maxWallSeconds: 600, maxTurns: 12, maxToolCalls: 24, maxOutputTokens: null, costCeilingMicrousd: null },
   },
+};
+
+// Suggestion (inline typeahead) settings for the browser fallback. Off by
+// default, same as a fresh install's stored default.
+let mockSuggestionSettings: SuggestionSettingsSnapshot = {
+  configured: false,
+  settings: { enabled: false, provider: "claude", model: "haiku" },
 };
 
 const mockBriefingOptions: WorkBriefingOptions = {
@@ -500,6 +533,15 @@ export const bridgeApi = {
     for (const target of consent.targets) { const state = skill.providerStates.find(item => item.provider === target)!; state.installed = consent.action === "install"; state.managed = consent.action === "install"; state.installedRef = consent.action === "install" ? skill.pinnedRef : null; }
     return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
   },
+  automationCatalog: (): Promise<AutomationCatalog> => isTauri() ? call("automations/automation_catalog") as Promise<AutomationCatalog> : Promise.resolve(structuredClone(mockAutomations)),
+  executeAutomationAction: async (provider: AutomationProvider, id: string, action: AutomationAction): Promise<AutomationActionResult> => {
+    if (isTauri()) return call("automations/execute_automation_action", { provider, id, action }) as Promise<AutomationActionResult>;
+    const automation = mockAutomations.automations.find(item => item.provider === provider && item.id === id);
+    if (!automation) throw new Error(`No ${provider} automation with id ${id}`);
+    if (action === "delete") mockAutomations.automations = mockAutomations.automations.filter(item => item !== automation);
+    else automation.status = action === "pause" ? "paused" : "active";
+    return { provider, id, action, success: true, message: `${action} completed` };
+  },
   marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? call("marketplace/marketplace_catalog") as Promise<MarketplaceCatalog> : Promise.resolve(structuredClone(mockMarketplace)),
   marketplaceAppAuthStates: (): Promise<MarketplaceAppAuthState[]> => {
     if (isTauri()) return call("marketplace/marketplace_app_auth_states") as Promise<MarketplaceAppAuthState[]>;
@@ -550,6 +592,25 @@ export const bridgeApi = {
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
   saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
   resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? call("models/reset_model_profiles") as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  // The composer's inline typeahead. Off by default; `configured: false` is a
+  // fresh install reading defaults, same distinction Work's settings make.
+  getSuggestionSettings: (): Promise<SuggestionSettingsSnapshot> =>
+    isTauri() ? call("models/get_suggestion_settings") : Promise.resolve(structuredClone(mockSuggestionSettings)),
+  // Validation is Rust's; this surface may pre-empt an obvious mistake, but a
+  // payload that bypasses it is refused server-side by the same rules.
+  saveSuggestionSettings: (settings: SuggestionSettings): Promise<SuggestionSettingsSnapshot> => {
+    if (isTauri()) return call("models/save_suggestion_settings", { settings });
+    mockSuggestionSettings = { configured: true, settings: structuredClone(settings) };
+    return Promise.resolve(structuredClone(mockSuggestionSettings));
+  },
+  // Ask the typeahead engine to continue the composer's current draft. The
+  // caller is expected to gate this on the setting being enabled and the
+  // draft being non-empty — this call does not re-check either for the mock.
+  suggestCompletion: (text: string): Promise<SuggestCompletionResult> => {
+    if (isTauri()) return call("models/suggest_completion", { text });
+    const suggestion = text.trim().endsWith("?") || text.length < 3 ? "" : " …";
+    return Promise.resolve({ suggestion, usedFallback: false, fallbackReason: null });
+  },
   configState: (): Promise<ConfigState> => isTauri() ? call("config/get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
   saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
     if (isTauri()) return call("config/save_harness_config", { config });
@@ -605,9 +666,9 @@ export const bridgeApi = {
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     return Promise.resolve(structuredClone(mockConfigState));
   },
-  learningState: (): Promise<LearningState> => isTauri() ? call("learning/get_learning_state") as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
-  runLearning: (triggerKind: LocalLearningTriggerKind = "manual"): Promise<LearningRun> => {
-    if (isTauri()) return call("learning/run_learning", { triggerKind }) as Promise<LearningRun>;
+  learningState: (workspaceId: string): Promise<LearningState> => isTauri() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
+  runLearning: (triggerKind: LocalLearningTriggerKind = "manual", workspaceId: string): Promise<LearningRun> => {
+    if (isTauri()) return call("learning/run_learning", { triggerKind, workspaceId }) as Promise<LearningRun>;
     if (mockLearningState.latestRun) {
       const duplicate = { ...structuredClone(mockLearningState.latestRun), triggerKind, duplicate: true };
       return Promise.resolve(duplicate);
@@ -635,8 +696,8 @@ export const bridgeApi = {
     mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
-  rollbackRoutingPolicy: (targetVersion: number, explanation: string): Promise<LearningState> => {
-    if (isTauri()) return call("routing/rollback_routing_policy", { targetVersion, explanation }) as Promise<LearningState>;
+  rollbackRoutingPolicy: (workspaceId: string, targetVersion: number, explanation: string): Promise<LearningState> => {
+    if (isTauri()) return call("routing/rollback_routing_policy", { workspaceId, targetVersion, explanation }) as Promise<LearningState>;
     void targetVersion;
     void explanation;
     mockLearningState.activePolicyVersion += 1;
@@ -664,6 +725,9 @@ export const bridgeApi = {
   // Tens of bytes per poll instead of the entire history; equal digests mean
   // sessionForest would return unchanged store content.
   sessionForestDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
+  /** Durable backfill of one session's event log — any session id, including a
+   * worker child's. Cursor semantics: pass the last sequence already held. */
+  replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => isTauri() ? call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]> : Promise.resolve([]),
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;
@@ -818,6 +882,76 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
     emitState();
   },
+  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null): Promise<SearchSessionEntriesResult> => {
+    if (isTauri()) {
+      return call("sessions/search_session_entries", limit != null ? { sessionId, query, limit } : { sessionId, query });
+    }
+    if (!sessionId.trim()) throw new Error("Recall needs a session id; search cannot run across a workspace");
+    const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (!tokens.length) throw new Error("Recall needs a word to search for in this chat");
+    const forest = mockForest(sessionId);
+    const kinds = new Set(["user.message", "assistant.message", "worker.result", "compaction", "checkpoint", "branch.summary"]);
+    const hits = forest.entries
+      .filter(entry => kinds.has(entry.kind))
+      .filter(entry => {
+        const body = `${entry.payload.text ?? ""} ${entry.payload.title ?? ""} ${entry.payload.summary ?? ""}`.toLowerCase();
+        return tokens.every(token => body.includes(token));
+      })
+      .slice(0, limit ?? 20)
+      .map(entry => ({
+        entryId: entry.id,
+        kind: entry.kind,
+        sequence: entry.sequence,
+        snippet: String(entry.payload.text ?? entry.payload.summary ?? entry.payload.title ?? ""),
+        createdAt: entry.createdAt,
+      }));
+    return { sessionId, query, hits };
+  },
+  saveMemoryRecord: async (body: string, kind?: string | null, sessionId?: string | null): Promise<MemoryRecord> => {
+    if (isTauri()) {
+      return call("memory/save_memory_record", {
+        body,
+        ...(kind ? { kind } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      });
+    }
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("A memory pin needs some text. Empty bodies are not stored.");
+    const now = new Date().toISOString();
+    const record: MemoryRecord = {
+      id: crypto.randomUUID(),
+      scopeKey: "account:local",
+      kind: kind?.trim() || "preference",
+      body: trimmed,
+      provenance: "user_explicit",
+      status: "active",
+      sourceSessionId: sessionId?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockMemoryRecords.unshift(record);
+    return structuredClone(record);
+  },
+  listMemoryRecords: async (scopeKey: string): Promise<ListMemoryRecordsResult> => {
+    if (isTauri()) return call("memory/list_memory_records", { scopeKey });
+    const trimmed = scopeKey.trim();
+    if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    return {
+      scopeKey: trimmed,
+      records: mockMemoryRecords
+        .filter(record => record.scopeKey === trimmed && record.status === "active")
+        .slice(0, 50)
+        .map(record => structuredClone(record)),
+    };
+  },
+  deleteMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/delete_memory_record", { recordId });
+    const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
+    if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
+    record.status = "deleted";
+    record.updatedAt = new Date().toISOString();
+    return structuredClone(record);
+  },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return call("projects/add_project", { path });
     const name = path.split("/").filter(Boolean).at(-1) || "Repository";
@@ -956,7 +1090,11 @@ export const bridgeApi = {
   onAdaptersChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe("adapters-changed", handler);
     return () => undefined;
-  }
+  },
+  onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe("learning-job-changed", handler);
+    return () => undefined;
+  },
 };
 
 /* ── Browser-mode file system ──────────────────────────────────────────────
