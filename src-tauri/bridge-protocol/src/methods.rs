@@ -65,6 +65,7 @@ methods![
     (PrepareTurn, "sessions", "prepare_turn"),
     (SendTurn, "sessions", "send_turn"),
     (CompactSession, "sessions", "compact_session"),
+    (SearchSessionEntries, "sessions", "search_session_entries"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),

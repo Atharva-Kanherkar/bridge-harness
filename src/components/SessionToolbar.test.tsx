@@ -105,6 +105,14 @@ describe("SessionToolbar", () => {
     expect(container.textContent).not.toMatch(/codex\/|feat\//);
   });
 
+  it("offers search for this chat when the callback exists", () => {
+    mount();
+    expect(container.querySelector('button[aria-label="Search this chat"]')).toBeNull();
+    mount({ onToggleRecall: noop, recallOpen: true });
+    const search = container.querySelector<HTMLButtonElement>('button[aria-label="Search this chat"]')!;
+    expect(search.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("collects the window actions behind one overflow control", () => {
     mount();
     expect(menu()).toBeNull();

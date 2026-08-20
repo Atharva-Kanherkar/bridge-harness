@@ -192,4 +192,12 @@ describe("suggested-task actions", () => {
       expect(prepared.draft).not.toContain(framing);
     }
   });
+
+  it("recalls only the requested session in the mock forest", async () => {
+    const isolated = await bridgeApi.searchSessionEntries("session-1", "isolated workers");
+    expect(isolated.hits.some(hit => hit.snippet.toLowerCase().includes("isolated"))).toBe(true);
+    const other = await bridgeApi.searchSessionEntries("session-other", "isolated workers");
+    expect(other.hits).toEqual([]);
+    await expect(bridgeApi.searchSessionEntries("  ", "hello")).rejects.toThrow("session id");
+  });
 });

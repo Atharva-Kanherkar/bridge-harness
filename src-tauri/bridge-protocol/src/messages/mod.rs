@@ -162,6 +162,7 @@ typed_methods![
     (PrepareTurn, PrepareTurnParams, SanitizedTurn),
     (SendTurn, SendTurnParams, UnitResult),
     (CompactSession, CompactSessionParams, UnitResult),
+    (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
     (StopSession, StopSessionParams, BridgeState),

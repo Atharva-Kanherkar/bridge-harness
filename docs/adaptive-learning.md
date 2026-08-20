@@ -4,6 +4,8 @@ Bridge stores versioned role profiles and typed learning evidence in its local `
 
 Router learning is scoped to `workspace:{id}`. Direct chats are out of the router. Existing rows from before this split keep `legacy:global`; live routing never selects that bucket. Memory jobs never enter the learning router.
 
+Session recall is a different product: FTS5 over that chat's forest, keyed by session id, zero LLM. It is not the helper picker, not account memory, and not a workspace-wide index. See [session-forest.md](./session-forest.md#session-recall).
+
 Online routing treats missing or stale quota/context as unknown (eligible). Only a live session in the same workspace can mark a harness `QuotaExhausted` or `ContextExhausted`. An old row at `usage_percent=100` does not block a later route.
 
 ## Manual and in-app runs
