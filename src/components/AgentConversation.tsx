@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding } from "../types";
@@ -265,7 +265,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onOpenSession, onWaiveCompletion, onRefreshBase, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -303,7 +303,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             data-entry-id={entry.item.entryId}
             className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
           >
-            <ItemView item={entry.item} onResolve={onResolve} onOpenSession={onOpenSession} onRefreshBase={onRefreshBase} errorContext={errorContext}/>
+            <ItemView item={entry.item} onResolve={onResolve} onOpenSession={onOpenSession} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} errorContext={errorContext}/>
           </div>)}
       {optimistic.map((text, index) => <div key={`pending-${index}`} className={BUBBLE}>{text}</div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
@@ -415,7 +415,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, onResolve, onOpenSession, onRefreshBase, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, onResolve, onOpenSession, onRefreshBase, onRetryWorker, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className={BUBBLE}>{item.text}</div>;
     // No bubble, no card: the agent writes straight onto the canvas.
@@ -425,7 +425,7 @@ function ItemView({ item, onResolve, onOpenSession, onRefreshBase, errorContext 
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
-  if (item.type === "delegation") return <DelegationRow item={item} onOpenSession={onOpenSession}/>;
+  if (item.type === "delegation") return <DelegationRow item={item} onOpenSession={onOpenSession} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") {
@@ -586,7 +586,7 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item, onOpenSession }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void }) {
+function DelegationRow({ item, onOpenSession, onRetryWorker }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
   // A background worker's own approval card renders on the worker's conversation,
   // which is normally not the selected one. This mirrored row is what makes the
   // block visible where the user is actually working.
@@ -633,6 +633,25 @@ function DelegationRow({ item, onOpenSession }: { item: ConversationItem; onOpen
   const model = String(item.data.modelLabel ?? item.data.model ?? "");
   const effort = item.data.effort ? String(item.data.effort) : "";
   const [open, setOpen] = useState(false);
+  // Bridge no longer spends a hidden turn retrying a cause it cannot show has
+  // changed, so a terminal failure has to arrive with its real reason and the
+  // action the user would otherwise have had no way to take.
+  const failureCause = typeof item.data.failureCause === "string" ? item.data.failureCause : "";
+  const failureClass = typeof item.data.failureClass === "string" ? item.data.failureClass : "";
+  const retrySessionId = item.data.canRetry === true && typeof item.data.childSessionId === "string"
+    ? item.data.childSessionId
+    : undefined;
+  if (isResult && failureCause) {
+    return <WorkerFailureRow
+      title={item.title || "Worker finished without completing"}
+      summary={item.text}
+      cause={failureCause}
+      failureClass={failureClass}
+      childSessionId={retrySessionId}
+      onOpenSession={onOpenSession}
+      onRetryWorker={onRetryWorker}
+    />;
+  }
   return <div className="my-3 min-w-0">
     <button className="w-full min-w-0 flex items-center gap-[9px] min-h-[30px] px-2 py-1 -ml-2 rounded-md text-left text-muted-foreground text-[12.5px] hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
       {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
@@ -641,6 +660,41 @@ function DelegationRow({ item, onOpenSession }: { item: ConversationItem; onOpen
       {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
     </button>
     {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-[15px] border-l border-border text-muted-foreground text-[12.5px] leading-relaxed"><Markdown text={item.text}/></div>}
+  </div>;
+}
+
+/// A worker that ended without completing, said plainly.
+///
+/// The old card collapsed every outcome into "Subagent finished" and let the
+/// orchestrator silently retry. Naming the classified cause is what lets the
+/// person reading decide whether another attempt is worth anything.
+function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId, onOpenSession, onRetryWorker }: {
+  title: string;
+  summary: string;
+  cause: string;
+  failureClass: string;
+  childSessionId?: string;
+  onOpenSession?: (sessionId: string) => void;
+  onRetryWorker?: (childSessionId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const transport = failureClass === "protocol_invalid";
+  return <div className="my-3 min-w-0 rounded-lg border border-border border-l-2 border-l-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
+    <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{title}</span></div>
+    <p className="mt-1 text-foreground">{cause}</p>
+    {transport && <p className="mt-1 text-muted-foreground/70">Bridge could not read this worker&apos;s result, so nothing below has been verified. Retrying would not change that on its own.</p>}
+    {summary && <p className="mt-1.5 whitespace-pre-wrap break-words">{summary}</p>}
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      {childSessionId && onRetryWorker && <button
+        type="button"
+        disabled={busy}
+        onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}
+        className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+      ><RotateCcw size={12} aria-hidden="true" /> {busy ? "Retrying…" : "Retry this task"}</button>}
+      {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] transition-colors hover:bg-accent"><CornerDownRight size={12} aria-hidden="true" /> Open the worker</button>}
+    </div>
+    {error && <p className="mt-1.5 text-destructive">{error}</p>}
   </div>;
 }
 

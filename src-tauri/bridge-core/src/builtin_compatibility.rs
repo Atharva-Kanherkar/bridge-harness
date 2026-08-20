@@ -80,6 +80,11 @@ const CLAUDE_CAPABILITIES: &[&str] = &[
     "approvals",
     "usage",
     "interrupt",
+    // Claude alone: the sidecar drives one streaming-input query, so a user
+    // message written mid-turn is folded into the turn in flight. Codex and
+    // OpenCode would take a second concurrent turn instead, so they must not
+    // advertise this — Bridge queues their follow-ups.
+    "steering",
 ];
 
 const OPENCODE_CAPABILITIES: &[&str] = CODEX_CAPABILITIES;
