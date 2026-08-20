@@ -930,6 +930,63 @@ pub fn labels_for_paths(paths: &[String]) -> Vec<String> {
     labels.into_iter().collect()
 }
 
+/// Whether an implementation worker's result leaves a revision that has to be
+/// verified before the task can be called done.
+///
+/// `completed` always does. `needs_delegation` does too when the worker changed
+/// the repository: the change set is real, it is usually sitting uncommitted in
+/// the worker's own worktree awaiting adoption, and it is exactly the kind of
+/// result that most needs review. Gating only on `completed` left those results
+/// with no `eval_attempts` row, so the verification worker the orchestrator
+/// routed next had no revision to bind to and died on a raw
+/// `QueryReturnedNoRows`.
+///
+/// `files_changed` is trustworthy here because `live_turn` replaces it with the
+/// paths derived from Git before this runs — a worker cannot open or dodge a gate
+/// by editing its own prose. Every other status (`failed`, `blocked`,
+/// `cancelled`, `protocol_invalid`) still opens nothing: there is either no work
+/// to judge or nothing readable to judge it by.
+fn opens_completion_gate(result: &WorkerResult) -> bool {
+    match result.status {
+        WorkerResultStatus::Completed => true,
+        WorkerResultStatus::NeedsDelegation => !result.files_changed.is_empty(),
+        _ => false,
+    }
+}
+
+/// Typed reason reported when a verification worker has no revision to bind to.
+pub const VERIFICATION_TARGET_UNAVAILABLE: &str = "implementation_revision_unavailable";
+
+/// The checkout a verifier must run in: the repository behind the newest open
+/// completion gate for this task.
+///
+/// `Ok(None)` is the routing fact "this task has no implementation revision to
+/// verify" — unroutable, but not a database failure, and the two must not reach
+/// the orchestrator as the same sentence.
+pub fn verification_target_path(
+    db: &Connection,
+    parent_session_id: &str,
+) -> Result<Option<String>, BridgeError> {
+    db.query_row(
+        "SELECT repository_path FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested','failed') ORDER BY started_at DESC,rowid DESC LIMIT 1",
+        params![parent_session_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(BridgeError::from)
+}
+
+/// What the orchestrator can actually do about a missing implementation
+/// revision. `permanent` is the right failure class for this, but "retry will
+/// not help" is only half the answer the orchestrator needs.
+pub fn verification_target_unavailable_reason() -> String {
+    format!(
+        "no implementation revision is recorded for this task ({VERIFICATION_TARGET_UNAVAILABLE}), \
+         so there is nothing for a verifier to bind to. Adopt or commit the implementation \
+         worker's worktree changes, or re-run the implementation, before delegating verification."
+    )
+}
+
 pub fn create_from_worker_result(
     db: &Connection,
     child_session_id: &str,
@@ -950,7 +1007,7 @@ pub fn create_from_worker_result(
         })?;
         return settle_verification_result(db, &context, &request, result);
     }
-    if context.role != "implementation" || result.status != WorkerResultStatus::Completed {
+    if context.role != "implementation" || !opens_completion_gate(result) {
         return Ok(None);
     }
     let serialized_request = context.serialized_request.as_deref().ok_or_else(|| {
@@ -1931,6 +1988,115 @@ mod tests {
             .unwrap(),
             "superseded"
         );
+    }
+
+    /// An implementation worker that finished in `worktree`, with its durable
+    /// completion input registered, ready to hand a result to
+    /// `create_from_worker_result`.
+    fn implementation_worker(db: &Connection, session_id: &str, worktree: &str) {
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES(?1,'w','claude','impl','completed','estimated','s','worker','native')", params![session_id]).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES(?1,'w','implementation','standard','implementation','[]','isolated','released','now','now')", params![session_id]).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES(?1,'s','completed','implementation','key','reported',0,?2,'now')", params![session_id, worktree]).unwrap();
+        let request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["Proof card is visible"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
+        db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,'now')", params![session_id, request.to_string()]).unwrap();
+    }
+
+    fn implementation_result(
+        status: WorkerResultStatus,
+        files_changed: Vec<String>,
+    ) -> WorkerResult {
+        WorkerResult {
+            schema_version: 1,
+            status,
+            summary: "handing off".into(),
+            files_changed,
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec![],
+            suggested_next_action: crate::delegation::SuggestedNextAction::FollowUp,
+            suggested_role: None,
+            suggested_task: None,
+        }
+    }
+
+    /// The regression: a worker that hands off with its change set still
+    /// uncommitted in its own worktree used to open no gate at all, which left
+    /// the verification worker the orchestrator routed next with no revision to
+    /// bind to.
+    #[test]
+    fn needs_delegation_with_changes_opens_a_bindable_gate() {
+        let db = fixture();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        implementation_worker(&db, "child", &cwd);
+        let summary = create_from_worker_result(
+            &db,
+            "child",
+            &implementation_result(
+                WorkerResultStatus::NeedsDelegation,
+                vec!["src/App.tsx".into()],
+            ),
+            &HashSet::new(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(summary.verdict, CompletionVerdict::Verifying);
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some(cwd),
+            "the verifier binds to the worktree the implementation left dirty"
+        );
+    }
+
+    #[test]
+    fn a_handoff_that_changed_nothing_opens_no_gate() {
+        let db = fixture();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        implementation_worker(&db, "child", &cwd);
+        // Nothing changed, so there is nothing to verify — and a failure still
+        // opens nothing even when it did change files.
+        for (status, files) in [
+            (WorkerResultStatus::NeedsDelegation, vec![]),
+            (WorkerResultStatus::Failed, vec!["src/App.tsx".into()]),
+            (WorkerResultStatus::Blocked, vec!["src/App.tsx".into()]),
+            (WorkerResultStatus::Cancelled, vec!["src/App.tsx".into()]),
+            (
+                WorkerResultStatus::ProtocolInvalid,
+                vec!["src/App.tsx".into()],
+            ),
+        ] {
+            assert!(create_from_worker_result(
+                &db,
+                "child",
+                &implementation_result(status, files),
+                &HashSet::new()
+            )
+            .unwrap()
+            .is_none());
+        }
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    /// "There is no revision to verify" is a routing fact with a remediation,
+    /// not the raw `QueryReturnedNoRows` the bind site used to forward.
+    #[test]
+    fn a_task_without_a_gate_reports_a_typed_unroutable_reason() {
+        let db = fixture();
+        assert_eq!(verification_target_path(&db, "s").unwrap(), None);
+        let reason = verification_target_unavailable_reason();
+        assert!(reason.contains(VERIFICATION_TARGET_UNAVAILABLE));
+        assert!(reason.contains("Adopt or commit"));
     }
 
     #[test]
