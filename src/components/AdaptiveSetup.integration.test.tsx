@@ -155,6 +155,26 @@ describe("adaptive setup journeys", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("closing the dialog drops unsaved schedule edits", async () => {
+    const initial = await bridgeApi.learningState("demo-1");
+    vi.spyOn(bridgeApi, "learningState")
+      .mockImplementationOnce(() => Promise.resolve(initial))
+      .mockImplementation(() => new Promise(() => undefined));
+    const render = (open: boolean) => root.render(<RouterSettingsDialog open={open} workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+    await act(async () => { render(true); await flush(); });
+    const checkbox = [...container.querySelectorAll("label")]
+      .find(label => label.textContent?.includes("In-app schedule"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    await act(async () => { checkbox.click(); await flush(); });
+    expect(checkbox.checked).toBe(true);
+    await act(async () => { render(false); await flush(); });
+    await act(async () => { render(true); await flush(); });
+    expect(
+      [...container.querySelectorAll("label")].some(label => label.textContent?.includes("In-app schedule")),
+      "a reopened dialog must show the loading state, not last session's unsaved edits",
+    ).toBe(false);
+  });
+
   it("disables evaluator spend and token ceilings", async () => {
     await act(async () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
