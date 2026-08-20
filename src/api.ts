@@ -81,6 +81,7 @@ let mockLearningState: LearningState = {
   latestRun: null,
   activePolicyVersion: 1,
   canaryPolicyVersion: null,
+  rollbackTargetVersion: null,
 };
 let nextEventId = 20;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
@@ -956,7 +957,11 @@ export const bridgeApi = {
   onAdaptersChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe("adapters-changed", handler);
     return () => undefined;
-  }
+  },
+  onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe("learning-job-changed", handler);
+    return () => undefined;
+  },
 };
 
 /* ── Browser-mode file system ──────────────────────────────────────────────
