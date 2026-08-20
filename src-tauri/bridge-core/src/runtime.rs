@@ -261,7 +261,11 @@ impl BridgeCore {
         // gone would otherwise block its parent forever.
         crate::worker_adoption::recover(&connection)?;
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)?;
-        let _ = store::export_history_snapshot(&connection, &snapshot_dir);
+        let _ = store::export_history_snapshot_if_stale(
+            &connection,
+            &snapshot_dir,
+            crate::live_turn::HISTORY_SNAPSHOT_INTERVAL,
+        );
         let opencode_config = agent_config::state(&connection)?
             .harnesses
             .into_iter()

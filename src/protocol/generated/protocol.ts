@@ -1183,7 +1183,9 @@ export interface HealthResult {
   database: string;
   harnesses: Record<string, boolean>;
   ok: boolean;
+  snapshot_count: number;
   snapshot_directory: string;
+  snapshot_total_bytes: number;
   telemetry_database: string;
   version: string;
 }

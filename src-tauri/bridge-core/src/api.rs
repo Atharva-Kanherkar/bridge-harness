@@ -44,11 +44,15 @@ pub struct Health {
     pub database: String,
     pub telemetry_database: String,
     pub snapshot_directory: String,
+    pub snapshot_count: u64,
+    pub snapshot_total_bytes: u64,
     pub adapters: Vec<AdapterDescriptor>,
 }
 
 pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
     let adapters = core.adapter_registry.descriptors();
+    let (snapshot_count, snapshot_total_bytes) =
+        crate::store::history_snapshot_stats(&core.snapshot_dir);
     let opencode_available = adapters
         .iter()
         .find(|adapter| adapter.id == "opencode")
@@ -65,6 +69,8 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
         database: core.database_path.to_string_lossy().into(),
         telemetry_database: core.telemetry_database_path.to_string_lossy().into(),
         snapshot_directory: core.snapshot_dir.to_string_lossy().into(),
+        snapshot_count,
+        snapshot_total_bytes,
         adapters,
     })
 }

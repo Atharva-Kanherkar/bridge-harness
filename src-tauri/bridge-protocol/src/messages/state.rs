@@ -192,6 +192,10 @@ pub struct HealthResult {
     pub telemetry_database: String,
     #[serde(rename = "snapshot_directory")]
     pub snapshot_directory: String,
+    #[serde(rename = "snapshot_count")]
+    pub snapshot_count: u64,
+    #[serde(rename = "snapshot_total_bytes")]
+    pub snapshot_total_bytes: u64,
     pub adapters: Vec<AdapterDescriptor>,
 }
 
