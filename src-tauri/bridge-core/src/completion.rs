@@ -2032,6 +2032,14 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         implementation_worker(&db, "child", &cwd);
+        // The worktree the worker wrote in, still awaiting adoption: a recorded
+        // base revision and branch, but no commit of its own.
+        db.execute(
+            "INSERT INTO worker_worktree_adoptions(session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,task_worktree_path,state,base_commit,base_branch,baseline_dirty_paths,changed_paths,dirty,created_at,updated_at)
+             VALUES('child','s','w',?1,'codex/fix-model-profile-migration',?1,'pending_adoption','7d7e79fe','main','[]','[]',1,'now','now')",
+            params![cwd],
+        )
+        .unwrap();
         let summary = create_from_worker_result(
             &db,
             "child",
@@ -2048,6 +2056,27 @@ mod tests {
             verification_target_path(&db, "s").unwrap(),
             Some(cwd),
             "the verifier binds to the worktree the implementation left dirty"
+        );
+        // And the attempt still says what the change is relative to and who
+        // produced it, so the verifier reviews a revision rather than a folder.
+        assert_eq!(
+            db.query_row(
+                "SELECT base_commit,base_ref,worker_branch,worker_session_id FROM eval_attempts WHERE id=?1",
+                params![summary.attempt_id],
+                |row| Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                )),
+            )
+            .unwrap(),
+            (
+                Some("7d7e79fe".into()),
+                Some("main".into()),
+                Some("codex/fix-model-profile-migration".into()),
+                Some("child".into()),
+            )
         );
     }
 
@@ -2097,6 +2126,10 @@ mod tests {
         let reason = verification_target_unavailable_reason();
         assert!(reason.contains(VERIFICATION_TARGET_UNAVAILABLE));
         assert!(reason.contains("Adopt or commit"));
+        // "Nothing to verify" and "the database is broken" are different facts,
+        // and the bind site reports them differently.
+        db.execute("DROP TABLE eval_attempts", []).unwrap();
+        assert!(verification_target_path(&db, "s").is_err());
     }
 
     #[test]
