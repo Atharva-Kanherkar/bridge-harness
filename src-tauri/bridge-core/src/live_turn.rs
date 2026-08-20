@@ -5577,11 +5577,13 @@ fn prepare_input(
 
     // Read any @file mentions before locking the adapter map so the referenced
     // file contents ride along as trusted application context, not user text.
-    let file_context = if let Some(root) = state.session_workspace_root(session_id) {
-        workspace_files::mention_context(&root, &outbound)
-    } else {
-        None
-    };
+    //
+    // Not gated on having a workspace any more: a user can attach a file from
+    // anywhere on their machine to any chat, and a chat with no folder attached
+    // is exactly where that matters most.
+    let workspace_root = state.session_workspace_root(session_id);
+    let file_context =
+        workspace_files::mention_context(workspace_root.as_deref(), &outbound);
     let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
     // Prefer the original slash text for the transcript when we expanded a
     // skill/prompt.
