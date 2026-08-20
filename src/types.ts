@@ -77,6 +77,8 @@ export type {
   SlashCommandResolve,
   SearchSessionEntriesResult,
   SessionRecallHit,
+  MemoryRecord,
+  ListMemoryRecordsResult,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,

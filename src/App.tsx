@@ -675,7 +675,7 @@ export function App() {
         setState(next);
         target = next.sessions.find(item => item.id === target.id) ?? target;
       }
-      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall)(\s|$)/i.test(text);
+      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall|pins|unpin|pin)(\s|$)/i.test(text);
       if (!localOnly && !liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));

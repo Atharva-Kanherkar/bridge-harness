@@ -69,6 +69,10 @@ methods![
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
+    // memory — explicit named-scope pins; not recall, not the router
+    (SaveMemoryRecord, "memory", "save_memory_record"),
+    (ListMemoryRecords, "memory", "list_memory_records"),
+    (DeleteMemoryRecord, "memory", "delete_memory_record"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     // terminal

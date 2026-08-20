@@ -140,6 +140,23 @@ pub fn dispatch(
                 p.limit,
             ))
         }
+        MethodName::SaveMemoryRecord => {
+            let p: wire::SaveMemoryRecordParams = decode(method, params)?;
+            reply(api::save_memory_record(
+                core,
+                &p.body,
+                p.kind.as_deref(),
+                p.session_id.as_deref(),
+            ))
+        }
+        MethodName::ListMemoryRecords => {
+            let p: wire::ListMemoryRecordsParams = decode(method, params)?;
+            reply(api::list_memory_records(core, &p.scope_key))
+        }
+        MethodName::DeleteMemoryRecord => {
+            let p: wire::DeleteMemoryRecordParams = decode(method, params)?;
+            reply(api::delete_memory_record(core, &p.record_id))
+        }
         MethodName::InterruptTurn => {
             let p: wire::InterruptTurnParams = decode(method, params)?;
             reply(api::interrupt_turn(core, &p.session_id))

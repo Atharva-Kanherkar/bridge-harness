@@ -191,6 +191,27 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "save_memory_record",
+      "domain": "memory",
+      "method": "memory/save_memory_record",
+      "paramsSchema": "save-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "list_memory_records",
+      "domain": "memory",
+      "method": "memory/list_memory_records",
+      "paramsSchema": "list-memory-records-params.json",
+      "resultSchema": "list-memory-records-result.json"
+    },
+    {
+      "command": "delete_memory_record",
+      "domain": "memory",
+      "method": "memory/delete_memory_record",
+      "paramsSchema": "delete-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

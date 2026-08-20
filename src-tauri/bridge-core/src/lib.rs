@@ -37,6 +37,7 @@ pub mod managed_agents;
 pub mod managed_payload;
 pub mod managed_runtime;
 pub mod marketplace;
+pub mod memory_ledger;
 pub mod model;
 pub mod model_profiles;
 pub mod opencode_adapter;

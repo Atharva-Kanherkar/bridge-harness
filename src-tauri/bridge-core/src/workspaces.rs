@@ -204,10 +204,6 @@ pub fn archive_workspace_records(
 ) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
-        "DELETE FROM task_knowledge WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
         "DELETE FROM worker_leases WHERE workspace_id=?1",
         params![workspace_id],
     )?;

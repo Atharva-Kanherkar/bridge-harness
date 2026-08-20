@@ -34,6 +34,9 @@ export type BridgeMethod =
   | "sessions/interrupt_turn"
   | "sessions/refresh_account_usage"
   | "sessions/stop_session"
+  | "memory/save_memory_record"
+  | "memory/list_memory_records"
+  | "memory/delete_memory_record"
   | "approvals/resolve_approval"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -137,6 +140,9 @@ export const BRIDGE_METHODS = [
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
   { method: "sessions/stop_session", domain: "sessions", command: "stop_session" },
+  { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
+  { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
+  { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -290,6 +296,9 @@ export interface BridgeMethodParams {
   "sessions/interrupt_turn": InterruptTurnParams;
   "sessions/refresh_account_usage": undefined;
   "sessions/stop_session": StopSessionParams;
+  "memory/save_memory_record": SaveMemoryRecordParams;
+  "memory/list_memory_records": ListMemoryRecordsParams;
+  "memory/delete_memory_record": DeleteMemoryRecordParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -395,6 +404,9 @@ export interface BridgeMethodResults {
   "sessions/interrupt_turn": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
   "sessions/stop_session": BridgeState;
+  "memory/save_memory_record": MemoryRecord;
+  "memory/list_memory_records": ListMemoryRecordsResult;
+  "memory/delete_memory_record": MemoryRecord;
   "approvals/resolve_approval": UnitResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -659,6 +671,18 @@ export interface ManagedAgentStatus {
 export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
 
 export type MarketplaceProvider = "codex" | "claude";
+
+export interface MemoryRecord {
+  body: string;
+  createdAt: string;
+  id: string;
+  kind: string;
+  provenance: string;
+  scopeKey: string;
+  sourceSessionId?: string | null;
+  status: string;
+  updatedAt: string;
+}
 
 export interface ModelOption {
   defaultForTier: boolean;
@@ -1355,6 +1379,25 @@ export interface InterruptTurnParams {
 
 export interface StopSessionParams {
   sessionId: string;
+}
+
+export interface SaveMemoryRecordParams {
+  body: string;
+  kind?: string | null;
+  sessionId?: string | null;
+}
+
+export interface ListMemoryRecordsParams {
+  scopeKey: string;
+}
+
+export interface ListMemoryRecordsResult {
+  records: MemoryRecord[];
+  scopeKey: string;
+}
+
+export interface DeleteMemoryRecordParams {
+  recordId: string;
 }
 
 export interface ResolveApprovalParams {
