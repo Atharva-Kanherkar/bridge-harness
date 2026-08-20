@@ -2312,18 +2312,37 @@ pub fn launch_worker_outcome(
         return WorkerLaunchOutcome::Failed;
     }
     if directive.role == delegation::WorkerRole::Verification {
-        let verification_path: Result<String, BridgeError> = state.db.lock().unwrap().query_row(
-            "SELECT repository_path FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested','failed') ORDER BY started_at DESC,rowid DESC LIMIT 1",
-            params![parent_session_id],
-            |row| row.get(0),
-        ).map_err(BridgeError::from);
+        let verification_path =
+            completion::verification_target_path(&state.db.lock().unwrap(), parent_session_id);
         match verification_path {
-            Ok(path) => {
+            Ok(Some(path)) => {
                 reservation.path = path.clone();
                 let _ = state.db.lock().unwrap().execute(
                     "UPDATE worker_runtime SET worktree_path=?2,updated_at=?3 WHERE session_id=?1",
                     params![reservation.session_id, path, Utc::now().to_rfc3339()],
                 );
+            }
+            // Unroutable, not broken. This used to forward rusqlite's
+            // `Query returned no rows`, which told the orchestrator neither what
+            // was missing nor what to do about it.
+            Ok(None) => {
+                let reason = completion::verification_target_unavailable_reason();
+                let db = state.db.lock().unwrap();
+                let _ = learning_router::record_route_status(
+                    &db,
+                    &routed.decision.id,
+                    completion::VERIFICATION_TARGET_UNAVAILABLE,
+                );
+                let _ = store::event(
+                    &db,
+                    "completion",
+                    "completion.verification_target_unavailable",
+                    parent_session_id,
+                    &reason,
+                );
+                drop(db);
+                fail_reserved_worker(core, &reservation.session_id, &directive.label(), &reason);
+                return WorkerLaunchOutcome::Failed;
             }
             Err(error) => {
                 fail_reserved_worker(
