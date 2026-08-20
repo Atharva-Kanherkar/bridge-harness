@@ -17,7 +17,7 @@ use crate::model::{
 use crate::{
     adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
-    secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
+    secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
     verification_pipeline, verified_catalog, work, work_actions, work_observation, work_reconcile,
     work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
@@ -392,6 +392,16 @@ pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), B
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)
 }
 
+pub fn search_session_entries(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    session_recall::search(&db, session_id, query, limit)
+}
+
 /// Run a finished worker's objective again because the user asked. Goes through
 /// the ordinary launch path, so every policy limit applies as it did the first
 /// time.
@@ -751,7 +761,6 @@ pub fn resolve_slash_command(
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
-    let available = available_adapter_ids(core);
     let (kind, session_harness): (String, String) = {
         let db = core.db.lock().unwrap();
         db.query_row(
@@ -760,6 +769,15 @@ pub fn resolve_slash_command(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?
     };
+    if session_recall::is_bridge_local_slash(name) {
+        return Ok(Some(SlashCommandResolve {
+            name: name.to_string(),
+            harness: session_harness,
+            kind: "builtin".into(),
+            switch_harness: false,
+        }));
+    }
+    let available = available_adapter_ids(core);
     let catalog = slash::list_commands(&available);
     let matches: Vec<_> = catalog
         .iter()

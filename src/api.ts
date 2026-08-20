@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -818,6 +818,31 @@ export const bridgeApi = {
     forest.leaves = [...forest.leaves.filter(entry => entry.id !== parent), forest.entries.at(-1)!];
     forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
     emitState();
+  },
+  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null): Promise<SearchSessionEntriesResult> => {
+    if (isTauri()) {
+      return call("sessions/search_session_entries", limit != null ? { sessionId, query, limit } : { sessionId, query });
+    }
+    if (!sessionId.trim()) throw new Error("Recall needs a session id; search cannot run across a workspace");
+    const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (!tokens.length) throw new Error("Recall needs a word to search for in this chat");
+    const forest = mockForest(sessionId);
+    const kinds = new Set(["user.message", "assistant.message", "worker.result", "compaction", "checkpoint", "branch.summary"]);
+    const hits = forest.entries
+      .filter(entry => kinds.has(entry.kind))
+      .filter(entry => {
+        const body = `${entry.payload.text ?? ""} ${entry.payload.title ?? ""} ${entry.payload.summary ?? ""}`.toLowerCase();
+        return tokens.every(token => body.includes(token));
+      })
+      .slice(0, limit ?? 20)
+      .map(entry => ({
+        entryId: entry.id,
+        kind: entry.kind,
+        sequence: entry.sequence,
+        snippet: String(entry.payload.text ?? entry.payload.summary ?? entry.payload.title ?? ""),
+        createdAt: entry.createdAt,
+      }));
+    return { sessionId, query, hits };
   },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return call("projects/add_project", { path });

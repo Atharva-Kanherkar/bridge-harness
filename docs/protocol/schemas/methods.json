@@ -177,6 +177,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "search_session_entries",
+      "domain": "sessions",
+      "method": "sessions/search_session_entries",
+      "paramsSchema": "search-session-entries-params.json",
+      "resultSchema": "search-session-entries-result.json"
+    },
+    {
       "command": "interrupt_turn",
       "domain": "sessions",
       "method": "sessions/interrupt_turn",

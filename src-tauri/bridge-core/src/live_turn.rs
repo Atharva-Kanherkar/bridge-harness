@@ -15,9 +15,9 @@ use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     orchestrator, policy, policy_coordinator, prompt_compiler, restoration, secret_interception,
-    session_forest, session_input, session_supervisor, skill_marketplace, slash, store,
-    worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox,
-    workspace_files,
+    session_forest, session_input, session_recall, session_supervisor, skill_marketplace, slash,
+    store, worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_retry,
+    worker_sandbox, workspace_files,
     worktree_coordinator, BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
@@ -5553,6 +5553,18 @@ fn prepare_input(
                 &session_harness,
                 "Refreshed account usage. Check the meter in the title bar.",
             )?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Recall { query } => {
+            let text = if query.trim().is_empty() {
+                "Usage: /recall <words to find in this chat>. Search only looks at this session."
+                    .to_string()
+            } else {
+                let db = state.db.lock().unwrap();
+                let result = session_recall::search(&db, &session_id, &query, None)?;
+                session_recall::format_reply(&result)
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Compact { .. } => {

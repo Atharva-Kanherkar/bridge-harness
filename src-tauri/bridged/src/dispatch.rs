@@ -139,6 +139,15 @@ pub fn dispatch(
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))
         }
+        MethodName::SearchSessionEntries => {
+            let p: wire::SearchSessionEntriesParams = decode(method, params)?;
+            reply(api::search_session_entries(
+                core,
+                &p.session_id,
+                &p.query,
+                p.limit,
+            ))
+        }
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;
             reply(api::retry_worker_task(core, &p.child_session_id))

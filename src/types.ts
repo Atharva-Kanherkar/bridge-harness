@@ -75,6 +75,8 @@ export type {
   SkillProvider,
   SlashCommand,
   SlashCommandResolve,
+  SearchSessionEntriesResult,
+  SessionRecallHit,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,

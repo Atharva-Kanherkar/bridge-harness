@@ -28,6 +28,8 @@ pub enum SlashDispatch {
     Compact { focus: Option<String> },
     /// Bridge-handled: clear provider session / start fresh in this chat.
     Clear,
+    /// Bridge-handled: FTS5 recall in this session only.
+    Recall { query: String },
     /// Known TUI-only command — tell the user it isn't available here.
     Unsupported { name: String, harness: String },
 }
@@ -36,7 +38,12 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut out: Vec<SlashCommand> = Vec::new();
+    let mut out: Vec<SlashCommand> = vec![SlashCommand {
+        name: "recall".into(),
+        description: "Search this chat's history (this session only)".into(),
+        harness: "bridge".into(),
+        kind: "builtin".into(),
+    }];
 
     if available.contains("claude") {
         out.extend(claude_builtins());
@@ -130,6 +137,11 @@ pub fn dispatch(
 
     match name {
         "usage" | "cost" | "stats" => return SlashDispatch::Usage,
+        "recall" => {
+            return SlashDispatch::Recall {
+                query: args.unwrap_or("").to_string(),
+            };
+        }
         "compact" => {
             return SlashDispatch::Compact {
                 focus: args.map(str::to_string),
@@ -624,5 +636,12 @@ mod tests {
             dispatch("/compact focus on errors", "claude", &available),
             SlashDispatch::Compact { focus: Some(_) }
         ));
+        assert!(matches!(
+            dispatch("/recall what did we decide", "claude", &available),
+            SlashDispatch::Recall { query } if query == "what did we decide"
+        ));
+        assert!(list_commands(&HashSet::new())
+            .iter()
+            .any(|command| command.name == "recall" && command.harness == "bridge"));
     }
 }

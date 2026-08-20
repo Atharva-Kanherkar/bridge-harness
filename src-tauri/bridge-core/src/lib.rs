@@ -59,6 +59,7 @@ mod runtime;
 pub mod secret_interception;
 pub mod session_forest;
 pub mod session_input;
+pub mod session_recall;
 pub mod session_titles;
 pub mod session_supervisor;
 pub mod sessions;

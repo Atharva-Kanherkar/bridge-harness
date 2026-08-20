@@ -67,6 +67,7 @@ methods![
     (SendTurn, "sessions", "send_turn"),
     (SubmitInput, "sessions", "submit_input"),
     (CompactSession, "sessions", "compact_session"),
+    (SearchSessionEntries, "sessions", "search_session_entries"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),

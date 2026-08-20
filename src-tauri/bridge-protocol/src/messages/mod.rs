@@ -164,6 +164,7 @@ typed_methods![
     (SendTurn, SendTurnParams, UnitResult),
     (SubmitInput, SubmitInputParams, SubmitInputResult),
     (CompactSession, CompactSessionParams, UnitResult),
+    (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
