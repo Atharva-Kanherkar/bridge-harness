@@ -64,6 +64,7 @@ methods![
     (UpdateChatModel, "sessions", "update_chat_model"),
     (PrepareTurn, "sessions", "prepare_turn"),
     (SendTurn, "sessions", "send_turn"),
+    (SubmitInput, "sessions", "submit_input"),
     (CompactSession, "sessions", "compact_session"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),

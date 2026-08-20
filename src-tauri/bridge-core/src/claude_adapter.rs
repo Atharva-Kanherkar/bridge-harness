@@ -509,6 +509,12 @@ impl AdapterRuntime for ClaudeRuntime {
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text)
     }
+    /// The sidecar feeds one long-lived streaming-input `query()`, so a user
+    /// message written while a turn is running is picked up by that turn — the
+    /// SDK's own steering path — instead of starting a competing one.
+    fn supports_active_turn_steering(&self) -> bool {
+        true
+    }
     fn interrupt(&self) -> Result<(), BridgeError> {
         ClaudeRuntime::interrupt(self)
     }

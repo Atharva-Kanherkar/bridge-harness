@@ -827,6 +827,22 @@ async fn send_turn(
     blocking("Turn delivery", move || api::send_turn(&core, session_id, text)).await
 }
 
+/// The active-turn input contract. Unlike `send_turn`, this one is safe to call
+/// while the agent is working: Bridge decides between starting a turn, steering
+/// the live one, and durably queueing, and reports which it did.
+#[tauri::command]
+async fn submit_input(
+    session_id: String,
+    text: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SubmitInputResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Input submission", move || {
+        api::submit_input(&core, session_id, text)
+    })
+    .await
+}
+
 /// List the current chat's workspace files for the composer's `@file`
 /// autocomplete. Returns an empty list for chats with no connected folder.
 #[tauri::command]
@@ -1168,6 +1184,7 @@ fn setup_embedded(
     work_observation::start_work_fact_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
+    live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
 }
@@ -1266,6 +1283,7 @@ pub fn run() {
             resize_terminal,
             prepare_turn,
             send_turn,
+            submit_input,
             list_workspace_files,
             list_workspace_tree,
             read_workspace_file,

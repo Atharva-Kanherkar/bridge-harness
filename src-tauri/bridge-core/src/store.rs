@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 26;
+const LATEST_SCHEMA_VERSION: i64 = 27;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -251,6 +251,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             24 => migration_24_work_board(&transaction)?,
             25 => migration_25_ephemeral_work_evidence(&transaction)?,
             26 => migration_26_briefing_run_leases(&transaction)?,
+            27 => migration_27_queued_session_input(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -814,6 +815,31 @@ fn migration_26_briefing_run_leases(transaction: &Transaction<'_>) -> Result<(),
             ))?;
         }
     }
+    Ok(())
+}
+
+/// The durable home for user input submitted while a turn was already running.
+///
+/// A follow-up the user typed must not live only in a UI state hook: a reconnect
+/// or a daemon restart would lose it, and an in-memory queue drained twice would
+/// deliver it twice. `state` is the exactly-once guard — delivery claims a row
+/// with a compare-and-swap out of `queued`, so two concurrent drains cannot both
+/// win it.
+fn migration_27_queued_session_input(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS queued_session_input (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL,
+            provider_text TEXT NOT NULL,
+            display_text TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('queued','claiming','delivered','abandoned')),
+            created_at TEXT NOT NULL,
+            delivered_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS queued_session_input_pending
+            ON queued_session_input(session_id, state, sequence);",
+    )?;
     Ok(())
 }
 

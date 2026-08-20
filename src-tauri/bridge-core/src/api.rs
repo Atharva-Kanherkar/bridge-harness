@@ -353,6 +353,17 @@ pub fn send_turn(
     live_turn::send_turn(core, session_id, text)
 }
 
+/// Submit user input and let Bridge decide what to do with it: start a turn,
+/// steer the one already running, or durably queue it for the next phase
+/// boundary. The disposition comes back so the client can say which happened.
+pub fn submit_input(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    live_turn::submit_input(core, session_id, text)
+}
+
 pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     let prompt = core.begin_manual_compaction(session_id)?;
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)

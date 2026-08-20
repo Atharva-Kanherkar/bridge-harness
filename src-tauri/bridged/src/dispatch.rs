@@ -127,6 +127,10 @@ pub fn dispatch(
             let p: wire::SendTurnParams = decode(method, params)?;
             reply(api::send_turn(core, p.session_id, p.text))
         }
+        MethodName::SubmitInput => {
+            let p: wire::SubmitInputParams = decode(method, params)?;
+            reply(api::submit_input(core, p.session_id, p.text))
+        }
         MethodName::CompactSession => {
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))

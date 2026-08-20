@@ -156,6 +156,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "submit_input",
+      "domain": "sessions",
+      "method": "sessions/submit_input",
+      "paramsSchema": "submit-input-params.json",
+      "resultSchema": "submit-input-result.json"
+    },
+    {
       "command": "compact_session",
       "domain": "sessions",
       "method": "sessions/compact_session",

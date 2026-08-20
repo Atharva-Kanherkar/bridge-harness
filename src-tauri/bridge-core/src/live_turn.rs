@@ -15,11 +15,12 @@ use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     orchestrator, policy, policy_coordinator, prompt_compiler, restoration, secret_interception,
-    session_forest, session_supervisor, skill_marketplace, slash, store, worker_adoption,
-    worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
+    session_forest, session_input, session_supervisor, skill_marketplace, slash, store,
+    worker_adoption, worker_guard, worker_lifecycle, worker_pool, worker_sandbox, workspace_files,
     worktree_coordinator, BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
+use bridge_protocol::messages as wire;
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use std::{
@@ -1482,6 +1483,14 @@ fn handle_agent_value(
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(core, session_id, turn_id, directive, true);
     }
+    // This is the phase boundary. Anything the user typed while the turn was
+    // running is delivered here, before Bridge spends a model turn on its own
+    // recovery: the person watching outranks the automatic retry.
+    let steered_by_user = if turn_completed {
+        drain_queued_input(core, session_id)
+    } else {
+        false
+    };
     if !pending_directives.is_empty() {
         // A valid request cleared the backlog; reset the correction budget.
         state
@@ -1505,7 +1514,10 @@ fn handle_agent_value(
             *counter += 1;
             *counter
         };
-        let will_retry = attempts <= MAX_INVALID_REQUEST_CORRECTIONS;
+        // User guidance already went to this provider at this boundary, so the
+        // orchestrator has a new instruction to act on. Spending a correction
+        // turn on the old request now would talk over the user.
+        let will_retry = attempts <= MAX_INVALID_REQUEST_CORRECTIONS && !steered_by_user;
         {
             let db = state.db.lock().unwrap();
             let rejection = agent::NormalizedEvent {
@@ -1553,6 +1565,15 @@ fn handle_agent_value(
                     reason,
                 );
             }
+        } else if steered_by_user {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "delegation.correction.preempted_by_user_input",
+                session_id,
+                reason,
+            );
         } else {
             let db = state.db.lock().unwrap();
             let _ = store::event(
@@ -5148,6 +5169,22 @@ pub fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
+    persist_submitted_user_turn_with_delivery(db, session_id, adapter_id, display_text, "submitted")
+}
+
+/// The same durable user message, stamped with how it reached the provider.
+///
+/// The stamp is what lets the conversation show a queued follow-up as queued and
+/// then as delivered. Without it a queued message is indistinguishable from one
+/// the agent is already working on, which is the confusion this whole path
+/// exists to remove.
+pub fn persist_submitted_user_turn_with_delivery(
+    db: &Connection,
+    session_id: &str,
+    adapter_id: &str,
+    display_text: &str,
+    delivery: &str,
+) -> Result<Option<AgentEvent>, BridgeError> {
     let user_event = agent::NormalizedEvent {
         kind: "message.completed".into(),
         item_id: Some(format!("user-{}", Uuid::new_v4())),
@@ -5155,7 +5192,7 @@ pub fn persist_submitted_user_turn(
         status: Some("completed".into()),
         title: None,
         text: Some(display_text.into()),
-        data: serde_json::json!({}),
+        data: serde_json::json!({"delivery": delivery}),
     };
     store::session_event(
         db,
@@ -5166,28 +5203,57 @@ pub fn persist_submitted_user_turn(
     .map(Some)
 }
 
-pub fn send_turn(
-    core: &Arc<BridgeCore>,
-    session_id: String,
-    text: String,
-) -> Result<(), BridgeError> {
-    let state = core;
-    if text.trim().is_empty() {
-        return Err(BridgeError::Invalid("Message cannot be empty".into()));
-    }
-    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
-        return Err(BridgeError::Invalid(
-            "Worker turns are scheduled through the policy-controlled worker pool".into(),
-        ));
-    }
+/// The outcome of running submitted text through Bridge's one input boundary.
+enum InputPreparation {
+    /// A session-control command Bridge answered itself; nothing is left for a
+    /// provider to receive.
+    Handled {
+        interceptions: Vec<secret_interception::SecretInterception>,
+    },
+    Ready(PreparedInput),
+}
 
+/// User text that has cleared policy and is ready for a provider.
+struct PreparedInput {
+    /// What the conversation shows the user.
+    display_text: String,
+    /// What the provider receives: slash-expanded, with `@file` context
+    /// appended as trusted application context.
+    provider_text: String,
+    /// The slash-expanded user text. The credential broker keys its per-turn
+    /// context off this, so a marker pulled in from a referenced file's body
+    /// cannot be mistaken for one the user wrote.
+    outbound: String,
+    interceptions: Vec<secret_interception::SecretInterception>,
+}
+
+/// Run user text through secret interception, slash-command policy, and `@file`
+/// context — once, in one place.
+///
+/// Every route a user's words take to a provider comes through here: a new turn,
+/// a steer into a running turn, and a follow-up queued for a phase boundary.
+/// That is the point of the function. A second path would be a second policy,
+/// and the one that got skipped would be the one that leaked a secret.
+///
+/// `allow_session_control` is false while a turn is running. `/clear` drops the
+/// provider process, `/compact` starts a checkpoint turn, `/usage` re-reads the
+/// account: none of those are safe underneath a live turn, so they are refused
+/// with a reason rather than quietly reinterpreted as prose.
+fn prepare_input(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    text: &str,
+    allow_session_control: bool,
+) -> Result<InputPreparation, BridgeError> {
+    let state = core;
     // Sanitize the user-authored text before slash expansion, adapter transport,
     // optimistic UI projection, or durable conversation history can observe it.
-    let intercepted = secret_interception::intercept(&text);
+    let intercepted = secret_interception::intercept(text);
     state
         .credential_broker
-        .register(&session_id, intercepted.captured);
+        .register(session_id, intercepted.captured);
     let sanitized_input = intercepted.sanitized;
+    let interceptions = sanitized_input.interceptions.clone();
     let available: std::collections::HashSet<String> = state
         .adapter_registry
         .descriptors()
@@ -5201,49 +5267,70 @@ pub fn send_turn(
         |row| row.get(0),
     )?;
 
-    let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
+    let dispatch = slash::dispatch(&sanitized_input.text, &session_harness, &available);
+    if !allow_session_control && session_input::requires_idle_session(&dispatch) {
+        return Err(BridgeError::Invalid(
+            "That command changes the chat itself, so it needs an idle turn. Stop the current turn first, or send it as a message.".into(),
+        ));
+    }
+
+    let outbound = match dispatch {
         slash::SlashDispatch::Usage => {
             state.refresh_account_usage()?;
             emit_local_assistant(
                 core,
-                &session_id,
+                session_id,
                 &session_harness,
                 "Refreshed account usage. Check the meter in the title bar.",
             )?;
-            return Ok(());
+            return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Compact { .. } => {
-            let prompt = state.begin_manual_compaction(&session_id)?;
-            send_internal_checkpoint_turn(core, &session_id, &prompt)?;
-            return Ok(());
+            let prompt = state.begin_manual_compaction(session_id)?;
+            send_internal_checkpoint_turn(core, session_id, &prompt)?;
+            return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Clear => {
-            state.credential_broker.clear_session(&session_id);
-            if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            state.credential_broker.clear_session(session_id);
+            if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
                 runtime.stop(adapters::ShutdownReason::UserStopped);
             }
             let db = state.db.lock().unwrap();
-            session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
+            session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
             db.execute(
                 "UPDATE sessions SET provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1",
                 params![session_id],
             )?;
+            // The conversation these follow-ups belonged to is gone; delivering
+            // them into a fresh provider session would be delivering them to
+            // someone else.
+            let discarded = session_input::discard_for_session(&db, session_id)?;
+            if discarded > 0 {
+                let _ = store::event(
+                    &db,
+                    "session",
+                    "session.input.discarded",
+                    session_id,
+                    &format!("{discarded} queued follow-up(s) dropped with the cleared session"),
+                );
+            }
+            drop(db);
             emit_local_assistant(
                 core,
-                &session_id,
+                session_id,
                 &session_harness,
                 "Cleared this chat’s provider session. Send a message to start fresh.",
             )?;
             core.events.publish(CoreEvent::StateChanged);
-            return Ok(());
+            return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Unsupported { name, harness } => {
             emit_local_assistant(core,
-                &session_id,
+                session_id,
                 &session_harness,
                 &format!("`/{name}` is a {harness} terminal UI command and isn’t available inside Bridge yet."),
             )?;
-            return Ok(());
+            return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Expand { text } => text,
         slash::SlashDispatch::Forward { text } => text,
@@ -5251,25 +5338,53 @@ pub fn send_turn(
 
     // Read any @file mentions before locking the adapter map so the referenced
     // file contents ride along as trusted application context, not user text.
-    let file_context = if let Some(root) = state.session_workspace_root(&session_id) {
+    let file_context = if let Some(root) = state.session_workspace_root(session_id) {
         workspace_files::mention_context(&root, &outbound)
     } else {
         None
     };
     let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
+    // Prefer the original slash text for the transcript when we expanded a
+    // skill/prompt.
+    let display_text = if outbound != sanitized_input.text {
+        sanitized_input.text
+    } else {
+        outbound.clone()
+    };
+    Ok(InputPreparation::Ready(PreparedInput {
+        display_text,
+        provider_text,
+        outbound,
+        interceptions,
+    }))
+}
 
+/// Hand prepared text to the live provider and record it in the conversation.
+///
+/// `delivery` names how the text got here — `submitted`, `steered`, or
+/// `queued` — and rides on the persisted user event so the UI can show a queued
+/// follow-up turning into a delivered one instead of guessing.
+fn deliver_prepared_input(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    prepared: &PreparedInput,
+    delivery: &str,
+) -> Result<(), BridgeError> {
+    let state = core;
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
-        .get(&session_id)
+        .get(session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
+    let credential_context = state
+        .credential_broker
+        .turn_context(session_id, &prepared.outbound);
     if let Err(error) = deliver_sanitized_turn(
         runtime.as_ref(),
-        &provider_text,
+        &prepared.provider_text,
         credential_context.as_deref(),
     ) {
         drop(adapters);
-        record_recoverable_adapter_failure(&state, &session_id, &error)?;
+        record_recoverable_adapter_failure(state, session_id, &error)?;
         return Err(error);
     }
     drop(adapters);
@@ -5279,23 +5394,307 @@ pub fn send_turn(
         params![session_id],
         |r| r.get(0),
     )?;
-    // Claude stream-json does not reliably echo the submitted user turn; persist it locally.
-    // Prefer the original slash text for the transcript when we expanded a skill/prompt.
-    let display_text = if outbound != sanitized_input.text {
-        sanitized_input.text
-    } else {
-        outbound.clone()
-    };
-    if let Some(event) = persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
-    {
+    // Claude stream-json does not reliably echo the submitted user turn; persist
+    // it locally.
+    if let Some(event) = persist_submitted_user_turn_with_delivery(
+        &db,
+        session_id,
+        &adapter_id,
+        &prepared.display_text,
+        delivery,
+    )? {
         core.events.publish(CoreEvent::Agent(event));
     }
     let _ = db.execute(
         "UPDATE sessions SET status='working' WHERE id=?1",
         params![session_id],
     );
+    drop(db);
     core.events.publish(CoreEvent::StateChanged);
     Ok(())
+}
+
+/// Whether a new provider turn would collide with one already in flight.
+///
+/// Deliberately pessimistic: `status='working'` counts even before the provider
+/// has echoed `turn.started`, because the window between Bridge writing a turn
+/// and the provider acknowledging it is exactly where a second `turn/start`
+/// would land.
+fn turn_is_active(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
+    core.db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing')
+             FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| BridgeError::Invalid("Chat session does not exist".into()))
+}
+
+pub fn send_turn(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+) -> Result<(), BridgeError> {
+    // The legacy entry point: always deliver now. Clients that want Bridge to
+    // decide between starting, steering, and queueing call `submit_input`.
+    submit_input_internal(core, session_id, text, true).map(|_| ())
+}
+
+/// The typed active-turn input contract: one call the client makes whatever the
+/// session is doing, and an explicit disposition back saying what happened.
+///
+/// Nothing here cancels anything. `interrupt_turn` stays a separate method
+/// precisely so sending guidance cannot be mistaken for stopping the work.
+pub fn submit_input(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    submit_input_internal(core, session_id, text, false)
+}
+
+fn submit_input_internal(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+    force_new_turn: bool,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    let state = core;
+    if text.trim().is_empty() {
+        return Err(BridgeError::Invalid("Message cannot be empty".into()));
+    }
+    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
+        return Err(BridgeError::Invalid(
+            "Worker turns are scheduled through the policy-controlled worker pool".into(),
+        ));
+    }
+
+    let route = if force_new_turn {
+        session_input::InputRoute::NewTurn
+    } else {
+        let steering_capable = state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(&session_id)
+            .is_some_and(|runtime| runtime.supports_active_turn_steering());
+        session_input::route(turn_is_active(core, &session_id)?, steering_capable)
+    };
+
+    let prepared = match prepare_input(
+        core,
+        &session_id,
+        &text,
+        route == session_input::InputRoute::NewTurn,
+    )? {
+        InputPreparation::Handled { interceptions } => {
+            return Ok(wire::SubmitInputResult {
+                disposition: route.disposition(),
+                queued_input_id: None,
+                interceptions: mirror_interceptions(&interceptions),
+            })
+        }
+        InputPreparation::Ready(prepared) => prepared,
+    };
+    let interceptions = mirror_interceptions(&prepared.interceptions);
+
+    match route {
+        session_input::InputRoute::NewTurn => {
+            deliver_prepared_input(core, &session_id, &prepared, "submitted")?;
+        }
+        session_input::InputRoute::Steer => {
+            deliver_prepared_input(core, &session_id, &prepared, "steered")?;
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "session",
+                "session.input.steered",
+                &session_id,
+                "User guidance delivered into the active turn",
+            );
+        }
+        session_input::InputRoute::Queue => {
+            let queued = {
+                let db = state.db.lock().unwrap();
+                let queued = session_input::enqueue(
+                    &db,
+                    &session_id,
+                    &prepared.provider_text,
+                    &prepared.display_text,
+                )?;
+                // Persist the message itself, not just the queue row: a
+                // reconnect replays the conversation from durable history, and a
+                // follow-up the user can no longer see is a follow-up they will
+                // type again.
+                let adapter_id: String = db.query_row(
+                    "SELECT harness FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )?;
+                if let Some(event) = persist_submitted_user_turn_with_delivery(
+                    &db,
+                    &session_id,
+                    &adapter_id,
+                    &prepared.display_text,
+                    "queued",
+                )? {
+                    core.events.publish(CoreEvent::Agent(event));
+                }
+                let _ = store::event(
+                    &db,
+                    "session",
+                    "session.input.queued",
+                    &session_id,
+                    &queued.id,
+                );
+                queued
+            };
+            core.events.publish(CoreEvent::StateChanged);
+            return Ok(wire::SubmitInputResult {
+                disposition: route.disposition(),
+                queued_input_id: Some(queued.id),
+                interceptions,
+            });
+        }
+    }
+    Ok(wire::SubmitInputResult {
+        disposition: route.disposition(),
+        queued_input_id: None,
+        interceptions,
+    })
+}
+
+/// Core interceptions as the wire shape. The protocol crate deliberately does
+/// not depend on core, so the two structs are mirrors and this is the seam.
+fn mirror_interceptions(
+    interceptions: &[secret_interception::SecretInterception],
+) -> Vec<wire::SecretInterception> {
+    interceptions
+        .iter()
+        .map(|interception| wire::SecretInterception {
+            reference: interception.reference.clone(),
+            detector: interception.detector.clone(),
+        })
+        .collect()
+}
+
+/// Deliver at most one queued follow-up, if the session has one and is between
+/// turns.
+///
+/// Called at every phase boundary and by the maintenance sweep, so a reconnect
+/// or a completion event nobody was listening for still gets the user's words
+/// delivered. Safe to call concurrently: the claim is a compare-and-swap, so a
+/// second caller finds the row already taken.
+///
+/// One per boundary. Two queued messages are two turns, not one turn carrying
+/// both — the second was written without knowing what the first would produce.
+pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
+    let state = core.clone();
+    let queued = {
+        let db = state.db.lock().unwrap();
+        let idle = db
+            .query_row(
+                "SELECT active_turn_id IS NULL AND status NOT IN ('working','checkpointing')
+                 FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        if !idle {
+            return false;
+        }
+        session_input::next_queued(&db, session_id).ok().flatten()
+    };
+    let Some(queued) = queued else {
+        return false;
+    };
+    let claimed = {
+        let db = state.db.lock().unwrap();
+        session_input::claim(&db, &queued.id).unwrap_or(false)
+    };
+    if !claimed {
+        return false;
+    }
+    let prepared = PreparedInput {
+        display_text: queued.display_text.clone(),
+        provider_text: queued.provider_text.clone(),
+        // Policy already ran at submission time; the queued row is the result.
+        outbound: queued.display_text.clone(),
+        interceptions: Vec::new(),
+    };
+    match deliver_prepared_input(core, session_id, &prepared, "queued_delivered") {
+        Ok(()) => {
+            let db = state.db.lock().unwrap();
+            let _ = session_input::mark_delivered(&db, &queued.id);
+            let _ = store::event(
+                &db,
+                "session",
+                "session.input.delivered",
+                session_id,
+                &queued.id,
+            );
+            true
+        }
+        Err(error) => {
+            let db = state.db.lock().unwrap();
+            // Back to the front of the queue: a transient adapter error should
+            // postpone the follow-up, never eat it.
+            let _ = session_input::release(&db, &queued.id);
+            let _ = store::event(
+                &db,
+                "session",
+                "session.input.delivery_failed",
+                session_id,
+                &error.to_string(),
+            );
+            false
+        }
+    }
+}
+
+/// How often the sweep looks for waiting input. This is the safety net behind
+/// the phase-boundary drain, not the primary path, so it can be unhurried.
+pub const QUEUED_INPUT_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Deliver waiting input for sessions that are idle with a live provider.
+///
+/// The phase-boundary drain covers the normal case. This covers the ones it
+/// cannot see: a daemon that restarted while input was queued, and a turn that
+/// ended without the completion event reaching the drain.
+pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
+    // Rows a previous process claimed but never confirmed. Redelivering could
+    // duplicate and silence would lose, so each one is surfaced to the session
+    // it belonged to and the user decides.
+    let stranded = {
+        let db = core.db.lock().unwrap();
+        session_input::recover_claimed(&db).unwrap_or_default()
+    };
+    for input in stranded {
+        let db = core.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "session",
+            "session.input.abandoned",
+            &input.session_id,
+            &format!(
+                "A follow-up may not have reached the agent before Bridge restarted: {}",
+                input.display_text
+            ),
+        );
+    }
+    thread::spawn(move || loop {
+        thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
+        let sessions = {
+            let db = core.db.lock().unwrap();
+            session_input::sessions_with_queued_input(&db).unwrap_or_default()
+        };
+        for session_id in sessions {
+            drain_queued_input(&core, &session_id);
+        }
+    });
 }
 
 fn record_recoverable_adapter_failure(
@@ -5960,5 +6359,392 @@ mod approval_deadline_tests {
             .unwrap();
         assert_eq!(resolved.payload["data"]["childBlocked"], false);
         assert_eq!(resolved.payload["data"]["outcome"], "accept");
+    }
+}
+
+#[cfg(test)]
+mod submit_input_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A live provider that records what it was told, and can be made to fail
+    /// the write so the queue's release path is reachable.
+    struct FakeRuntime {
+        steering: bool,
+        sent: Arc<Mutex<Vec<String>>>,
+        refuse: Arc<AtomicBool>,
+    }
+
+    struct FakeHandles {
+        sent: Arc<Mutex<Vec<String>>>,
+        refuse: Arc<AtomicBool>,
+    }
+
+    impl FakeRuntime {
+        fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let refuse = Arc::new(AtomicBool::new(false));
+            let runtime = FakeRuntime {
+                steering,
+                sent: sent.clone(),
+                refuse: refuse.clone(),
+            };
+            (Box::new(runtime), FakeHandles { sent, refuse })
+        }
+    }
+
+    impl adapters::AdapterRuntime for FakeRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "fake"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
+        fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.sent.lock().unwrap().push(text.to_owned());
+            Ok(())
+        }
+        fn supports_active_turn_steering(&self) -> bool {
+            self.steering
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
+    fn core_with_chat(status: &str) -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth)
+                 VALUES('chat',NULL,'claude','Chat',?1,'reported','direct',0)",
+                params![status],
+            )
+            .unwrap();
+        (fixture, Arc::new(core))
+    }
+
+    fn attach(core: &Arc<BridgeCore>, steering: bool) -> Arc<Mutex<Vec<String>>> {
+        attach_handles(core, steering).sent
+    }
+
+    fn attach_handles(core: &Arc<BridgeCore>, steering: bool) -> FakeHandles {
+        let (runtime, handles) = FakeRuntime::new(steering);
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        handles
+    }
+
+    fn session_status(core: &Arc<BridgeCore>) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id='chat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn an_idle_session_starts_a_normal_turn() {
+        let (_fixture, core) = core_with_chat("ready");
+        let sent = attach(&core, false);
+
+        let outcome = submit_input(&core, "chat".into(), "ship it".into()).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert_eq!(outcome.queued_input_id, None);
+        assert_eq!(sent.lock().unwrap().as_slice(), ["ship it".to_owned()]);
+        assert_eq!(session_status(&core), "working");
+    }
+
+    #[test]
+    fn a_steering_capable_provider_takes_guidance_mid_turn() {
+        let (_fixture, core) = core_with_chat("working");
+        let sent = attach(&core, true);
+
+        let outcome = submit_input(&core, "chat".into(), "use the other API".into()).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        assert_eq!(outcome.queued_input_id, None);
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            ["use the other API".to_owned()],
+            "steering goes to the provider immediately"
+        );
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            session_input::pending_count(&db, "chat").unwrap(),
+            0,
+            "nothing was queued: the provider took it"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_cannot_steer_gets_a_durable_queue_not_a_second_turn() {
+        let (_fixture, core) = core_with_chat("working");
+        let sent = attach(&core, false);
+
+        let outcome = submit_input(&core, "chat".into(), "also update the docs".into()).unwrap();
+
+        assert_eq!(
+            outcome.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary
+        );
+        let queued_id = outcome.queued_input_id.expect("the queue row is named");
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "a busy provider must never be handed a concurrent turn"
+        );
+        {
+            let db = core.db.lock().unwrap();
+            assert_eq!(session_input::pending_count(&db, "chat").unwrap(), 1);
+            // The message is in durable history too, so a reconnect still shows
+            // the user what they typed.
+            let stored: String = db
+                .query_row(
+                    "SELECT json_extract(payload,'$.data.delivery') FROM session_entries
+                     WHERE session_id='chat' AND kind='user.message'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, "queued");
+        }
+
+        // The turn ends: the phase boundary delivers it, exactly once.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        assert!(drain_queued_input(&core, "chat"));
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            ["also update the docs".to_owned()]
+        );
+        assert!(
+            !drain_queued_input(&core, "chat"),
+            "a replayed drain has nothing left to deliver"
+        );
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        let db = core.db.lock().unwrap();
+        assert_eq!(session_input::pending_count(&db, "chat").unwrap(), 0);
+        let delivered: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM queued_session_input WHERE id=?1 AND state='delivered'",
+                params![queued_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delivered, 1);
+    }
+
+    #[test]
+    fn a_busy_session_holds_its_queue_until_the_boundary() {
+        let (_fixture, core) = core_with_chat("working");
+        let sent = attach(&core, false);
+        submit_input(&core, "chat".into(), "one".into()).unwrap();
+        submit_input(&core, "chat".into(), "two".into()).unwrap();
+
+        assert!(
+            !drain_queued_input(&core, "chat"),
+            "a running turn is not a phase boundary"
+        );
+        assert!(sent.lock().unwrap().is_empty());
+
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        // One per boundary, in submission order: the second follow-up was
+        // written without knowing what the first would produce.
+        assert!(drain_queued_input(&core, "chat"));
+        assert_eq!(sent.lock().unwrap().as_slice(), ["one".to_owned()]);
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_failed_write_postpones_the_follow_up_instead_of_eating_it() {
+        let (_fixture, core) = core_with_chat("working");
+        let handles = attach_handles(&core, false);
+        submit_input(&core, "chat".into(), "keep this".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+
+        // Make the provider write fail, the way a dead pipe would.
+        handles.refuse.store(true, Ordering::SeqCst);
+        assert!(!drain_queued_input(&core, "chat"));
+        assert!(handles.sent.lock().unwrap().is_empty());
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            1,
+            "the follow-up is back at the front of the queue, not lost"
+        );
+    }
+
+    #[test]
+    fn worker_sessions_stay_policy_controlled() {
+        let (_fixture, core) = core_with_chat("working");
+        attach(&core, true);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth,parent_session_id) VALUES('worker',NULL,'codex','Worker','working','reported','workspace',1,'chat')", []).unwrap();
+            store::upsert_worker_runtime(
+                &db,
+                &crate::model::WorkerRuntimeRecord {
+                    session_id: "worker".into(),
+                    parent_session_id: "chat".into(),
+                    lifecycle_state: "working".into(),
+                    task_family: "implementation".into(),
+                    compatibility_key: "key".into(),
+                    result_status: "pending".into(),
+                    retry_count: 0,
+                    warm_until: None,
+                    worktree_path: None,
+                    worktree_branch: None,
+                    last_result: None,
+                    last_activity_at: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .unwrap();
+        }
+
+        let error = submit_input(&core, "worker".into(), "do it differently".into()).unwrap_err();
+        assert!(
+            error.to_string().contains("policy-controlled"),
+            "workers take direction from their orchestrator: {error}"
+        );
+    }
+
+    #[test]
+    fn session_commands_need_an_idle_turn_but_still_work_when_idle() {
+        let (_fixture, core) = core_with_chat("working");
+        attach(&core, true);
+
+        let error = submit_input(&core, "chat".into(), "/clear".into()).unwrap_err();
+        assert!(
+            error.to_string().contains("needs an idle turn"),
+            "a command that rewrites the session cannot run under a live turn: {error}"
+        );
+
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready' WHERE id='chat'", [])
+            .unwrap();
+        let outcome = submit_input(&core, "chat".into(), "/clear".into()).unwrap();
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert_eq!(session_status(&core), "idle");
+    }
+
+    #[test]
+    fn clearing_a_chat_drops_the_follow_ups_that_belonged_to_it() {
+        let (_fixture, core) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "queued guidance".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready' WHERE id='chat'", [])
+            .unwrap();
+
+        submit_input(&core, "chat".into(), "/clear".into()).unwrap();
+
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            0,
+            "delivering into a fresh provider session would be delivering to someone else"
+        );
+    }
+
+    #[test]
+    fn secrets_are_intercepted_on_every_disposition() {
+        let secret = "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789";
+        for (status, steering, expected) in [
+            ("ready", false, wire::InputDisposition::StartedNewTurn),
+            ("working", true, wire::InputDisposition::SteeredActiveTurn),
+            (
+                "working",
+                false,
+                wire::InputDisposition::QueuedForPhaseBoundary,
+            ),
+        ] {
+            let (_fixture, core) = core_with_chat(status);
+            let sent = attach(&core, steering);
+
+            let outcome =
+                submit_input(&core, "chat".into(), format!("use {secret} please")).unwrap();
+
+            assert_eq!(outcome.disposition, expected);
+            assert_eq!(
+                outcome.interceptions.len(),
+                1,
+                "{expected:?} reports the replaced secret"
+            );
+            assert_eq!(outcome.interceptions[0].detector, "anthropic");
+            for delivered in sent.lock().unwrap().iter() {
+                assert!(
+                    !delivered.contains(secret),
+                    "{expected:?} must not put the raw secret on the wire"
+                );
+            }
+            let db = core.db.lock().unwrap();
+            let stored: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM queued_session_input WHERE provider_text LIKE '%sk-ant-%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, 0, "{expected:?} must not queue a raw secret either");
+        }
+    }
+
+    #[test]
+    fn empty_input_is_refused_before_anything_is_queued() {
+        let (_fixture, core) = core_with_chat("working");
+        attach(&core, false);
+        assert!(submit_input(&core, "chat".into(), "   ".into()).is_err());
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            0
+        );
     }
 }

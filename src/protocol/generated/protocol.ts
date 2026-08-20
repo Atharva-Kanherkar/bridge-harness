@@ -29,6 +29,7 @@ export type BridgeMethod =
   | "sessions/update_chat_model"
   | "sessions/prepare_turn"
   | "sessions/send_turn"
+  | "sessions/submit_input"
   | "sessions/compact_session"
   | "sessions/interrupt_turn"
   | "sessions/refresh_account_usage"
@@ -131,6 +132,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/update_chat_model", domain: "sessions", command: "update_chat_model" },
   { method: "sessions/prepare_turn", domain: "sessions", command: "prepare_turn" },
   { method: "sessions/send_turn", domain: "sessions", command: "send_turn" },
+  { method: "sessions/submit_input", domain: "sessions", command: "submit_input" },
   { method: "sessions/compact_session", domain: "sessions", command: "compact_session" },
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
@@ -283,6 +285,7 @@ export interface BridgeMethodParams {
   "sessions/update_chat_model": UpdateChatModelParams;
   "sessions/prepare_turn": PrepareTurnParams;
   "sessions/send_turn": SendTurnParams;
+  "sessions/submit_input": SubmitInputParams;
   "sessions/compact_session": CompactSessionParams;
   "sessions/interrupt_turn": InterruptTurnParams;
   "sessions/refresh_account_usage": undefined;
@@ -387,6 +390,7 @@ export interface BridgeMethodResults {
   "sessions/update_chat_model": BridgeState;
   "sessions/prepare_turn": SanitizedTurn;
   "sessions/send_turn": UnitResult;
+  "sessions/submit_input": SubmitInputResult;
   "sessions/compact_session": UnitResult;
   "sessions/interrupt_turn": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
@@ -597,6 +601,8 @@ export interface HarnessConfig {
 }
 
 export type HarnessId = string;
+
+export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
 
 export type JsSafeI64 = number;
 
@@ -1320,6 +1326,17 @@ export interface SendTurnParams {
 }
 
 export type UnitResult = null;
+
+export interface SubmitInputParams {
+  sessionId: string;
+  text: string;
+}
+
+export interface SubmitInputResult {
+  disposition: InputDisposition;
+  interceptions: SecretInterception[];
+  queuedInputId?: string | null;
+}
 
 export interface CompactSessionParams {
   sessionId: string;
