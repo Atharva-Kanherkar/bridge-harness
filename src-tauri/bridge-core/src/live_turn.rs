@@ -4992,6 +4992,23 @@ fn report_to_parent(
                 | delegation::WorkerResultStatus::Blocked
         )
         .then(|| worker_retry::classify(&result));
+        // What the worker asked for, carried through verbatim. Dropping these two
+        // fields is what let the orchestrator substitute a verifier for the
+        // follow-up that was actually requested.
+        let handoff = result.status == delegation::WorkerResultStatus::NeedsDelegation;
+        let suggested_role = handoff.then(|| {
+            result
+                .suggested_role
+                .map(delegation::WorkerRole::as_str)
+                // `delegation` derives the role from `suggestedTask` and falls
+                // back to implementation, so this only covers a result that
+                // bypassed normalization.
+                .unwrap_or("implementation")
+        });
+        // A handoff asking for anything other than verification is a partial
+        // revision, not a completion candidate: `opens_completion_gate` opens no
+        // gate over it, so it must not be offered as a verification target either.
+        let partial_revision = handoff && suggested_role != Some("verification");
         let routing_notice = serde_json::json!({
         "type": "bridge-worker-evidence",
         "evidenceId": report.evidence_id,
@@ -5004,10 +5021,13 @@ fn report_to_parent(
         // revision, dirty state, and diffstat behind this claim.
         "repository": evidence_payload,
         "awaitsAdoption": awaits_adoption,
-        "instruction": if awaits_adoption {
-            "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. These changes exist ONLY in the worker's own worktree — the user's task checkout is unchanged until they are adopted. Do not claim the task is done; report that the change is waiting to be adopted or discarded."
-        } else {
-            "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
+        "suggestedRole": suggested_role,
+        "suggestedTask": handoff.then(|| result.suggested_task.clone()).flatten(),
+        "partialRevision": partial_revision,
+        "instruction": match (partial_revision, awaits_adoption) {
+            (true, _) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. This worker handed off before finishing: route suggestedRole for suggestedTask next. Its revision is partial, so no completion gate was opened over it and it is NOT a verification target. Do not claim the task is done, and do not substitute verification for the requested follow-up.",
+            (false, true) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. These changes exist ONLY in the worker's own worktree — the user's task checkout is unchanged until they are adopted. Do not claim the task is done; report that the change is waiting to be adopted or discarded.",
+            (false, false) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
         }
     })
     .to_string();

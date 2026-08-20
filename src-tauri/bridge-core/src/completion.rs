@@ -930,26 +930,41 @@ pub fn labels_for_paths(paths: &[String]) -> Vec<String> {
     labels.into_iter().collect()
 }
 
-/// Whether an implementation worker's result leaves a revision that has to be
-/// verified before the task can be called done.
+/// Whether an implementation worker's result is a **completion candidate** — a
+/// revision that has to be verified before the task can be called done.
 ///
-/// `completed` always does. `needs_delegation` does too when the worker changed
-/// the repository: the change set is real, it is usually sitting uncommitted in
-/// the worker's own worktree awaiting adoption, and it is exactly the kind of
-/// result that most needs review. Gating only on `completed` left those results
-/// with no `eval_attempts` row, so the verification worker the orchestrator
-/// routed next had no revision to bind to and died on a raw
-/// `QueryReturnedNoRows`.
+/// Not every revision is one. A `needs_delegation` handoff can mean two very
+/// different things, and only one of them is a candidate:
 ///
-/// `files_changed` is trustworthy here because `live_turn` replaces it with the
-/// paths derived from Git before this runs — a worker cannot open or dodge a gate
-/// by editing its own prose. Every other status (`failed`, `blocked`,
-/// `cancelled`, `protocol_invalid`) still opens nothing: there is either no work
-/// to judge or nothing readable to judge it by.
+/// - "the implementation is done, please verify it" — `suggestedRole:
+///   verification`. The change set is real, usually sitting uncommitted in the
+///   worker's own worktree awaiting adoption, and it is exactly the kind of
+///   result that most needs review. Gating only on `completed` left it with no
+///   `eval_attempts` row, so the verifier the orchestrator routed next had no
+///   revision to bind to and died on a raw `QueryReturnedNoRows`.
+/// - "I need another implementation worker" — anything else. That is a **partial
+///   revision**: real work, but not a claim of completeness. Opening a gate over
+///   it would let a verifier drive incomplete work to `verified` while the
+///   follow-up the worker actually asked for never ran. It opens nothing, and the
+///   routing notice carries `suggestedRole`/`suggestedTask` so the orchestrator
+///   routes what was asked for instead.
+///
+/// `suggestedRole` is always populated for `needs_delegation` — `delegation`
+/// derives it from `suggestedTask` and falls back to `implementation` — so the
+/// default direction is the safe one.
+///
+/// `files_changed` is trustworthy here because `worker_adoption` has already
+/// replaced it with the paths derived from Git, empty list included, so a worker
+/// cannot open a gate by naming files it never touched. Every other status
+/// (`failed`, `blocked`, `cancelled`, `protocol_invalid`) opens nothing: there is
+/// either no work to judge or nothing readable to judge it by.
 fn opens_completion_gate(result: &WorkerResult) -> bool {
     match result.status {
         WorkerResultStatus::Completed => true,
-        WorkerResultStatus::NeedsDelegation => !result.files_changed.is_empty(),
+        WorkerResultStatus::NeedsDelegation => {
+            !result.files_changed.is_empty()
+                && result.suggested_role == Some(crate::delegation::WorkerRole::Verification)
+        }
         _ => false,
     }
 }
@@ -2013,7 +2028,21 @@ mod tests {
         db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,'now')", params![session_id, request.to_string()]).unwrap();
     }
 
+    /// A handoff asking for verification: the shape that is a completion
+    /// candidate. `asking_for` overrides the requested follow-up.
     fn implementation_result(
+        status: WorkerResultStatus,
+        files_changed: Vec<String>,
+    ) -> WorkerResult {
+        asking_for(
+            crate::delegation::WorkerRole::Verification,
+            status,
+            files_changed,
+        )
+    }
+
+    fn asking_for(
+        role: crate::delegation::WorkerRole,
         status: WorkerResultStatus,
         files_changed: Vec<String>,
     ) -> WorkerResult {
@@ -2027,8 +2056,8 @@ mod tests {
             risks: vec![],
             remaining_work: vec![],
             suggested_next_action: crate::delegation::SuggestedNextAction::FollowUp,
-            suggested_role: None,
-            suggested_task: None,
+            suggested_role: Some(role),
+            suggested_task: Some("take it from here".into()),
         }
     }
 
@@ -2127,6 +2156,64 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    /// A handoff can mean "please verify this" or "I need another implementation
+    /// worker". Only the first is a completion candidate: opening a gate over the
+    /// second would let a verifier drive incomplete work to `verified` while the
+    /// follow-up the worker asked for never ran.
+    #[test]
+    fn only_a_handoff_asking_for_verification_opens_a_gate() {
+        use crate::delegation::WorkerRole;
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for role in [
+            WorkerRole::Implementation,
+            WorkerRole::Research,
+            WorkerRole::Planning,
+            WorkerRole::Documentation,
+        ] {
+            let db = fixture();
+            implementation_worker(&db, "child", &cwd);
+            assert!(
+                create_from_worker_result(
+                    &db,
+                    "child",
+                    &asking_for(
+                        role,
+                        WorkerResultStatus::NeedsDelegation,
+                        vec!["src/App.tsx".into()]
+                    ),
+                    &HashSet::new()
+                )
+                .unwrap()
+                .is_none(),
+                "a handoff asking for {} is a partial revision, not a completion candidate",
+                role.as_str()
+            );
+            assert_eq!(
+                verification_target_path(&db, "s").unwrap(),
+                None,
+                "and it is not offered as a verification target"
+            );
+        }
+        // The same result asking for verification is a candidate.
+        let db = fixture();
+        implementation_worker(&db, "child", &cwd);
+        assert!(create_from_worker_result(
+            &db,
+            "child",
+            &asking_for(
+                WorkerRole::Verification,
+                WorkerResultStatus::NeedsDelegation,
+                vec!["src/App.tsx".into()]
+            ),
+            &HashSet::new()
+        )
+        .unwrap()
+        .is_some());
     }
 
     /// "There is no revision to verify" is a routing fact with a remediation,
