@@ -2422,25 +2422,53 @@ pub fn launch_worker_outcome(
         return WorkerLaunchOutcome::Failed;
     }
     if directive.role == delegation::WorkerRole::Verification {
-        let verification_path: Result<String, BridgeError> = state.db.lock().unwrap().query_row(
-            "SELECT repository_path FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested','failed') ORDER BY started_at DESC,rowid DESC LIMIT 1",
-            params![parent_session_id],
-            |row| row.get(0),
-        ).map_err(BridgeError::from);
+        let verification_path =
+            completion::verification_target_path(&state.db.lock().unwrap(), parent_session_id);
         match verification_path {
-            Ok(path) => {
+            Ok(Some(path)) => {
                 reservation.path = path.clone();
                 let _ = state.db.lock().unwrap().execute(
                     "UPDATE worker_runtime SET worktree_path=?2,updated_at=?3 WHERE session_id=?1",
                     params![reservation.session_id, path, Utc::now().to_rfc3339()],
                 );
             }
-            Err(error) => {
-                fail_reserved_worker(
+            // Unroutable, not broken. This used to forward rusqlite's
+            // `Query returned no rows`, which told the orchestrator neither what
+            // was missing nor what to do about it.
+            Ok(None) => {
+                let reason = completion::verification_target_unavailable_reason();
+                let db = state.db.lock().unwrap();
+                let _ = learning_router::record_route_status(
+                    &db,
+                    &routed.decision.id,
+                    completion::VERIFICATION_TARGET_UNAVAILABLE,
+                );
+                let _ = store::event(
+                    &db,
+                    "completion",
+                    "completion.verification_target_unavailable",
+                    parent_session_id,
+                    &reason,
+                );
+                drop(db);
+                abort_unbindable_verifier(
                     core,
-                    &reservation.session_id,
-                    &directive.label(),
-                    &format!("Could not bind verifier to the implementation revision: {error}"),
+                    &reservation,
+                    parent_session_id,
+                    "verification_target",
+                    &reason,
+                );
+                return WorkerLaunchOutcome::Failed;
+            }
+            Err(error) => {
+                let reason =
+                    format!("Could not bind verifier to the implementation revision: {error}");
+                abort_unbindable_verifier(
+                    core,
+                    &reservation,
+                    parent_session_id,
+                    "database",
+                    &reason,
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -4125,6 +4153,38 @@ fn fail_reserved_worker(core: &Arc<BridgeCore>, session_id: &str, label: &str, r
     }
 }
 
+/// Abandon a verifier that never started because it had nothing to bind to.
+///
+/// Deliberately *not* [`fail_reserved_worker`]. Settling this reservation would
+/// synthesize a failed **verification** result, and the settle path would then
+/// find no gate, fall back to [`completion::record_gate_error`], supersede every
+/// live attempt for the parent, and leave a `failed` attempt with no escalation
+/// behind. `completion_allows_ready` only forgives a failed gate that expired on
+/// the verify deadline, and the deadline pass only looks at attempts still in
+/// `verifying`/`changes_requested` — so that gate could never be cleared and the
+/// parent would stay `waiting` forever. A launch that never happened is erased
+/// instead, and the parent is told in words.
+fn abort_unbindable_verifier(
+    core: &Arc<BridgeCore>,
+    reservation: &WorkerLaunchReservation,
+    parent_session_id: &str,
+    phase: &str,
+    reason: &str,
+) {
+    {
+        let db = core.db.lock().unwrap();
+        // A resumed warm worker is a session that already existed and did work;
+        // only a fresh reservation is ours to erase.
+        if !reservation.reuse_existing {
+            let _ = delete_reserved_worker(&db, &reservation.session_id);
+        }
+        // The reservation is gone, so whatever it was pinning is no longer a
+        // reason for the parent to sit in `waiting`.
+        let _ = completion::reconcile_parent_readiness(&db, parent_session_id);
+    }
+    report_worker_launch_failure(core, parent_session_id, phase, reason);
+}
+
 fn delete_reserved_worker(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
@@ -5243,6 +5303,23 @@ fn report_to_parent(
                 | delegation::WorkerResultStatus::Blocked
         )
         .then(|| worker_retry::classify(&result));
+        // What the worker asked for, carried through verbatim. Dropping these two
+        // fields is what let the orchestrator substitute a verifier for the
+        // follow-up that was actually requested.
+        let handoff = result.status == delegation::WorkerResultStatus::NeedsDelegation;
+        let suggested_role = handoff.then(|| {
+            result
+                .suggested_role
+                .map(delegation::WorkerRole::as_str)
+                // `delegation` derives the role from `suggestedTask` and falls
+                // back to implementation, so this only covers a result that
+                // bypassed normalization.
+                .unwrap_or("implementation")
+        });
+        // A handoff asking for anything other than verification is a partial
+        // revision, not a completion candidate: `opens_completion_gate` opens no
+        // gate over it, so it must not be offered as a verification target either.
+        let partial_revision = handoff && suggested_role != Some("verification");
         // The still-running siblings ride along, so the parent never reads one
         // result as "everything is finished".
         let fleet = {
@@ -5262,10 +5339,13 @@ fn report_to_parent(
         // revision, dirty state, and diffstat behind this claim.
         "repository": evidence_payload,
         "awaitsAdoption": awaits_adoption,
-        "instruction": if awaits_adoption {
-            "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. These changes exist ONLY in the worker's own worktree — the user's task checkout is unchanged until they are adopted. Do not claim the task is done; report that the change is waiting to be adopted or discarded."
-        } else {
-            "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
+        "suggestedRole": suggested_role,
+        "suggestedTask": handoff.then(|| result.suggested_task.clone()).flatten(),
+        "partialRevision": partial_revision,
+        "instruction": match (partial_revision, awaits_adoption) {
+            (true, _) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. This worker handed off before finishing: route suggestedRole for suggestedTask next. Its revision is partial, so no completion gate was opened over it and it is NOT a verification target. Do not claim the task is done, and do not substitute verification for the requested follow-up.",
+            (false, true) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. These changes exist ONLY in the worker's own worktree — the user's task checkout is unchanged until they are adopted. Do not claim the task is done; report that the change is waiting to be adopted or discarded.",
+            (false, false) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
         }
     })
     .to_string();
@@ -7916,6 +7996,162 @@ mod retry_settlement_tests {
             sent.lock().unwrap().len(),
             sent_before,
             "one automatic attempt per objective, not one per result"
+        );
+    }
+}
+
+#[cfg(test)]
+mod verification_binding_tests {
+    use super::*;
+    use crate::model::WorkerRuntimeRecord;
+
+    /// A parent that is waiting on one reserved verifier and nothing else, so
+    /// what the abort leaves behind is observable.
+    fn core_with_reserved_verifier() -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind) VALUES('parent','w','codex','Parent','waiting','reported',0,'orchestrator')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,kind) VALUES('verifier','w','claude','Verification','starting','reported','parent',1,'workspace')", []).unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('verifier','w','verification','standard','verification','[]','read_only','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(
+                &db,
+                &WorkerRuntimeRecord {
+                    session_id: "verifier".into(),
+                    parent_session_id: "parent".into(),
+                    lifecycle_state: "starting".into(),
+                    task_family: "verification".into(),
+                    compatibility_key: "key".into(),
+                    result_status: "pending".into(),
+                    retry_count: 0,
+                    warm_until: None,
+                    worktree_path: None,
+                    worktree_branch: None,
+                    last_result: None,
+                    last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .unwrap();
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    fn reservation() -> WorkerLaunchReservation {
+        WorkerLaunchReservation {
+            session_id: "verifier".into(),
+            workspace_id: "w".into(),
+            depth: 1,
+            path: "/task".into(),
+            branch: "bridge/task".into(),
+            actual_model: "claude-opus".into(),
+            outcome: policy::PolicyOutcome {
+                decision: policy::RouteDecision::SpawnWorker(policy::WorkerSpec {
+                    request: delegation::DelegationRequest {
+                        schema_version: delegation::SCHEMA_VERSION,
+                        role: delegation::WorkerRole::Verification,
+                        objective: "Verify the handoff".into(),
+                        acceptance_criteria: vec!["report typed evidence".into()],
+                        known_facts: vec![],
+                        decisions: vec![],
+                        evidence_ids: vec![],
+                        relevant_files: vec![],
+                        owned_paths: vec![],
+                        write_mode: delegation::WriteMode::ReadOnly,
+                        capability_tier: delegation::CapabilityTier::Standard,
+                        effort: delegation::Effort::Medium,
+                        network_access: false,
+                        writable_output_paths: vec![],
+                        verification: vec![],
+                        output_contract: delegation::OutputContract::VerificationResult,
+                        harness: None,
+                        model: None,
+                    },
+                    requires_child_worktree: false,
+                    capability_units: 1,
+                }),
+                reason: policy::RouteReason::EligibleFreshSpawn,
+                capability_units: 1,
+            },
+            reuse_existing: false,
+        }
+    }
+
+    /// The regression behind finding 1: settling this reservation as a failed
+    /// verifier would record a `gate-error` attempt that readiness can never
+    /// forgive, so the parent would sit in `waiting` forever.
+    #[test]
+    fn an_unroutable_verifier_is_aborted_without_a_gate() {
+        let (_fixture, core, _managed_root) = core_with_reserved_verifier();
+        abort_unbindable_verifier(
+            &core,
+            &reservation(),
+            "parent",
+            "verification_target",
+            &completion::verification_target_unavailable_reason(),
+        );
+        let db = core.db.lock().unwrap();
+        for (table, column) in [
+            ("sessions", "id"),
+            ("worker_runtime", "session_id"),
+            ("worker_leases", "session_id"),
+        ] {
+            assert_eq!(
+                db.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column}='verifier'"),
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0,
+                "the reservation left a row behind in {table}"
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "aborting must not synthesize a verification result, which would \
+             record a gate-error attempt readiness can never forgive"
+        );
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "ready",
+            "the parent is no longer waiting on a reservation that no longer exists"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE kind='delegation.rejected'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "and it was told why in words"
         );
     }
 }
