@@ -148,6 +148,9 @@ pub struct DelegationState {
     /// `bridge-delegate` request, so a persistently malformed orchestrator turn
     /// cannot drive an unbounded correction loop.
     pub invalid_request_corrections: HashMap<String, u32>,
+    /// A peek is emitted before the provider's separate turn-completed frame;
+    /// hold it until that boundary so its reply starts a clean turn.
+    pub pending_worker_peeks: HashMap<String, delegation::PeekRequest>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.

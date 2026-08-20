@@ -15,9 +15,10 @@ use crate::model::{
     AdapterDescriptor, AgentEvent, BridgeState, CapabilityTier, Harness, SessionForestSnapshot,
 };
 use crate::{
-    adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
-    learning_job, learning_router, live_turn, marketplace, memory_ledger, model_profiles, opencode_adapter,
-    secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
+    adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
+    completion, git, learning_job, learning_router, live_turn, marketplace, memory_ledger,
+    model_profiles, opencode_adapter, secret_interception, session_recall, session_supervisor,
+    sessions, skill_marketplace, slash, store,
     suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
@@ -281,8 +282,9 @@ pub fn replay_session_events(
     session_id: &str,
     after_sequence: i64,
     limit: Option<u32>,
+    tail: Option<bool>,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
-    core.replay_session_events(session_id, after_sequence, limit)
+    core.replay_session_events(session_id, after_sequence, limit, tail)
 }
 
 pub fn activate_session_entry(
@@ -2028,6 +2030,25 @@ pub fn execute_skill_change(
     )?;
     core.events.publish(CoreEvent::StateChanged);
     Ok(results)
+}
+
+// --- automations ---------------------------------------------------------------
+
+pub fn automation_catalog(
+    _core: &Arc<BridgeCore>,
+) -> Result<automations::AutomationCatalog, BridgeError> {
+    Ok(automations::catalog(&user_home()))
+}
+
+pub fn execute_automation_action(
+    core: &Arc<BridgeCore>,
+    provider: automations::AutomationProvider,
+    automation_id: &str,
+    action: automations::AutomationAction,
+) -> Result<automations::AutomationActionResult, BridgeError> {
+    let result = automations::execute(&user_home(), provider, automation_id, action)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(result)
 }
 
 #[cfg(test)]

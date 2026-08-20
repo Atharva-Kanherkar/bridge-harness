@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 31;
+const LATEST_SCHEMA_VERSION: i64 = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -435,6 +435,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             29 => migration_29_learning_scope(&transaction)?,
             30 => migration_30_session_entry_fts(&transaction)?,
             31 => migration_31_memory_ledger(&transaction)?,
+            32 => migration_32_worker_progress_summary(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1073,6 +1074,13 @@ fn migration_27_queued_session_input(transaction: &Transaction<'_>) -> Result<()
 /// `recovery_turns` records the three kinds of turn Bridge spends on its own
 /// recovery separately, because "the agent used 40 turns" and "the agent used 12
 /// turns and 28 corrections" are very different bills.
+fn migration_32_worker_progress_summary(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    // One truthful line per live worker — "what it is doing right now",
+    // derived from its own event stream — so Mission Control and the
+    // orchestrator's fleet digest read progress without loading a feed.
+    add_column_if_missing(transaction, "worker_runtime", "progress_summary", "TEXT")
+}
+
 fn migration_28_evidence_based_retries(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS worker_retry_budget (
@@ -2259,6 +2267,45 @@ pub fn session_events_after(
             })
         },
     )?;
+    session_entries_to_events(db, entries)
+}
+
+pub fn session_events_tail(
+    db: &Connection,
+    session_id: &str,
+    limit: u32,
+) -> Result<Vec<AgentEvent>, BridgeError> {
+    let entries = query_with_params(
+        db,
+        "SELECT id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
+         FROM (
+             SELECT id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
+             FROM session_entries WHERE session_id=?1 ORDER BY sequence DESC LIMIT ?2
+         ) ORDER BY sequence",
+        params![session_id, limit],
+        |row| {
+            Ok(SessionEntry {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                parent_entry_id: row.get(2)?,
+                sequence: row.get(3)?,
+                semantic_schema_version: row.get(4)?,
+                kind: row.get(5)?,
+                payload: parse_json_column(row, 6),
+                provider_event_id: row.get(7)?,
+                context_visibility: row.get(8)?,
+                token_estimate: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )?;
+    session_entries_to_events(db, entries)
+}
+
+fn session_entries_to_events(
+    db: &Connection,
+    entries: Vec<SessionEntry>,
+) -> Result<Vec<AgentEvent>, BridgeError> {
     let forest = crate::session_forest::SessionForest::new(db);
     entries
         .into_iter()
@@ -2445,9 +2492,9 @@ pub fn worker_runtime(
     session_id: &str,
 ) -> Result<Option<WorkerRuntimeRecord>, BridgeError> {
     db.query_row(
-        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,updated_at FROM worker_runtime WHERE session_id=?1",
+        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,waiting_since,waiting_reason,progress_summary,updated_at FROM worker_runtime WHERE session_id=?1",
         params![session_id],
-        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), last_activity_at:row.get(11)?, updated_at:row.get(12)? }),
+        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), last_activity_at:row.get(11)?, waiting_since:row.get(12)?, waiting_reason:row.get(13)?, progress_summary:row.get(14)?, updated_at:row.get(15)? }),
     ).optional().map_err(BridgeError::from)
 }
 
@@ -2457,7 +2504,7 @@ pub fn worker_runtimes(
 ) -> Result<Vec<WorkerRuntimeRecord>, BridgeError> {
     query_with_params(
         db,
-        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.last_activity_at,r.updated_at
+        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.last_activity_at,r.waiting_since,r.waiting_reason,r.progress_summary,r.updated_at
          FROM worker_runtime r JOIN sessions s ON s.id=r.session_id
          WHERE s.workspace_id=?1 ORDER BY s.rowid",
         params![workspace_id],
@@ -2477,7 +2524,10 @@ pub fn worker_runtimes(
                     .get::<_, Option<String>>(10)?
                     .and_then(|value| serde_json::from_str(&value).ok()),
                 last_activity_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                waiting_since: row.get(12)?,
+                waiting_reason: row.get(13)?,
+                progress_summary: row.get(14)?,
+                updated_at: row.get(15)?,
             })
         },
     )
@@ -4386,6 +4436,9 @@ mod tests {
             worktree_branch: None,
             last_result: None,
             last_activity_at: Some("active-now".into()),
+            waiting_since: None,
+            waiting_reason: None,
+            progress_summary: None,
             updated_at: "now".into(),
         };
         upsert_worker_runtime(&db, &runtime).unwrap();

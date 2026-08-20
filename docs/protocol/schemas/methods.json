@@ -770,6 +770,20 @@
       "method": "skills/execute_skill_change",
       "paramsSchema": "execute-skill-change-params.json",
       "resultDeferred": "Vec<bridge_core::skill_marketplace::SkillActionResult>"
+    },
+    {
+      "command": "automation_catalog",
+      "domain": "automations",
+      "method": "automations/automation_catalog",
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::automations::AutomationCatalog"
+    },
+    {
+      "command": "execute_automation_action",
+      "domain": "automations",
+      "method": "automations/execute_automation_action",
+      "paramsSchema": "execute-automation-action-params.json",
+      "resultDeferred": "bridge_core::automations::AutomationActionResult"
     }
   ],
   "protocolVersion": {

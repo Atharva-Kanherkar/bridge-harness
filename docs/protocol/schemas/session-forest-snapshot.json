@@ -702,6 +702,13 @@
         "parentSessionId": {
           "type": "string"
         },
+        "progressSummary": {
+          "description": "One line of \"what it is doing right now\", derived from the worker's own event stream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "resultStatus": {
           "type": "string"
         },
@@ -716,6 +723,19 @@
         },
         "updatedAt": {
           "type": "string"
+        },
+        "waitingReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waitingSince": {
+          "description": "When the worker entered `waiting`, and why (e.g. `approval_requested`).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "warmUntil": {
           "type": [

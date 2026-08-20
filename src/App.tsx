@@ -950,6 +950,8 @@ export function App() {
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
+        fullscreen={fullscreen}
+        onToggleFullscreen={() => setFullscreen(value => !value)}
         onFocusSession={openSession}
       /> : session ? <>
         <SessionToolbar

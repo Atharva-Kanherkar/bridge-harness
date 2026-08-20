@@ -93,7 +93,13 @@ pub fn dispatch(
         }
         MethodName::ReplaySessionEvents => {
             let p: wire::ReplaySessionEventsParams = decode(method, params)?;
-            reply(api::replay_session_events(core, &p.session_id, p.after_sequence, p.limit))
+            reply(api::replay_session_events(
+                core,
+                &p.session_id,
+                p.after_sequence,
+                p.limit,
+                p.tail,
+            ))
         }
         MethodName::ActivateSessionEntry => {
             let p: wire::ActivateSessionEntryParams = decode(method, params)?;
@@ -492,6 +498,17 @@ pub fn dispatch(
         MethodName::ExecuteSkillChange => {
             let p: wire::ExecuteSkillChangeParams = decode(method, params)?;
             reply(api::execute_skill_change(core, &p.confirmation_id))
+        }
+
+        MethodName::AutomationCatalog => reply(api::automation_catalog(core)),
+        MethodName::ExecuteAutomationAction => {
+            let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
+            reply(api::execute_automation_action(
+                core,
+                into_core(method, &p.provider)?,
+                &p.id,
+                into_core(method, &p.action)?,
+            ))
         }
     }
 }

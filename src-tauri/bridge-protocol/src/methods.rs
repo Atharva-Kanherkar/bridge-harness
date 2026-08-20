@@ -178,6 +178,9 @@ methods![
     (SkillSuggestions, "skills", "skill_suggestions"),
     (PreviewSkillChange, "skills", "preview_skill_change"),
     (ExecuteSkillChange, "skills", "execute_skill_change"),
+    // automations — each harness's native scheduled jobs, one catalog
+    (AutomationCatalog, "automations", "automation_catalog"),
+    (ExecuteAutomationAction, "automations", "execute_automation_action"),
 ];
 
 impl MethodName {

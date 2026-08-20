@@ -27,6 +27,8 @@ import type {
   ReplaySessionEvent,
   SkillAction,
   SkillProvider,
+  AutomationAction,
+  AutomationProvider,
 } from "./protocol/generated/protocol";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,8 @@ export type {
   AdapterDescriptor,
   AgentDefinition,
   ApprovalDecision,
+  AutomationAction,
+  AutomationProvider,
   BaseBranchDivergence,
   BridgeEvent,
   BridgeState,
@@ -225,6 +229,24 @@ export interface SkillPreview {
 }
 export interface SkillActionResult {
   provider: SkillProvider; action: SkillAction; success: boolean; message: string; error: string | null;
+}
+
+export interface AutomationSchedule { kind: "cron" | "rrule" | string; expression: string; human: string }
+export interface AutomationRun {
+  id: string; automationId: string; status: string; title: string | null; summary: string | null; createdAt: number | null;
+}
+export interface UnifiedAutomation {
+  id: string; provider: AutomationProvider; name: string; prompt: string; schedule: AutomationSchedule;
+  status: "active" | "paused" | "unknown"; recurring: boolean;
+  createdAt: number | null; nextRunAt: number | null; lastRunAt: number | null;
+  cwds: string[]; model: string | null; effort: string | null; canPause: boolean; runs: AutomationRun[];
+}
+export interface AutomationProviderState {
+  provider: AutomationProvider; available: boolean; detail: string; count: number;
+}
+export interface AutomationCatalog { automations: UnifiedAutomation[]; providers: AutomationProviderState[] }
+export interface AutomationActionResult {
+  provider: AutomationProvider; id: string; action: AutomationAction; success: boolean; message: string;
 }
 
 export interface BrowserTab {

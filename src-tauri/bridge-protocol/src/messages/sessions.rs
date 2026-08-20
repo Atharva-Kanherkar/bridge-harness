@@ -86,6 +86,10 @@ pub struct ReplaySessionEventsParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 1_000))]
     pub limit: Option<u32>,
+    /// Return the newest `limit` durable events, still ordered oldest to
+    /// newest. Intended for bounded activity surfaces, not cursor recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail: Option<bool>,
 }
 
 /// Structured provider data accepted by normalized events.

@@ -116,7 +116,9 @@ export type BridgeMethod =
   | "skills/skill_catalog"
   | "skills/skill_suggestions"
   | "skills/preview_skill_change"
-  | "skills/execute_skill_change";
+  | "skills/execute_skill_change"
+  | "automations/automation_catalog"
+  | "automations/execute_automation_action";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -229,6 +231,8 @@ export const BRIDGE_METHODS = [
   { method: "skills/skill_suggestions", domain: "skills", command: "skill_suggestions" },
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
   { method: "skills/execute_skill_change", domain: "skills", command: "execute_skill_change" },
+  { method: "automations/automation_catalog", domain: "automations", command: "automation_catalog" },
+  { method: "automations/execute_automation_action", domain: "automations", command: "execute_automation_action" },
 ] as const;
 
 export type BridgeNotification =
@@ -391,6 +395,8 @@ export interface BridgeMethodParams {
   "skills/skill_suggestions": SkillSuggestionsParams;
   "skills/preview_skill_change": PreviewSkillChangeParams;
   "skills/execute_skill_change": ExecuteSkillChangeParams;
+  "automations/automation_catalog": undefined;
+  "automations/execute_automation_action": ExecuteAutomationActionParams;
 }
 
 /** Result types for every registered method. */
@@ -505,6 +511,8 @@ export interface BridgeMethodResults {
   "skills/skill_suggestions": unknown;
   "skills/preview_skill_change": unknown;
   "skills/execute_skill_change": unknown;
+  "automations/automation_catalog": unknown;
+  "automations/execute_automation_action": unknown;
 }
 
 export interface AdapterDescriptor {
@@ -536,6 +544,10 @@ export interface AgentDefinition {
 }
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
+
+export type AutomationAction = "pause" | "resume" | "delete";
+
+export type AutomationProvider = "claude" | "codex" | "opencode";
 
 export interface BridgeEvent {
   body: string;
@@ -1172,11 +1184,14 @@ export interface WorkerRuntimeRecord {
   lastResult?: unknown;
   lifecycleState: string;
   parentSessionId: string;
+  progressSummary?: string | null;
   resultStatus: string;
   retryCount: JsSafeI64;
   sessionId: string;
   taskFamily: string;
   updatedAt: string;
+  waitingReason?: string | null;
+  waitingSince?: string | null;
   warmUntil?: string | null;
   worktreeBranch?: string | null;
   worktreePath?: string | null;
@@ -1355,6 +1370,7 @@ export interface ReplaySessionEventsParams {
   afterSequence: number;
   limit?: number | null;
   sessionId: string;
+  tail?: boolean | null;
 }
 
 export type ReplaySessionEventsResult = ReplaySessionEvent[];
@@ -1842,4 +1858,10 @@ export interface PreviewSkillChangeParams {
 
 export interface ExecuteSkillChangeParams {
   confirmationId: string;
+}
+
+export interface ExecuteAutomationActionParams {
+  action: AutomationAction;
+  id: string;
+  provider: AutomationProvider;
 }

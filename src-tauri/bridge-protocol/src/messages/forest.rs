@@ -77,6 +77,12 @@ pub struct WorkerRuntimeRecord {
     pub worktree_branch: Option<String>,
     pub last_result: Option<Value>,
     pub last_activity_at: Option<String>,
+    /// When the worker entered `waiting`, and why (e.g. `approval_requested`).
+    pub waiting_since: Option<String>,
+    pub waiting_reason: Option<String>,
+    /// One line of "what it is doing right now", derived from the worker's
+    /// own event stream.
+    pub progress_summary: Option<String>,
     pub updated_at: String,
 }
 
@@ -278,6 +284,9 @@ mod tests {
                 worktree_branch: Some("bridge/w".into()),
                 last_result: Some(json!({"ok": true})),
                 last_activity_at: Some("now".into()),
+                waiting_since: Some("now".into()),
+                waiting_reason: Some("approval_requested".into()),
+                progress_summary: Some("Running: cargo test".into()),
                 updated_at: "now".into(),
             }],
             worker_queue: vec![QueuedWorkerRequest {

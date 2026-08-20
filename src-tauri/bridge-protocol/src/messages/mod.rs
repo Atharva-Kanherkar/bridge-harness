@@ -21,6 +21,7 @@
 
 mod agents;
 mod approvals;
+mod automations;
 mod browser;
 mod common;
 mod completion;
@@ -42,6 +43,7 @@ mod workspaces;
 
 pub use agents::*;
 pub use approvals::*;
+pub use automations::*;
 pub use browser::*;
 pub use common::*;
 pub use completion::*;
@@ -268,6 +270,9 @@ typed_methods![
     (SkillSuggestions, SkillSuggestionsParams, _),
     (PreviewSkillChange, PreviewSkillChangeParams, _),
     (ExecuteSkillChange, ExecuteSkillChangeParams, _),
+    // automations
+    (AutomationCatalog, _, _),
+    (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
 ];
 
 /// The documented exceptions to result typing: every method whose result is
@@ -297,6 +302,8 @@ pub const DEFERRED_RESULTS: &[(MethodName, &str)] = &[
     (MethodName::SkillSuggestions, "Vec<bridge_core::skill_marketplace::CapabilitySuggestion>"),
     (MethodName::PreviewSkillChange, "bridge_core::skill_marketplace::SkillPreview"),
     (MethodName::ExecuteSkillChange, "Vec<bridge_core::skill_marketplace::SkillActionResult>"),
+    (MethodName::AutomationCatalog, "bridge_core::automations::AutomationCatalog"),
+    (MethodName::ExecuteAutomationAction, "bridge_core::automations::AutomationActionResult"),
 ];
 
 impl TypedMethod {

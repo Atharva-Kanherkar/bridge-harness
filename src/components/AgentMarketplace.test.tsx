@@ -191,7 +191,7 @@ describe("MarketplaceScreen", () => {
 
     const view = await render(<MarketplaceScreen/>);
     const tabs = [...view.host.querySelectorAll(".u-segmented-item")].map(item => item.textContent?.trim());
-    expect(tabs).toEqual(["agents", "plugins", "skills"]);
+    expect(tabs).toEqual(["agents", "plugins", "skills", "automations"]);
     expect(view.host.querySelector('[data-active="true"]')?.textContent?.trim()).toBe("agents");
     await view.unmount();
   });
