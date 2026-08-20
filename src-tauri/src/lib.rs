@@ -2398,9 +2398,17 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fallback.summary.contains("Unstructured worker result"));
-        assert!(!fallback.summary.contains("invalid first output"));
-        assert!(!fallback.summary.contains("invalid repair output"));
+        // Transport, not task outcome — and the worker's own words survive.
+        // Reporting this as `failed` with the prose stripped is what turned a
+        // bad fence into a failed task and then into another paid retry.
+        assert_eq!(
+            fallback.status,
+            bridge_core::delegation::WorkerResultStatus::ProtocolInvalid
+        );
+        assert!(!fallback.is_retryable());
+        assert!(fallback.summary.contains("could not be read"));
+        assert!(fallback.summary.contains("invalid first output"));
+        assert!(fallback.summary.contains("invalid repair output"));
         assert_eq!(
             db.query_row(
                 "SELECT kind FROM events ORDER BY id DESC LIMIT 1",

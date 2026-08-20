@@ -1163,7 +1163,10 @@ fn settle_verification_result(
             WorkerResultStatus::Failed => CheckStatus::Failed,
             WorkerResultStatus::Cancelled
             | WorkerResultStatus::Blocked
-            | WorkerResultStatus::NeedsDelegation => CheckStatus::Blocked,
+            | WorkerResultStatus::NeedsDelegation
+            // Blocked, not failed: the work may well be fine, but nothing
+            // readable came back to judge it by.
+            | WorkerResultStatus::ProtocolInvalid => CheckStatus::Blocked,
         };
         let mut detail = result.summary.clone();
         if !result.risks.is_empty() {

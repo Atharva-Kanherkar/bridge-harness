@@ -4143,7 +4143,7 @@ pub fn process_worker_result_output(
             )?;
             Ok(None)
         }
-        delegation::WorkerOutputAction::Unstructured { raw: _, reason } => {
+        delegation::WorkerOutputAction::Unstructured { raw, reason } => {
             store::event(
                 db,
                 "delegation",
@@ -4151,19 +4151,11 @@ pub fn process_worker_result_output(
                 child_session_id,
                 &reason,
             )?;
-            Ok(Some(delegation::WorkerResult {
-                schema_version: delegation::SCHEMA_VERSION,
-                status: delegation::WorkerResultStatus::Failed,
-                summary: format!("Unstructured worker result after repair failure: {reason}"),
-                files_changed: vec![],
-                tests: vec![],
-                decisions: vec![],
-                risks: vec!["The raw worker response was excluded from parent context".into()],
-                remaining_work: vec!["Review the worker transcript manually".into()],
-                suggested_next_action: delegation::SuggestedNextAction::Finish,
-                suggested_role: None,
-                suggested_task: None,
-            }))
+            // `protocol_invalid`, not `failed`. Bridge could not read the
+            // envelope; that is not the same claim as "the work did not
+            // succeed", and reporting it as failure is what made an unchanged
+            // formatting mistake cost another model turn.
+            Ok(Some(delegation::protocol_invalid_result(&raw, &reason)))
         }
     }
 }
@@ -4284,7 +4276,12 @@ fn settle_worker_after_result(
         delegation::WorkerResultStatus::Cancelled => {
             (worker_lifecycle::WorkerLifecycleState::Cancelled, None)
         }
-        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked => {
+        delegation::WorkerResultStatus::Failed
+        | delegation::WorkerResultStatus::Blocked
+        // Terminal like a failure — the worker is done and its process is going
+        // away — but never retried like one, because nothing about the task
+        // changed. See `WorkerResultStatus::ProtocolInvalid`.
+        | delegation::WorkerResultStatus::ProtocolInvalid => {
             (worker_lifecycle::WorkerLifecycleState::Failed, None)
         }
     };
