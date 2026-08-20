@@ -120,15 +120,9 @@ pub struct RecoveryOutcome {
     pub cleared: usize,
 }
 
-/// Reap ledgered children whose supervisor is gone. Called at boot before the
+/// Reap ledgered children whose supervisor is gone. Called at boot, with the
+/// explicit directory rather than the process-global registration, before the
 /// adapter registry spawns anything new.
-pub fn recover(db: &Connection) -> Result<RecoveryOutcome, BridgeError> {
-    let Some(root) = ledger_root() else {
-        return Ok(RecoveryOutcome::default());
-    };
-    recover_in_dir(db, &root)
-}
-
 pub fn recover_in_dir(db: &Connection, root: &Path) -> Result<RecoveryOutcome, BridgeError> {
     let mut outcome = RecoveryOutcome::default();
     let Ok(entries) = std::fs::read_dir(root) else {

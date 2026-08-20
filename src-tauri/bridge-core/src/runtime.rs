@@ -253,8 +253,9 @@ impl BridgeCore {
         // pre-ledger opencode orphans by the one-time sweep. Both fail closed
         // and neither may abort boot: a stuck foreign process is not this
         // instance's failure.
-        crate::process_ledger::register_ledger_root(config.data_dir.join("process-ledger"));
-        let _ = crate::process_ledger::recover(&connection);
+        let ledger_root = config.data_dir.join("process-ledger");
+        crate::process_ledger::register_ledger_root(&ledger_root);
+        let _ = crate::process_ledger::recover_in_dir(&connection, &ledger_root);
         let _ = crate::process_ledger::sweep_legacy_opencode_orphans(&connection);
         session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)?;
         // Adoption state must survive restart: a pending row whose worktree is
@@ -470,6 +471,63 @@ mod tests {
             events: None,
         });
         assert!(result.is_err());
+    }
+
+    /// The boot wiring for the launch ledger: a record whose supervisor is
+    /// dead is reaped during `BridgeCore::boot`, exactly as an interrupted
+    /// discovery or SIGKILLed daemon leaves it.
+    #[cfg(unix)]
+    #[test]
+    fn boot_reaps_ledgered_children_of_dead_supervisors() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        {
+            let db = crate::store::open(&data_dir.join("bridge.db")).unwrap();
+            seed_fast_failing_opencode(&db, data_dir);
+        }
+        let ledger_root = data_dir.join("process-ledger");
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        crate::adapters::configure_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let guard = crate::process_ledger::record_launch_in_dir(
+            &ledger_root,
+            "opencode.control",
+            "boot test",
+            child.id(),
+        );
+        std::mem::forget(guard);
+        let record_path = std::fs::read_dir(&ledger_root)
+            .unwrap()
+            .flatten()
+            .next()
+            .unwrap()
+            .path();
+        let mut record: crate::process_ledger::LaunchRecord =
+            serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+        record.supervisor_pid = u32::MAX - 1;
+        record.supervisor_identity = "a supervisor that no longer exists".into();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let core = BridgeCore::boot(BootConfig {
+            data_dir: data_dir.to_path_buf(),
+            browser_extension_path: data_dir.join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "boot must terminate the abandoned child");
+        assert!(!record_path.exists(), "the handled record is cleared");
+        let db = core.db.lock().unwrap();
+        let killed: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='process.orphan_killed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(killed, 1, "recovery evidence is durable");
     }
 
     #[cfg(unix)]
