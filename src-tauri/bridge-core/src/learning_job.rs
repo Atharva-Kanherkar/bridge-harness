@@ -1303,26 +1303,25 @@ pub fn update_schedule(
             "learning mode must be manual, ask, or automatic".into(),
         ));
     }
-    let current = load_schedule(db)?;
-    // While the job is already enabled the runner owns next_run_at. A dialog
-    // that loaded hours ago must not write a stale timestamp back over a
-    // cadence the scheduler already advanced. Accept a client next_run_at
-    // only on the disabled → enabled transition.
-    let next_run_at = if schedule.enabled && !current.enabled {
-        match &schedule.next_run_at {
-            Some(next) => {
-                DateTime::parse_from_rfc3339(next)
-                    .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
-                Some(next.clone())
-            }
-            None => Some((Utc::now() + Duration::minutes(schedule.cadence_minutes)).to_rfc3339()),
+    // While the job is already enabled the runner owns next_run_at, and the
+    // scheduler advances it on its own connection — a read-then-write here
+    // would race it. The transition check lives inside the UPDATE, where
+    // `enabled` still names the stored row, so a client next_run_at applies
+    // only on the disabled-to-enabled edge and the runner's value survives a
+    // stale dialog snapshot atomically.
+    let requested_next_run_at = match (&schedule.next_run_at, schedule.enabled) {
+        (Some(next), true) => {
+            DateTime::parse_from_rfc3339(next)
+                .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
+            next.clone()
         }
-    } else {
-        current.next_run_at.clone()
+        _ => (Utc::now() + Duration::minutes(schedule.cadence_minutes)).to_rfc3339(),
     };
     db.execute(
-        "UPDATE learning_jobs SET enabled=?2,cadence_minutes=?3,next_run_at=?4,run_budget_microusd=?5,run_budget_tokens=?6,mode=?7,updated_at=?8 WHERE id=?1",
-        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
+        "UPDATE learning_jobs SET enabled=?2,cadence_minutes=?3,
+            next_run_at=CASE WHEN ?2 AND NOT enabled THEN ?4 ELSE next_run_at END,
+            run_budget_microusd=?5,run_budget_tokens=?6,mode=?7,updated_at=?8 WHERE id=?1",
+        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, requested_next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
     )?;
     load_schedule(db)
 }
@@ -2057,6 +2056,25 @@ mod tests {
         assert_eq!(stored.mode, "ask");
         let expected = future.to_rfc3339();
         assert_eq!(stored.next_run_at.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_runner_advance_survives_a_stale_dialog_save() {
+        let db = database();
+        let mut schedule = load_schedule(&db).unwrap();
+        schedule.enabled = true;
+        let stale = update_schedule(&db, &schedule).unwrap();
+        let advanced = (Utc::now() + Duration::hours(6)).to_rfc3339();
+        db.execute(
+            "UPDATE learning_jobs SET next_run_at=?1 WHERE id='default'",
+            params![advanced],
+        )
+        .unwrap();
+        let mut resave = stale;
+        resave.mode = "ask".into();
+        let stored = update_schedule(&db, &resave).unwrap();
+        assert_eq!(stored.mode, "ask");
+        assert_eq!(stored.next_run_at.as_deref(), Some(advanced.as_str()));
     }
 
     #[test]
