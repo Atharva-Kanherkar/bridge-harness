@@ -343,11 +343,16 @@ const mockBriefingOptions: WorkBriefingOptions = {
         { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true },
         { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false },
       ],
+      connectors: [
+        { id: "claude.ai Slack", family: "slack", connected: true },
+        { id: "claude.ai GitHub", family: "github", connected: true },
+        { id: "claude.ai Gmail", family: "gmail", connected: false },
+      ],
     },
     {
       id: "codex", label: "Codex", available: true, supported: false,
       reason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
-      defaultModel: null, models: [],
+      defaultModel: null, models: [], connectors: [],
     },
   ],
 };
