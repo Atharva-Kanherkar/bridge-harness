@@ -155,6 +155,10 @@ pub fn run_briefing(
             limits: request.limits.clone(),
             idempotency_key: request.idempotency_key.map(str::to_owned),
             started_at: request.started_at.to_owned(),
+            // The proxied runner is claimed by its caller; the lease, when one
+            // exists, was written by the claim path before this ran.
+            lease_owner: None,
+            lease_expires_at: None,
         },
     )?;
 

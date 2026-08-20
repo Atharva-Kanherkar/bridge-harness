@@ -96,6 +96,11 @@ fn launch(
             Some(json!({
                 "allowedTools": policy.allowed_wire_names(),
                 "allowedServers": policy.allowed_servers(),
+                // Servers whose read-verb tools are allowed without per-identity
+                // review — the harness-run briefing's mode, where the harness's
+                // own MCP configuration decides what exists. Empty for an
+                // exact-review policy, and the gate treats empty as no scope.
+                "readScopeServers": policy.read_scope_servers(),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
             }))
