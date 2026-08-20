@@ -2,7 +2,7 @@
 
 Thin explicit ledger. Not session recall. Not the learning router. Not a Memory UI.
 
-## Schema 29
+## Schema 31
 
 - Create `memory_records` (named `scope_key TEXT NOT NULL`, never NULL).
 - `DROP TABLE IF EXISTS task_knowledge` with **no** `INSERT SELECT`. It never had a production reader.
