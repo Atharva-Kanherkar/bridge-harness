@@ -92,6 +92,15 @@ export function RouterSettingsDialog({
   const models = useMemo(() => adapters.flatMap(adapter => adapter.models.map(model => ({ ...model, harness: adapter.id, harnessLabel: adapter.label }))), [adapters]);
 
   useEffect(() => {
+    if (open) return;
+    // A closed dialog keeps no state: unsaved schedule edits must not greet
+    // the next open, and an in-flight read must not land on it.
+    savedScheduleRef.current = null;
+    learningReadGeneration.current += 1;
+    setLearning(undefined);
+  }, [open]);
+
+  useEffect(() => {
     if (!open || !workspaceId) return;
     let active = true;
     let off: (() => void) | undefined;
@@ -154,7 +163,7 @@ export function RouterSettingsDialog({
         const schedule = await bridgeApi.updateLearningSchedule(learning.schedule);
         learningReadGeneration.current += 1;
         savedScheduleRef.current = schedule;
-        setLearning({ ...learning, schedule });
+        setLearning(current => current ? { ...current, schedule } : current);
       }
       onClose();
     } catch (error) {

@@ -3413,7 +3413,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_26_backfills_legacy_global_and_allows_one_live_policy_per_scope() {
+    fn learning_scope_migration_backfills_legacy_global_and_allows_one_live_policy_per_scope() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir.path().join("bridge.db")).unwrap();
         let scope: String = db
