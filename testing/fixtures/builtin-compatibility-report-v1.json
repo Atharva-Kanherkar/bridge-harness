@@ -16,7 +16,8 @@
         "commands",
         "approvals",
         "usage",
-        "interrupt"
+        "interrupt",
+        "steering"
       ],
       "sandboxModes": [
         "read_only",

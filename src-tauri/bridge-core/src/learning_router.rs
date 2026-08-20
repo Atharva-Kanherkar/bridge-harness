@@ -1131,7 +1131,10 @@ pub fn record_worker_outcome(
         WorkerResultStatus::Failed => "failure",
         WorkerResultStatus::Cancelled
         | WorkerResultStatus::Blocked
-        | WorkerResultStatus::NeedsDelegation => "unknown",
+        | WorkerResultStatus::NeedsDelegation
+        // A transport error says nothing about the route that was chosen, so it
+        // must not train the router either way.
+        | WorkerResultStatus::ProtocolInvalid => "unknown",
     };
     let has_failed_test = result
         .tests

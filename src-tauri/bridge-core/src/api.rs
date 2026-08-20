@@ -353,9 +353,30 @@ pub fn send_turn(
     live_turn::send_turn(core, session_id, text)
 }
 
+/// Submit user input and let Bridge decide what to do with it: start a turn,
+/// steer the one already running, or durably queue it for the next phase
+/// boundary. The disposition comes back so the client can say which happened.
+pub fn submit_input(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    live_turn::submit_input(core, session_id, text)
+}
+
 pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     let prompt = core.begin_manual_compaction(session_id)?;
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)
+}
+
+/// Run a finished worker's objective again because the user asked. Goes through
+/// the ordinary launch path, so every policy limit applies as it did the first
+/// time.
+pub fn retry_worker_task(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+) -> Result<(), BridgeError> {
+    live_turn::retry_worker_task(core, child_session_id)
 }
 
 pub fn interrupt_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
@@ -1136,6 +1157,30 @@ pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOption
                         .map(|resolution| resolution.actual_model)
                 })
                 .flatten();
+            // The connectors this harness itself holds, so Settings offers
+            // narrowing to what actually exists. Only a certified harness gets
+            // the (subprocess-backed) discovery: an uncertified one runs
+            // nothing, so there is nothing to narrow.
+            let connectors = (supported && descriptor.id == "claude")
+                .then(|| {
+                    let configuration = crate::marketplace::claude_sdk_configuration();
+                    configuration
+                        .mcp_servers
+                        .keys()
+                        .map(|instance| wire::WorkBriefingConnector {
+                            id: instance.clone(),
+                            family: crate::work_briefing_live::family_for_server(instance)
+                                .map(|family| family.as_str().to_owned())
+                                .unwrap_or_else(|| "unknown".to_owned()),
+                            connected: configuration
+                                .connector_health
+                                .get(instance)
+                                .copied()
+                                .flatten(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             wire::WorkBriefingHarness {
                 supported,
                 reason: certification.err().map(|unsupported| unsupported.reason()),
@@ -1151,6 +1196,7 @@ pub fn work_briefing_options(core: &Arc<BridgeCore>) -> wire::WorkBriefingOption
                             && model.default_for_tier,
                     })
                     .collect(),
+                connectors,
                 id: descriptor.id,
                 label: descriptor.label,
                 available: descriptor.available,

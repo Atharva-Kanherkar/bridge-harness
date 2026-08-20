@@ -87,14 +87,6 @@ pub fn retention_action_for_attributes(
     }
 }
 
-pub fn should_retry(
-    result: &crate::delegation::WorkerResult,
-    retry_count: i64,
-    has_hot_process: bool,
-) -> bool {
-    result.is_retryable() && retry_count == 0 && has_hot_process
-}
-
 pub struct WorkerPool;
 
 impl WorkerPool {
@@ -414,7 +406,10 @@ mod tests {
             suggested_task: None,
         };
         assert!(result.is_terminal_cancellation());
-        assert!(!should_retry(&result, 0, true));
+        // Retry policy lives in `crate::worker_retry` now: this used to retry
+        // any typed failure once, without asking whether the cause could have
+        // changed. Keeping a second, laxer answer around was an invitation.
+        assert!(!crate::worker_retry::decide(&result, 0, true, 0).is_retry());
     }
 
     #[test]

@@ -833,6 +833,22 @@ async fn send_turn(
     blocking("Turn delivery", move || api::send_turn(&core, session_id, text)).await
 }
 
+/// The active-turn input contract. Unlike `send_turn`, this one is safe to call
+/// while the agent is working: Bridge decides between starting a turn, steering
+/// the live one, and durably queueing, and reports which it did.
+#[tauri::command]
+async fn submit_input(
+    session_id: String,
+    text: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SubmitInputResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Input submission", move || {
+        api::submit_input(&core, session_id, text)
+    })
+    .await
+}
+
 /// List the current chat's workspace files for the composer's `@file`
 /// autocomplete. Returns an empty list for chats with no connected folder.
 #[tauri::command]
@@ -914,6 +930,21 @@ async fn replay_session_events(
             after_sequence,
             limit,
         )
+    })
+    .await
+}
+
+/// Re-dispatch a finished worker's objective at the user's request. Bridge no
+/// longer takes this turn on its own for a cause it cannot show has changed, so
+/// the decision belongs to whoever can see why the worker failed.
+#[tauri::command]
+async fn retry_worker_task(
+    child_session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Worker retry", move || {
+        api::retry_worker_task(&core, &child_session_id)
     })
     .await
 }
@@ -1174,6 +1205,7 @@ fn setup_embedded(
     work_observation::start_work_fact_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
+    live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
 }
@@ -1272,12 +1304,14 @@ pub fn run() {
             resize_terminal,
             prepare_turn,
             send_turn,
+            submit_input,
             list_workspace_files,
             list_workspace_tree,
             read_workspace_file,
             write_workspace_file,
             compact_session,
             interrupt_turn,
+            retry_worker_task,
             refresh_account_usage,
             resolve_approval,
             stop_session,
@@ -2367,14 +2401,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first, None);
+        // Two rows, in order: the audit fact, and the recovery turn it cost.
+        // The second is what makes a repair turn visible as a repair turn
+        // rather than as anonymous agent activity.
         assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "worker.result.repair_requested"
+            event_kinds(&db),
+            vec![
+                "worker.result.repair_requested".to_owned(),
+                bridge_core::worker_retry::RECOVERY_REPAIR.to_owned(),
+            ]
         );
 
         let fallback = process_worker_result_output(
@@ -2386,18 +2421,39 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fallback.summary.contains("Unstructured worker result"));
-        assert!(!fallback.summary.contains("invalid first output"));
-        assert!(!fallback.summary.contains("invalid repair output"));
+        // Transport, not task outcome — and the worker's own words survive.
+        // Reporting this as `failed` with the prose stripped is what turned a
+        // bad fence into a failed task and then into another paid retry.
         assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "worker.result.unstructured"
+            fallback.status,
+            bridge_core::delegation::WorkerResultStatus::ProtocolInvalid
         );
+        assert!(!fallback.is_retryable());
+        assert!(fallback.summary.contains("could not be read"));
+        assert!(fallback.summary.contains("invalid first output"));
+        assert!(fallback.summary.contains("invalid repair output"));
+        // The fallback is a classification, not another paid turn, so nothing
+        // new is charged to the recovery ledger.
+        assert_eq!(
+            event_kinds(&db),
+            vec![
+                "worker.result.repair_requested".to_owned(),
+                bridge_core::worker_retry::RECOVERY_REPAIR.to_owned(),
+                "worker.result.unstructured".to_owned(),
+            ]
+        );
+    }
+
+    fn event_kinds(db: &rusqlite::Connection) -> Vec<String> {
+        let mut statement = db
+            .prepare("SELECT kind FROM events ORDER BY id")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
     }
 
     #[test]

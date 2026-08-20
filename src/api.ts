@@ -9,6 +9,7 @@ import type {
   ManagedAgentOperationResult,
   ManagedAgentStatus,
   ReadWorkspaceFileResult,
+  SubmitInputResult,
   WorkspaceChangesResult,
   WorkBoard,
   WorkBriefReceipt,
@@ -220,7 +221,7 @@ const mockHealth: Health = {
   ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", telemetry_database: "demo-telemetry",
   adapters: [
     { id: "codex", label: "Codex", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
-    { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
+    { id: "claude", label: "Claude Code", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "approvals", "usage", "interrupt", "steering"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
     { id: "opencode", label: "OpenCode", available: true, version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", tier: "fast", defaultForTier: true }, { id: "opencode/north-mini-code-free", label: "North Mini Code", tier: "standard", defaultForTier: true }, { id: "opencode/big-pickle", label: "Big Pickle", tier: "strong", defaultForTier: true }], defaultModel: "opencode/north-mini-code-free" }
   ]
 };
@@ -344,11 +345,16 @@ const mockBriefingOptions: WorkBriefingOptions = {
         { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForBriefing: true },
         { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForBriefing: false },
       ],
+      connectors: [
+        { id: "claude.ai Slack", family: "slack", connected: true },
+        { id: "claude.ai GitHub", family: "github", connected: true },
+        { id: "claude.ai Gmail", family: "gmail", connected: false },
+      ],
     },
     {
       id: "codex", label: "Codex", available: true, supported: false,
       reason: "the app-server protocol has no per-tool authority, so an exact connector read cannot be isolated from a mutation",
-      defaultModel: null, models: [],
+      defaultModel: null, models: [], connectors: [],
     },
   ],
 };
@@ -890,7 +896,25 @@ export const bridgeApi = {
     appendAgent(sessionId, "message.completed", { itemId: assistantItemId, role: "assistant", status: "completed", text: "I’ll handle that through the normalized adapter layer. The GUI remains provider-neutral, and no agent TUI is rendered." });
     session.status = "ready"; session.activeTurnId = null; emitState();
   },
+  // The active-turn input contract. Unlike sendTurn this is safe to call while
+  // the agent is working: the backend decides between starting a turn, steering
+  // the live one, and durably queueing, and says which it did.
+  submitInput: async (sessionId: string, text: string): Promise<SubmitInputResult> => {
+    if (isTauri()) return call("sessions/submit_input", { sessionId, text });
+    const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
+    if (session.activeTurnId) {
+      const steering = mockHealth.adapters.some(adapter => adapter.id === session.harness && adapter.capabilities.includes("steering"));
+      appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: steering ? "steered" : "queued" } });
+      emitState();
+      return { disposition: steering ? "steeredActiveTurn" : "queuedForPhaseBoundary", queuedInputId: steering ? undefined : `mock-queue-${nextEventId}`, interceptions: [] };
+    }
+    await bridgeApi.sendTurn(sessionId, text);
+    return { disposition: "startedNewTurn", interceptions: [] };
+  },
   interruptTurn: (sessionId: string): Promise<void> => isTauri() ? unit(call("sessions/interrupt_turn", { sessionId })) : Promise.resolve(),
+  // The user's half of the retry decision. Bridge stopped taking this turn on
+  // its own for a cause it cannot show has changed.
+  retryWorkerTask: (childSessionId: string): Promise<void> => isTauri() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),
   refreshAccountUsage: (): Promise<void> => isTauri() ? unit(call("sessions/refresh_account_usage")) : Promise.resolve(),
   resolveApproval: async (sessionId: string, eventId: number, decision: ApprovalDecision): Promise<void> => {
     if (isTauri()) return unit(call("approvals/resolve_approval", { sessionId, eventId, decision }));
