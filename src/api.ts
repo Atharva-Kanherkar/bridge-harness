@@ -694,6 +694,9 @@ export const bridgeApi = {
   // Tens of bytes per poll instead of the entire history; equal digests mean
   // sessionForest would return unchanged store content.
   sessionForestDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
+  /** Durable backfill of one session's event log — any session id, including a
+   * worker child's. Cursor semantics: pass the last sequence already held. */
+  replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number): Promise<AgentEvent[]> => isTauri() ? call("sessions/replay_session_events", { sessionId, afterSequence, limit }) as Promise<AgentEvent[]> : Promise.resolve([]),
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;

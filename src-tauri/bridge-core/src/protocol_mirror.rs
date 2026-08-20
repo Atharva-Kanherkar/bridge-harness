@@ -885,6 +885,9 @@ fn the_session_forest_snapshot_mirrors_core() {
             worktree_branch: Some("bridge/w".into()),
             last_result: Some(serde_json::json!({"ok": true})),
             last_activity_at: Some("now".into()),
+            waiting_since: Some("now".into()),
+            waiting_reason: Some("approval_requested".into()),
+            progress_summary: Some("Running: cargo test".into()),
             updated_at: "now".into(),
         }],
         worker_queue: vec![model::QueuedWorkerRequest {

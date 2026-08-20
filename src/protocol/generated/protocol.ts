@@ -1128,11 +1128,14 @@ export interface WorkerRuntimeRecord {
   lastResult?: unknown;
   lifecycleState: string;
   parentSessionId: string;
+  progressSummary?: string | null;
   resultStatus: string;
   retryCount: JsSafeI64;
   sessionId: string;
   taskFamily: string;
   updatedAt: string;
+  waitingReason?: string | null;
+  waitingSince?: string | null;
   warmUntil?: string | null;
   worktreeBranch?: string | null;
   worktreePath?: string | null;

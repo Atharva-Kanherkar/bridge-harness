@@ -513,6 +513,15 @@ pub struct WorkerRuntimeRecord {
     pub worktree_branch: Option<String>,
     pub last_result: Option<serde_json::Value>,
     pub last_activity_at: Option<String>,
+    // Written by their own UPDATE statements, never by the upsert: the upsert
+    // races the approval and event paths that maintain them, and a stale DTO
+    // must not clobber a fresher observation.
+    #[serde(default)]
+    pub waiting_since: Option<String>,
+    #[serde(default)]
+    pub waiting_reason: Option<String>,
+    #[serde(default)]
+    pub progress_summary: Option<String>,
     pub updated_at: String,
 }
 

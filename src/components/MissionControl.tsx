@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Bot, Check, Clock3, CornerDownRight, GitBranch, LayoutGrid, LoaderCircle, RefreshCw } from "lucide-react";
+import { AlertTriangle, Bot, Check, Clock3, CornerDownRight, GitBranch, LayoutGrid, LoaderCircle, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import { cn } from "@/lib/utils";
 import { formatElapsed, harnessLabel } from "../utils";
+import { WorkerDetail } from "./WorkerDetail";
 import { isBroken, isRunning, isWaiting, workerStatus, type WorkerTone } from "./workerStatus";
 
 // Mission Control renders every live agent at once as its own window, instead of
@@ -148,8 +149,12 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
       {needsYou && (
         <div className="mx-3.5 mt-2 flex shrink-0 items-center gap-1.5 rounded-r-md border-l-2 border-l-warning bg-accent px-2 py-1 text-[10px] font-medium text-foreground">
           <AlertTriangle size={11} className="shrink-0 text-warning" aria-hidden="true" />
-          <span className="truncate">Needs your approval — click to open</span>
+          <span className="truncate">{runtime?.waitingReason ? `Waiting: ${runtime.waitingReason.replaceAll("_", " ")} — click to open` : "Needs your approval — click to open"}</span>
         </div>
+      )}
+
+      {runtime?.progressSummary && !needsYou && (
+        <p className="mx-3.5 mt-2 shrink-0 truncate font-mono text-[10px] font-medium text-foreground/85">{runtime.progressSummary}</p>
       )}
 
       <div className="relative mt-2 min-h-0 flex-1 overflow-hidden px-3.5 pb-3">
@@ -182,6 +187,8 @@ export function MissionControl({
   events,
   activeSessionId,
   now,
+  fullscreen,
+  onToggleFullscreen,
   onFocusSession,
 }: {
   sessions: Session[];
@@ -190,8 +197,11 @@ export function MissionControl({
   events: AgentEvent[];
   activeSessionId?: string;
   now?: number;
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
   onFocusSession: (sessionId: string) => void;
 }) {
+  const [detailSessionId, setDetailSessionId] = useState<string>();
   const [liveNow, setLiveNow] = useState(Date.now);
   useEffect(() => {
     if (now !== undefined) return;
@@ -231,9 +241,10 @@ export function MissionControl({
   const running = agents.filter(agent => isRunning(agent.tone)).length;
   const waiting = agents.filter(agent => isWaiting(agent.tone)).length;
   const broken = agents.filter(agent => isBroken(agent.tone)).length;
+  const detail = detailSessionId ? agents.find(agent => agent.session.id === detailSessionId) : undefined;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col animate-page-mount">
+    <div className="relative flex min-h-0 flex-1 flex-col animate-page-mount">
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
         <LayoutGrid size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         <h1 className="m-0 font-display text-sm font-semibold tracking-tight text-foreground">Mission Control</h1>
@@ -243,6 +254,11 @@ export function MissionControl({
           {waiting > 0 && <span className="text-warning">{waiting} need you</span>}
           {broken > 0 && <span className="text-destructive">{broken} failed</span>}
         </span>
+        {onToggleFullscreen && (
+          <button type="button" onClick={onToggleFullscreen} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}>
+            {fullscreen ? <Minimize2 size={13} aria-hidden="true"/> : <Maximize2 size={13} aria-hidden="true"/>}
+          </button>
+        )}
       </div>
       {agents.length ? (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
@@ -253,7 +269,7 @@ export function MissionControl({
                 agent={agent}
                 active={agent.session.id === activeSessionId}
                 now={effectiveNow}
-                onFocus={() => onFocusSession(agent.session.id)}
+                onFocus={() => setDetailSessionId(agent.session.id)}
               />
             ))}
           </div>
@@ -266,6 +282,18 @@ export function MissionControl({
             <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">Start a chat or delegate work, and every live agent will appear here as its own window.</p>
           </div>
         </div>
+      )}
+      {detail && (
+        <WorkerDetail
+          session={detail.session}
+          runtime={detail.runtime}
+          liveEvents={events}
+          now={effectiveNow}
+          fullscreen={fullscreen}
+          onToggleFullscreen={onToggleFullscreen}
+          onClose={() => setDetailSessionId(undefined)}
+          onFocusSession={onFocusSession}
+        />
       )}
     </div>
   );

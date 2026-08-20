@@ -464,6 +464,9 @@ mod tests {
                 worktree_branch: None,
                 last_result: None,
                 last_activity_at: None,
+                waiting_since: None,
+                waiting_reason: None,
+                progress_summary: None,
                 updated_at: "now".into(),
             },
         )
@@ -823,6 +826,9 @@ mod tests {
                     worktree_branch: None,
                     last_result: None,
                     last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
                     updated_at: "now".into(),
                 },
             )

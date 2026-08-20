@@ -1393,6 +1393,14 @@ fn handle_agent_value(
                 // thread cannot persist and publish sequence N+1 before N.
                 state.events.publish(CoreEvent::Agent(event));
             }
+            if session_kind == "worker" {
+                if let Some(summary) = worker_progress_summary(&normalized_event) {
+                    let _ = db.execute(
+                        "UPDATE worker_runtime SET progress_summary=?2 WHERE session_id=?1 AND result_status='pending'",
+                        params![session_id, summary],
+                    );
+                }
+            }
             let pending_compaction =
                 compaction_controller::CompactionController::pending(&db, session_id)
                     .ok()
@@ -2032,6 +2040,9 @@ pub fn reserve_worker_launch_outcome(
             worktree_branch: None,
             last_result: None,
             last_activity_at: None,
+            waiting_since: None,
+            waiting_reason: None,
+            progress_summary: None,
             updated_at: Utc::now().to_rfc3339(),
         },
     )?;
@@ -4562,6 +4573,37 @@ fn settle_worker_after_result(
 
 /// If a worker process exits before ever reporting, tell its parent so the
 /// parent is not left waiting on a child that will never answer.
+/// One line of "what the worker is doing right now", from a normalized event.
+/// Only shape-bearing kinds produce one — deltas, turn markers, and reasoning
+/// churn are ignored so the summary changes when the work does.
+fn worker_progress_summary(event: &agent::NormalizedEvent) -> Option<String> {
+    let head = |text: &str| -> String {
+        let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
+        if line.chars().count() <= 140 {
+            line.to_string()
+        } else {
+            let truncated: String = line.chars().take(139).collect();
+            format!("{}…", truncated.trim_end())
+        }
+    };
+    let label = event
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .or(event.text.as_deref())
+        .filter(|text| !text.trim().is_empty())?;
+    match event.kind.as_str() {
+        "tool.started" => Some(format!("Running: {}", head(label))),
+        "tool.completed" => Some(format!("Finished: {}", head(label))),
+        "message.completed" | "assistant.message"
+            if event.role.as_deref() == Some("assistant") =>
+        {
+            Some(head(label))
+        }
+        _ => None,
+    }
+}
+
 /// Refresh a session's liveness heartbeat for the stall watchdog.
 fn reset_worker_heartbeat(state: &BridgeCore, session_id: &str) {
     state
@@ -6435,6 +6477,58 @@ mod exit_result_tests {
 }
 
 #[cfg(test)]
+mod progress_summary_tests {
+    use super::*;
+
+    fn event(kind: &str, role: Option<&str>, title: Option<&str>, text: Option<&str>) -> agent::NormalizedEvent {
+        agent::NormalizedEvent {
+            kind: kind.into(),
+            item_id: None,
+            role: role.map(Into::into),
+            status: None,
+            title: title.map(Into::into),
+            text: text.map(Into::into),
+            data: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn tool_and_message_events_produce_a_summary_and_churn_kinds_do_not() {
+        assert_eq!(
+            worker_progress_summary(&event("tool.started", None, Some("cargo test"), None)),
+            Some("Running: cargo test".to_string())
+        );
+        assert_eq!(
+            worker_progress_summary(&event("tool.completed", None, None, Some("Edit src/lib.rs"))),
+            Some("Finished: Edit src/lib.rs".to_string())
+        );
+        assert_eq!(
+            worker_progress_summary(&event(
+                "assistant.message",
+                Some("assistant"),
+                None,
+                Some("Tests pass.\nMore detail below."),
+            )),
+            Some("Tests pass.".to_string())
+        );
+        // A user-role message, reasoning churn, and deltas say nothing new.
+        assert_eq!(worker_progress_summary(&event("message.completed", Some("user"), None, Some("hi"))), None);
+        assert_eq!(worker_progress_summary(&event("reasoning", Some("assistant"), None, Some("thinking"))), None);
+        assert_eq!(worker_progress_summary(&event("message.delta", Some("assistant"), None, Some("t"))), None);
+        // Empty labels produce nothing rather than a blank line.
+        assert_eq!(worker_progress_summary(&event("tool.started", None, Some("  "), None)), None);
+    }
+
+    #[test]
+    fn summaries_are_bounded_to_one_short_line() {
+        let long = "x".repeat(500);
+        let summary = worker_progress_summary(&event("tool.started", None, Some(&long), None)).unwrap();
+        assert!(summary.chars().count() <= 150, "{}", summary.chars().count());
+        assert!(summary.ends_with('…'));
+    }
+}
+
+#[cfg(test)]
 mod approval_deadline_tests {
     use super::*;
     use crate::model::WorkerRuntimeRecord;
@@ -6489,6 +6583,9 @@ mod approval_deadline_tests {
                     worktree_branch: None,
                     last_result: None,
                     last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
                 },
             )
@@ -6985,6 +7082,9 @@ mod submit_input_tests {
                     worktree_branch: None,
                     last_result: None,
                     last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
                 },
             )
@@ -7201,6 +7301,9 @@ mod retry_settlement_tests {
                     worktree_branch: None,
                     last_result: None,
                     last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
                 },
             )
