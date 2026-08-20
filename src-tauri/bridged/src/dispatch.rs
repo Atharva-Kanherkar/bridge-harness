@@ -449,6 +449,17 @@ pub fn dispatch(
             let p: wire::ExecuteSkillChangeParams = decode(method, params)?;
             reply(api::execute_skill_change(core, &p.confirmation_id))
         }
+
+        MethodName::AutomationCatalog => reply(api::automation_catalog(core)),
+        MethodName::ExecuteAutomationAction => {
+            let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
+            reply(api::execute_automation_action(
+                core,
+                into_core(method, &p.provider)?,
+                &p.automation_id,
+                into_core(method, &p.action)?,
+            ))
+        }
     }
 }
 

@@ -15,7 +15,8 @@ use crate::model::{
     AdapterDescriptor, AgentEvent, BridgeState, CapabilityTier, Harness, SessionForestSnapshot,
 };
 use crate::{
-    adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
+    adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
+    completion, git,
     learning_job, learning_router, live_turn, marketplace, model_profiles, opencode_adapter,
     secret_interception, session_supervisor, sessions, skill_marketplace, slash, store,
     verification_pipeline, verified_catalog, work, work_actions, work_observation, work_reconcile,
@@ -1934,6 +1935,25 @@ pub fn execute_skill_change(
     )?;
     core.events.publish(CoreEvent::StateChanged);
     Ok(results)
+}
+
+// --- automations ---------------------------------------------------------------
+
+pub fn automation_catalog(
+    _core: &Arc<BridgeCore>,
+) -> Result<automations::AutomationCatalog, BridgeError> {
+    Ok(automations::catalog(&user_home()))
+}
+
+pub fn execute_automation_action(
+    core: &Arc<BridgeCore>,
+    provider: automations::AutomationProvider,
+    automation_id: &str,
+    action: automations::AutomationAction,
+) -> Result<automations::AutomationActionResult, BridgeError> {
+    let result = automations::execute(&user_home(), provider, automation_id, action)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(result)
 }
 
 #[cfg(test)]

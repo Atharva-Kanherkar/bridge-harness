@@ -13,6 +13,7 @@ pub mod agent_config;
 pub mod agent_integration;
 pub mod agent_lifecycle;
 pub mod api;
+pub mod automations;
 pub mod backend_binding;
 pub mod binary;
 pub mod briefing_conformance;

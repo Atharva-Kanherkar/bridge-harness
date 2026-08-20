@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -242,6 +242,27 @@ const mockSkills: SkillCatalog = {
   personal: [{ id: "personal:my-workflow", name: "my-workflow", description: "A skill you maintain locally.", providers: ["codex"], source: "Personal skill" }],
 };
 const mockSkillConsents = new Map<string, { skillId: string; action: SkillAction; targets: SkillProvider[] }>();
+
+const mockAutomations: AutomationCatalog = {
+  automations: [
+    {
+      id: "task-1", provider: "claude", name: "Summarize overnight CI failures", prompt: "Summarize overnight CI failures and file issues for new ones.",
+      schedule: { kind: "cron", expression: "7 9 * * 1-5", human: "Weekdays at 09:07" }, status: "active", recurring: true,
+      createdAt: Date.now() - 86_400_000, nextRunAt: null, lastRunAt: Date.now() - 3_600_000, cwds: [], model: null, effort: null, canPause: false, runs: [],
+    },
+    {
+      id: "auto-1", provider: "codex", name: "Nightly dependency audit", prompt: "Audit dependencies for CVEs and report anything actionable.",
+      schedule: { kind: "rrule", expression: "FREQ=DAILY;BYHOUR=3;BYMINUTE=15", human: "Daily at 03:15" }, status: "paused", recurring: true,
+      createdAt: Date.now() - 172_800_000, nextRunAt: Date.now() + 43_200_000, lastRunAt: null, cwds: ["/Users/you/project"], model: "gpt-5.3-codex", effort: "high", canPause: true,
+      runs: [{ id: "thread-1", status: "COMPLETED", title: "Deps clean", summary: "No CVEs found", createdAt: Date.now() - 90_000_000 }],
+    },
+  ],
+  providers: [
+    { provider: "claude", available: true, detail: "~/.claude/scheduled_tasks.json", count: 1 },
+    { provider: "codex", available: true, detail: "~/.codex/sqlite/codex.db", count: 1 },
+    { provider: "opencode", available: false, detail: "OpenCode has no automations feature", count: 0 },
+  ],
+};
 
 function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
   const version = (mockModelSetup.activeVersion ?? 0) + 1;
@@ -499,6 +520,15 @@ export const bridgeApi = {
     const skill = mockSkills.community.find(item => item.id === consent.skillId)!;
     for (const target of consent.targets) { const state = skill.providerStates.find(item => item.provider === target)!; state.installed = consent.action === "install"; state.managed = consent.action === "install"; state.installedRef = consent.action === "install" ? skill.pinnedRef : null; }
     return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
+  },
+  automationCatalog: (): Promise<AutomationCatalog> => isTauri() ? call("automations/automation_catalog") as Promise<AutomationCatalog> : Promise.resolve(structuredClone(mockAutomations)),
+  executeAutomationAction: async (provider: AutomationProvider, automationId: string, action: AutomationAction): Promise<AutomationActionResult> => {
+    if (isTauri()) return call("automations/execute_automation_action", { provider, automationId, action }) as Promise<AutomationActionResult>;
+    const automation = mockAutomations.automations.find(item => item.provider === provider && item.id === automationId);
+    if (!automation) throw new Error(`No ${provider} automation with id ${automationId}`);
+    if (action === "delete") mockAutomations.automations = mockAutomations.automations.filter(item => item !== automation);
+    else automation.status = action === "pause" ? "paused" : "active";
+    return { provider, id: automationId, action, success: true, message: `${action} completed` };
   },
   marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? call("marketplace/marketplace_catalog") as Promise<MarketplaceCatalog> : Promise.resolve(structuredClone(mockMarketplace)),
   marketplaceAppAuthStates: (): Promise<MarketplaceAppAuthState[]> => {

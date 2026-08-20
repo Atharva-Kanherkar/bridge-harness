@@ -12,8 +12,8 @@ use bridge_core::live_turn;
 use bridge_core::work_observation;
 use bridge_core::model::*;
 use bridge_core::{
-    agent_config, browser_bridge, marketplace, opencode_adapter, secret_interception,
-    skill_marketplace, slash,
+    agent_config, automations, browser_bridge, marketplace, opencode_adapter,
+    secret_interception, skill_marketplace, slash,
 };
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use std::{
@@ -274,6 +274,28 @@ async fn execute_skill_change(
 ) -> Result<Vec<skill_marketplace::SkillActionResult>, BridgeError> {
     let core = state.inner().clone();
     blocking("Skill installer", move || api::execute_skill_change(&core, &confirmation_id)).await
+}
+
+#[tauri::command]
+async fn automation_catalog(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationCatalog, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation discovery", move || api::automation_catalog(&core)).await
+}
+
+#[tauri::command]
+async fn execute_automation_action(
+    provider: automations::AutomationProvider,
+    automation_id: String,
+    action: automations::AutomationAction,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationActionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation update", move || {
+        api::execute_automation_action(&core, provider, &automation_id, action)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1256,6 +1278,8 @@ pub fn run() {
             skill_suggestions,
             preview_skill_change,
             execute_skill_change,
+            automation_catalog,
+            execute_automation_action,
             get_state,
             get_session_forest,
             get_session_forest_digest,

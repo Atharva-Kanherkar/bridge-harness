@@ -20,8 +20,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use bridge_protocol::messages as wire;
 
 use crate::{
-    agent_config, browser_bridge, completion, delegation, learning_job, learning_router,
-    marketplace, model, model_profiles, skill_marketplace,
+    agent_config, automations, browser_bridge, completion, delegation, learning_job,
+    learning_router, marketplace, model, model_profiles, skill_marketplace,
 };
 
 /// Assert a core DTO and its protocol mirror describe the same document.
@@ -151,6 +151,24 @@ fn mirror_skill_action(action: skill_marketplace::SkillAction) -> wire::SkillAct
         skill_marketplace::SkillAction::Install => wire::SkillAction::Install,
         skill_marketplace::SkillAction::Rollback => wire::SkillAction::Rollback,
         skill_marketplace::SkillAction::Uninstall => wire::SkillAction::Uninstall,
+    }
+}
+
+fn mirror_automation_provider(
+    provider: automations::AutomationProvider,
+) -> wire::AutomationProvider {
+    match provider {
+        automations::AutomationProvider::Claude => wire::AutomationProvider::Claude,
+        automations::AutomationProvider::Codex => wire::AutomationProvider::Codex,
+        automations::AutomationProvider::OpenCode => wire::AutomationProvider::OpenCode,
+    }
+}
+
+fn mirror_automation_action(action: automations::AutomationAction) -> wire::AutomationAction {
+    match action {
+        automations::AutomationAction::Pause => wire::AutomationAction::Pause,
+        automations::AutomationAction::Resume => wire::AutomationAction::Resume,
+        automations::AutomationAction::Delete => wire::AutomationAction::Delete,
     }
 }
 
@@ -440,6 +458,20 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
         skill_marketplace::SkillAction::Uninstall,
     ] {
         assert_same_wire_value(&action, &mirror_skill_action(action));
+    }
+    for provider in [
+        automations::AutomationProvider::Claude,
+        automations::AutomationProvider::Codex,
+        automations::AutomationProvider::OpenCode,
+    ] {
+        assert_same_wire_value(&provider, &mirror_automation_provider(provider));
+    }
+    for action in [
+        automations::AutomationAction::Pause,
+        automations::AutomationAction::Resume,
+        automations::AutomationAction::Delete,
+    ] {
+        assert_same_wire_value(&action, &mirror_automation_action(action));
     }
 }
 
