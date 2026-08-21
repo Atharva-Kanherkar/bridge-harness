@@ -34,7 +34,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// rejected: the only ways to make an `acp:` session fit a 0.8 client are to
 /// hide it or to rename it, and both break the guarantee that history never
 /// vanishes and is never re-attributed.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
+///
+/// **1.3 adds `config/save_permission_policy`.** The minor bump is what stops a
+/// client that needs it from handshaking against a daemon that does not have it
+/// and only finding out at `method_not_found` — the daemon outlives the app, so
+/// that pairing is routine rather than exotic.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 3 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

@@ -12,7 +12,7 @@ import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCo
 import { useThemePreference, type ThemePreference } from "../theme";
 import { cn } from "@/lib/utils";
 
-type Section = "agents" | "harnesses" | "models" | "permissions" | "work" | "appearance";
+export type Section = "agents" | "harnesses" | "models" | "permissions" | "work" | "appearance";
 
 const roles: { id: AgentRole; label: string }[] = [
   { id: "orchestrator", label: "Orchestrator" }, { id: "research", label: "Research" },
@@ -148,8 +148,8 @@ function SectionButton({ active, icon, label, onClick }: { active: boolean; icon
   </button>;
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], onModelSetupChange, onSuggestionSettingsChange, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
-  const [section, setSection] = useState<Section>("agents");
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
+  const [section, setSection] = useState<Section>(initialSection);
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);

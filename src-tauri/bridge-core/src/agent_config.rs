@@ -363,8 +363,15 @@ pub fn save_permission_policy(
     // Stamped host-side: the client does not get to claim when a policy changed,
     // and the settings page renders what was actually stored.
     policy.updated_at = Utc::now().to_rfc3339();
-    upsert(db, "permission_policy", "global", &policy)?;
-    state(db)
+    // One transaction covering the write *and* the response it is reported by.
+    // Committing first and then failing to build the snapshot told the UI the
+    // save had failed while `bypass_all` was already durable and live — for a
+    // security control that asymmetry runs the wrong way, so it fails closed.
+    let transaction = db.unchecked_transaction()?;
+    upsert(&transaction, "permission_policy", "global", &policy)?;
+    let next = state(&transaction)?;
+    transaction.commit()?;
+    Ok(next)
 }
 
 pub fn save_harness(
@@ -562,6 +569,39 @@ mod tests {
 
         save_permission_policy(&db, PermissionPolicy::default()).unwrap();
         assert!(!permission_policy(&db).unwrap().bypass_all);
+    }
+
+    /// The write and the response it is reported by are one transaction. A save
+    /// that reports failure must not have left the policy on — for a security
+    /// control the failure has to land closed.
+    #[test]
+    fn a_policy_save_that_cannot_report_does_not_take_effect() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        // Break the read half of the save: `state()` reads stored agents, so an
+        // unparseable agent row makes the response construction fail.
+        upsert(&db, "agent", "bridge-orchestrator", &json!("not-an-agent")).unwrap();
+
+        let outcome = save_permission_policy(
+            &db,
+            PermissionPolicy {
+                bypass_all: true,
+                updated_at: String::new(),
+            },
+        );
+
+        assert!(outcome.is_err(), "the save could not be reported");
+        let stored: Option<String> = db
+            .query_row(
+                "SELECT payload FROM configuration_entries WHERE kind='permission_policy'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(
+            stored.is_none(),
+            "a failed save must not leave bypass durably on: {stored:?}"
+        );
     }
 
     #[test]

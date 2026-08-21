@@ -555,6 +555,28 @@ pub fn resolve_approval(
         core.events.publish(CoreEvent::StateChanged);
         return Ok(());
     }
+    // One answer per request. The approval event is published to every client
+    // before anything resolves it, so a human click and the permission policy can
+    // both reach here for the same request id — and two `respond` calls for one
+    // request is a contradictory answer to the provider plus two resolutions in
+    // the transcript. Multi-window clients could already race this; the policy
+    // just made the window routine.
+    let already_resolved: bool = db
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM session_entries
+                 WHERE session_id=?1 AND kind='approval.resolved'
+                   AND json_extract(payload,'$.data.requestEventId')=?2
+             )",
+            params![session_id, event_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if already_resolved {
+        return Err(BridgeError::Invalid(
+            "This approval has already been answered".into(),
+        ));
+    }
     let request_id = detail("requestId")
         .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
     let is_worker = store::worker_runtime(&db, session_id)?.is_some();
@@ -1774,6 +1796,10 @@ pub fn save_permission_policy(
 
 pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_all(&core.db.lock().unwrap())?;
+    // Reset deletes every configuration row, the permission policy among them, so
+    // the chrome badge has to hear about it or it keeps advertising a bypass that
+    // is no longer in effect.
+    core.events.publish(CoreEvent::StateChanged);
     let directory = opencode_directory(None)?;
     let _ = core
         .adapter_registry

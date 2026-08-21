@@ -670,6 +670,8 @@ export const bridgeApi = {
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => ({ ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false }));
     mockConfigState.agents = mockConfigState.agents.filter(item => item.isBuiltIn).map(item => ({ ...item, enabled: true, model: null, systemPrompt: "", isDefault: item.id === "bridge-orchestrator" }));
     mockConfigState.defaultAgentId = "bridge-orchestrator";
+    // Reset clears every configuration row on the real path, the policy included.
+    mockConfigState.permissionPolicy = { bypassAll: false, updatedAt: "" };
     return Promise.resolve(structuredClone(mockConfigState));
   },
   learningState: (workspaceId: string): Promise<LearningState> => isTauri() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
