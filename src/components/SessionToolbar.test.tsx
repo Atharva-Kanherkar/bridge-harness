@@ -150,6 +150,12 @@ describe("SessionToolbar", () => {
     mount({ fullscreen: true });
     const row = container.firstElementChild as HTMLElement;
     expect(row.className).toContain("pl-[84px]");
-    expect(row.getAttribute("data-tauri-drag-region")).toBe("");
+    expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
+  });
+
+  it("stays a whole-row window drag handle when windowed", () => {
+    mount();
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
   });
 });

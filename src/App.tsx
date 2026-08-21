@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
@@ -17,6 +17,7 @@ import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
+import { AppTitleBar } from "./components/AppTitleBar";
 import { MissionControl } from "./components/MissionControl";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
@@ -797,29 +798,19 @@ export function App() {
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  return <div className="relative flex h-[100dvh] overflow-hidden bg-background text-foreground">
+  return <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background text-foreground">
 
-    {!fullscreen && <div className="fixed right-2 top-1.5 z-40 flex items-center gap-1.5 sm:right-5 sm:top-5">
-      {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
-      <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
-    </div>}
+    {!fullscreen && <AppTitleBar
+      title={view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}
+      navOpen={navOpen}
+      onOpenNav={() => setNavOpen(true)}
+      actions={<>
+        {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
+        <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
+      </>}
+    />}
 
-    {!fullscreen && <div
-      className="fixed inset-x-0 top-0 z-20 flex h-11 items-center gap-2 border-b border-border bg-sidebar pl-[84px] pr-[148px] sm:hidden"
-      data-tauri-drag-region
-    >
-      <button
-        type="button"
-        onClick={() => setNavOpen(true)}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        aria-label="Open navigation"
-        aria-expanded={navOpen}
-      >
-        <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
-      </button>
-      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">{view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}</span>
-    </div>}
-
+    <div className="relative flex min-h-0 flex-1">
     {!fullscreen && <BridgeSidebar
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
@@ -838,7 +829,7 @@ export function App() {
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
     />}
-    <main className={cn("relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount", fullscreen ? "pt-0" : "pt-11 sm:pt-0")}>
+    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
         board={workBoard}
@@ -1017,6 +1008,7 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
     </main>
+    </div>
     {error && (() => {
       const described = describeError(error, {
         provider: session ? harnessLabel(session.harness) : undefined,

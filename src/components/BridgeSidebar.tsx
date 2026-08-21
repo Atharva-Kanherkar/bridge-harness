@@ -401,12 +401,11 @@ export function BridgeSidebar({
       <div className={cn("flex min-h-0 h-full flex-col", collapsed ? "px-2 py-3" : "px-2 py-3")}>
         <div
           className={cn(
-            "mb-3 grid h-7 shrink-0 items-center",
-            collapsed ? "grid-cols-1 justify-items-start pl-0.5" : "grid-cols-[40px_28px_minmax(0,1fr)_auto] gap-1",
+            "mb-3 flex h-7 shrink-0 items-center",
+            collapsed ? "justify-start pl-0.5" : "justify-between",
           )}
-          data-tauri-drag-region
+          data-tauri-drag-region="deep"
         >
-          {!collapsed && <div className="h-full" data-tauri-drag-region aria-hidden="true" />}
           <button
             type="button"
             onClick={toggleCollapsed}
@@ -416,19 +415,14 @@ export function BridgeSidebar({
             <PanelLeft className={cn("h-4 w-4 transition-transform duration-200", collapsed && "rotate-180")} strokeWidth={1.75} />
           </button>
           {!collapsed && (
-            <>
-              <p className="min-w-0 truncate font-display text-[14px] font-semibold tracking-[-0.012em] text-foreground">
-                bridge
-              </p>
-              <RailIconButton
-                label={searchOpen ? "Close search" : "Search chats"}
-                onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-              >
-                {searchOpen
-                  ? <X size={14} strokeWidth={1.7} aria-hidden="true" />
-                  : <Search size={14} strokeWidth={1.7} aria-hidden="true" />}
-              </RailIconButton>
-            </>
+            <RailIconButton
+              label={searchOpen ? "Close search" : "Search chats"}
+              onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+            >
+              {searchOpen
+                ? <X size={14} strokeWidth={1.7} aria-hidden="true" />
+                : <Search size={14} strokeWidth={1.7} aria-hidden="true" />}
+            </RailIconButton>
           )}
         </div>
 

@@ -201,7 +201,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
   };
 
   return <div className="flex h-full min-h-0 flex-col">
-    <header className="flex h-[64px] shrink-0 items-center border-b border-border/70 px-6 sm:px-8">
+    <header className="flex h-[64px] shrink-0 items-center border-b border-border/70 px-6 sm:px-8" data-tauri-drag-region="deep">
       <div className="min-w-0 flex-1"><h1 className="font-display text-lg font-semibold tracking-tight text-foreground">Settings</h1><p className="text-xs text-muted-foreground">Providers, models, prompts, and agent presets.</p></div>
       <div className="flex items-center gap-2">{saved && <span className="inline-flex items-center gap-1 text-xs text-success"><Check size={13} />Saved</span>}<button type="button" disabled={busy} onClick={() => void resetEverything()} className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-45"><RotateCcw size={13} />Reset all</button></div>
     </header>

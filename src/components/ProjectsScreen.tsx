@@ -51,7 +51,7 @@ export function ProjectsScreen({
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
-        <header className="mb-5 flex items-end gap-3">
+        <header className="mb-5 flex items-end gap-3" data-tauri-drag-region="deep">
           <div className="min-w-0 flex-1">
             <h1 className="m-0 font-display text-[19px] font-semibold tracking-[-0.02em] text-foreground">Projects</h1>
             <p className="mt-1 text-[13px] text-muted-foreground">

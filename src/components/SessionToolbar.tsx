@@ -65,10 +65,12 @@ export function SessionToolbar({
       className={cn(
         "flex h-11 shrink-0 items-center gap-2 border-b border-border pr-2",
         // In fullscreen this is the topmost row, so it leaves the traffic lights
-        // their corner and stays draggable.
+        // their corner.
         fullscreen ? "pl-[84px]" : "pl-4 sm:pl-6",
       )}
-      data-tauri-drag-region={fullscreen ? "" : undefined}
+      // The window has no native titlebar, so this strip is the grab handle:
+      // "deep" makes the whole row draggable while buttons keep their clicks.
+      data-tauri-drag-region="deep"
     >
       <h1 className="m-0 min-w-0 flex-1 truncate font-display text-[14px] font-semibold leading-none tracking-[-0.014em] text-foreground">
         {title}
