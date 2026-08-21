@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 35;
+const LATEST_SCHEMA_VERSION: i64 = 36;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -260,6 +260,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             33 => migration_33_memory_extraction(&transaction)?,
             34 => migration_34_memory_packet(&transaction)?,
             35 => migration_35_family_only_preferences(&transaction)?,
+            36 => migration_36_routing_catalogs(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -939,6 +940,18 @@ fn migration_33_memory_extraction(transaction: &Transaction<'_>) -> Result<(), B
 
 fn migration_34_memory_packet(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_packet::install(transaction)
+}
+
+fn migration_36_routing_catalogs(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS routing_catalogs (
+            hash TEXT PRIMARY KEY,
+            snapshot TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
+    )?;
+    add_column_if_missing(transaction, "router_decisions", "catalog_hash", "TEXT")?;
+    Ok(())
 }
 
 fn migration_35_family_only_preferences(
@@ -3081,6 +3094,7 @@ mod tests {
             "memory_record_fts",
             "memory_retrieval_audits",
             "memory_injection_settings",
+            "routing_catalogs",
         ] {
             assert!(
                 db.query_row(

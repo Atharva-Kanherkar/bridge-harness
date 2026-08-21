@@ -256,7 +256,7 @@ pub struct RouterDecision {
     pub profile_purpose: Option<String>,
     #[serde(default = "default_policy_version")]
     pub policy_version: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub catalog_snapshot: serde_json::Value,
     pub mode: RouterMode,
     pub manual_override: bool,
@@ -1022,9 +1022,24 @@ fn normalized_list(values: &[String]) -> Vec<String> {
 }
 
 fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), BridgeError> {
+    // The catalog is the fastest-growing bytes in an active workspace, and it
+    // was stored twice per decision: once in its own column and once embedded
+    // in the decision blob. It now lives once per distinct catalog, keyed by
+    // hash; decision rows carry the hash, and the blob omits the snapshot.
+    let catalog_body = decision.catalog_snapshot.to_string();
+    let catalog_hash = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(catalog_body.as_bytes()))
+    };
     db.execute(
-        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+        "INSERT OR IGNORE INTO routing_catalogs(hash,snapshot,created_at) VALUES(?1,?2,?3)",
+        params![catalog_hash, catalog_body, decision.created_at],
+    )?;
+    let mut stored = decision.clone();
+    stored.catalog_snapshot = serde_json::Value::Null;
+    db.execute(
+        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,catalog_hash,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         params![
             decision.id,
             decision.workspace_id,
@@ -1037,7 +1052,7 @@ fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), Br
             decision.profile_version,
             decision.profile_purpose,
             decision.policy_version,
-            decision.catalog_snapshot.to_string(),
+            catalog_hash,
             decision.explanation,
             decision.actual_provider,
             decision.actual_model,
@@ -1047,7 +1062,7 @@ fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), Br
             decision.baseline_candidate,
             decision.recommended_candidate,
             decision.executed_candidate,
-            serde_json::to_string(decision).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            serde_json::to_string(&stored).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             decision.created_at,
         ],
     )?;
@@ -1700,9 +1715,44 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).unwrap();
         assert_eq!(evidence.0, 0);
-        assert!(evidence.1 > 2);
+        assert_eq!(evidence.1, 0, "the snapshot no longer rides every decision row");
         assert_eq!(evidence.2.len(), 64);
         assert!(!evidence.3.is_empty());
+        let (catalog_hash, blob): (String, String) = db
+            .query_row(
+                "SELECT catalog_hash,decision FROM router_decisions LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(catalog_hash.len(), 64);
+        assert!(
+            !blob.contains("catalogSnapshot"),
+            "the blob stopped embedding the catalog a second time"
+        );
+        let catalogs: i64 = db
+            .query_row("SELECT COUNT(*) FROM routing_catalogs WHERE hash=?1", params![catalog_hash], |row| row.get(0))
+            .unwrap();
+        assert_eq!(catalogs, 1, "the catalog lives once, keyed by its hash");
+    }
+
+    #[test]
+    fn decision_rows_store_a_catalog_hash_not_blobs() {
+        let db = routing_db();
+        route(&db, "parent", "turn-a", &request(), &descriptors()).unwrap();
+        route(&db, "parent", "turn-b", &request(), &descriptors()).unwrap();
+        let catalogs: i64 = db
+            .query_row("SELECT COUNT(*) FROM routing_catalogs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(catalogs, 1, "two decisions over one catalog store it once");
+        let bytes: i64 = db
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(catalog_snapshot)),0) FROM router_decisions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bytes, 0);
     }
 
     #[test]
