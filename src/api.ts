@@ -885,6 +885,31 @@ export const bridgeApi = {
         .map(record => structuredClone(record)),
     };
   },
+  supersedeMemoryRecord: async (recordId: string, body: string, kind?: string | null): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/supersede_memory_record", { recordId, body, ...(kind ? { kind } : {}) });
+    const old = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
+    if (!old) throw new Error("Only an active memory record can be superseded.");
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("A memory pin needs some text. Empty bodies are not stored.");
+    const now = new Date().toISOString();
+    old.status = "superseded";
+    old.updatedAt = now;
+    const record: MemoryRecord = {
+      id: crypto.randomUUID(),
+      scopeKey: old.scopeKey,
+      kind: kind?.trim() || old.kind,
+      body: trimmed,
+      provenance: "user_explicit",
+      status: "active",
+      sourceSessionId: old.sourceSessionId,
+      supersedes: old.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockMemoryRecords.unshift(record);
+    emitMemoryChanged(record.scopeKey);
+    return structuredClone(record);
+  },
   approveMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
     if (isTauri()) return call("memory/approve_memory_record", { recordId });
     const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "proposed");
