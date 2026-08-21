@@ -4,7 +4,8 @@ import { bridgeApi } from "../api";
 import type { MemoryRecord } from "../types";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
-const MAX_BODY_CHARS = 4000;
+/** Mirrors the contract cap in bridge-protocol's memory messages. */
+export const MAX_MEMORY_BODY_CHARS = 4000;
 
 /**
  * Account memory on this machine (`account:local`). Deliberately not this
@@ -78,7 +79,7 @@ export function MemoryDialog({
   if (!open) return null;
 
   const trimmed = body.trim();
-  const overLimit = body.length > MAX_BODY_CHARS;
+  const overLimit = body.length > MAX_MEMORY_BODY_CHARS;
   const visible = (records ?? []).filter(record => !filter || record.kind === filter);
 
   const save = async () => {
@@ -122,7 +123,7 @@ export function MemoryDialog({
             <select className={`${fieldClass} h-9 w-36`} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
               {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
-            <span className={`text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{body.length} / {MAX_BODY_CHARS}</span>
+            <span className={`text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{body.length} / {MAX_MEMORY_BODY_CHARS}</span>
             <button
               type="button"
               className="ml-auto h-9 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45"
@@ -130,7 +131,7 @@ export function MemoryDialog({
               onClick={() => void save()}
             >Save pin</button>
           </div>
-          {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
+          {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {KINDS.map(item => (

@@ -25,7 +25,7 @@ import { PatchView } from "./components/DiffView";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
-import { MemoryDialog } from "./components/MemoryDialog";
+import { MemoryDialog, MAX_MEMORY_BODY_CHARS } from "./components/MemoryDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
@@ -718,6 +718,13 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  // "Remember this" on an assistant message. Over the cap the dialog opens with
+  // the full text for the user to trim — never a clip, never a truncated save.
+  const rememberMessage = useCallback(async (text: string) => {
+    if (text.length > MAX_MEMORY_BODY_CHARS) { setMemoryDraft(text); setModal("memory"); return; }
+    try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
+    catch (e) { setError(errorMessage(e)); }
+  }, [session?.id]);
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
@@ -932,6 +939,7 @@ export function App() {
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
                   highlightEntryId={highlightEntryId}
+                  onRemember={rememberMessage}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
