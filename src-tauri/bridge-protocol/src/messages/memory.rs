@@ -64,6 +64,57 @@ pub struct ListMemoryRecordsResult {
     pub records: Vec<MemoryRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApproveMemoryRecordParams {
+    pub record_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RejectMemoryRecordParams {
+    pub record_id: String,
+}
+
+/// Extraction is opt-in per scope. `remember` is the default and means nothing
+/// automatic; `propose` runs the pinned profile after turns. `auto_apply` does
+/// not exist until a replay bench can justify it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateExtractionSettingsParams {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExtractionRun {
+    pub status: String,
+    pub proposal_count: i64,
+    pub observed_tokens: i64,
+    pub spend_microusd: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExtractionSettings {
+    pub scope_key: String,
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The newest run in this scope, spend observed — never a simulated zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<MemoryExtractionRun>,
+}
+
 /// What memory exists, so surfaces can be honest about what they do not own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

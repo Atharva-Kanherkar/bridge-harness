@@ -162,6 +162,24 @@ pub fn dispatch(
             reply(api::delete_memory_record(core, &p.record_id))
         }
         MethodName::GetMemoryCapabilities => reply(api::get_memory_capabilities(core)),
+        MethodName::ApproveMemoryRecord => {
+            let p: wire::ApproveMemoryRecordParams = decode(method, params)?;
+            reply(api::approve_memory_record(core, &p.record_id))
+        }
+        MethodName::RejectMemoryRecord => {
+            let p: wire::RejectMemoryRecordParams = decode(method, params)?;
+            reply(api::reject_memory_record(core, &p.record_id))
+        }
+        MethodName::GetExtractionSettings => reply(api::get_extraction_settings(core)),
+        MethodName::UpdateExtractionSettings => {
+            let p: wire::UpdateExtractionSettingsParams = decode(method, params)?;
+            reply(api::update_extraction_settings(
+                core,
+                &p.mode,
+                p.harness.as_deref(),
+                p.model.as_deref(),
+            ))
+        }
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;
             reply(api::retry_worker_task(core, &p.child_session_id))

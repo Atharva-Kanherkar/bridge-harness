@@ -40,6 +40,10 @@ export type BridgeMethod =
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
   | "memory/get_memory_capabilities"
+  | "memory/approve_memory_record"
+  | "memory/reject_memory_record"
+  | "memory/get_extraction_settings"
+  | "memory/update_extraction_settings"
   | "approvals/resolve_approval"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -149,6 +153,10 @@ export const BRIDGE_METHODS = [
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
   { method: "memory/get_memory_capabilities", domain: "memory", command: "get_memory_capabilities" },
+  { method: "memory/approve_memory_record", domain: "memory", command: "approve_memory_record" },
+  { method: "memory/reject_memory_record", domain: "memory", command: "reject_memory_record" },
+  { method: "memory/get_extraction_settings", domain: "memory", command: "get_extraction_settings" },
+  { method: "memory/update_extraction_settings", domain: "memory", command: "update_extraction_settings" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -310,6 +318,10 @@ export interface BridgeMethodParams {
   "memory/list_memory_records": ListMemoryRecordsParams;
   "memory/delete_memory_record": DeleteMemoryRecordParams;
   "memory/get_memory_capabilities": undefined;
+  "memory/approve_memory_record": ApproveMemoryRecordParams;
+  "memory/reject_memory_record": RejectMemoryRecordParams;
+  "memory/get_extraction_settings": undefined;
+  "memory/update_extraction_settings": UpdateExtractionSettingsParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -421,6 +433,10 @@ export interface BridgeMethodResults {
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
   "memory/get_memory_capabilities": MemoryCapabilities;
+  "memory/approve_memory_record": MemoryRecord;
+  "memory/reject_memory_record": MemoryRecord;
+  "memory/get_extraction_settings": MemoryExtractionSettings;
+  "memory/update_extraction_settings": MemoryExtractionSettings;
   "approvals/resolve_approval": UnitResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -687,6 +703,15 @@ export interface ManagedAgentStatus {
 export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "uninstall" | "authenticate";
 
 export type MarketplaceProvider = "codex" | "claude";
+
+export interface MemoryExtractionRun {
+  detail?: string | null;
+  observedTokens: number;
+  proposalCount: number;
+  spendMicrousd: number;
+  status: string;
+  updatedAt: string;
+}
 
 export interface MemoryLedgerCapability {
   exists: boolean;
@@ -1457,6 +1482,28 @@ export interface DeleteMemoryRecordParams {
 export interface MemoryCapabilities {
   ledger: MemoryLedgerCapability;
   providerNative: ProviderMemoryCommand[];
+}
+
+export interface ApproveMemoryRecordParams {
+  recordId: string;
+}
+
+export interface RejectMemoryRecordParams {
+  recordId: string;
+}
+
+export interface MemoryExtractionSettings {
+  harness?: string | null;
+  lastRun?: MemoryExtractionRun | null;
+  mode: string;
+  model?: string | null;
+  scopeKey: string;
+}
+
+export interface UpdateExtractionSettingsParams {
+  harness?: string | null;
+  mode: string;
+  model?: string | null;
 }
 
 export interface ResolveApprovalParams {

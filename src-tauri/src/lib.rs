@@ -978,6 +978,55 @@ async fn get_memory_capabilities(
     .await
 }
 
+#[tauri::command]
+async fn approve_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Approve memory record", move || {
+        api::approve_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reject_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reject memory record", move || {
+        api::reject_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_extraction_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get extraction settings", move || {
+        api::get_extraction_settings(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_extraction_settings(
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Update extraction settings", move || {
+        api::update_extraction_settings(&core, &mode, harness.as_deref(), model.as_deref())
+    })
+    .await
+}
+
 /// Replay durable session events after a cursor — the recovery half of the
 /// notify-then-replay event contract.
 #[tauri::command]
@@ -1380,6 +1429,10 @@ pub fn run() {
             list_memory_records,
             delete_memory_record,
             get_memory_capabilities,
+            approve_memory_record,
+            reject_memory_record,
+            get_extraction_settings,
+            update_extraction_settings,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

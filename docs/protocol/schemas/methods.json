@@ -233,6 +233,34 @@
       "resultSchema": "memory-capabilities.json"
     },
     {
+      "command": "approve_memory_record",
+      "domain": "memory",
+      "method": "memory/approve_memory_record",
+      "paramsSchema": "approve-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "reject_memory_record",
+      "domain": "memory",
+      "method": "memory/reject_memory_record",
+      "paramsSchema": "reject-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "get_extraction_settings",
+      "domain": "memory",
+      "method": "memory/get_extraction_settings",
+      "paramsSchema": null,
+      "resultSchema": "memory-extraction-settings.json"
+    },
+    {
+      "command": "update_extraction_settings",
+      "domain": "memory",
+      "method": "memory/update_extraction_settings",
+      "paramsSchema": "update-extraction-settings-params.json",
+      "resultSchema": "memory-extraction-settings.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

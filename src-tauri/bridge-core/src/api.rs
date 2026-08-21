@@ -418,6 +418,83 @@ pub fn delete_memory_record(
     Ok(record)
 }
 
+pub fn approve_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::approve(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+pub fn reject_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::reject(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+fn extraction_settings_wire(
+    db: &rusqlite::Connection,
+    settings: crate::memory_extraction::ExtractionSettings,
+) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let last_run = crate::memory_extraction::last_run(db, &settings.scope_key)?.map(|run| {
+        wire::MemoryExtractionRun {
+            status: run.status,
+            proposal_count: run.proposal_count,
+            observed_tokens: run.observed_tokens,
+            spend_microusd: run.spend_microusd,
+            detail: run.detail,
+            updated_at: run.updated_at,
+        }
+    });
+    Ok(wire::MemoryExtractionSettings {
+        scope_key: settings.scope_key,
+        mode: settings.mode,
+        harness: settings.harness,
+        model: settings.model,
+        last_run,
+    })
+}
+
+pub fn get_extraction_settings(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings =
+        crate::memory_extraction::settings(&db, memory_ledger::account_memory_scope())?;
+    extraction_settings_wire(&db, settings)
+}
+
+pub fn update_extraction_settings(
+    core: &Arc<BridgeCore>,
+    mode: &str,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings = crate::memory_extraction::update_settings(
+        &db,
+        memory_ledger::account_memory_scope(),
+        mode,
+        harness,
+        model,
+    )?;
+    extraction_settings_wire(&db, settings)
+}
+
 /// What memory exists here, so the UI can be honest about what it does not
 /// own. The provider half is derived from the slash catalog: an unavailable
 /// adapter contributes nothing, and no harness name is compared in this body.
