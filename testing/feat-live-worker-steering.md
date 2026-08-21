@@ -163,13 +163,27 @@ tsgen artifacts are untouched by design, and that is itself an assertion below.
 - `still shows a classified failure with its retry action after folding`.
 
 `src/components/WorkerDetail.test.tsx`
-- `offers a steering composer for a live worker` — submits through the injected
-  handler.
+- `offers a steering composer for a live worker`.
 - `does not offer steering once the worker has reported`.
+- `does not offer steering while the worker is checkpointing`.
+- `shows no composer at all when the caller does not offer steering`.
 
-`src/App.test.tsx`
-- `lets the user steer a worker from its focus view` — worker view renders a
-  composer, not the read-only banner, and submits via `submitInput`.
+`src/components/SteerComposer.test.tsx` (new, jsdom)
+- `sends what the user typed and clears the box` — trimmed, through the injected
+  handler.
+- `refuses to send an empty steer`.
+- `keeps the draft and shows why when the steer is refused` — the backend gate
+  can refuse between render and submit.
+- `explains itself instead of offering a box a worker cannot take`.
+
+**Amended during implementation.** This section originally called for an
+`src/App.test.tsx` case rendering the worker focus view end to end. `App.test.tsx`
+only mounts `ChatModelControl`; the full `App` needs every Tauri command mocked,
+which is out of proportion to what the case would prove. The composer the worker
+view renders is `SteerComposer`, exported and tested directly above — same unit,
+same assertions, no mock harness. The focus view's own wiring (banner replaced,
+`workerSteerable` mirroring the backend gate) is covered by `tsc -b` plus the
+manual path in §Manual below.
 
 ## Integration / Functional Tests
 
