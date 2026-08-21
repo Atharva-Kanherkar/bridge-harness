@@ -27,6 +27,15 @@ export function harnessLabel(harness?: string | null): string {
   return BUILTIN_HARNESS_LABELS[harness] ?? harness[0].toUpperCase() + harness.slice(1);
 }
 
+/**
+ * The slash popover's ownership badge. Keyed off the catalog's harness field,
+ * never a provider-name comparison: an unrecognised future harness badges as
+ * provider-owned, not as local.
+ */
+export function slashOwnershipBadge(harness: string): string {
+  return harness === "bridge" ? "this Mac" : harnessLabel(harness);
+}
+
 export function safeSlug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "task";
 }

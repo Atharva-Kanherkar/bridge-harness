@@ -9,6 +9,15 @@ const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 export const MAX_MEMORY_BODY_CHARS = 4000;
 
 /**
+ * What "Remember this" does with a message: at or under the cap it saves
+ * directly; over it the dialog opens pre-filled for the user to trim. Never a
+ * clip, never a truncated write.
+ */
+export function rememberAction(text: string): "save" | "open-dialog" {
+  return text.length > MAX_MEMORY_BODY_CHARS ? "open-dialog" : "save";
+}
+
+/**
  * Account memory on this machine (`account:local`). Deliberately not this
  * chat's history and not the helper picker — the header says so, because the
  * one-dialog-three-products confusion is the bug this surface exists to fix.

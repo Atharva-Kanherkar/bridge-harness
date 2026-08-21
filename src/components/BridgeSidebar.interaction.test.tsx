@@ -239,4 +239,12 @@ describe("BridgeSidebar and the Work board", () => {
     act(() => row.click());
     expect(onOpenWorkBoard).toHaveBeenCalledOnce();
   });
+  it("the memory row opens account memory without a workspace", () => {
+    const onOpenMemory = vi.fn();
+    mount({ workspaces: [], onOpenMemory });
+    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Memory")!;
+    act(() => row.click());
+    expect(onOpenMemory).toHaveBeenCalledOnce();
+  });
 });

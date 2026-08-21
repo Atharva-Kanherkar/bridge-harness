@@ -282,4 +282,8 @@ describe("BridgeSidebar without the worker panel", () => {
     expect(html).not.toContain("Live workers");
     expect(html).not.toMatch(/workers?: /);
   });
+  it("offers Memory in the footer rail with no workspace at all", () => {
+    // Account memory is not workspace memory; a plain chat reaches it too.
+    expect(render({ workspaces: [] })).toContain("Memory");
+  });
 });

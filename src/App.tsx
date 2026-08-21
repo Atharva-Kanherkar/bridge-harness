@@ -25,10 +25,10 @@ import { PatchView } from "./components/DiffView";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
-import { MemoryDialog, MAX_MEMORY_BODY_CHARS } from "./components/MemoryDialog";
+import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
+import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -721,7 +721,7 @@ export function App() {
   // "Remember this" on an assistant message. Over the cap the dialog opens with
   // the full text for the user to trim — never a clip, never a truncated save.
   const rememberMessage = useCallback(async (text: string) => {
-    if (text.length > MAX_MEMORY_BODY_CHARS) { setMemoryDraft(text); setModal("memory"); return; }
+    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); setModal("memory"); return; }
     try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
     catch (e) { setError(errorMessage(e)); }
   }, [session?.id]);
@@ -983,10 +983,7 @@ export function App() {
                       {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                         <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
                         <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        {/* Keyed off the catalog's harness field, never a provider-name
-                            comparison: an unrecognised future harness badges as
-                            provider-owned, not as local. */}
-                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{command.harness === "bridge" ? "this Mac" : harnessLabel(command.harness)}</span>
+                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{slashOwnershipBadge(command.harness)}</span>
                       </button>)}
                     </div>
                   </div>}
