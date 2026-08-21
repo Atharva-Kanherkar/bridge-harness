@@ -28,6 +28,13 @@ const PRIOR_WEIGHT: i64 = 4;
 /// workspace keeps its history, while inside an active one fresh evidence
 /// outweighs stale volume. Providers change models in place; a candidate that
 /// was great in March is not evidence about August.
+/// Outcome confidence is three deterministic buckets, not a score. Only the
+/// test-backed bucket is knowledge; unknown acceptance is named as unknown so
+/// no gate can quietly treat it as known. The bounded evaluator, when it
+/// exists, is the only thing allowed to mint a real number between these.
+pub const CONFIDENCE_TEST_BACKED_BPS: i64 = 9_500;
+pub const CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS: i64 = 7_000;
+pub const CONFIDENCE_NO_SIGNAL_BPS: i64 = 4_000;
 pub const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 pub const EVIDENCE_WINDOW_DAYS: i64 = 120;
 
@@ -1186,14 +1193,14 @@ pub fn record_worker_outcome(
         "unknown"
     };
     let confidence_bps = if has_failed_test || has_passed_test {
-        9_500
+        CONFIDENCE_TEST_BACKED_BPS
     } else if matches!(
         result.status,
         WorkerResultStatus::Completed | WorkerResultStatus::Failed
     ) {
-        7_000
+        CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS
     } else {
-        4_000
+        CONFIDENCE_NO_SIGNAL_BPS
     };
     let evidence_entry_ids = db
         .query_row(

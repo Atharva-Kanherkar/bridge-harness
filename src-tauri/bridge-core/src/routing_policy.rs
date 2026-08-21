@@ -13,7 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MIN_EVIDENCE_SAMPLES: i64 = 5;
 const MAX_REPLAY_EVIDENCE_ROWS: i64 = 5_000;
 const MIN_GROUP_SAMPLES: i64 = 2;
-const MIN_CONFIDENCE_BPS: i64 = 6_500;
+/// The learning gate is keyed to the named unknown-acceptance bucket rather
+/// than a free-floating floor: an outcome whose acceptance is unknown must
+/// not pass, whatever number encodes it.
+const MIN_CONFIDENCE_BPS: i64 = crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS + 1;
 const MIN_REPLAY_COVERAGE_BPS: i64 = 8_000;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -559,6 +562,29 @@ pub fn build_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn aggregate_with_confidence(confidence: i64) -> Aggregate {
+        let mut aggregate = Aggregate::default();
+        aggregate.samples = 2;
+        aggregate.known_outcomes = 2;
+        aggregate.successes = 2;
+        aggregate.confidence_reported = 2;
+        aggregate.confidence_total = confidence * 2;
+        aggregate
+    }
+
+    #[test]
+    fn unknown_acceptance_does_not_pass_the_learning_gate() {
+        assert!(
+            !aggregate_with_confidence(crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS)
+                .eligible_for_learning(),
+            "unknown acceptance is unknown, not a passing grade"
+        );
+        assert!(
+            aggregate_with_confidence(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS)
+                .eligible_for_learning()
+        );
+    }
 
     #[test]
     fn stored_fingerprint_preferences_are_stripped_and_families_survive() {
