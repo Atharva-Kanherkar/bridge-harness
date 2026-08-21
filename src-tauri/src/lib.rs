@@ -640,6 +640,18 @@ async fn set_default_agent(
 }
 
 #[tauri::command]
+async fn save_permission_policy(
+    policy: agent_config::PermissionPolicy,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Permission policy save", move || {
+        api::save_permission_policy(&core, policy)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn reset_all_config(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
@@ -1403,6 +1415,7 @@ pub fn run() {
             delete_agent_config,
             set_default_agent,
             reset_all_config,
+            save_permission_policy,
             get_learning_state,
             run_learning,
             cancel_learning_run,

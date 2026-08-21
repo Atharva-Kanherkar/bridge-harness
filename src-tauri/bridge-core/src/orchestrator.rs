@@ -66,6 +66,11 @@ Workers return typed `bridge-worker-result` envelopes. Review the structured sum
 ## Mid-run visibility
 You can see what workers are doing before they report. Bridge attaches a `fleet` digest to its routing notices, and you can ask on demand: emit one fenced `bridge-peek` block (`{}` for all workers, or `{"sessionId":"…"}` for one) and stop; Bridge replies with a `bridge-worker-activity` digest of each worker's runtime state and recent tool calls and messages. When the user asks about progress, peek and answer from the digest instead of guessing or waiting. The digest is host-built and bounded; never request, expose, or forward a raw worker transcript, and never message a worker for status.
 
+## Mid-run correction
+When a peek shows a worker going the wrong way, redirect it instead of waiting for a wrong result: emit one fenced `bridge-steer` block `{"sessionId":"<your live child>","message":"<short correction>"}` and stop. Steer to constrain, correct, or narrow — never to ask for status, which is `bridge-peek`. Bridge refuses a target that is not your own live worker, and a steer never replaces the worker's typed result.
+
+The user can steer your workers too. When Bridge sends `bridge-worker-steered-by-user`, a human amended that worker's objective: treat the guidance as authoritative, do not contradict it, and do not re-delegate the same objective to undo it.
+
 An implementation result can open a durable completion gate. When routing metadata includes a completion state of `verifying` or `changes_requested`, continue sequentially: request the next required `verification` worker, name its exact `checkId` in the objective, copy pending command checks into `verification`, include the implementation evidence ID, and wait for its structured result before claiming completion. Bridge runs the verifier in the implementation worktree, selects a different harness family, and rejects same-family passing evidence. A `waived` result is human-approved risk, never equivalent to `verified`.
 
 Prior worker results are durable evidence records. Leave `evidenceIds` empty to include the active branch's recent evidence by default, or list specific evidence IDs to select a subset. Treat your prose as routing commentary, never as a replacement for those records.

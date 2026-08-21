@@ -485,6 +485,13 @@
       "resultSchema": "config-state.json"
     },
     {
+      "command": "save_permission_policy",
+      "domain": "config",
+      "method": "config/save_permission_policy",
+      "paramsSchema": "save-permission-policy-params.json",
+      "resultSchema": "config-state.json"
+    },
+    {
       "command": "get_learning_state",
       "domain": "learning",
       "method": "learning/get_learning_state",
@@ -788,7 +795,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 2
+    "minor": 3
   },
   "reserved": {
     "cancel": "$/cancel",

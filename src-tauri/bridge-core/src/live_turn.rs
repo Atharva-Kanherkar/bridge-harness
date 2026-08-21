@@ -978,7 +978,7 @@ pub fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET harness=?2,status='working',started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
+            "UPDATE sessions SET harness=?2,status=?9,started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
                 adapter_id,
@@ -987,12 +987,13 @@ pub fn start_session(
                 chosen_model,
                 selection.tier.as_str(),
                 chosen_effort_name,
-                session_label
+                session_label,
+                STARTED_IDLE_STATUS
             ],
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,0,?10)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,?11,?5,'reported',?6,?7,?8,?9,0,?10)",
             params![
                 session_id,
                 workspace_id,
@@ -1003,7 +1004,8 @@ pub fn start_session(
                 chosen_model,
                 selection.tier.as_str(),
                 chosen_effort_name,
-                Uuid::new_v4().simple().to_string()
+                Uuid::new_v4().simple().to_string(),
+                STARTED_IDLE_STATUS
             ],
         )?;
     }
@@ -1347,15 +1349,23 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let started_at = Utc::now().to_rfc3339();
     {
         let db = state.db.lock().unwrap();
+        // `ready`, not `working`: the provider is up and nothing is running yet.
+        // Claiming `working` here was a lie about a turn that did not exist, and
+        // `turn_is_active` reads that as a turn in flight — so on any provider
+        // that cannot take input mid-turn, the session's very first message was
+        // queued for a phase boundary no turn would ever produce. Bridge already
+        // encodes this invariant from the other side: boot reconciliation clears
+        // `active_turn_id` for a `ready` session precisely because a ready
+        // session has no turn.
         if is_orchestrator {
             db.execute(
-                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
-                params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL],
+                "UPDATE sessions SET status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
+                params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL, STARTED_IDLE_STATUS],
             )?;
         } else {
             db.execute(
-                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
-                params![session_id, started_at, thread_id, chosen_model, cwd],
+                "UPDATE sessions SET status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
+                params![session_id, started_at, thread_id, chosen_model, cwd, STARTED_IDLE_STATUS],
             )?;
         }
         launch_plan.commit(&db, &session_id)?;
@@ -1768,6 +1778,13 @@ fn handle_agent_value(
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
     let mut pending_peek: Option<delegation::PeekRequest> = None;
+    let mut pending_steer: Option<delegation::SteerRequest> = None;
+    let mut pending_invalid_steer: Option<String> = None;
+    // A policy-granted approval is answered after the correctness lock, through
+    // the same call a human click makes. Holds the persisted sequence, which is
+    // the id `resolve_approval` answers by.
+    let mut pending_auto_approval: Option<i64> = None;
+    let mut auto_approve_this_event = false;
     // Child approvals and their resolutions are surfaced to the parent after the
     // correctness lock is released, because reaching the parent's live runtime
     // needs the adapter map.
@@ -1884,6 +1901,39 @@ fn handle_agent_value(
                     }
                 }
                 "approval.requested" => {
+                    // One switch, read where the request lands, so a flip takes
+                    // effect on the next approval without restarting anything.
+                    //
+                    // Write-scope approvals are authorization, not convenience:
+                    // they are raised by `policy.rs` as typed forest entries and
+                    // never travel a provider control channel, so they cannot
+                    // reach this arm. Checked anyway — a structural guarantee
+                    // that is also asserted is one that survives a refactor.
+                    let is_write_scope = event
+                        .data
+                        .get("approvalType")
+                        .or_else(|| event.data.pointer("/data/approvalType"))
+                        .and_then(|value| value.as_str())
+                        == Some("delegation_path_scope");
+                    // Not every control request that normalizes to
+                    // `approval.requested` is an approval. Codex folds
+                    // `item/tool/requestUserInput` and
+                    // `mcpServer/elicitation/request` into the same event, and
+                    // those are questions: `respond` answers with
+                    // `{"result":{"decision":…}}`, which is the wrong shape for
+                    // them and wedges the turn. Granting is for requests that
+                    // asked for permission. Claude and OpenCode set no
+                    // `requestMethod` because every request they raise is one.
+                    let is_approval_request = event
+                        .data
+                        .get("requestMethod")
+                        .and_then(|value| value.as_str())
+                        .is_none_or(|method| method.ends_with("requestApproval"));
+                    auto_approve_this_event = !is_write_scope
+                        && is_approval_request
+                        && agent_config::permission_policy(&db)
+                            .map(|policy| policy.bypass_all)
+                            .unwrap_or(false);
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
@@ -1899,12 +1949,19 @@ fn handle_agent_value(
                             "UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested',updated_at=?2 WHERE session_id=?1",
                             params![session_id, Utc::now().to_rfc3339()],
                         );
-                        pending_child_approval = Some(serde_json::json!({
+                        // The lifecycle still goes Waiting and back, exactly as it
+                        // would if a human resolved instantly — `transition`
+                        // clears `waiting_since` on the way out, and
+                        // `resolve_approval` needs Waiting as its starting state.
+                        // What must not happen is telling the parent a worker is
+                        // blocked when policy has already unblocked it.
+                        pending_child_approval = (!auto_approve_this_event).then(|| serde_json::json!({
                             "title": event.title,
                             "text": event.text,
                             "command": event.data.get("command").or_else(|| event.data.pointer("/data/command")),
                             "cwd": event.data.get("cwd").or_else(|| event.data.pointer("/data/cwd")),
                         }));
+
                     } else {
                         let _ = db.execute(
                             "UPDATE sessions SET status='waiting' WHERE id=?1",
@@ -2068,6 +2125,36 @@ fn handle_agent_value(
                         delegation::ParseOutcome::Absent => {}
                     }
                 }
+                // A steer redirects a running worker. Held to the turn boundary
+                // like a peek, and stripped from the prose for the same reason:
+                // the machine block is plumbing, not something to read.
+                if let Some(text) = normalized_event.text.clone() {
+                    match delegation::parse_steer_request(&text) {
+                        delegation::ParseOutcome::Parsed(steer) => {
+                            pending_steer = Some(steer);
+                            let stripped = delegation::strip_steer(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                "_Steering a worker…_".to_owned()
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Invalid { reason, .. } => {
+                            // Unlike a peek, a malformed steer has no safe
+                            // default — there is no "all workers" reading of a
+                            // redirection. Hand the reason back instead.
+                            let _ = store::event(&db, "delegation", "delegation.steer.invalid", session_id, &reason);
+                            pending_invalid_steer = Some(reason.clone());
+                            let stripped = delegation::strip_steer(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                format!("_Steer rejected: {reason}._")
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Absent => {}
+                    }
+                }
             }
             if let Ok(event) = store::session_event(
                 &db,
@@ -2082,11 +2169,19 @@ fn handle_agent_value(
                     &normalized_event,
                     &event.created_at,
                 ));
+                // A policy match needs the durable sequence of the request it
+                // is answering. `session_event` returns sequence 0 for a frame it
+                // chose not to persist, and answering 0 would resolve whatever
+                // approval happens to sit at that sequence.
+                if auto_approve_this_event && event.sequence > 0 {
+                    pending_auto_approval = Some(event.sequence);
+                }
                 // Publish while the database mutex is still held. This keeps
                 // durable live delivery in commit/sequence order: another
                 // thread cannot persist and publish sequence N+1 before N.
                 state.events.publish(CoreEvent::Agent(event));
             }
+            auto_approve_this_event = false;
             if own_depth > 0 {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
@@ -2223,6 +2318,11 @@ fn handle_agent_value(
         finish_orchestrator_shutdown(core, session_id, adapters::ShutdownReason::UserStopped);
     }
 
+    // Before the parent is told a child is blocked: if policy already answered
+    // the approval, nobody is blocked and mirroring a card would be a lie.
+    if let Some(event_id) = pending_auto_approval {
+        apply_bypass_approval(core, session_id, event_id);
+    }
     if let Some(detail) = &pending_child_approval {
         surface_child_approval_on_parent(core, session_id, detail);
     }
@@ -2240,6 +2340,14 @@ fn handle_agent_value(
             .pending_worker_peeks
             .insert(session_id.to_owned(), peek);
     }
+    if let Some(steer) = pending_steer {
+        state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_steers
+            .insert(session_id.to_owned(), steer);
+    }
     // The assistant message and turn completion are separate provider frames.
     // Reply only after completion instead of racing active-turn steering.
     if turn_completed {
@@ -2252,6 +2360,20 @@ fn handle_agent_value(
         if let Some(peek) = peek {
             deliver_worker_activity_digest(core, session_id, &peek);
         }
+        let steer = state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_steers
+            .remove(session_id);
+        if let Some(steer) = steer {
+            deliver_orchestrator_steer(core, session_id, &steer);
+        }
+    }
+    // A steer Bridge could not even parse is fed back rather than dropped: the
+    // orchestrator asked to redirect a worker and has to learn that it did not.
+    if let Some(reason) = &pending_invalid_steer {
+        refuse_orchestrator_steer(core, session_id, reason);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -4410,6 +4532,238 @@ pub fn notify_parent_child_left_waiting(
     core.events.publish(CoreEvent::StateChanged);
 }
 
+/// Answer an approval the permission policy granted.
+///
+/// Goes through [`crate::api::resolve_approval`] — the same call a human click
+/// makes — on purpose. A second decision path is where auto-approval would drift
+/// into granting something the human path refuses: the lifecycle transition, the
+/// `approval.resolved` event, the session and workspace status updates, and the
+/// parent's mirrored card all have to happen identically, and the only way to
+/// guarantee that is to not write them twice.
+///
+/// The reason ledger names the policy that matched, so an auto-approval is
+/// auditable after the fact rather than merely absent from the UI.
+fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64) {
+    match crate::api::resolve_approval(core, session_id, event_id, "accept") {
+        Ok(()) => {
+            {
+                let db = core.db.lock().unwrap();
+                let _ = store::event(
+                    &db,
+                    "approval",
+                    "approval.auto_allowed",
+                    session_id,
+                    &format!("bypass_all granted approval {event_id}"),
+                );
+            }
+            // `resolve_approval` already published, but it published before this
+            // row existed. The audit list reads the ledger, so it needs a nudge
+            // that comes after the row it is meant to show.
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        Err(error) => {
+            // A policy that could not be applied must not look like one that was.
+            let db = core.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "approval",
+                "approval.auto_allow_failed",
+                session_id,
+                &format!("bypass_all could not answer approval {event_id}: {error}"),
+            );
+        }
+    }
+}
+
+/// Who redirected a worker mid-run. The parent needs the distinction: its own
+/// `bridge-steer` is a decision it already made, a user steer is news.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteerSource {
+    User,
+    Orchestrator,
+}
+
+impl SteerSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Orchestrator => "orchestrator",
+        }
+    }
+}
+
+/// Whether guidance actually got to the worker, and when.
+///
+/// A provider that cannot take input mid-turn has its guidance queued for the
+/// next phase boundary. That is a success, not a failure — but it is a different
+/// success from "the running turn has it now", and the chip in the chat has to be
+/// able to say which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerReach {
+    Now,
+    NextTurnBoundary,
+    NotReached,
+}
+
+impl WorkerReach {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::NextTurnBoundary => "next_turn_boundary",
+            Self::NotReached => "undelivered",
+        }
+    }
+
+    const fn reached(self) -> bool {
+        !matches!(self, Self::NotReached)
+    }
+
+    const fn from_route(route: session_input::InputRoute) -> Self {
+        match route {
+            session_input::InputRoute::Queue => Self::NextTurnBoundary,
+            _ => Self::Now,
+        }
+    }
+}
+
+/// The chat-visible trace of a steer: one durable event on the parent, so the
+/// person reading the orchestrator conversation can see that a worker was
+/// redirected and by whom.
+///
+/// Written on the parent rather than the worker because the parent's chat is
+/// where the user actually is — the same reason the mirrored approval card
+/// exists.
+/// One steer, as the chat needs to describe it.
+///
+/// Grouped rather than passed as six positional arguments, because the two
+/// booleans in it are the pair that were previously collapsed into one and got
+/// this wrong — keeping them named at the call site is the point.
+struct SteerRecord<'a> {
+    child_session_id: &'a str,
+    label: &'a str,
+    guidance: &'a str,
+    source: SteerSource,
+    reached_worker: WorkerReach,
+    orchestrator_notified: bool,
+}
+
+fn record_worker_steer_on_parent(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    record: SteerRecord<'_>,
+) {
+    let SteerRecord {
+        child_session_id,
+        label,
+        guidance,
+        source,
+        reached_worker,
+        orchestrator_notified,
+    } = record;
+    let event = agent::NormalizedEvent {
+        kind: "delegation.steered".into(),
+        // A fresh item per steer: two redirections of the same worker are two
+        // interventions, and folding them would hide the first.
+        item_id: Some(format!("steer-{}", Uuid::new_v4())),
+        role: Some("system".into()),
+        status: Some(reached_worker.label().into()),
+        title: Some(match source {
+            SteerSource::User => format!("You steered {label}"),
+            SteerSource::Orchestrator => format!("Orchestrator steered {label}"),
+        }),
+        text: Some(digest_line(guidance)),
+        // Two independent facts, never one. Whether the guidance reached the
+        // worker is what the person who typed it needs to know; whether the
+        // orchestrator heard about it is a separate, quieter concern. Collapsing
+        // them into one `delivered` flag made a landed steer read as failed
+        // whenever the parent's runtime happened to be down.
+        data: serde_json::json!({
+            "childSessionId": child_session_id,
+            "label": label,
+            "steeredBy": source.label(),
+            "steerDelivered": reached_worker.reached(),
+            "landed": reached_worker.label(),
+            "orchestratorNotified": orchestrator_notified,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &core.db.lock().unwrap(),
+        parent_session_id,
+        &event,
+        &serde_json::json!({"delegation": true}),
+    ) {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Tell the orchestrator that a human redirected one of its workers.
+///
+/// Same seam as [`notify_parent_child_left_waiting`]: a routing notice into the
+/// parent's live runtime plus a durable event for the chat. Without the notice
+/// the orchestrator keeps steering toward the objective it issued and treats the
+/// worker's changed course as a defect.
+fn notify_parent_worker_steered(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    guidance: &str,
+    route: session_input::InputRoute,
+) {
+    let state = core.clone();
+    let Some(context) = child_approval_context(&state.db.lock().unwrap(), child_session_id) else {
+        return;
+    };
+    let fleet = fleet_digest(&state.db.lock().unwrap(), &context.parent_session_id);
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-steered-by-user",
+        "childSessionId": child_session_id,
+        "label": context.label,
+        "guidance": digest_line(guidance),
+        "landed": match route {
+            session_input::InputRoute::Queue => "next_turn_boundary",
+            _ => "now",
+        },
+        "fleet": fleet,
+        "instruction": "The user sent this worker guidance directly. Treat it as an amendment to the objective you issued, not as a defect. Do not contradict it or re-delegate the same objective; keep waiting for the worker's typed result."
+    })
+    .to_string();
+    let notified = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&context.parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    {
+        let db = state.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "delegation",
+            if notified {
+                "delegation.steer.user_notified"
+            } else {
+                "delegation.steer.user_undeliverable"
+            },
+            &context.parent_session_id,
+            child_session_id,
+        );
+    }
+    // The guidance already reached the worker — `submit_input` delivered or
+    // durably queued it before calling this. Whether the orchestrator heard
+    // about it is a separate fact and must not be reported as the steer failing.
+    record_worker_steer_on_parent(
+        core,
+        &context.parent_session_id,
+        SteerRecord {
+            child_session_id,
+            label: &context.label,
+            guidance,
+            source: SteerSource::User,
+            reached_worker: WorkerReach::from_route(route),
+            orchestrator_notified: notified,
+        },
+    );
+}
+
 /// Resolve workers that have waited past the approval deadline. `waiting` is
 /// intentionally excluded from the stall watchdog, so this is the only thing that
 /// stops an unanswered approval from pinning the parent forever.
@@ -5611,6 +5965,200 @@ fn deliver_worker_activity_digest(
         session_id,
         &format!("{worker_count} live workers in the digest"),
     );
+}
+
+/// Hand a refusal back to the orchestrator that asked to steer.
+///
+/// A dropped steer is worse than a rejected one: the orchestrator carries on
+/// believing the worker was redirected, and only the wrong result reveals
+/// otherwise. Same shape as the delegation-rejection feedback.
+fn refuse_orchestrator_steer(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
+    let notice = serde_json::json!({
+        "type": "bridge-steer-rejected",
+        "reason": reason,
+        "instruction": "No worker was redirected. Correct the block and re-emit it, or leave the worker alone; do not assume the guidance landed."
+    })
+    .to_string();
+    let delivered = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .is_some_and(|runtime| runtime.send_turn(&notice).is_ok());
+    let db = core.db.lock().unwrap();
+    let _ = store::event(
+        &db,
+        "delegation",
+        if delivered {
+            "delegation.steer.refused"
+        } else {
+            "delegation.steer.undeliverable"
+        },
+        session_id,
+        reason,
+    );
+}
+
+/// Deliver one `bridge-steer` into the named worker.
+///
+/// The target is checked against the parent's own live children on the host
+/// side. A model-supplied session id is untrusted input: without this check an
+/// orchestrator could reach a sibling's worker, or a session that is not a
+/// worker at all, just by naming it.
+fn deliver_orchestrator_steer(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    steer: &delegation::SteerRequest,
+) {
+    let state = core.clone();
+    let target: Option<(String, String, String)> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT s.label,r.result_status,r.lifecycle_state FROM worker_runtime r
+             JOIN sessions s ON s.id=r.session_id
+             WHERE r.session_id=?1 AND r.parent_session_id=?2",
+            params![steer.session_id, parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+    let Some((label, result_status, lifecycle_state)) = target else {
+        refuse_orchestrator_steer(
+            core,
+            parent_session_id,
+            &format!(
+                "{} is not one of your workers, so nothing was steered",
+                steer.session_id
+            ),
+        );
+        return;
+    };
+    // The same gate the user's steer passes through, so a worker is reachable on
+    // one set of rules regardless of who is speaking.
+    let has_live_runtime = state
+        .adapters
+        .lock()
+        .unwrap()
+        .contains_key(&steer.session_id);
+    if let Err(refusal) =
+        session_input::worker_steer_gate(&result_status, &lifecycle_state, has_live_runtime)
+    {
+        let reason = match refusal {
+            session_input::WorkerSteerRefusal::AlreadyReported => format!(
+                "{label} already reported its typed result; guidance cannot reach it. Delegate a follow-up objective instead."
+            ),
+            session_input::WorkerSteerRefusal::Checkpointing => format!(
+                "{label} is checkpointing its context; nothing was steered. Wait for it to finish."
+            ),
+            session_input::WorkerSteerRefusal::NotRunning => {
+                format!("{label} has no live provider process, so nothing was steered")
+            }
+        };
+        refuse_orchestrator_steer(core, parent_session_id, &reason);
+        return;
+    }
+    // A steer is not exempt from the active-turn contract. `send_turn` on a
+    // provider that cannot take input mid-turn *starts a second turn*, which
+    // races the objective turn and the typed result. Route it the way any other
+    // input into a busy session is routed, and queue when the provider cannot
+    // absorb it now.
+    let steering_capable = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&steer.session_id)
+        .is_some_and(|runtime| runtime.supports_active_turn_steering());
+    let turn_active = turn_is_active(core, &steer.session_id).unwrap_or(true);
+    let route = session_input::route(turn_active, steering_capable);
+    let envelope = orchestrator_steer_envelope(steer.guidance());
+    let reached = match route {
+        session_input::InputRoute::Queue => {
+            let db = state.db.lock().unwrap();
+            match session_input::enqueue(&db, &steer.session_id, &envelope, steer.guidance()) {
+                Ok(_) => WorkerReach::NextTurnBoundary,
+                Err(_) => WorkerReach::NotReached,
+            }
+        }
+        _ => {
+            let sent = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(&steer.session_id)
+                .is_some_and(|runtime| runtime.send_turn(&envelope).is_ok());
+            if sent {
+                WorkerReach::Now
+            } else {
+                WorkerReach::NotReached
+            }
+        }
+    };
+    if reached == WorkerReach::NotReached {
+        refuse_orchestrator_steer(
+            core,
+            parent_session_id,
+            &format!("{label} could not take the guidance, so nothing was steered"),
+        );
+        return;
+    }
+    let queued = reached == WorkerReach::NextTurnBoundary;
+    {
+        let db = state.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "delegation",
+            if queued {
+                "delegation.steer.queued"
+            } else {
+                "delegation.steer.delivered"
+            },
+            parent_session_id,
+            &steer.session_id,
+        );
+        let _ = store::event(
+            &db,
+            "session",
+            if queued {
+                "session.input.queued"
+            } else {
+                "session.input.steered"
+            },
+            &steer.session_id,
+            if queued {
+                "Orchestrator guidance queued for the worker's next phase boundary"
+            } else {
+                "Orchestrator guidance delivered into the active turn"
+            },
+        );
+    }
+    record_worker_steer_on_parent(
+        core,
+        parent_session_id,
+        SteerRecord {
+            child_session_id: &steer.session_id,
+            label: &label,
+            guidance: steer.guidance(),
+            source: SteerSource::Orchestrator,
+            reached_worker: reached,
+            // The orchestrator is the one who asked; nothing to notify it of.
+            orchestrator_notified: true,
+        },
+    );
+}
+
+/// The wrapper an orchestrator's correction wears on its way into a worker.
+///
+/// Says who is speaking, because a worker that mistakes routing guidance for a
+/// user request will start negotiating with it instead of folding it in — and
+/// restates the envelope contract for the same reason the user path does.
+fn orchestrator_steer_envelope(guidance: &str) -> String {
+    serde_json::json!({
+        "type": "bridge-orchestrator-steer",
+        "guidance": guidance,
+        "instruction": "Your orchestrator is correcting your course mid-task. Fold this into the objective you were given; it refines the objective and does not replace it. Still end with exactly one fenced `bridge-worker-result` envelope describing the work you actually did. Do not reply to this conversationally."
+    })
+    .to_string()
 }
 
 /// Refresh a session's liveness heartbeat for the stall watchdog.
@@ -6844,12 +7392,28 @@ fn deliver_prepared_input(
     Ok(())
 }
 
+/// The status a session carries once its provider is up and nothing is running.
+///
+/// Deliberately not `working`. [`turn_is_active`] reads `working` as a turn in
+/// flight, so a session that claims it while merely idle has its next message
+/// routed to the queue — and the drain waits for a `turn.completed` that cannot
+/// arrive, because no turn was ever started (#261). Every provider-boot path
+/// binds this constant rather than writing a status literal, so the invariant
+/// cannot be reverted one call site at a time.
+pub const STARTED_IDLE_STATUS: &str = "ready";
+
 /// Whether a new provider turn would collide with one already in flight.
 ///
 /// Deliberately pessimistic: `status='working'` counts even before the provider
 /// has echoed `turn.started`, because the window between Bridge writing a turn
 /// and the provider acknowledging it is exactly where a second `turn/start`
 /// would land.
+///
+/// That pessimism is only sound while `status='working'` means a turn was
+/// actually submitted. `start_chat` used to set it on a session that was merely
+/// up and idle, which made a cold session look busy forever and queued its first
+/// message into a boundary that could never arrive (#261). Anything that marks a
+/// session `working` is asserting a turn exists.
 fn turn_is_active(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
     core.db
         .lock()
@@ -6906,21 +7470,34 @@ fn submit_input_internal(
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
-    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
-        return Err(BridgeError::Invalid(
-            "Worker turns are scheduled through the policy-controlled worker pool".into(),
-        ));
-    }
-    // A send into a session whose adapter is gone — the app restarted, or the
-    // provider process died — is explicit consent to bring it back. Resume
-    // through the same seam the UI uses before routing; without this the
-    // delivery dead-ends on "Structured adapter session is not running" and
-    // the person just sees a toast (#252).
-    if !state.adapters.lock().unwrap().contains_key(&session_id) {
+    // A user who can watch a worker go down the wrong path has to be able to say
+    // so. The old blanket refusal made the worker focus view read-only, which
+    // meant the only person who could see the mistake was the only one who could
+    // not mention it. Three durable states still refuse, and they name themselves.
+    let worker = store::worker_runtime(&state.db.lock().unwrap(), &session_id)?;
+    if let Some(runtime) = &worker {
+        let has_live_runtime = state.adapters.lock().unwrap().contains_key(&session_id);
+        session_input::worker_steer_gate(
+            &runtime.result_status,
+            &runtime.lifecycle_state,
+            has_live_runtime,
+        )
+        .map_err(|refusal| BridgeError::Invalid(refusal.message().into()))?;
+    } else if !state.adapters.lock().unwrap().contains_key(&session_id) {
+        // A send into a session whose adapter is gone — the app restarted, or the
+        // provider process died — is explicit consent to bring it back. Resume
+        // through the same seam the UI uses before routing; without this the
+        // delivery dead-ends on "Structured adapter session is not running" and
+        // the person just sees a toast (#252). Never for a worker: the gate above
+        // already refused a worker with no live runtime, because launching one is
+        // the pool's decision, not a side effect of typing.
         resume_for_send(core, &session_id)?;
     }
 
-    let route = if force_new_turn {
+    // The legacy `send_turn` entry point forces a new turn, which is the one
+    // thing a worker cannot absorb: its turn is the objective, and a second
+    // `turn/start` underneath it races the typed result. Workers always route.
+    let route = if force_new_turn && worker.is_none() {
         session_input::InputRoute::NewTurn
     } else {
         let steering_capable = state
@@ -6947,8 +7524,20 @@ fn submit_input_internal(
         }
         InputPreparation::Ready(prepared) => prepared,
     };
+    // The words stay the user's; the contract reminder is Bridge's. A worker
+    // asked something mid-run will otherwise answer in prose and never emit its
+    // envelope, so the reminder travels with the provider text while the
+    // transcript keeps showing exactly what the person typed.
+    let prepared = match worker.as_ref() {
+        Some(_) => PreparedInput {
+            provider_text: worker_steer_envelope(&prepared.provider_text),
+            ..prepared
+        },
+        None => prepared,
+    };
     let interceptions = mirror_interceptions(&prepared.interceptions);
 
+    let mut queued_input_id = None;
     match route {
         session_input::InputRoute::NewTurn => {
             deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Submitted)?;
@@ -7001,18 +7590,33 @@ fn submit_input_internal(
                 queued
             };
             core.events.publish(CoreEvent::StateChanged);
-            return Ok(wire::SubmitInputResult {
-                disposition: route.disposition(),
-                queued_input_id: Some(queued.id),
-                interceptions,
-            });
+            queued_input_id = Some(queued.id);
         }
+    }
+    // The orchestrator has to learn that a human redirected its worker, or it
+    // keeps planning against the objective it issued and argues with guidance it
+    // never saw. Told at submission time rather than at delivery: knowing a steer
+    // is inbound is what stops the fight, and a queued one lands next boundary.
+    if worker.is_some() {
+        notify_parent_worker_steered(core, &session_id, &prepared.display_text, route);
     }
     Ok(wire::SubmitInputResult {
         disposition: route.disposition(),
-        queued_input_id: None,
+        queued_input_id,
         interceptions,
     })
+}
+
+/// The wrapper a user's words wear on their way into a running worker.
+///
+/// Steering is supervision, not a conversation. Without the reminder a worker
+/// treats the message as a chat turn, answers it, and never emits the typed
+/// envelope the completion gate is waiting for — so a single human sentence
+/// would quietly make the result contract optional.
+fn worker_steer_envelope(guidance: &str) -> String {
+    format!(
+        "The user is watching you work and has sent guidance mid-task. Fold it into the objective you were already given; it refines the objective, it does not replace it.\n\n{guidance}\n\nThis changes nothing about how you finish: still end with exactly one fenced `bridge-worker-result` envelope describing the work you actually did. Do not answer this as a chat message."
+    )
 }
 
 /// Core interceptions as the wire shape. The protocol crate deliberately does
@@ -8092,27 +8696,41 @@ mod submit_input_tests {
 
     /// A live provider that records what it was told, and can be made to fail
     /// the write so the queue's release path is reachable.
-    struct FakeRuntime {
+    pub(super) struct FakeRuntime {
         steering: bool,
         sent: Arc<Mutex<Vec<String>>>,
+        /// Approval answers, as `(requestId, decision)`. Recorded rather than
+        /// swallowed: "the provider was told accept" is the whole assertion for
+        /// an auto-approved request.
+        responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
         refuse: Arc<AtomicBool>,
     }
 
-    struct FakeHandles {
-        sent: Arc<Mutex<Vec<String>>>,
-        refuse: Arc<AtomicBool>,
+    pub(super) struct FakeHandles {
+        pub(super) sent: Arc<Mutex<Vec<String>>>,
+        pub(super) responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
+        pub(super) refuse: Arc<AtomicBool>,
     }
 
     impl FakeRuntime {
-        fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+        pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
+            let responded = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 steering,
                 sent: sent.clone(),
+                responded: responded.clone(),
                 refuse: refuse.clone(),
             };
-            (Box::new(runtime), FakeHandles { sent, refuse })
+            (
+                Box::new(runtime),
+                FakeHandles {
+                    sent,
+                    responded,
+                    refuse,
+                },
+            )
         }
     }
 
@@ -8139,7 +8757,14 @@ mod submit_input_tests {
         fn interrupt(&self) -> Result<(), BridgeError> {
             Ok(())
         }
-        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+        fn respond(&self, request_id: serde_json::Value, decision: &str) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.responded
+                .lock()
+                .unwrap()
+                .push((request_id, decision.to_owned()));
             Ok(())
         }
         fn stop(&mut self, _: adapters::ShutdownReason) {}
@@ -8416,8 +9041,12 @@ mod submit_input_tests {
         );
     }
 
+    /// A worker is steerable on its *own* liveness. Workers used to refuse every
+    /// message outright; now that they accept guidance, the live-runtime check has
+    /// to read the worker's adapter and not its parent's — otherwise a busy
+    /// orchestrator would make every one of its dead children look reachable.
     #[test]
-    fn worker_sessions_stay_policy_controlled() {
+    fn a_workers_liveness_is_its_own_not_its_parents() {
         let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, true);
         {
@@ -8447,10 +9076,15 @@ mod submit_input_tests {
             .unwrap();
         }
 
+        // The parent has a live provider; the worker does not.
         let error = submit_input(&core, "worker".into(), "do it differently".into()).unwrap_err();
         assert!(
-            error.to_string().contains("policy-controlled"),
-            "workers take direction from their orchestrator: {error}"
+            error.to_string().contains("not running"),
+            "a parent's adapter must not stand in for its child's: {error}"
+        );
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("worker"),
+            "and the refusal must not quietly launch one"
         );
     }
 
@@ -8569,6 +9203,194 @@ mod submit_input_tests {
         assert_eq!(messages, 1);
     }
 
+    /* ── #261: a cold session's first message ─────────────────────────────── */
+
+    /// The reproduction. `start_chat` leaves a session up and idle; a provider
+    /// that cannot steer must still get the first message as a real turn, not a
+    /// queue entry waiting on a boundary that no turn will produce.
+    #[test]
+    fn a_cold_sessions_first_message_starts_a_turn_instead_of_queueing_forever() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let sent = attach(&core, false);
+
+        let outcome = submit_input(&core, "chat".into(), "review this PR".into()).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert_eq!(sent.lock().unwrap().as_slice(), ["review this PR".to_owned()]);
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            0,
+            "nothing was queued, so nothing needs a boundary to arrive"
+        );
+    }
+
+    #[test]
+    fn a_started_session_is_idle_until_a_turn_is_actually_submitted() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        attach(&core, false);
+        assert!(
+            !turn_is_active(&core, "chat").unwrap(),
+            "up and idle is not a turn in flight"
+        );
+
+        submit_input(&core, "chat".into(), "go".into()).unwrap();
+
+        assert!(
+            turn_is_active(&core, "chat").unwrap(),
+            "a submitted turn is, even before the provider echoes it"
+        );
+    }
+
+    /// The guard this fix deliberately keeps. `deliver_prepared_input` leaves
+    /// `status='working'` with no `active_turn_id` until the provider echoes
+    /// `turn.started`, and a second `turn/start` must not land in that window.
+    #[test]
+    fn a_turn_bridge_has_written_but_the_provider_has_not_echoed_still_blocks_a_second() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let sent = attach(&core, false);
+
+        submit_input(&core, "chat".into(), "first".into()).unwrap();
+        // Exactly what deliver_prepared_input leaves behind: working, unechoed.
+        assert!(core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status='working' AND active_turn_id IS NULL FROM sessions WHERE id='chat'",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap());
+
+        let second = submit_input(&core, "chat".into(), "second".into()).unwrap();
+
+        assert_eq!(
+            second.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary,
+            "the acknowledgement window still counts as busy"
+        );
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            ["first".to_owned()],
+            "no second turn was started against the provider"
+        );
+    }
+
+    /* ── The drain, against a provider that is not there ──────────────────── */
+
+    #[test]
+    fn the_drain_does_not_claim_or_log_when_the_provider_is_gone() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "held".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        // The provider dies before the boundary is reached.
+        core.adapters.lock().unwrap().remove("chat");
+
+        for _ in 0..5 {
+            assert!(!drain_queued_input(&core, "chat"));
+        }
+
+        let db = core.db.lock().unwrap();
+        let state: String = db
+            .query_row(
+                "SELECT state FROM queued_session_input WHERE session_id='chat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "queued", "the row was never claimed and never released");
+        let failures: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='session.input.delivery_failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            failures, 0,
+            "five sweeps must not write five reason rows against a provider that is gone"
+        );
+    }
+
+    #[test]
+    fn a_queued_row_survives_a_provider_outage_and_lands_when_it_returns() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "held".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        core.adapters.lock().unwrap().remove("chat");
+        assert!(!drain_queued_input(&core, "chat"));
+
+        let sent = attach(&core, false);
+        assert!(drain_queued_input(&core, "chat"));
+        assert_eq!(sent.lock().unwrap().as_slice(), ["held".to_owned()]);
+    }
+
+    /// What the started status has to *mean*, not merely what it is spelled.
+    ///
+    /// The review of this fix pointed out that seeding `core_with_chat("ready")`
+    /// tests the state's meaning while leaving the line that produces it
+    /// unguarded. There is no fakeable seam around adapter launch to call
+    /// `start_chat` from a test, so the invariant is pinned two other ways: every
+    /// provider-boot path binds `STARTED_IDLE_STATUS` instead of a literal, and
+    /// this asserts the properties that constant has to keep.
+    #[test]
+    fn the_status_a_started_session_carries_is_one_the_router_reads_as_idle() {
+        assert_ne!(
+            STARTED_IDLE_STATUS, "working",
+            "the whole defect was a started session claiming a turn (#261)"
+        );
+        let (_fixture, core, _managed_root) = core_with_chat(STARTED_IDLE_STATUS);
+        let sent = attach(&core, false);
+
+        assert!(
+            !turn_is_active(&core, "chat").unwrap(),
+            "a started session must not read as having a turn in flight"
+        );
+        // The other half of the deadlock: the drain's idle gate has to agree, or
+        // anything already queued could never be released.
+        submit_input(&core, "chat".into(), "first".into()).unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 1, "it started a turn");
+    }
+
+    /// No provider-boot path may reintroduce the deadlock shape.
+    ///
+    /// `start_chat` had it and `start_session` kept it after the first pass of
+    /// this fix — found in review, not by a test. A single SQL statement that
+    /// asserts `working` while nulling the turn id is that shape, wherever it is
+    /// written, so the guard reads the module instead of trusting the next author
+    /// to remember.
+    #[test]
+    fn no_provider_boot_path_claims_a_turn_it_does_not_have() {
+        let module = include_str!("live_turn.rs");
+        let offenders: Vec<&str> = module
+            .split('"')
+            .filter(|literal| {
+                literal.contains("status='working'") && literal.contains("active_turn_id=NULL")
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these statements mark a session working while clearing its turn id — \
+             bind STARTED_IDLE_STATUS instead: {offenders:#?}"
+        );
+    }
+
     #[test]
     fn empty_input_is_refused_before_anything_is_queued() {
         let (_fixture, core, _managed_root) = core_with_chat("working");
@@ -8577,6 +9399,835 @@ mod submit_input_tests {
         assert_eq!(
             session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
             0
+        );
+    }
+
+    /* ── Steering a live worker ──────────────────────────────────────────── */
+
+    fn attach_to(core: &Arc<BridgeCore>, session_id: &str, steering: bool) -> Arc<Mutex<Vec<String>>> {
+        let (runtime, handles) = FakeRuntime::new(steering);
+        core.adapters
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned(), runtime);
+        handles.sent
+    }
+
+    /// A parent orchestrator with one worker child, in whatever durable state the
+    /// test needs. No adapters attached: each test decides who is live.
+    fn core_with_worker(session_status: &str, lifecycle: &str, result_status: &str) -> ChatFixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('parent','w','codex','Orchestrator','working','reported','orchestrator',0)", []).unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,started_at)
+                 VALUES('child','w','claude','Implementation · strong',?1,'reported','parent',1,'now')",
+                params![session_status],
+            )
+            .unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(
+                &db,
+                &crate::model::WorkerRuntimeRecord {
+                    session_id: "child".into(),
+                    parent_session_id: "parent".into(),
+                    lifecycle_state: lifecycle.into(),
+                    task_family: "implementation".into(),
+                    compatibility_key: "key".into(),
+                    result_status: result_status.into(),
+                    retry_count: 0,
+                    warm_until: None,
+                    worktree_path: None,
+                    worktree_branch: None,
+                    last_result: None,
+                    last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .unwrap();
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    fn parent_event_kinds(core: &Arc<BridgeCore>) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM session_entries WHERE session_id='parent' ORDER BY sequence")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    /// The whole point of the change: a user who can see a worker going the wrong
+    /// way can now say so, and the orchestrator is told rather than left to fight
+    /// the new direction.
+    #[test]
+    fn a_user_steer_reaches_a_live_worker_and_tells_the_parent() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        let outcome = submit_input(&core, "child".into(), "use the existing store".into()).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        let delivered = worker_sent.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1);
+        assert!(
+            delivered[0].contains("use the existing store"),
+            "the user's own words have to survive the wrapper: {}",
+            delivered[0]
+        );
+        assert!(
+            delivered[0].contains("bridge-worker-result"),
+            "a steer must restate the envelope contract, not replace it"
+        );
+
+        let notice = parent_sent.lock().unwrap().clone();
+        assert_eq!(notice.len(), 1, "the orchestrator is told exactly once");
+        let parsed: serde_json::Value = serde_json::from_str(&notice[0]).unwrap();
+        assert_eq!(parsed["type"], "bridge-worker-steered-by-user");
+        assert_eq!(parsed["childSessionId"], "child");
+        assert_eq!(parsed["landed"], "now");
+        assert!(parsed["fleet"].is_array());
+
+        assert!(parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+        let db = core.db.lock().unwrap();
+        let ledger: Vec<String> = db
+            .prepare("SELECT kind FROM events WHERE kind LIKE 'session.input.%' OR kind LIKE 'delegation.steer.%' ORDER BY id")
+            .and_then(|mut statement| {
+                statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap();
+        assert!(ledger.contains(&"session.input.steered".to_owned()));
+        assert!(ledger.contains(&"delegation.steer.user_notified".to_owned()));
+    }
+
+    /// A provider that cannot take input mid-turn queues it, exactly as a chat
+    /// would — and the parent is still told, with the boundary named.
+    #[test]
+    fn a_worker_on_a_non_steering_provider_queues_the_guidance() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        attach_to(&core, "child", false);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        let outcome = submit_input(&core, "child".into(), "skip the migration".into()).unwrap();
+
+        assert_eq!(
+            outcome.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary
+        );
+        assert!(outcome.queued_input_id.is_some());
+        let queued = session_input::next_queued(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap();
+        assert!(
+            queued.provider_text.contains("bridge-worker-result"),
+            "the contract reminder has to be queued with the words, not added later"
+        );
+        assert_eq!(
+            queued.display_text, "skip the migration",
+            "the transcript shows what the person typed, not Bridge's wrapper"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert_eq!(parsed["landed"], "next_turn_boundary");
+    }
+
+    #[test]
+    fn a_reported_worker_still_refuses_input() {
+        let (_fixture, core, _managed_root) = core_with_worker("ready", "completed", "reported");
+        let worker_sent = attach_to(&core, "child", true);
+
+        let error = submit_input(&core, "child".into(), "one more thing".into()).unwrap_err();
+
+        assert!(
+            error.to_string().contains("already reported"),
+            "the refusal has to say why: {error}"
+        );
+        assert!(worker_sent.lock().unwrap().is_empty());
+        assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    /// A worker with no process is not resumed by a message. The pool launches
+    /// workers; typing at one must not become a back door into that decision.
+    #[test]
+    fn a_worker_with_no_live_provider_is_not_launched_by_a_message() {
+        let (_fixture, core, _managed_root) = core_with_worker("ready", "warm", "pending");
+
+        let error = submit_input(&core, "child".into(), "keep going".into()).unwrap_err();
+
+        assert!(error.to_string().contains("not running"), "{error}");
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("child"),
+            "no adapter was started behind the refusal"
+        );
+    }
+
+    #[test]
+    fn a_checkpointing_worker_refuses_until_the_checkpoint_finishes() {
+        let (_fixture, core, _managed_root) =
+            core_with_worker("checkpointing", "checkpointing", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+
+        let error = submit_input(&core, "child".into(), "stop that".into()).unwrap_err();
+
+        assert!(error.to_string().contains("checkpointing"), "{error}");
+        assert!(worker_sent.lock().unwrap().is_empty());
+    }
+
+    /// Steering is supervision, never a substitute for the typed result. The
+    /// completion gate reads these two columns, so this is the assertion that
+    /// keeps a human sentence from being mistaken for a worker's report.
+    #[test]
+    fn steering_a_worker_leaves_the_result_contract_alone() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        attach_to(&core, "child", true);
+        attach_to(&core, "parent", true);
+
+        submit_input(&core, "child".into(), "narrow the scope".into()).unwrap();
+
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.result_status, "pending");
+        assert!(runtime.last_result.is_none());
+    }
+
+    /* ── bridge-steer, the orchestrator's own verb ────────────────────────── */
+
+    fn steer(session_id: &str, message: &str) -> delegation::SteerRequest {
+        let delegation::ParseOutcome::Parsed(request) = delegation::parse_steer_request(&format!(
+            "```bridge-steer\n{}\n```",
+            serde_json::json!({"sessionId": session_id, "message": message})
+        )) else {
+            panic!("fixture steer did not parse");
+        };
+        request
+    }
+
+    fn ledger_kinds(core: &Arc<BridgeCore>, prefix: &str) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM events WHERE kind LIKE ?1 ORDER BY id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(params![format!("{prefix}%")], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn an_orchestrator_steer_reaches_its_own_live_child() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "use the existing store"));
+
+        let delivered = worker_sent.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&delivered[0]).unwrap();
+        assert_eq!(parsed["type"], "bridge-orchestrator-steer");
+        assert_eq!(parsed["guidance"], "use the existing store");
+        assert!(
+            parsed["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("bridge-worker-result"),
+            "the envelope contract travels with every steer"
+        );
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.delivered".to_owned()));
+        assert!(parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    /// A model-supplied session id is untrusted input. Reaching a session that is
+    /// not this parent's worker would be a cross-session write dressed up as
+    /// guidance.
+    #[test]
+    fn an_orchestrator_cannot_steer_a_session_that_is_not_its_worker() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        // A session that exists but belongs to nobody here.
+        core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('stranger','w','codex','Stranger','working','reported','orchestrator',0)", []).unwrap();
+
+        for target in ["stranger", "parent", "does-not-exist"] {
+            deliver_orchestrator_steer(&core, "parent", &steer(target, "stop that"));
+        }
+
+        assert!(
+            worker_sent.lock().unwrap().is_empty(),
+            "nothing reached the real worker either"
+        );
+        let refusals = parent_sent.lock().unwrap().clone();
+        assert_eq!(refusals.len(), 3);
+        for refusal in &refusals {
+            let parsed: serde_json::Value = serde_json::from_str(refusal).unwrap();
+            assert_eq!(parsed["type"], "bridge-steer-rejected");
+            assert!(parsed["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not one of your workers"));
+        }
+        assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    #[test]
+    fn steering_a_reported_or_dead_worker_is_refused_with_a_reason() {
+        let (_fixture, core, _managed_root) = core_with_worker("ready", "completed", "reported");
+        let parent_sent = attach_to(&core, "parent", true);
+        attach_to(&core, "child", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "one more thing"));
+        let reported: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert!(reported["reason"]
+            .as_str()
+            .unwrap()
+            .contains("already reported"));
+
+        // Same worker, still pending, but the process is gone.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worker_runtime SET result_status='pending' WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+        core.adapters.lock().unwrap().remove("child");
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "one more thing"));
+        let dead: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[1]).unwrap();
+        assert!(dead["reason"].as_str().unwrap().contains("no live provider"));
+        assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    /// The review finding this exists for: `send_turn` on a provider that cannot
+    /// take input mid-turn *starts a second turn*, which races the worker's
+    /// objective turn and its typed result. An orchestrator steer is not exempt
+    /// from the active-turn contract just because the orchestrator sent it.
+    #[test]
+    fn an_orchestrator_steer_is_queued_when_the_worker_cannot_take_input_mid_turn() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", false); // cannot steer
+        let parent_sent = attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "use the existing store"));
+
+        assert!(
+            worker_sent.lock().unwrap().is_empty(),
+            "a second turn must not be started against a busy provider"
+        );
+        assert!(
+            parent_sent.lock().unwrap().is_empty(),
+            "queuing is a success, not a refusal"
+        );
+        let queued = session_input::next_queued(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .expect("the guidance is durably queued for the next boundary");
+        let parsed: serde_json::Value = serde_json::from_str(&queued.provider_text).unwrap();
+        assert_eq!(
+            parsed["type"], "bridge-orchestrator-steer",
+            "the orchestrator envelope survives the queue"
+        );
+        assert_eq!(queued.display_text, "use the existing store");
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.queued".to_owned()));
+
+        // And it lands for real at the boundary the drain is waiting for.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='child'",
+                [],
+            )
+            .unwrap();
+        assert!(drain_queued_input(&core, "child"));
+        assert_eq!(worker_sent.lock().unwrap().len(), 1);
+    }
+
+    /// A steering-capable worker still gets it immediately — the routing change
+    /// must not have turned every steer into a deferred one.
+    #[test]
+    fn a_steering_capable_worker_takes_an_orchestrator_steer_immediately() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "narrow the scope"));
+
+        assert_eq!(worker_sent.lock().unwrap().len(), 1);
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "child").unwrap(),
+            0
+        );
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.delivered".to_owned()));
+    }
+
+    #[test]
+    fn an_orchestrator_steer_respects_the_checkpoint_refusal_too() {
+        let (_fixture, core, _managed_root) =
+            core_with_worker("checkpointing", "checkpointing", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "stop that"));
+
+        assert!(worker_sent.lock().unwrap().is_empty());
+        let refusal: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert!(refusal["reason"].as_str().unwrap().contains("checkpointing"));
+    }
+
+    /// The second review finding: a landed steer was reported as failed whenever
+    /// the parent's runtime happened to be down, because one `delivered` flag
+    /// carried two unrelated facts.
+    #[test]
+    fn a_steer_that_reached_the_worker_is_not_reported_as_failed_when_the_parent_is_deaf() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        // No adapter for the parent: the notice cannot be delivered.
+
+        submit_input(&core, "child".into(), "use the existing store".into()).unwrap();
+
+        assert_eq!(worker_sent.lock().unwrap().len(), 1, "the worker got it");
+        let chip = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.steered'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&chip).unwrap();
+        let data = payload.get("data").unwrap_or(&payload);
+        assert_eq!(
+            data["steerDelivered"], true,
+            "the guidance reached the worker, so the chip must not read as failed"
+        );
+        assert_eq!(
+            data["orchestratorNotified"], false,
+            "and the notification failure is recorded as its own fact"
+        );
+        assert_eq!(data["landed"], "now");
+    }
+
+    #[test]
+    fn a_malformed_steer_is_handed_back_not_dropped() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let parent_sent = attach_to(&core, "parent", true);
+
+        refuse_orchestrator_steer(&core, "parent", "bridge-steer message cannot be empty");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert_eq!(parsed["type"], "bridge-steer-rejected");
+        assert!(parsed["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("do not assume the guidance landed"));
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.refused".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod permission_policy_tests {
+    use super::submit_input_tests::FakeRuntime;
+    use super::*;
+
+    /// A provider approval as it arrives on the control channel. Codex's shape,
+    /// because it is the one with an explicit `requestId` to answer.
+    fn approval_frame(request_id: i64) -> serde_json::Value {
+        // The JSON-RPC envelope `id` is both what routes this to the request
+        // normalizer and what becomes the `requestId` an answer is addressed to.
+        serde_json::json!({
+            "id": request_id,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "itemId": "item-1",
+                "command": "rm -rf build",
+                "cwd": "/repo",
+            },
+        })
+    }
+
+    type Fixture = (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        std::sync::MutexGuard<'static, ()>,
+    );
+
+    fn core_with_session(bypass: bool) -> Fixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth)
+                 VALUES('chat',NULL,'codex','Chat','working','reported','direct',0)",
+                [],
+            )
+            .unwrap();
+            if bypass {
+                agent_config::save_permission_policy(
+                    &db,
+                    agent_config::PermissionPolicy {
+                        bypass_all: true,
+                        updated_at: String::new(),
+                    },
+                )
+                .unwrap();
+            }
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    fn attach(core: &Arc<BridgeCore>, session_id: &str) -> super::submit_input_tests::FakeHandles {
+        let (runtime, handles) = FakeRuntime::new(false);
+        core.adapters
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned(), runtime);
+        handles
+    }
+
+    fn ledger(core: &Arc<BridgeCore>, prefix: &str) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM events WHERE kind LIKE ?1 ORDER BY id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(params![format!("{prefix}%")], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    fn entry_kinds(core: &Arc<BridgeCore>) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM session_entries WHERE session_id='chat' ORDER BY sequence")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    fn deliver(core: &Arc<BridgeCore>, frame: &serde_json::Value) {
+        deliver_to(core, "chat", frame);
+    }
+
+    fn deliver_to(core: &Arc<BridgeCore>, session_id: &str, frame: &serde_json::Value) {
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".to_owned())));
+        handle_agent_value(core, session_id, &current_turn, frame);
+    }
+
+    /// A parent orchestrator with one live worker child, so the mirrored
+    /// blocked-card path is reachable.
+    fn core_with_worker(bypass: bool) -> Fixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('parent','w','codex','Orchestrator','working','reported','orchestrator',0)", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,started_at) VALUES('child','w','codex','Implementation · strong','working','reported','parent',1,'now')", []).unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(&db, &crate::model::WorkerRuntimeRecord {
+                session_id: "child".into(), parent_session_id: "parent".into(),
+                lifecycle_state: "working".into(), task_family: "implementation".into(),
+                compatibility_key: "key".into(), result_status: "pending".into(), retry_count: 0,
+                warm_until: None, worktree_path: None, worktree_branch: None, last_result: None,
+                last_activity_at: None, waiting_since: None, waiting_reason: None,
+                progress_summary: None, updated_at: Utc::now().to_rfc3339(),
+            }).unwrap();
+            if bypass {
+                agent_config::save_permission_policy(&db, agent_config::PermissionPolicy {
+                    bypass_all: true, updated_at: String::new(),
+                }).unwrap();
+            }
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    #[test]
+    fn an_approval_is_auto_accepted_when_bypass_is_on() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &approval_frame(42));
+
+        let answered = handles.responded.lock().unwrap().clone();
+        assert_eq!(answered.len(), 1, "the provider was answered exactly once");
+        assert_eq!(answered[0].1, "accept");
+        assert_eq!(answered[0].0, serde_json::json!(42));
+        // Visible, not silent: the conversation shows the resolution and the
+        // ledger names the policy that matched.
+        let kinds = entry_kinds(&core);
+        assert!(kinds.contains(&"approval.requested".to_owned()));
+        assert!(kinds.contains(&"approval.resolved".to_owned()));
+        assert_eq!(
+            ledger(&core, "approval."),
+            vec!["approval.auto_allowed".to_owned()]
+        );
+    }
+
+    #[test]
+    fn an_approval_waits_for_a_human_when_bypass_is_off() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &approval_frame(42));
+
+        assert!(
+            handles.responded.lock().unwrap().is_empty(),
+            "nothing may be granted before someone asks for it"
+        );
+        assert!(ledger(&core, "approval.").is_empty());
+        let status: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT status FROM sessions WHERE id='chat'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "waiting");
+        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+    }
+
+    /// The gate that must survive bypass. Write scope is authorization, not
+    /// convenience — a worker writing outside its lease is the one thing a
+    /// convenience switch must never grant.
+    #[test]
+    fn a_write_scope_approval_is_never_auto_accepted() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+
+        let mut frame = approval_frame(42);
+        frame["params"]["approvalType"] = serde_json::json!("delegation_path_scope");
+        deliver(&core, &frame);
+
+        assert!(
+            handles.responded.lock().unwrap().is_empty(),
+            "bypass must not answer a write-scope approval"
+        );
+        assert!(ledger(&core, "approval.").is_empty());
+        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+    }
+
+    /// A failure to apply the policy must not read as a grant.
+    #[test]
+    fn a_policy_that_could_not_be_applied_says_so() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+        handles.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        deliver(&core, &approval_frame(42));
+
+        assert!(handles.responded.lock().unwrap().is_empty());
+        assert_eq!(
+            ledger(&core, "approval."),
+            vec!["approval.auto_allow_failed".to_owned()],
+            "an unapplied policy is recorded as unapplied, never as allowed"
+        );
+        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+    }
+
+    /// Two of the three Codex methods that normalize to `approval.requested` are
+    /// questions, not approvals. `respond` answers with `{"decision":…}`, which is
+    /// the wrong shape for them, so granting one sends the provider a malformed
+    /// result and the turn stops going anywhere.
+    #[test]
+    fn bypass_answers_approvals_and_leaves_questions_alone() {
+        for method in ["item/tool/requestUserInput", "mcpServer/elicitation/request"] {
+            let (_fixture, core, _managed_root) = core_with_session(true);
+            let handles = attach(&core, "chat");
+
+            let mut frame = approval_frame(42);
+            frame["method"] = serde_json::json!(method);
+            deliver(&core, &frame);
+
+            assert!(
+                handles.responded.lock().unwrap().is_empty(),
+                "{method} is a question; answering it with a decision wedges the turn"
+            );
+            assert!(ledger(&core, "approval.").is_empty(), "{method}");
+        }
+        // And the real thing still gets granted, so the narrowing did not turn
+        // the feature off.
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+        deliver(&core, &approval_frame(42));
+        assert_eq!(handles.responded.lock().unwrap().len(), 1);
+    }
+
+    /// `session_event` returns sequence 0 for a frame it did not persist, and
+    /// answering 0 would resolve whatever approval happens to sit there.
+    #[test]
+    fn auto_approval_never_answers_an_unpersisted_approval() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+
+        // A frame for a session that does not exist persists nothing.
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".to_owned())));
+        handle_agent_value(&core, "no-such-session", &current_turn, &approval_frame(42));
+
+        assert!(handles.responded.lock().unwrap().is_empty());
+        assert!(ledger(&core, "approval.").is_empty());
+    }
+
+    /// The regression test for the bug this slice's review found: the grant ran,
+    /// and then the handler mirrored a blocked card anyway, telling the parent to
+    /// stop waiting on a worker that had already resumed.
+    #[test]
+    fn a_worker_approval_auto_accepted_leaves_the_worker_running_not_waiting() {
+        let (_fixture, core, _managed_root) = core_with_worker(true);
+        let child = attach(&core, "child");
+        let parent = attach(&core, "parent");
+
+        deliver_to(&core, "child", &approval_frame(42));
+
+        assert_eq!(child.responded.lock().unwrap().len(), 1, "the child was granted");
+        // The blocked *state* is what must never appear. `delegation.blocked` is
+        // also the kind the resolution half uses (`childBlocked: false`, folded
+        // under one item id), so the assertion is on the payload, not the kind —
+        // asserting on the kind alone would forbid the correct event too.
+        let blocked_cards: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.blocked'
+                   AND json_extract(payload,'$.data.childBlocked')=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            blocked_cards, 0,
+            "a granted approval must not tell the parent its worker is blocked"
+        );
+        // The parent is still told the worker is running again, which is true and
+        // is the same notice a human resolution sends. Deliberately not
+        // suppressed: diverging from the human path here would be a second
+        // decision path, which is the thing this design avoids.
+        let _ = &parent;
+        // The worker is running, and its wait was never stamped.
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.lifecycle_state, "working");
+        assert_eq!(runtime.waiting_reason, None);
+    }
+
+    /// One answer per request. The approval is published to every client before
+    /// anything resolves it, so a human click and the policy can both reach the
+    /// resolver for the same id — and two `respond` calls is a contradictory
+    /// answer to the provider plus two resolutions in the transcript.
+    #[test]
+    fn an_approval_is_answered_once_even_when_two_deciders_race() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+        deliver(&core, &approval_frame(42));
+        let event_id: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='approval.requested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        crate::api::resolve_approval(&core, "chat", event_id, "accept").unwrap();
+        let second = crate::api::resolve_approval(&core, "chat", event_id, "decline");
+
+        assert!(second.is_err(), "the second decider must be refused");
+        assert_eq!(
+            handles.responded.lock().unwrap().len(),
+            1,
+            "the provider heard exactly one answer, not two contradictory ones"
+        );
+    }
+
+    /// The browser gate is a different channel with a different state machine.
+    ///
+    /// The previous version of this test asserted that no session approval
+    /// existed while never raising a browser approval, so it was true either way
+    /// and proved nothing. Faking a browser approval would need an attached
+    /// browser and a lease; what actually matters is narrower and checkable: the
+    /// permission policy is consulted in exactly one place, and the browser
+    /// bridge is not it. If someone wires the policy into that module, this fails.
+    #[test]
+    fn the_permission_policy_is_not_reachable_from_the_browser_gate() {
+        let browser = include_str!("browser_bridge.rs");
+        for marker in ["permission_policy", "bypass_all", "PermissionPolicy"] {
+            assert!(
+                !browser.contains(marker),
+                "the browser outward-effect gate must not consult the permission \
+                 policy — it is authorization, not convenience (found {marker:?})"
+            );
+        }
+        // And the policy's only reader is this module's approval seam.
+        // Split so this assertion does not match its own source text.
+        let needle = format!("{}::{}(", "agent_config", "permission_policy");
+        let live = include_str!("live_turn.rs");
+        assert_eq!(
+            live.matches(needle.as_str()).count(),
+            1,
+            "one policy read, at the approval seam; a second reader is a second policy"
         );
     }
 }

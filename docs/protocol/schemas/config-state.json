@@ -128,6 +128,21 @@
         "label"
       ],
       "type": "object"
+    },
+    "PermissionPolicy": {
+      "description": "How much Bridge asks before an agent acts. Mirrors `bridge_core::agent_config::PermissionPolicy`.\n\n`default` on the container, not just the fields: a policy payload written by an older build must still read once slice 3 adds the graduated modes.",
+      "properties": {
+        "bypassAll": {
+          "default": false,
+          "description": "Auto-accept every provider approval, for every agent. Worker write scope and browser outward effects are unaffected — those are authorization.",
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
     }
   },
   "description": "The configuration snapshot every config mutation returns. Mirrors `bridge_core::agent_config::ConfigState`.",
@@ -146,12 +161,16 @@
         "$ref": "#/definitions/HarnessConfig"
       },
       "type": "array"
+    },
+    "permissionPolicy": {
+      "$ref": "#/definitions/PermissionPolicy"
     }
   },
   "required": [
     "agents",
     "defaultAgentId",
-    "harnesses"
+    "harnesses",
+    "permissionPolicy"
   ],
   "title": "ConfigState",
   "type": "object"

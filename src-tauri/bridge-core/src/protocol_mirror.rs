@@ -1098,6 +1098,10 @@ fn result_payloads_mirror_core() {
             updated_at: "now".into(),
         }],
         default_agent_id: "reviewer".into(),
+        permission_policy: agent_config::PermissionPolicy {
+            bypass_all: true,
+            updated_at: "now".into(),
+        },
     });
     assert_mirrors::<wire::BrowserRouteDecision>(&browser_bridge::route_browser(
         browser_bridge::BrowserRouteRequest {

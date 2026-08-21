@@ -107,6 +107,7 @@ pub const REQUIRED_MARKERS: &[&str] = &[
     "xhigh",
     "bridge-delegate",
     "bridge-worker-result",
+    "bridge-steer",
     "needs_delegation",
     "flat topology",
     "trivial one-shot local actions",

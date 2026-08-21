@@ -4,7 +4,7 @@ import { appendFileMention, applyFileMention as insertFileMention, fileMentionQu
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
@@ -19,6 +19,9 @@ import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { MissionControl } from "./components/MissionControl";
+import { BypassBadge } from "./components/BypassBadge";
+import type { Section as SettingsSection } from "./components/SettingsScreen";
+import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { BrowserSurface } from "./components/BrowserSurface";
@@ -111,6 +114,10 @@ export function App() {
   // drops the sidebar and the session header so the active tab gets the whole
   // window. The tab strip stays, because it is also the way back out.
   const [fullscreen, setFullscreen] = useState(false);
+  /// The worker whose full activity feed is open over the chat. Owned here, not
+  /// in the conversation, because the overlay covers the whole session pane and
+  /// has to survive the transcript re-rendering underneath it.
+  const [expandedWorkerId, setExpandedWorkerId] = useState<string>();
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
@@ -158,7 +165,13 @@ export function App() {
   const agentEventTimerRef = useRef<number | undefined>(undefined);
   const browserSessionRef = useRef<string>();
 
-  const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
+  const reload = useCallback(async () => {
+    setState(await bridgeApi.state());
+    // Re-read with the state it was published alongside: `save_permission_policy`
+    // publishes StateChanged precisely so the badge repaints, and another window
+    // flipping the switch has to reach this one too.
+    setPermissionPolicy((await bridgeApi.configState()).permissionPolicy);
+  }, []);
   useEffect(() => {
     void Promise.all([reload(), bridgeApi.modelSetup()])
       .then(([, setup]) => { setModelSetup(setup); })
@@ -237,12 +250,45 @@ export function App() {
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
-  // A focused worker is watchable and its approvals are resolvable, but the
-  // backend rejects worker turns, so it gets no composer.
+  // A focused worker is watchable, its approvals are resolvable, and it can be
+  // steered — the composer says "steer", not "message", because the worker still
+  // answers to the objective its orchestrator gave it.
   const isWorkerView = !!session?.parentSessionId;
+  const workerRuntime = useMemo(
+    () => forest?.workerRuntimes.find(runtime => runtime.sessionId === session?.id),
+    [forest?.workerRuntimes, session?.id],
+  );
+  // The three durable facts the backend gate reads, mirrored so the composer is
+  // not offered for a steer that is going to be refused.
+  const workerSteerable = isWorkerView
+    && workerRuntime?.resultStatus !== "reported"
+    && workerRuntime?.lifecycleState !== "checkpointing"
+    && liveStatuses.includes(session?.status ?? "stopped");
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
+  // A worker panel reads the worker's own session row, its runtime record, and
+  // its slice of the *global* live stream — the parent's slice would show none
+  // of the child's frames.
+  const workerPanelSource = useMemo(
+    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents }),
+    [agentEvents, forest?.workerRuntimes, state.sessions],
+  );
+  const expandedWorker = useMemo(
+    () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
+    [expandedWorkerId, state.sessions],
+  );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  // Read from config rather than held in component state: the badge has to agree
+  // with what the host stored, including after another window changed it.
+  const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>();
+  // Which settings section to open on. The badge is the one entry point that has
+  // an opinion: sending someone hunting through Agents for the switch they just
+  // clicked "click to change" on is the wrong end of the promise.
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("agents");
+  const autoApprovals = useMemo(
+    () => state.events.filter(event => event.kind === "approval.auto_allowed"),
+    [state.events],
+  );
   // What the submit affordance does while this session is working. Read from the
   // harness's advertised capabilities: a provider that cannot take input
   // mid-turn gets its follow-up queued, and the button says Queue, not Steer.
@@ -463,7 +509,7 @@ export function App() {
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
-  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); }
+  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); setExpandedWorkerId(undefined); }
 
   // Reading the board is the whole of what opening Work does: one call, no session
   // selected, no model, no git, no network.
@@ -774,6 +820,16 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  /// Send guidance into a running worker.
+  ///
+  /// The same `submitInput` every other session uses: the backend decides
+  /// between steering the live turn and queueing for the next boundary, and it
+  /// is what tells the orchestrator a human redirected its worker. Deliberately
+  /// not `startChat` first — a worker with no process is refused, because
+  /// launching one is the worker pool's decision.
+  const steerWorker = useCallback(async (childSessionId: string, text: string) => {
+    await bridgeApi.submitInput(childSessionId, text);
+  }, []);
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
@@ -889,6 +945,7 @@ export function App() {
       navOpen={navOpen}
       onOpenNav={() => setNavOpen(true)}
       actions={<>
+        <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
         {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
         <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
       </>}
@@ -935,7 +992,7 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
@@ -944,6 +1001,7 @@ export function App() {
         fullscreen={fullscreen}
         onToggleFullscreen={() => setFullscreen(value => !value)}
         onFocusSession={openSession}
+        onSteer={steerWorker}
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
@@ -970,6 +1028,20 @@ export function App() {
           busy={busy}
         />
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
+          {/* The chat's own panel, expanded. Rendered over the session pane
+              rather than navigating away, because the reason to look at a
+              worker's full feed is usually to decide something in the
+              conversation you are still in. */}
+          {expandedWorker && <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
+            <WorkerDetail
+              session={expandedWorker}
+              runtime={forest?.workerRuntimes.find(runtime => runtime.sessionId === expandedWorker.id)}
+              liveEvents={agentEvents}
+              onClose={() => setExpandedWorkerId(undefined)}
+              onFocusSession={openSession}
+              onSteer={steerWorker}
+            />
+          </div>}
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
               {recallOpen && (
@@ -988,6 +1060,8 @@ export function App() {
                 <AgentConversation
                   session={session}
                   onOpenSession={openSession}
+                  workers={workerPanelSource}
+                  onExpandWorker={setExpandedWorkerId}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
@@ -1011,7 +1085,7 @@ export function App() {
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
-                {queuedFollowUpCount > 0 && !isWorkerView && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
                     <span>{`${queuedFollowUpCount} follow-up${queuedFollowUpCount === 1 ? "" : "s"} queued — sent when this step finishes`}</span>
@@ -1029,7 +1103,13 @@ export function App() {
                     <span>{fallbackNotice}</span>
                   </div>
                 </div>}
-                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
+                {/* A worker gets a steering composer, not the chat composer: what
+                    you type amends the objective its orchestrator gave it, and
+                    the orchestrator is told so it does not fight the change. */}
+                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6">
+                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
+                </div> : <div className="relative mx-auto max-w-2xl">
                   {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">

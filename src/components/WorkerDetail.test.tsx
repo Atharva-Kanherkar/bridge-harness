@@ -107,4 +107,72 @@ describe("WorkerDetail", () => {
     expect(html).toContain("Result envelope");
     expect(html).toContain("All acceptance criteria met.");
   });
+
+  it("offers a steering composer for a live worker", () => {
+    const html = renderToStaticMarkup(
+      <WorkerDetail
+        session={session}
+        runtime={runtime}
+        liveEvents={[]}
+        now={NOW}
+        onClose={() => {}}
+        onFocusSession={() => {}}
+        onSteer={async () => {}}
+        initialEvents={[]}
+      />,
+    );
+    expect(html).toContain("Steer this worker");
+    expect(html).toContain("its orchestrator is told");
+  });
+
+  it("does not offer steering once the worker has reported", () => {
+    const html = renderToStaticMarkup(
+      <WorkerDetail
+        session={{ ...session, status: "stopped" }}
+        runtime={{ ...runtime, resultStatus: "reported", lastResult: { status: "completed", summary: "Done." } }}
+        liveEvents={[]}
+        now={NOW}
+        onClose={() => {}}
+        onFocusSession={() => {}}
+        onSteer={async () => {}}
+        initialEvents={[]}
+      />,
+    );
+    expect(html).not.toContain("Steer this worker");
+    expect(html).toContain("Its typed result is final");
+  });
+
+  it("does not offer steering while the worker is checkpointing", () => {
+    // Bridge's own checkpoint turn owns the provider; the backend refuses, so
+    // the box must not be there to type into.
+    const html = renderToStaticMarkup(
+      <WorkerDetail
+        session={{ ...session, status: "checkpointing" }}
+        runtime={{ ...runtime, lifecycleState: "checkpointing" }}
+        liveEvents={[]}
+        now={NOW}
+        onClose={() => {}}
+        onFocusSession={() => {}}
+        onSteer={async () => {}}
+        initialEvents={[]}
+      />,
+    );
+    expect(html).not.toContain("Steer this worker");
+  });
+
+  it("shows no composer at all when the caller does not offer steering", () => {
+    const html = renderToStaticMarkup(
+      <WorkerDetail
+        session={session}
+        runtime={runtime}
+        liveEvents={[]}
+        now={NOW}
+        onClose={() => {}}
+        onFocusSession={() => {}}
+        initialEvents={[]}
+      />,
+    );
+    expect(html).not.toContain("Steer this worker");
+    expect(html).not.toContain("Its typed result is final");
+  });
 });

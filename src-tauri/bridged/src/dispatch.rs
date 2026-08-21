@@ -337,6 +337,13 @@ pub fn dispatch(
             reply(api::set_default_agent(core, &p.id))
         }
         MethodName::ResetAllConfig => reply(api::reset_all_config(core)),
+        MethodName::SavePermissionPolicy => {
+            let p: wire::SavePermissionPolicyParams = decode(method, params)?;
+            reply(api::save_permission_policy(
+                core,
+                into_core(method, &p.policy)?,
+            ))
+        }
 
         MethodName::GetLearningState => {
             let p: wire::GetLearningStateParams = decode(method, params)?;
