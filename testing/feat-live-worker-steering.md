@@ -64,7 +64,12 @@ tsgen artifacts are untouched by design, and that is itself an assertion below.
   `delegation.steer.user_notified` / `delegation.steer.user_undeliverable` on the
   parent depending on whether the orchestrator's runtime took the notice.
 - A `delegation.steered` normalized event is written on the parent so the user sees
-  a chip in the orchestrator chat saying a steer went in and who sent it.
+  a chip in the orchestrator chat saying a steer went in and who sent it. It carries
+  **two independent facts**, never one: `steerDelivered` (did the guidance reach or
+  durably queue to the worker) and `orchestratorNotified` (did the parent's runtime
+  take the routing notice), plus `landed` = `now` | `next_turn_boundary` |
+  `undelivered`. The chip's failure state keys on `steerDelivered` alone — a steer
+  that landed must never read as failed because the parent happened to be deaf.
 - Guardrails, asserted: steering does **not** write a `worker_runtime.last_result`,
   does not mark `result_status='reported'`, does not touch `ResultRepairTracker`,
   and does not create or resolve a completion gate.
@@ -86,12 +91,19 @@ tsgen artifacts are untouched by design, and that is itself an assertion below.
   - a `bridge-delegate` or `bridge-peek` block is not a steer block.
 - The block is stripped from the text the user reads and replaced by
   `_Steering a worker…_` when nothing else remains.
-- Delivery is validated host-side: the target must be a child of *this* parent with
-  a still-pending result and a live runtime. A stranger's session id, a reported
-  worker, or a dead worker is refused and the refusal is fed back to the
-  orchestrator (never silently dropped).
+- Delivery is validated host-side against the **same** `worker_steer_gate` the user's
+  steer passes: the target must be a child of *this* parent, not reported, not
+  checkpointing, with a live runtime. A stranger's session id, a reported worker, a
+  checkpointing worker, or a dead worker is refused and the refusal is fed back to
+  the orchestrator (never silently dropped).
+- Delivery goes through `session_input::route`, not a direct `send_turn`. An
+  orchestrator steer is **not** exempt from the active-turn contract: `send_turn` on
+  a provider that cannot take input mid-turn *starts a second turn*, racing the
+  worker's objective turn and its typed result. A non-steering worker has the
+  orchestrator envelope durably queued for its next phase boundary instead.
 - Like `bridge-peek`, delivery happens at turn completion, not mid-frame.
-- Ledger rows: `delegation.steer.delivered`, `delegation.steer.undeliverable`, or
+- Ledger rows: `delegation.steer.delivered` (landed now), `delegation.steer.queued`
+  (waiting for the boundary), `delegation.steer.undeliverable`, or
   `delegation.steer.invalid`. A `delegation.steered` event on the parent surfaces
   the chip.
 - Prompts teach the verb in both `delegation::protocol(0)` and
@@ -131,6 +143,15 @@ tsgen artifacts are untouched by design, and that is itself an assertion below.
   was actually right.
 - `steering_a_worker_leaves_the_result_contract_alone` — after a steer,
   `worker_runtime.result_status` is still `pending` and `last_result` is still null.
+- `an_orchestrator_steer_is_queued_when_the_worker_cannot_take_input_mid_turn` —
+  a non-steering worker runtime gets nothing sent, the envelope is durably queued
+  with the guidance as its display text, and it lands for real once the drain runs.
+- `a_steering_capable_worker_takes_an_orchestrator_steer_immediately` — the routing
+  change must not have turned every steer into a deferred one.
+- `an_orchestrator_steer_respects_the_checkpoint_refusal_too` — one gate, both callers.
+- `a_steer_that_reached_the_worker_is_not_reported_as_failed_when_the_parent_is_deaf`
+  — worker got it, parent has no runtime: `steerDelivered` true,
+  `orchestratorNotified` false.
 - `an_orchestrator_steer_only_reaches_its_own_live_child` — `bridge-steer` at a
   foreign session id, a reported child, and a dead child are each refused with a
   reason fed back to the orchestrator; the legitimate case delivers.
@@ -175,6 +196,16 @@ tsgen artifacts are untouched by design, and that is itself an assertion below.
 - `keeps the draft and shows why when the steer is refused` — the backend gate
   can refuse between render and submit.
 - `explains itself instead of offering a box a worker cannot take`.
+
+**Amended after review (2026-08-21).** Review
+[#4992705172](https://github.com/Atharva-Kanherkar/bridge-harness/pull/257#pullrequestreview-4992705172)
+found two correctness gaps that changed the contract above: (P1) an orchestrator
+steer was delivered with a bare `send_turn`, which on Codex/OpenCode starts a
+second provider turn against a busy worker — it now routes through
+`session_input::route` and queues when the provider cannot absorb it; (P2) one
+`delivered` flag carried both "the worker got it" and "the orchestrator was told",
+so a landed steer rendered as `NOT DELIVERED` whenever the parent's runtime was
+down — the two are now separate fields. §2 and §3 above are the corrected contract.
 
 **Amended during implementation.** This section originally called for an
 `src/App.test.tsx` case rendering the worker focus view end to end. `App.test.tsx`
