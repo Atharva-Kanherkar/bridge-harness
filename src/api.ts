@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -68,6 +68,7 @@ let mockConfigState: ConfigState = {
     { id: "bridge-documentation", name: "Documentation agent", description: "Produces concise project documentation.", role: "documentation", harness: "bridge", model: null, effort: "low", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
   ],
   defaultAgentId: "bridge-orchestrator",
+  permissionPolicy: { bypassAll: false, updatedAt: "" },
 };
 let mockOpenCodeCatalog: OpenCodeCatalog = {
   executablePath: "/usr/local/bin/opencode",
@@ -657,6 +658,11 @@ export const bridgeApi = {
     if (isTauri()) return call("config/set_default_agent", { id });
     mockConfigState.defaultAgentId = id;
     mockConfigState.agents = mockConfigState.agents.map(item => ({ ...item, isDefault: item.id === id }));
+    return Promise.resolve(structuredClone(mockConfigState));
+  },
+  savePermissionPolicy: (policy: PermissionPolicy): Promise<ConfigState> => {
+    if (isTauri()) return call("config/save_permission_policy", { policy });
+    mockConfigState.permissionPolicy = { ...policy, updatedAt: new Date().toISOString() };
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetAllConfig: (): Promise<ConfigState> => {

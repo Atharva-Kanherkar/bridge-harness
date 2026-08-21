@@ -10,5 +10,6 @@ describe("SettingsScreen", () => {
     expect(html).toContain("Harnesses");
     expect(html).toContain("Role models");
     expect(html).toContain("Prompts change behavior, never permissions");
+    expect(html).toContain("Permissions");
   });
 });

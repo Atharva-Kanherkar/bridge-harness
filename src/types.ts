@@ -53,6 +53,7 @@ export type {
   CompletionSummary,
   CompletionVerdict,
   ConfigState,
+  PermissionPolicy,
   ContinuationFidelity,
   EvalKind,
   ExternalLearningTriggerKind,
