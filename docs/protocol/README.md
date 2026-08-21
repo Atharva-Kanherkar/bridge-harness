@@ -293,6 +293,7 @@ unchanged.
 | `state-changed` | transient | Refetch hint: re-read the state snapshot |
 | `adapters-changed` | transient | Refetch hint: re-read adapter availability |
 | `learning-job-changed` | transient | Refetch hint carrying the changed run/state |
+| `memory-changed` | transient | Refetch hint naming the changed scope (`{"scopeKey": …}`); the records come from `memory/list_memory_records` |
 | `session-output` | transient | Terminal bytes; worthless once stale |
 | `account-usage` | transient | Provider usage tick for the ambient meter |
 | `stream-lagged` | transient | Host-synthesized: this connection's live channel dropped events (`{"missed": n}`); refetch hints follow, replay durable history from your cursors |

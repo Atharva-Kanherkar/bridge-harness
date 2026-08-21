@@ -229,6 +229,7 @@ export type BridgeNotification =
   | "adapters-changed"
   | "managed-agent-changed"
   | "learning-job-changed"
+  | "memory-changed"
   | "session-output"
   | "account-usage"
   | "stream-lagged";
@@ -239,6 +240,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "adapters-changed", delivery: "transient" },
   { notification: "managed-agent-changed", delivery: "transient" },
   { notification: "learning-job-changed", delivery: "transient" },
+  { notification: "memory-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
