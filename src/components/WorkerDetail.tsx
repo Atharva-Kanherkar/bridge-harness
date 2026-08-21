@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Bot, CircleDot, Hammer, LoaderCircle, Maximize2, Minimize2, RefreshCw, User, X } from "lucide-react";
+import { ArrowRight, Bot, CircleDot, Hammer, LoaderCircle, Maximize2, Minimize2, Navigation, RefreshCw, User, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { AgentEvent, Session, WorkerRuntimeRecord } from "../types";
 import { cn } from "@/lib/utils";
@@ -94,19 +94,31 @@ export function WorkerDetail({
   onToggleFullscreen,
   onClose,
   onFocusSession,
+  onSteer,
   initialEvents,
 }: {
   session: Session;
   runtime?: WorkerRuntimeRecord;
   liveEvents: AgentEvent[];
-  now: number;
+  /** Frozen clock for tests and for callers that already own a ticker; the view
+   *  keeps its own second hand otherwise, so elapsed time actually moves. */
+  now?: number;
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
   onClose: () => void;
   onFocusSession: (sessionId: string) => void;
+  /** Send guidance into this worker. Omitted where steering is not offered. */
+  onSteer?: (sessionId: string, text: string) => Promise<void>;
   /** Test seam: pre-loaded durable events, skipping the backfill fetch. */
   initialEvents?: AgentEvent[];
 }) {
+  const [liveNow, setLiveNow] = useState(Date.now);
+  useEffect(() => {
+    if (now !== undefined) return;
+    const timer = window.setInterval(() => setLiveNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [now]);
+  const clock = now ?? liveNow;
   const seed = initialEvents ?? cachedFeed(session.id);
   const [backfill, setBackfill] = useState<AgentEvent[]>(() => (seed ?? []).map(projectFeedEvent));
   const [loading, setLoading] = useState(seed === undefined);
@@ -175,6 +187,11 @@ export function WorkerDetail({
 
   const status = workerStatus(session, runtime);
   const result = runtime?.lastResult;
+  // Mirrors the backend gate (session_input::worker_steer_gate) so the composer
+  // is not offered for a steer that would be refused.
+  const steerable = runtime?.resultStatus !== "reported"
+    && runtime?.lifecycleState !== "checkpointing"
+    && (session.status === "working" || session.status === "waiting");
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background animate-page-mount" role="dialog" aria-modal="true" aria-label={`Worker ${session.title || session.label}`}>
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
@@ -184,7 +201,7 @@ export function WorkerDetail({
         <span className="flex-1" />
         <span className="hidden font-mono text-[9px] text-muted-foreground sm:inline">{runtime?.taskFamily}</span>
         {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5 font-mono text-[9px] text-muted-foreground"><RefreshCw size={8} aria-hidden="true"/>retry {runtime.retryCount}</span> : null}
-        <span className="font-mono text-[9px] text-muted-foreground">{formatElapsed(session.startedAt, now)}</span>
+        <span className="font-mono text-[9px] text-muted-foreground">{formatElapsed(session.startedAt, clock)}</span>
         {onToggleFullscreen && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={onToggleFullscreen} aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}>{fullscreen ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}</Button>}
         <Button type="button" variant="secondary" size="sm" onClick={() => onFocusSession(session.id)}>Open session <ArrowRight size={12}/></Button>
       </div>
@@ -192,7 +209,7 @@ export function WorkerDetail({
       {(runtime?.progressSummary || runtime?.waitingReason) && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card px-4 py-2 text-[10.5px] sm:px-6">
           {runtime.progressSummary && <span className="min-w-0 truncate font-mono text-foreground/80">{runtime.progressSummary}</span>}
-          {runtime.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[9px] font-medium text-warning">waiting: {runtime.waitingReason.replaceAll("_", " ")}{runtime.waitingSince ? ` · ${formatElapsed(runtime.waitingSince, now)}` : ""}</span>}
+          {runtime.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[9px] font-medium text-warning">waiting: {runtime.waitingReason.replaceAll("_", " ")}{runtime.waitingSince ? ` · ${formatElapsed(runtime.waitingSince, clock)}` : ""}</span>}
         </div>
       )}
 
@@ -223,6 +240,61 @@ export function WorkerDetail({
           </div>
         )}
       </div>
+
+      {onSteer && <SteerComposer sessionId={session.id} steerable={steerable} onSteer={onSteer}/>}
     </div>
   );
+}
+
+/// Guidance into a running worker, from the surface where you can see it going
+/// wrong.
+///
+/// Labelled as steering, not chatting: the worker still answers to the objective
+/// its orchestrator gave it, and what you type amends that objective rather than
+/// starting a conversation. Hidden once the worker has reported, because at that
+/// point the result is final and offering the box would be a lie.
+export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer this worker…" }: {
+  sessionId: string;
+  steerable: boolean;
+  onSteer: (sessionId: string, text: string) => Promise<void>;
+  label?: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string>();
+  if (!steerable) {
+    return <div className="shrink-0 border-t border-border px-4 py-3 text-[11px] text-muted-foreground sm:px-6" role="status">
+      This worker has finished. Its typed result is final — ask the orchestrator to delegate a follow-up.
+    </div>;
+  }
+  const send = () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    setBusy(true); setFailure(undefined);
+    void onSteer(sessionId, text)
+      .then(() => setDraft(""))
+      .catch((cause: unknown) => setFailure(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+  return <form
+    className="shrink-0 border-t border-border px-4 py-3 sm:px-6"
+    onSubmit={requested => { requested.preventDefault(); send(); }}
+  >
+    <div className="flex items-end gap-2">
+      <textarea
+        value={draft}
+        onChange={changed => setDraft(changed.target.value)}
+        onKeyDown={pressed => {
+          if (pressed.key === "Enter" && !pressed.shiftKey) { pressed.preventDefault(); send(); }
+        }}
+        rows={1}
+        placeholder={label}
+        aria-label={label}
+        className="min-h-[34px] max-h-32 flex-1 resize-none rounded-xl border border-border bg-card px-3 py-2 text-[12px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+      />
+      <Button type="submit" size="sm" disabled={busy || !draft.trim()}><Navigation size={12}/>{busy ? "Sending…" : "Steer"}</Button>
+    </div>
+    <p className="mt-1.5 text-[10px] text-muted-foreground/70">Guidance is folded into the worker&rsquo;s objective and its orchestrator is told. It still reports a typed result.</p>
+    {failure && <p className="mt-1.5 text-[10.5px] text-destructive">{failure}</p>}
+  </form>;
 }

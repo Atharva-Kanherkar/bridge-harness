@@ -31,6 +31,9 @@ export interface WorkerPanelModel {
   waitingReason?: string;
   waitingSince?: string;
   startedAt?: string;
+  /** Set once the worker's session closed, so a finished panel reports how long
+   *  the work took rather than how long ago it started. */
+  endedAt?: string;
   taskFamily?: string;
   feed: WorkerPanelFeedLine[];
   /** True once the typed envelope is in, which is what turns the panel into a result card. */
@@ -119,6 +122,7 @@ export function workerPanelModel(
     waitingReason: runtime?.waitingReason ?? undefined,
     waitingSince: runtime?.waitingSince ?? undefined,
     startedAt: session.startedAt ?? undefined,
+    endedAt: session.endedAt ?? undefined,
     taskFamily: runtime?.taskFamily,
     feed: workerFeedLines(events, childSessionId, feedLines),
     reported: runtime?.resultStatus === "reported",

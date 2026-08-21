@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentConversation } from "./AgentConversation";
-import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
+import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
 
 const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" };
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({ id, sessionId: "s", sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides });
@@ -229,6 +229,152 @@ describe("AgentConversation", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[done]} onRetryWorker={async () => undefined}/>);
     expect(html).toContain("Subagent finished");
     expect(html).not.toContain("Retry this task");
+  });
+
+  /* ── The live worker panel ──────────────────────────────────────────── */
+
+  const workerSession = (overrides: Partial<Session> = {}): Session => ({
+    ...session, id: "w1", label: "Implementation · strong", parentSessionId: "s", depth: 1,
+    kind: "workspace", startedAt: "2026-08-21T10:00:00Z", ...overrides,
+  });
+  const workerRuntime = (overrides: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRecord => ({
+    sessionId: "w1", parentSessionId: "s", lifecycleState: "working", taskFamily: "implementation",
+    compatibilityKey: "key", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: null,
+    worktreeBranch: null, lastResult: null, lastActivityAt: null, waitingSince: null, waitingReason: null,
+    progressSummary: null, updatedAt: "now", ...overrides,
+  });
+  const spawned = event(30, "delegation.spawned", {
+    itemId: "spawn-w1", role: "system", status: "working", title: "Delegated to Implementation · strong",
+    text: "Add refresh-token rotation",
+    data: { childSessionId: "w1", modelLabel: "Fable", effort: "high" },
+  });
+  const workerActivity = (id: number, title: string): AgentEvent => event(id, "tool.started", { sessionId: "w1", title });
+
+  it("shows a live worker panel while the worker runs", () => {
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned]}
+      now={Date.parse("2026-08-21T10:02:30Z")}
+      workers={{
+        sessions: [session, workerSession()],
+        runtimes: [workerRuntime({ retryCount: 1, progressSummary: "editing src/auth/store.rs" })],
+        events: [workerActivity(31, "read store.rs"), workerActivity(32, "edit store.rs")],
+      }}
+      onOpenSession={() => undefined}
+      onExpandWorker={() => undefined}
+    />);
+    expect(html).toContain("Implementation · strong");
+    expect(html).toContain("WORKING");
+    expect(html).toContain("editing src/auth/store.rs");
+    expect(html).toContain("retry 1");
+    // The mini-feed is the whole point: something visibly moving in the chat.
+    expect(html).toContain("edit store.rs");
+    expect(html).toContain("Expand");
+    expect(html).toContain("Open session");
+    // And the old static line is gone.
+    expect(html).not.toContain("Delegated · Delegated to");
+  });
+
+  it("names the waiting reason instead of showing a stalled panel", () => {
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned]}
+      now={Date.parse("2026-08-21T10:02:30Z")}
+      workers={{
+        sessions: [session, workerSession({ status: "waiting" })],
+        runtimes: [workerRuntime({ lifecycleState: "waiting", waitingReason: "approval_requested" })],
+        events: [],
+      }}
+    />);
+    expect(html).toContain("NEEDS YOU");
+    expect(html).toContain("waiting: approval requested");
+  });
+
+  it("turns the same panel into the result card when the result lands", () => {
+    const result = event(33, "delegation.result", {
+      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
+      text: "Rotation added.", data: { childSessionId: "w1", delivered: true, status: "completed" },
+    });
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned, result]}
+      now={Date.parse("2026-08-21T10:05:00Z")}
+      workers={{
+        sessions: [session, workerSession({ status: "stopped" })],
+        runtimes: [workerRuntime({
+          resultStatus: "reported", lifecycleState: "completed",
+          lastResult: { status: "completed", summary: "Rotation added.", filesChanged: ["src/auth/store.rs"], tests: [{ command: "cargo test auth", status: "passed" }] },
+        })],
+        events: [workerActivity(31, "edit store.rs")],
+      }}
+    />);
+    expect(html).toContain("DONE");
+    expect(html).toContain("1 file");
+    expect(html).toContain("1 test passing");
+    // One card, not a live panel plus a disconnected outcome row.
+    expect(html).not.toContain("Subagent finished");
+    // And the live ticker stops: no half-finished feed under a finished result.
+    expect(html).not.toContain("edit store.rs");
+  });
+
+  it("still shows a classified failure with its retry action after folding", () => {
+    const failed = event(34, "delegation.result", {
+      itemId: "result-w1", role: "system", status: "failed", title: "Worker finished without completing",
+      text: "Nothing was changed.",
+      data: { childSessionId: "w1", delivered: true, status: "failed", failureCause: "the worker stopped responding", failureClass: "stalled", canRetry: true },
+    });
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned, failed]}
+      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
+      onRetryWorker={async () => undefined}
+      onOpenSession={() => undefined}
+    />);
+    expect(html).toContain("the worker stopped responding");
+    expect(html).toContain("Retry this task");
+  });
+
+  it("falls back to the quiet row when the worker's session is not loaded yet", () => {
+    // The spawn event can beat the state poll that carries the child session row.
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned]}
+      workers={{ sessions: [session], runtimes: [], events: [] }}
+    />);
+    expect(html).toContain("Delegated");
+    expect(html).not.toContain("Expand");
+  });
+
+  it("shows a chip when someone steers a worker", () => {
+    const steered = event(35, "delegation.steered", {
+      itemId: "steer-1", role: "system", status: "delivered", title: "You steered Implementation · strong",
+      text: "use the existing store",
+      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "user", delivered: true },
+    });
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned, steered]}
+      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
+      onOpenSession={() => undefined}
+    />);
+    expect(html).toContain("You steered Implementation · strong");
+    expect(html).toContain("use the existing store");
+    expect(html).not.toContain("NOT DELIVERED");
+  });
+
+  it("says so when a steer never reached the worker", () => {
+    const undelivered = event(36, "delegation.steered", {
+      itemId: "steer-2", role: "system", status: "undelivered", title: "Orchestrator steered Implementation · strong",
+      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "orchestrator", delivered: false },
+    });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[undelivered]}/>);
+    expect(html).toContain("NOT DELIVERED");
   });
 
   it("surfaces projected continuation fidelity with stronger mid-turn warning", () => {

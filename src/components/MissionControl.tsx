@@ -178,6 +178,7 @@ export function MissionControl({
   fullscreen,
   onToggleFullscreen,
   onFocusSession,
+  onSteer,
 }: {
   sessions: Session[];
   runtimes: WorkerRuntimeRecord[];
@@ -188,6 +189,8 @@ export function MissionControl({
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
   onFocusSession: (sessionId: string) => void;
+  /** Send guidance into one worker, from the tile you noticed it on. */
+  onSteer?: (sessionId: string, text: string) => Promise<void>;
 }) {
   const [detailSessionId, setDetailSessionId] = useState<string>();
   const [liveNow, setLiveNow] = useState(Date.now);
@@ -250,6 +253,7 @@ export function MissionControl({
           onToggleFullscreen={onToggleFullscreen}
           onClose={closeDetail}
           onFocusSession={onFocusSession}
+          onSteer={detailSession.parentSessionId ? onSteer : undefined}
         />
       </div>
     );
