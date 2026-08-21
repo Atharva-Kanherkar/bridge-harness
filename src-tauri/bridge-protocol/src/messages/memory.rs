@@ -25,6 +25,9 @@ pub struct SaveMemoryRecordParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListMemoryRecordsParams {
     pub scope_key: String,
+    /// `active` (default) or `proposed`. Nothing else lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -44,6 +47,12 @@ pub struct MemoryRecord {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_session_id: Option<String>,
+    /// Written only by producers that can mean it (the extractor). An explicit
+    /// save keeps it NULL, and surfaces render unknown — never a fake number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence_bps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

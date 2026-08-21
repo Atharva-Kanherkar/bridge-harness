@@ -172,6 +172,7 @@ fn effort_str(effort: wire::Effort) -> &'static str {
 /// would still be one keystroke from being opened, resumed, or sent a turn.
 pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
     kind == Some(BRIEFING_SESSION_KIND)
+        || kind == Some(crate::memory_extraction::EXTRACTION_SESSION_KIND)
 }
 
 #[cfg(test)]

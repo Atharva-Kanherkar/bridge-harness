@@ -1423,6 +1423,11 @@ fn handle_agent_value(
                 checkpoint_prompt_after_turn = Some(prompt);
             }
         }
+        if turn_completed {
+            // Best-effort: a full extraction queue must never fail a turn, and
+            // the enqueue itself decides eligibility (mode, kind, open runs).
+            let _ = crate::memory_extraction::enqueue_after_turn(&db, session_id);
+        }
     }
 
     // Telemetry is deliberately flushed only after the correctness database
@@ -5562,7 +5567,7 @@ fn prepare_input(
         }
         slash::SlashDispatch::Pins => {
             let db = state.db.lock().unwrap();
-            let result = memory_ledger::list(&db, memory_ledger::account_memory_scope())?;
+            let result = memory_ledger::list(&db, memory_ledger::account_memory_scope(), None)?;
             emit_local_assistant(
                 core,
                 &session_id,

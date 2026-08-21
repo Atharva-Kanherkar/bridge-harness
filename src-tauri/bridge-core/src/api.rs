@@ -398,9 +398,10 @@ pub fn save_memory_record(
 pub fn list_memory_records(
     core: &Arc<BridgeCore>,
     scope_key: &str,
+    status: Option<&str>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    memory_ledger::list(&db, scope_key)
+    memory_ledger::list(&db, scope_key, status)
 }
 
 pub fn delete_memory_record(

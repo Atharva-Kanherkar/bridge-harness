@@ -155,7 +155,7 @@ pub fn dispatch(
         }
         MethodName::ListMemoryRecords => {
             let p: wire::ListMemoryRecordsParams = decode(method, params)?;
-            reply(api::list_memory_records(core, &p.scope_key))
+            reply(api::list_memory_records(core, &p.scope_key, p.status.as_deref()))
         }
         MethodName::DeleteMemoryRecord => {
             let p: wire::DeleteMemoryRecordParams = decode(method, params)?;

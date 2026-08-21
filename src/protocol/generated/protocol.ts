@@ -697,10 +697,12 @@ export interface MemoryLedgerCapability {
 
 export interface MemoryRecord {
   body: string;
+  confidenceBps?: number | null;
   createdAt: string;
   id: string;
   kind: string;
   provenance: string;
+  rationale?: string | null;
   scopeKey: string;
   sourceSessionId?: string | null;
   status: string;
@@ -1440,6 +1442,7 @@ export interface SaveMemoryRecordParams {
 
 export interface ListMemoryRecordsParams {
   scopeKey: string;
+  status?: string | null;
 }
 
 export interface ListMemoryRecordsResult {

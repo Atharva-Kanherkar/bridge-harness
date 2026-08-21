@@ -93,6 +93,14 @@ pub(crate) fn install_lifecycle(transaction: &Transaction<'_>) -> Result<(), Bri
     Ok(())
 }
 
+/// Schema 33 (record half): trust fields arrive with their first honest
+/// producer, the extractor. Explicit saves keep both NULL.
+pub(crate) fn install_trust_fields(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::store::add_column_if_missing(transaction, "memory_records", "confidence_bps", "INTEGER")?;
+    crate::store::add_column_if_missing(transaction, "memory_records", "rationale", "TEXT")?;
+    Ok(())
+}
+
 /// Reject empty, whitespace, and anything that is not a named scope.
 pub fn parse_scope_key(raw: &str) -> Result<String, BridgeError> {
     let trimmed = raw.trim();
@@ -117,7 +125,7 @@ pub fn parse_scope_key(raw: &str) -> Result<String, BridgeError> {
     )))
 }
 
-fn parse_kind(raw: Option<&str>) -> Result<&'static str, BridgeError> {
+pub(crate) fn parse_kind(raw: Option<&str>) -> Result<&'static str, BridgeError> {
     match raw.map(str::trim).filter(|value| !value.is_empty()) {
         None => Ok(KIND_PREFERENCE),
         Some(KIND_PREFERENCE) => Ok(KIND_PREFERENCE),
@@ -130,7 +138,7 @@ fn parse_kind(raw: Option<&str>) -> Result<&'static str, BridgeError> {
     }
 }
 
-fn require_body(body: &str) -> Result<String, BridgeError> {
+pub(crate) fn require_body(body: &str) -> Result<String, BridgeError> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return Err(BridgeError::Invalid(
@@ -164,10 +172,15 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
         provenance: row.get(4)?,
         status: row.get(5)?,
         source_session_id: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        confidence_bps: row.get::<_, Option<i64>>(7)?.map(|value| value as u32),
+        rationale: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
+
+const RECORD_COLUMNS: &str = "id, scope_key, kind, body, provenance, status, source_session_id, \
+     confidence_bps, rationale, created_at, updated_at";
 
 fn session_exists(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
     let found: Option<i64> = db
@@ -212,6 +225,8 @@ pub fn save(
         provenance: PROVENANCE_USER_EXPLICIT.to_string(),
         status: STATUS_ACTIVE.to_string(),
         source_session_id,
+        confidence_bps: None,
+        rationale: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -234,18 +249,32 @@ pub fn save(
     Ok(record)
 }
 
-pub fn list(db: &Connection, scope_key: &str) -> Result<ListMemoryRecordsResult, BridgeError> {
+pub fn list(
+    db: &Connection,
+    scope_key: &str,
+    status: Option<&str>,
+) -> Result<ListMemoryRecordsResult, BridgeError> {
     let scope_key = parse_scope_key(scope_key)?;
-    let mut statement = db.prepare(
-        "SELECT id, scope_key, kind, body, provenance, status, source_session_id, created_at, updated_at
+    let status = match status.map(str::trim).filter(|value| !value.is_empty()) {
+        None => STATUS_ACTIVE,
+        Some(STATUS_ACTIVE) => STATUS_ACTIVE,
+        Some(STATUS_PROPOSED) => STATUS_PROPOSED,
+        Some(other) => {
+            return Err(BridgeError::Invalid(format!(
+                "Memory list can show active or proposed records, not '{other}'."
+            )))
+        }
+    };
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS}
          FROM memory_records
          WHERE scope_key=?1 AND status=?2
          ORDER BY updated_at DESC, id DESC
          LIMIT ?3",
-    )?;
+    ))?;
     let records = statement
         .query_map(
-            params![scope_key, STATUS_ACTIVE, MAX_MEMORY_LIST_LIMIT as i64],
+            params![scope_key, status, MAX_MEMORY_LIST_LIMIT as i64],
             map_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;
@@ -278,13 +307,64 @@ pub fn forget(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeEr
 
 fn load(db: &Connection, record_id: &str) -> Result<Option<MemoryRecord>, BridgeError> {
     db.query_row(
-        "SELECT id, scope_key, kind, body, provenance, status, source_session_id, created_at, updated_at
-         FROM memory_records WHERE id=?1",
+        &format!("SELECT {RECORD_COLUMNS} FROM memory_records WHERE id=?1"),
         params![record_id],
         map_row,
     )
     .optional()
     .map_err(BridgeError::from)
+}
+
+/// The extractor's only write path. Whatever a model claimed, what lands is
+/// `proposed` / `model_proposal` — the gate in memory_extraction has already
+/// validated body, kind, confidence, and rationale before this runs.
+pub(crate) fn insert_proposal(
+    db: &Connection,
+    scope_key: &str,
+    body: &str,
+    kind: &str,
+    confidence_bps: Option<u32>,
+    rationale: Option<&str>,
+    source_session_id: &str,
+) -> Result<MemoryRecord, BridgeError> {
+    let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+    db.execute(
+        "INSERT INTO memory_records(
+            id, scope_key, kind, body, provenance, status, source_session_id,
+            confidence_bps, rationale, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,'model_proposal','proposed',?5,?6,?7,?8,?8)",
+        params![
+            id,
+            scope_key,
+            kind,
+            body,
+            source_session_id,
+            confidence_bps.map(|value| value as i64),
+            rationale,
+            now,
+        ],
+    )?;
+    load(db, &id)?.ok_or_else(|| BridgeError::Invalid("The proposal was not written.".into()))
+}
+
+/// Case-insensitive body match against every non-deleted record in scope, so
+/// the extractor cannot re-propose what already exists in any state but gone.
+pub(crate) fn body_already_known(
+    db: &Connection,
+    scope_key: &str,
+    body: &str,
+) -> Result<bool, BridgeError> {
+    let found: Option<i64> = db
+        .query_row(
+            "SELECT 1 FROM memory_records
+             WHERE scope_key=?1 AND status<>'deleted' AND lower(trim(body))=lower(trim(?2))
+             LIMIT 1",
+            params![scope_key, body],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
 }
 
 /// `proposed -> active`. The only path to active a proposal has.
@@ -400,7 +480,8 @@ pub fn search(
     };
     let mut statement = db.prepare(
         "SELECT m.id, m.scope_key, m.kind, m.body, m.provenance, m.status,
-                m.source_session_id, m.created_at, m.updated_at
+                m.source_session_id, m.confidence_bps, m.rationale,
+                m.created_at, m.updated_at
          FROM memory_record_fts f
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3
@@ -531,13 +612,13 @@ mod tests {
     fn proposed_reaches_active_only_through_approve() {
         let (_dir, db) = ledger_db();
         insert_proposed(&db, "p1", "Proposed convention");
-        assert!(list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records.is_empty());
+        assert!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.is_empty());
         assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None)
             .unwrap()
             .is_empty());
         let approved = approve(&db, "p1").unwrap();
         assert_eq!(approved.status, "active");
-        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records.len(), 1);
+        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.len(), 1);
         assert_eq!(
             search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None)
                 .unwrap()
@@ -556,7 +637,7 @@ mod tests {
         assert_eq!(rejected.status, "rejected");
         assert!(approve(&db, "p2").is_err(), "rejected is terminal");
         assert!(reject(&db, "p2").is_err());
-        assert!(list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records.is_empty());
+        assert!(list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records.is_empty());
         assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "idea", None)
             .unwrap()
             .is_empty());
@@ -588,7 +669,7 @@ mod tests {
         let old = load(&db, &original.id).unwrap().unwrap();
         assert_eq!(old.status, "superseded");
         assert_eq!(old.body, "Prefers yarn", "history keeps the original body");
-        let listed = list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records;
+        let listed = list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, replacement.id);
     }
@@ -712,7 +793,7 @@ mod tests {
             None
         )
         .is_err());
-        assert!(list(&db, "account:local").unwrap().records.is_empty());
+        assert!(list(&db, "account:local", None).unwrap().records.is_empty());
     }
 
     #[test]
@@ -726,13 +807,13 @@ mod tests {
             [],
         )
         .unwrap();
-        let account = list(&db, "account:local").unwrap();
+        let account = list(&db, "account:local", None).unwrap();
         assert_eq!(account.records.len(), 1);
         assert_eq!(account.records[0].body, "about me pin");
-        let other = list(&db, "workspace:other").unwrap();
+        let other = list(&db, "workspace:other", None).unwrap();
         assert_eq!(other.records.len(), 1);
         assert_eq!(other.records[0].body, "other desk");
-        assert!(list(&db, "").is_err());
+        assert!(list(&db, "", None).is_err());
     }
 
     #[test]
@@ -742,7 +823,7 @@ mod tests {
         let forgotten = forget(&db, &record.id).unwrap();
         assert_eq!(forgotten.status, "deleted");
         assert_eq!(forgotten.body, "forget me");
-        assert!(list(&db, "account:local").unwrap().records.is_empty());
+        assert!(list(&db, "account:local", None).unwrap().records.is_empty());
         assert!(forget(&db, &record.id).is_err());
     }
 
@@ -759,7 +840,7 @@ mod tests {
     fn unknown_session_is_rejected_not_stored_as_null_scope() {
         let (_dir, db) = ledger_db();
         assert!(save(&db, "hello", None, Some("missing")).is_err());
-        assert!(list(&db, "account:local").unwrap().records.is_empty());
+        assert!(list(&db, "account:local", None).unwrap().records.is_empty());
     }
 
     #[test]
