@@ -1,0 +1,1947 @@
+<title>Everything Is a Plugin</title>
+
+<style>
+  /* ---------------- theme: two monochrome grounds ----------------
+     Dark is the default. A reader can switch, and the choice sticks. Both grounds stay strictly
+     greyscale: the book's restraint is the point, and it keeps every figure legible either way. */
+  :root {
+    --bg: #000000;
+    --fg: #ffffff;
+    --fg-2: #a8a8a8;
+    --fg-3: #6e6e6e;
+    --rule: #2a2a2a;
+    --rule-2: #3d3d3d;
+    --panel: #0a0a0a;
+    --ok: #ffffff;
+    --no: #6e6e6e;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff; --fg: #101010; --fg-2: #4a4a4a; --fg-3: #7c7c7c;
+      --rule: #d8d8d8; --rule-2: #b4b4b4; --panel: #f4f4f4;
+      --ok: #101010; --no: #7c7c7c;
+    }
+  }
+
+  /* The host viewer's own theme stamp, when it sets one. Same specificity as the
+     book's toggle below, and listed first, so an in-book choice still outranks it. */
+  :root[data-theme="dark"] {
+    --bg: #000000; --fg: #ffffff; --fg-2: #a8a8a8; --fg-3: #6e6e6e;
+    --rule: #2a2a2a; --rule-2: #3d3d3d; --panel: #0a0a0a;
+    --ok: #ffffff; --no: #6e6e6e;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --fg: #101010; --fg-2: #4a4a4a; --fg-3: #7c7c7c;
+    --rule: #d8d8d8; --rule-2: #b4b4b4; --panel: #f4f4f4;
+    --ok: #101010; --no: #7c7c7c;
+  }
+
+  /* the reader's explicit choice wins over the OS in both directions */
+  :root[data-book-theme="dark"] {
+    --bg: #000000; --fg: #ffffff; --fg-2: #a8a8a8; --fg-3: #6e6e6e;
+    --rule: #2a2a2a; --rule-2: #3d3d3d; --panel: #0a0a0a;
+    --ok: #ffffff; --no: #6e6e6e;
+  }
+  :root[data-book-theme="light"] {
+    --bg: #ffffff; --fg: #101010; --fg-2: #4a4a4a; --fg-3: #7c7c7c;
+    --rule: #d8d8d8; --rule-2: #b4b4b4; --panel: #f4f4f4;
+    --ok: #101010; --no: #7c7c7c;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    overflow: hidden;
+  }
+  body { font-family: var(--serif); -webkit-font-smoothing: antialiased; }
+
+  /* ---------------- paging ---------------- */
+
+  .book {
+    display: flex; height: 100vh;
+    overflow-x: auto; overflow-y: hidden;
+    scroll-snap-type: x mandatory; scrollbar-width: none;
+  }
+  .book::-webkit-scrollbar { display: none; }
+
+  .page {
+    flex: 0 0 100%; width: 100%; height: 100vh;
+    scroll-snap-align: start; scroll-snap-stop: always;
+    overflow-y: auto; position: relative;
+    padding: clamp(2.2rem, 5vh, 4rem) clamp(1.3rem, 6vw, 5rem) 4.2rem;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--rule);
+  }
+
+  .leaf { width: 100%; max-width: 60ch; margin: 0 auto; flex: 1 0 auto;
+    display: flex; flex-direction: column; }
+  .leaf.wide { max-width: 78ch; }
+
+  .rh {
+    font-family: var(--mono); font-size: 0.63rem; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--fg-3);
+    display: flex; justify-content: space-between; gap: 1rem;
+    padding-bottom: 0.6rem; margin: 0 auto clamp(1.4rem, 4vh, 2.6rem);
+    border-bottom: 1px solid var(--rule);
+    width: 100%; max-width: 60ch; flex: none;
+  }
+  .page.w .rh { max-width: 78ch; }
+
+  .folio {
+    position: absolute; bottom: 1.5rem; left: 0; right: 0; text-align: center;
+    font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.2em;
+    color: var(--fg-3); font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+
+  /* ---------------- type ---------------- */
+
+  h1, h2, h3 { font-weight: 400; margin: 0; text-wrap: balance; }
+
+  .cover-mark { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.28em;
+    text-transform: uppercase; color: var(--fg-2); margin-bottom: auto; }
+  .cover h1 { font-size: clamp(2.2rem, 7vw, 4.4rem); line-height: 1.02;
+    letter-spacing: -0.025em; margin-bottom: 1.4rem; }
+  .cover .sub { font-size: clamp(1.02rem, 2.2vw, 1.3rem); color: var(--fg-2);
+    line-height: 1.5; max-width: 42ch; margin-bottom: 2.4rem; }
+  .cover .imprint { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em;
+    color: var(--fg-3); line-height: 1.9; border-top: 1px solid var(--rule); padding-top: 1.2rem; }
+
+  .page.part .leaf { justify-content: center; }
+  .rule-long { width: 4rem; height: 1px; background: var(--fg); margin-bottom: 2rem; }
+  .part-num { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.28em;
+    text-transform: uppercase; color: var(--fg-2); margin-bottom: 1.6rem; }
+  .part-title { font-size: clamp(1.9rem, 5.5vw, 3.2rem); line-height: 1.06;
+    letter-spacing: -0.02em; margin-bottom: 1.3rem; }
+  .part-gloss { color: var(--fg-2); font-size: 1.02rem; max-width: 38ch; line-height: 1.55; }
+
+  h2.ch-title { font-size: clamp(1.5rem, 3.4vw, 2.1rem); line-height: 1.15;
+    letter-spacing: -0.015em; margin-bottom: 1.2rem; }
+  h2.ch-title .cn { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.16em;
+    color: var(--fg-3); display: block; margin-bottom: 0.7rem; }
+
+  h3.sub { font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.14em; color: var(--fg-2); margin: 1.6rem 0 0.7rem; }
+  h3.sub:first-child { margin-top: 0; }
+
+  p { margin: 0 0 1rem; font-size: 0.98rem; line-height: 1.66; }
+  p.lede { font-size: 1.14rem; line-height: 1.5; margin-bottom: 1.3rem; }
+  p.small { font-size: 0.9rem; color: var(--fg-2); }
+
+  ul, ol { margin: 0 0 1rem; padding-left: 1.25rem; font-size: 0.96rem; line-height: 1.6; }
+  li { margin-bottom: 0.4rem; }
+  li::marker { color: var(--fg-3); }
+
+  code { font-family: var(--mono); font-size: 0.85em; color: var(--fg); }
+  p code, li code, td code { border-bottom: 1px solid var(--rule-2); }
+
+  /* ---------------- code + copy button ---------------- */
+
+  .codewrap { position: relative; margin: 0 0 0.5rem; }
+  pre.code {
+    font-family: var(--mono); font-size: clamp(0.66rem, 1.35vw, 0.76rem); line-height: 1.6;
+    color: var(--fg); background: var(--panel); border: 1px solid var(--rule);
+    padding: 0.95rem 1.1rem; overflow-x: auto; margin: 0;
+  }
+  pre.code code { border: none; font-size: inherit; }
+  pre.code .c { color: var(--fg-3); }
+
+  .copy {
+    position: absolute; top: 0.4rem; right: 0.4rem;
+    font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--fg-3);
+    background: var(--bg); border: 1px solid var(--rule-2);
+    padding: 0.2rem 0.45rem; cursor: pointer; opacity: 0;
+    transition: opacity 0.12s linear;
+  }
+  .codewrap:hover .copy, .copy:focus-visible { opacity: 1; }
+  .copy:hover { color: var(--fg); border-color: var(--fg); }
+  .copy:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+
+  .cap { font-family: var(--mono); font-size: 0.65rem; line-height: 1.6; color: var(--fg-3);
+    margin: 0 0 1.2rem; }
+  .cap b { color: var(--fg-2); font-weight: 400; letter-spacing: 0.1em;
+    text-transform: uppercase; font-size: 0.9em; }
+
+  /* ---------------- figures ---------------- */
+
+  figure { margin: 0 0 1rem; flex: none; }
+  figure svg { width: 100%; height: auto; max-height: 54vh; display: block; }
+  .fig-text { font-family: var(--mono); font-size: 10px; fill: var(--fg); letter-spacing: 0.04em; }
+  .fig-text-sm { font-family: var(--mono); font-size: 8.5px; fill: var(--fg-2); letter-spacing: 0.04em; }
+  .fig-stroke { stroke: var(--fg); fill: none; stroke-width: 1.25; }
+  .fig-stroke-thin { stroke: var(--fg-3); fill: none; stroke-width: 1; }
+  .fig-dash { stroke: var(--fg-3); fill: none; stroke-width: 1; stroke-dasharray: 3 3; }
+
+  /* ---------------- tables ---------------- */
+
+  .tw { overflow-x: auto; margin: 0 0 1.1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.5rem 0.7rem 0.5rem 0;
+    border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.5; }
+  th { font-family: var(--mono); font-size: 0.62rem; text-transform: uppercase;
+    letter-spacing: 0.12em; color: var(--fg-3); font-weight: 400;
+    border-bottom: 1px solid var(--rule-2); }
+  td:last-child, th:last-child { padding-right: 0; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  /* ---------------- callouts ---------------- */
+
+  .box { border: 1px solid var(--rule-2); padding: 0.85rem 1rem; margin: 0 0 1.1rem;
+    background: var(--panel); }
+  .box .lab { font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase;
+    letter-spacing: 0.18em; color: var(--fg-2); display: block; margin-bottom: 0.5rem; }
+  .box.trap { border-left-width: 3px; border-left-color: var(--fg); }
+  .box p { font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .box p:last-child { margin-bottom: 0; }
+
+  /* ---------------- inline exercises ---------------- */
+
+  .drill { margin-top: auto; padding-top: 1.2rem; border-top: 1px solid var(--rule); flex: none; }
+  .drill > .lab { font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase;
+    letter-spacing: 0.18em; color: var(--fg-3); display: block; margin-bottom: 0.7rem; }
+  details { border-bottom: 1px solid var(--rule); padding: 0.45rem 0; }
+  details:last-child { border-bottom: none; }
+  summary { cursor: pointer; font-size: 0.9rem; list-style: none; display: flex;
+    gap: 0.55rem; align-items: baseline; line-height: 1.5; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "+"; font-family: var(--mono); font-size: 0.75rem;
+    color: var(--fg-3); flex: none; }
+  details[open] summary::before { content: "\2212"; color: var(--fg); }
+  summary:focus-visible { outline: 1px solid var(--fg); outline-offset: 3px; }
+  .answer { font-size: 0.86rem; color: var(--fg-2); line-height: 1.6;
+    padding: 0.6rem 0 0.2rem 1.1rem; border-left: 1px solid var(--rule-2); margin: 0.6rem 0 0; }
+  .answer p { font-size: inherit; margin-bottom: 0.5rem; }
+  .answer p:last-child { margin-bottom: 0; }
+
+  /* ---------------- practice examination ---------------- */
+
+  .quiz { display: flex; flex-direction: column; min-height: 0; }
+  ol.qs { list-style: none; padding: 0; margin: 0 0 1rem; }
+  li.q { border-top: 1px solid var(--rule); padding: 0.7rem 0 0.5rem; margin: 0; }
+  li.q:first-child { border-top: none; padding-top: 0; }
+  li.q .qt { font-size: 0.94rem; margin: 0 0 0.5rem; display: flex; gap: 0.6rem; }
+  li.q .qt::before {
+    content: counter(qnum); counter-increment: qnum;
+    font-family: var(--mono); font-size: 0.68rem; color: var(--fg-3);
+    flex: none; padding-top: 0.32em; font-variant-numeric: tabular-nums;
+  }
+  ol.qs { counter-reset: qnum; }
+
+  li.q label {
+    display: flex; gap: 0.5rem; align-items: baseline;
+    font-size: 0.88rem; line-height: 1.5; padding: 0.16rem 0 0.16rem 1.9rem;
+    cursor: pointer; color: var(--fg-2);
+  }
+  li.q label:hover { color: var(--fg); }
+  li.q input { appearance: none; width: 0.7rem; height: 0.7rem; margin: 0; flex: none;
+    border: 1px solid var(--rule-2); border-radius: 50%; position: relative;
+    top: 0.16em; cursor: pointer; background: var(--bg); }
+  li.q input:checked { border-color: var(--fg); box-shadow: inset 0 0 0 2px var(--bg),
+    inset 0 0 0 4px var(--fg); }
+  li.q input:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+
+  li.q .why {
+    display: none; font-size: 0.84rem; color: var(--fg-2); line-height: 1.6;
+    margin: 0.5rem 0 0 1.9rem; padding-left: 0.9rem; border-left: 1px solid var(--rule-2);
+  }
+  li.q.graded .why { display: block; }
+  li.q.graded .verdict {
+    font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.14em;
+    text-transform: uppercase; margin-left: 0.5rem;
+  }
+  li.q.ok .verdict { color: var(--ok); }
+  li.q.no .verdict { color: var(--no); }
+  li.q.ok { border-left: 2px solid var(--ok); padding-left: 0.7rem; }
+  li.q.no { border-left: 2px solid var(--no); padding-left: 0.7rem; }
+
+  .quiz-bar { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap;
+    border-top: 1px solid var(--rule); padding-top: 0.8rem; margin-top: auto; flex: none; }
+  .qbtn { appearance: none; background: var(--bg); border: 1px solid var(--rule-2);
+    color: var(--fg); font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.14em;
+    text-transform: uppercase; padding: 0.42rem 0.8rem; cursor: pointer; }
+  .qbtn:hover { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .qbtn:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+  .score { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
+    color: var(--fg-2); font-variant-numeric: tabular-nums; }
+
+  /* answer key page */
+  .key { font-family: var(--mono); font-size: 0.74rem; line-height: 1.9;
+    columns: 2; column-gap: 2.4rem; }
+  .key span { display: block; color: var(--fg-2); }
+  .key b { color: var(--fg); font-weight: 400; }
+
+  /* ---------------- contents ---------------- */
+
+  .toc { font-family: var(--mono); font-size: 0.76rem; line-height: 1.5; }
+  .toc .grp { font-size: 0.6rem; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--fg-3); margin: 1.1rem 0 0.5rem; padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--rule); }
+  .toc .grp:first-child { margin-top: 0; }
+  .toc a { color: var(--fg); text-decoration: none; display: flex; align-items: baseline;
+    gap: 0.6rem; padding: 0.2rem 0; }
+  .toc a .n { color: var(--fg-3); font-variant-numeric: tabular-nums; flex: none; }
+  .toc a .dots { flex: 1; border-bottom: 1px dotted var(--rule-2); transform: translateY(-0.18em); }
+  .toc a .pg { color: var(--fg-2); font-variant-numeric: tabular-nums; flex: none; }
+  .toc a:hover .n, .toc a:hover .pg { color: var(--fg); }
+  .toc a:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+
+  /* ---------------- controls ---------------- */
+
+  .nav { position: fixed; bottom: 1.05rem; right: 1.1rem; display: flex;
+    align-items: center; gap: 0.45rem; z-index: 30; }
+  .nav button { appearance: none; background: var(--bg); border: 1px solid var(--rule-2);
+    color: var(--fg); font-family: var(--mono); font-size: 0.82rem; line-height: 1;
+    width: 2.1rem; height: 2.1rem; cursor: pointer; display: grid; place-items: center; padding: 0; }
+  .nav button:hover:not(:disabled) { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .nav button:disabled { color: var(--rule-2); cursor: default; }
+  .nav button:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+  .nav .count { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.12em;
+    color: var(--fg-3); min-width: 4.2rem; text-align: center;
+    font-variant-numeric: tabular-nums; background: none; border: none; cursor: pointer;
+    padding: 0.4rem 0; }
+  .nav .count:hover { color: var(--fg); }
+
+  .hint { position: fixed; bottom: 1.4rem; left: 1.2rem; font-family: var(--mono);
+    font-size: 0.6rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-3);
+    z-index: 20; pointer-events: none; }
+
+  .tick { position: fixed; top: 0; left: 0; height: 2px; background: var(--fg);
+    width: 0; z-index: 40; transition: width 0.18s linear; }
+
+  /* jump palette */
+  .palette {
+    position: fixed; inset: 0; background: var(--bg); z-index: 50;
+    display: none; flex-direction: column;
+    padding: clamp(2rem, 8vh, 5rem) clamp(1.3rem, 6vw, 5rem);
+  }
+  .palette[data-open="true"] { display: flex; }
+  .palette h2 { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--fg-3); margin-bottom: 1.2rem; }
+  .palette ol { list-style: none; padding: 0; margin: 0; overflow-y: auto;
+    columns: 2; column-gap: 2.5rem; font-family: var(--mono); font-size: 0.72rem; }
+  .palette li { margin: 0; break-inside: avoid; }
+  .palette button.jump { appearance: none; background: none; border: none; width: 100%;
+    text-align: left; color: var(--fg-2); font: inherit; cursor: pointer;
+    display: flex; gap: 0.7rem; padding: 0.22rem 0; }
+  .palette button.jump:hover, .palette button.jump:focus-visible { color: var(--fg); outline: none; }
+  .palette button.jump .n { color: var(--fg-3); font-variant-numeric: tabular-nums; flex: none; }
+  .palette .close { margin-top: 1.4rem; align-self: flex-start; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .book { scroll-behavior: auto; }
+    .tick, .copy { transition: none; }
+    * { animation: none !important; }
+  }
+  @media (min-width: 900px) { .book { scroll-behavior: smooth; } }
+  @media (max-width: 620px) {
+    .hint { display: none; }
+    .palette ol, .key { columns: 1; }
+  }
+</style>
+
+<div class="tick" id="tick"></div>
+
+<div class="book" id="book">
+
+  <!-- 01 COVER -->
+  <section class="page cover">
+    <div class="leaf">
+      <p class="cover-mark">BRIDGE &middot; a working book</p>
+      <h1>Everything<br />Is a Plugin</h1>
+      <p class="sub">What is wrong with Bridge's interface, why the cause is architectural rather
+        than visual, and what DeepSeek's plugin kernel would actually change.</p>
+      <div class="imprint">
+        Repository &nbsp; Atharva-Kanherkar/bridge-harness<br />
+        Read at &nbsp; commit f3e18b1 &middot; 18 Aug 2026<br />
+        License &nbsp; none declared &mdash; all rights reserved
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 CONTENTS I -->
+  <section class="page">
+    <div class="rh"><span>Contents</span><span>one of two</span></div>
+    <div class="leaf">
+      <div class="toc">
+        <p class="grp">Part I &middot; What a harness is</p>
+        <a href="#p-c1"><span class="n">01</span><span>The loop is the product</span><span class="dots"></span><span class="pg">05</span></a>
+        <a href="#p-c2"><span class="n">02</span><span>Four things it must own</span><span class="dots"></span><span class="pg">06</span></a>
+        <a href="#p-c3"><span class="n">03</span><span>Why harnesses ossify</span><span class="dots"></span><span class="pg">07</span></a>
+        <p class="grp">Part II &middot; Bridge as it stands</p>
+        <a href="#p-c4"><span class="n">04</span><span>The three trees</span><span class="dots"></span><span class="pg">10</span></a>
+        <a href="#p-c5"><span class="n">05</span><span>The protocol is the good part</span><span class="dots"></span><span class="pg">11</span></a>
+        <a href="#p-c6"><span class="n">06</span><span>One real plugin boundary</span><span class="dots"></span><span class="pg">12</span></a>
+        <a href="#p-c7"><span class="n">07</span><span>BridgeCore, the god&#8209;struct</span><span class="dots"></span><span class="pg">14</span></a>
+        <a href="#p-c8"><span class="n">08</span><span>The seams that are missing</span><span class="dots"></span><span class="pg">16</span></a>
+        <p class="grp">Part III &middot; The interface, measured</p>
+        <a href="#p-c9"><span class="n">09</span><span>962 lines, 36 states</span><span class="dots"></span><span class="pg">19</span></a>
+        <a href="#p-c10"><span class="n">10</span><span>The combinatorial shell</span><span class="dots"></span><span class="pg">21</span></a>
+        <a href="#p-c11"><span class="n">11</span><span>A design system on paper</span><span class="dots"></span><span class="pg">23</span></a>
+        <a href="#p-c12"><span class="n">12</span><span>Dead affordances</span><span class="dots"></span><span class="pg">25</span></a>
+        <a href="#p-c13"><span class="n">13</span><span>Thirteen statuses, shouted</span><span class="dots"></span><span class="pg">27</span></a>
+        <a href="#p-c14"><span class="n">14</span><span>Five keymaps, no keymap</span><span class="dots"></span><span class="pg">29</span></a>
+        <a href="#p-c15"><span class="n">15</span><span>Not a styling problem</span><span class="dots"></span><span class="pg">30</span></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 CONTENTS II -->
+  <section class="page">
+    <div class="rh"><span>Contents</span><span>two of two</span></div>
+    <div class="leaf">
+      <div class="toc">
+        <p class="grp">Part IV &middot; The DeepSeek design</p>
+        <a href="#p-c16"><span class="n">16</span><span>Everything is a plugin</span><span class="dots"></span><span class="pg">33</span></a>
+        <a href="#p-c17"><span class="n">17</span><span>Context as service repository</span><span class="dots"></span><span class="pg">34</span></a>
+        <a href="#p-c18"><span class="n">18</span><span>inject, apply, dispose</span><span class="dots"></span><span class="pg">35</span></a>
+        <a href="#p-c19"><span class="n">19</span><span>Four ways to dispatch</span><span class="dots"></span><span class="pg">37</span></a>
+        <a href="#p-c20"><span class="n">20</span><span>Profiles instead of forks</span><span class="dots"></span><span class="pg">39</span></a>
+        <p class="grp">Part V &middot; Adoption</p>
+        <a href="#p-c21"><span class="n">21</span><span>The translation table</span><span class="dots"></span><span class="pg">42</span></a>
+        <a href="#p-c22"><span class="n">22</span><span>Dissolving App.tsx</span><span class="dots"></span><span class="pg">44</span></a>
+        <a href="#p-c23"><span class="n">23</span><span>What must never be a plugin</span><span class="dots"></span><span class="pg">46</span></a>
+        <a href="#p-c24"><span class="n">24</span><span>A migration that ships</span><span class="dots"></span><span class="pg">47</span></a>
+        <p class="grp">Appendix</p>
+        <a href="#p-base"><span class="n">A</span><span>The measured baseline</span><span class="dots"></span><span class="pg">49</span></a>
+        <a href="#p-colophon"><span class="n">B</span><span>Colophon and sources</span><span class="dots"></span><span class="pg">50</span></a>
+      </div>
+      <div class="box" style="margin-top:1.2rem">
+        <span class="lab">How to read this</span>
+        <p>Arrow keys, the buttons at the lower right, or a swipe turn pages. Press <code>g</code>
+          to jump; the sun/moon button switches grounds. Boxes marked <strong>measured</strong>
+          carry a number you can reproduce; boxes marked <strong>trap</strong> are places the
+          repository contradicts its own written rule.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 PART I -->
+  <section class="page part">
+    <div class="leaf">
+      <div class="rule-long"></div>
+      <p class="part-num">Part one</p>
+      <h2 class="part-title">What a harness is</h2>
+      <p class="part-gloss">A harness is not a model and not an editor. It is the loop between
+        them &mdash; and the loop is the thing that ossifies.</p>
+    </div>
+  </section>
+
+  <!-- 05 CH1 -->
+  <section class="page w" id="p-c1">
+    <div class="rh"><span>One &middot; The loop</span><span>Foundations</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter one</span>The loop is the product</h2>
+      <p class="lede">The model is bought; the loop is built. Everything Bridge is arguing about
+        lives in the loop.</p>
+      <figure>
+        <svg viewBox="0 0 600 190" role="img" aria-label="Context assembly feeds a model, whose tool request is gated by an approval check before a tool executes; the result is appended to the transcript and the loop runs again, with the approval gate emphasized as the only place a human intervenes.">
+          <rect x="20" y="66" width="104" height="40" class="fig-stroke" />
+          <text x="34" y="91" class="fig-text">context</text>
+          <path d="M124 86 L166 86" class="fig-stroke" /><path d="M160 82 L166 86 L160 90" class="fig-stroke" />
+          <rect x="166" y="66" width="94" height="40" class="fig-stroke" />
+          <text x="180" y="91" class="fig-text">model</text>
+          <path d="M260 86 L300 86" class="fig-stroke" /><path d="M294 82 L300 86 L294 90" class="fig-stroke" />
+          <path d="M356 66 L392 86 L356 106 L320 86 Z" class="fig-stroke" style="stroke-width:2" />
+          <text x="334" y="84" class="fig-text-sm">allowed</text>
+          <text x="352" y="96" class="fig-text-sm">?</text>
+          <path d="M392 86 L432 86" class="fig-stroke" /><path d="M426 82 L432 86 L426 90" class="fig-stroke" />
+          <text x="398" y="78" class="fig-text-sm">yes</text>
+          <rect x="432" y="66" width="94" height="40" class="fig-stroke" />
+          <text x="446" y="91" class="fig-text">tool</text>
+          <path d="M356 106 L356 146 L470 146" class="fig-dash" /><path d="M464 142 L470 146 L464 150" class="fig-dash" />
+          <text x="362" y="130" class="fig-text-sm">ask a human, or refuse</text>
+          <path d="M526 86 L556 86 L556 34 L213 34 L213 62" class="fig-stroke" />
+          <path d="M209 56 L213 62 L217 56" class="fig-stroke" />
+          <text x="280" y="28" class="fig-text-sm">append the result, run again</text>
+          <line x1="20" y1="166" x2="580" y2="166" class="fig-stroke-thin" />
+          <text x="20" y="182" class="fig-text-sm">the gate is the only node a human touches, which is why it is the one node that cannot be swapped casually</text>
+        </svg>
+        <p class="cap"><b>Figure 1.1</b> The loop, with the approval gate where it actually sits:
+          between the model's request and the tool's execution. Chapter 23 returns to this
+          drawing, because it is the reason one part of Bridge must stay hard&#8209;wired.</p>
+      </figure>
+      <p>Notice what is absent: no session list, no diff viewer. Those exist because the loop runs
+        unattended and someone must supervise it afterwards. Bridge's README states its position
+        exactly &mdash; it renders normalized messages, plans, tool calls, approvals and file
+        changes &ldquo;instead of embedding provider TUIs.&rdquo; Bridge is a supervision surface
+        over somebody else's loop.</p>
+    </div>
+  </section>
+
+  <!-- 06 CH2 -->
+  <section class="page" id="p-c2">
+    <div class="rh"><span>Two &middot; Responsibilities</span><span>Foundations</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter two</span>Four things it must own</h2>
+      <p class="lede">Every harness owns the same four responsibilities. Naming them makes the rest
+        of this book a comparison rather than opinion.</p>
+      <p><strong>The model seam.</strong> Which model, at what tier, over which protocol. Bridge
+        calls this an <em>adapter</em> and has three: Codex over <code>app-server</code>, Claude
+        Code through an Agent SDK sidecar, OpenCode against its headless server.</p>
+      <p><strong>The tool surface.</strong> What the agent may do to the machine, and what it must
+        ask about first. Bridge pushes tools down into the provider and keeps the
+        <em>authorization</em>.</p>
+      <p><strong>Context and memory.</strong> What enters the prompt, what is dropped, what survives
+        a restart. Bridge's answer is a <em>session forest</em>: append&#8209;only entries, each
+        with a parent pointer, projected into a branch.</p>
+      <p><strong>The supervision surface.</strong> How a human sees what happened and intervenes.
+        For Bridge this is the whole React application &mdash; and the responsibility this book
+        argues is least well served.</p>
+      <div class="box">
+        <span class="lab">Why the four matter</span>
+        <p>DeepSeek makes all four swappable in configuration. Bridge has made one swappable in
+          code. That gap is Part V.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 CH3 -->
+  <section class="page" id="p-c3">
+    <div class="rh"><span>Three &middot; Ossification</span><span>Foundations</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter three</span>Why harnesses ossify</h2>
+      <p class="lede">Harnesses do not rot because their authors are careless. They rot because the
+        cheapest way to add the eleventh capability is to add a field to the object that already
+        holds the other ten.</p>
+      <p>Every application has a <em>composition root</em>: the one place where concrete
+        implementations are chosen and handed to everything else. In a young project it is a small
+        struct with four fields, and reading it tells you the whole system.</p>
+      <p>The root is also the path of least resistance. A new capability needs a database handle, a
+        subscription, and somewhere to keep a cache &mdash; and the root already has all three. So
+        the field goes in. Nothing breaks.</p>
+      <p>What changes is the <em>cost of removal</em>. Once thirty subsystems reach into one
+        struct, none can be lifted out without touching thirty call sites, and the honest answer
+        to &ldquo;can we swap the storage layer&rdquo; becomes no. The architecture did not fail.
+        It accreted.</p>
+    </div>
+  </section>
+
+  <!-- 08 CH3 FIGURE -->
+  <section class="page w">
+    <div class="rh"><span>Three &middot; Ossification</span><span>Figure</span></div>
+    <div class="leaf wide">
+      <figure>
+        <svg viewBox="0 0 600 220" role="img" aria-label="On the left, five subsystems all reach into one shared root struct with crossing thin lines. On the right, the same five subsystems each depend on a named registry, and the root only registers them, in straight non-crossing lines.">
+          <text x="10" y="14" class="fig-text-sm">ACCRETION: everything reaches into the root</text>
+          <rect x="20" y="92" width="86" height="36" class="fig-stroke" style="stroke-width:2" />
+          <text x="34" y="115" class="fig-text">root</text>
+          <line x1="106" y1="110" x2="196" y2="40" class="fig-stroke-thin" />
+          <line x1="106" y1="110" x2="196" y2="76" class="fig-stroke-thin" />
+          <line x1="106" y1="110" x2="196" y2="112" class="fig-stroke-thin" />
+          <line x1="106" y1="110" x2="196" y2="148" class="fig-stroke-thin" />
+          <line x1="106" y1="110" x2="196" y2="184" class="fig-stroke-thin" />
+          <line x1="196" y1="40" x2="196" y2="184" class="fig-stroke-thin" />
+          <line x1="106" y1="92" x2="196" y2="184" class="fig-stroke-thin" />
+          <line x1="106" y1="128" x2="196" y2="40" class="fig-stroke-thin" />
+          <rect x="196" y="26" width="76" height="28" class="fig-stroke-thin" />
+          <text x="206" y="44" class="fig-text-sm">storage</text>
+          <rect x="196" y="62" width="76" height="28" class="fig-stroke-thin" />
+          <text x="206" y="80" class="fig-text-sm">sessions</text>
+          <rect x="196" y="98" width="76" height="28" class="fig-stroke-thin" />
+          <text x="206" y="116" class="fig-text-sm">policy</text>
+          <rect x="196" y="134" width="76" height="28" class="fig-stroke-thin" />
+          <text x="206" y="152" class="fig-text-sm">loop</text>
+          <rect x="196" y="170" width="76" height="28" class="fig-stroke-thin" />
+          <text x="206" y="188" class="fig-text-sm">ui</text>
+          <text x="10" y="212" class="fig-text-sm">removal cost: every field, every caller</text>
+          <line x1="310" y1="8" x2="310" y2="206" class="fig-dash" />
+          <text x="330" y="14" class="fig-text-sm">BOUNDARIES: the root only registers</text>
+          <rect x="330" y="92" width="86" height="36" class="fig-stroke" />
+          <text x="344" y="115" class="fig-text">root</text>
+          <path d="M416 110 L462 110" class="fig-stroke" /><path d="M456 106 L462 110 L456 114" class="fig-stroke" />
+          <rect x="462" y="92" width="60" height="36" class="fig-stroke" style="stroke-width:2" />
+          <text x="470" y="108" class="fig-text-sm">registry</text>
+          <text x="470" y="121" class="fig-text-sm">by name</text>
+          <path d="M492 92 L492 40 L540 40" class="fig-stroke" />
+          <rect x="540" y="26" width="50" height="28" class="fig-stroke-thin" />
+          <text x="550" y="44" class="fig-text-sm">plug</text>
+          <path d="M492 92 L492 76 L540 76" class="fig-stroke" />
+          <rect x="540" y="62" width="50" height="28" class="fig-stroke-thin" />
+          <text x="550" y="80" class="fig-text-sm">plug</text>
+          <path d="M492 128 L492 148 L540 148" class="fig-stroke" />
+          <rect x="540" y="134" width="50" height="28" class="fig-stroke-thin" />
+          <text x="550" y="152" class="fig-text-sm">plug</text>
+          <path d="M492 128 L492 184 L540 184" class="fig-stroke" />
+          <rect x="540" y="170" width="50" height="28" class="fig-stroke-thin" />
+          <text x="550" y="188" class="fig-text-sm">plug</text>
+          <text x="330" y="212" class="fig-text-sm">removal cost: unregister one name</text>
+        </svg>
+        <p class="cap"><b>Figure 3.1</b> The same five subsystems, twice. The left tangle is drawn
+          thin because it is noise. The right side is not cleverer; it paid for one indirection.
+          Bridge's Rust core is closer to the left drawing than its author would guess, and
+          Chapter 7 counts the fields.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 09 PART II -->
+  <section class="page part">
+    <div class="leaf">
+      <div class="rule-long"></div>
+      <p class="part-num">Part two</p>
+      <h2 class="part-title">Bridge as it stands</h2>
+      <p class="part-gloss">The real architecture at commit f3e18b1: what is genuinely well built,
+        where the one working plugin boundary is, and which seams were never cut.</p>
+    </div>
+  </section>
+
+  <!-- 10 CH4 -->
+  <section class="page w" id="p-c4">
+    <div class="rh"><span>Four &middot; Three trees</span><span>Bridge today</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter four</span>The three trees</h2>
+      <p class="lede">Bridge's central idea: three hierarchies exist, they do not line up, and
+        pretending they do is how agent tools lie to their users.</p>
+      <figure>
+        <svg viewBox="0 0 600 205" role="img" aria-label="Three separate trees side by side: a workspace tree from repository to task worktree to worker worktree, an agent tree from orchestrator to two workers, and a conversation tree of immutable entries with one active branch. A footline notes the trees are not synchronised.">
+          <text x="14" y="14" class="fig-text-sm">WORKSPACE</text>
+          <rect x="14" y="26" width="150" height="28" class="fig-stroke" />
+          <text x="24" y="45" class="fig-text-sm">repository</text>
+          <path d="M40 54 L40 78 L60 78" class="fig-stroke-thin" />
+          <rect x="60" y="64" width="104" height="28" class="fig-stroke" />
+          <text x="70" y="83" class="fig-text-sm">task worktree</text>
+          <path d="M86 92 L86 116 L106 116" class="fig-stroke-thin" />
+          <rect x="106" y="102" width="58" height="28" class="fig-stroke-thin" />
+          <text x="114" y="120" class="fig-text-sm">worker</text>
+          <text x="14" y="156" class="fig-text-sm">branch + path +</text>
+          <text x="14" y="169" class="fig-text-sm">task status</text>
+          <line x1="192" y1="8" x2="192" y2="180" class="fig-dash" />
+          <text x="212" y="14" class="fig-text-sm">AGENTS</text>
+          <rect x="212" y="26" width="150" height="28" class="fig-stroke" style="stroke-width:2" />
+          <text x="222" y="45" class="fig-text-sm">orchestrator</text>
+          <path d="M238 54 L238 78 L258 78" class="fig-stroke-thin" />
+          <rect x="258" y="64" width="104" height="28" class="fig-stroke-thin" />
+          <text x="268" y="83" class="fig-text-sm">worker A</text>
+          <path d="M238 54 L238 116 L258 116" class="fig-stroke-thin" />
+          <rect x="258" y="102" width="104" height="28" class="fig-stroke-thin" />
+          <text x="268" y="121" class="fig-text-sm">worker B</text>
+          <text x="212" y="156" class="fig-text-sm">policy decides whether</text>
+          <text x="212" y="169" class="fig-text-sm">a child may exist</text>
+          <line x1="390" y1="8" x2="390" y2="180" class="fig-dash" />
+          <text x="410" y="14" class="fig-text-sm">CONVERSATION</text>
+          <rect x="410" y="26" width="110" height="26" class="fig-stroke" />
+          <text x="420" y="44" class="fig-text-sm">entry</text>
+          <path d="M436 52 L436 74 L456 74" class="fig-stroke-thin" />
+          <rect x="456" y="62" width="110" height="26" class="fig-stroke" />
+          <text x="466" y="80" class="fig-text-sm">entry</text>
+          <path d="M482 88 L482 110 L502 110" class="fig-stroke-thin" />
+          <rect x="502" y="98" width="88" height="26" class="fig-stroke-thin" />
+          <text x="512" y="116" class="fig-text-sm">forked</text>
+          <path d="M482 88 L482 146 L502 146" class="fig-stroke-thin" />
+          <rect x="502" y="134" width="88" height="26" class="fig-stroke" style="stroke-width:2" />
+          <text x="512" y="152" class="fig-text-sm">active</text>
+          <line x1="14" y1="186" x2="586" y2="186" class="fig-stroke-thin" />
+          <text x="14" y="200" class="fig-text-sm">rewinding the right-hand tree moves nothing in the left-hand ones &mdash; the fact the interface must carry</text>
+        </svg>
+        <p class="cap"><b>Figure 4.1</b> Three trees, drawn apart because they <em>are</em> apart.
+          A design that must show three unsynchronised hierarchies has earned some complexity.
+          Part III's complaint is not that Bridge's UI is complex; it is that its complexity is
+          unmanaged.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 11 CH5 -->
+  <section class="page" id="p-c5">
+    <div class="rh"><span>Five &middot; The protocol</span><span>Bridge today</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter five</span>The protocol is the good part</h2>
+      <p class="lede">Bridge already did the hard prerequisite for a plugin architecture, and
+        appears not to know it: a versioned, generated, drift&#8209;tested RPC contract sits in the
+        middle of the system.</p>
+      <p>The <code>bridge-protocol</code> crate is the single source of truth. Everything under
+        <code>docs/protocol/schemas/</code> and <code>src/protocol/generated/</code> is produced
+        from it, and drift is a test failure rather than a review note:</p>
+      <pre class="code"><code>cargo test --manifest-path src-tauri/Cargo.toml -p bridge-protocol</code></pre>
+      <p class="cap"><b>Measured</b> 87 methods across 18 domains, 105 generated JSON schemas,
+        1,405 lines of generated TypeScript. A test parses Tauri's
+        <code>generate_handler![...]</code> and asserts the registry matches one to one, so adding
+        a command without extending the contract fails the build.</p>
+      <div class="box">
+        <span class="lab">Why this matters for Part V</span>
+        <p>A plugin system needs a stable boundary a plugin can be written against without reading
+          the host's source. Bridge has one, it is enforced, and a client other than the desktop
+          app already speaks it: <code>bridged</code> serves newline&#8209;delimited JSON&#8209;RPC
+          2.0 over a Unix socket under an exclusive owner lease. The expensive part of
+          &ldquo;everything is a plugin&rdquo; is already built.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 CH6 -->
+  <section class="page" id="p-c6">
+    <div class="rh"><span>Six &middot; HarnessAdapter</span><span>Bridge today</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter six</span>One real plugin boundary</h2>
+      <p class="lede">Bridge has a working plugin system for exactly one capability. Reading it is
+        the fastest way to see what the other eight would look like.</p>
+      <pre class="code"><code>pub trait HarnessAdapter: Send + Sync + Any {
+    fn descriptor(&amp;self) -&gt; AdapterDescriptor;
+    fn start(&amp;self, request: StartRequest&lt;'_&gt;)
+        -&gt; Result&lt;StartedAdapter, BridgeError&gt;;
+    fn supports_native_resume(&amp;self) -&gt; bool;
+    fn normalize(&amp;self, value: &amp;Value) -&gt; Vec&lt;NormalizedEvent&gt;;
+}
+
+pub struct AdapterRegistry {
+    adapters: HashMap&lt;String, Box&lt;dyn HarnessAdapter&gt;&gt;,
+}</code></pre>
+      <p class="cap"><b>Source</b> <code>bridge-core/src/adapters.rs</code> 256&ndash;267, elided:
+        <code>as_any</code> and <code>resume</code> are omitted.</p>
+      <p>Three properties make this a boundary rather than a gesture.
+        <code>descriptor()</code> lets an adapter <em>declare</em> itself, availability included.
+        <code>supports_native_resume()</code> lets it admit a missing capability instead of faking
+        it. And <code>normalize()</code> means the rest of the system never learns which provider
+        it is talking to.</p>
+    </div>
+  </section>
+
+  <!-- 13 CH6b -->
+  <section class="page" id="p-c6b">
+    <div class="rh"><span>Six &middot; HarnessAdapter</span><span>Three registries</span></div>
+    <div class="leaf">
+      <h3 class="sub">Registration is already dynamic</h3>
+      <p><code>built_in()</code> happens to hard&#8209;code three adapters, but
+        <code>register()</code> takes any box and rejects empty or duplicate ids:</p>
+      <pre class="code"><code>registry.register(Box::new(CodexAdapter))?;
+registry.register(Box::new(ClaudeAdapter {
+    streams: Mutex::new(HashMap::new()) }))?;
+registry.register(Box::new(OpenCodeAdapter::new(
+    opencode_settings, on_opencode_discovered)))?;</code></pre>
+      <p>This is a string&#8209;keyed runtime registry, not a match over an enum. The mechanism a
+        plugin architecture needs is present and working.</p>
+      <div class="box trap">
+        <span class="lab">Trap</span>
+        <p>The boundary you can see is not the whole story. Which backend <em>may</em> execute is
+          decided by a second object, <code>BackendResolver</code>, fed by a
+          signature&#8209;verified <code>Catalog</code>, against a third registry called
+          <code>IntegrationRegistry</code> &mdash; whose own doc comment reads &ldquo;Empty today,
+          and that is the point.&rdquo; Bridge has three overlapping registries for one
+          capability. Chapter 21 argues that is what a single named service replaces.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14 CH7 -->
+  <section class="page w" id="p-c7">
+    <div class="rh"><span>Seven &middot; The god-struct</span><span>Bridge today</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter seven</span>BridgeCore, the god&#8209;struct</h2>
+      <p class="lede">One struct holds 23 public fields across 52 lines, and a live SQLite
+        connection is the first of them. This is Figure 3.1's left&#8209;hand drawing, in
+        production.</p>
+      <pre class="code"><code>pub struct BridgeCore {
+    pub db: Mutex&lt;rusqlite::Connection&gt;,
+    pub telemetry_db: Mutex&lt;rusqlite::Connection&gt;,
+    pub runtimes: Mutex&lt;HashMap&lt;String, RuntimeSession&gt;&gt;,
+    pub adapter_registry: Arc&lt;adapters::AdapterRegistry&gt;,
+    pub backend_resolver: Arc&lt;backend_binding::BackendResolver&gt;,
+    pub catalog: Arc&lt;verified_catalog::Catalog&gt;,
+    pub integrations: Arc&lt;agent_integration::IntegrationRegistry&gt;,
+    pub delegations: Mutex&lt;DelegationState&gt;,
+    <span class="c">// … 15 more: four PathBufs, three more Mutex&lt;HashMap&gt;, the event bus</span>
+}</code></pre>
+      <p class="cap"><b>Source</b> <code>bridge-core/src/runtime.rs</code> 33&ndash;85. Field count
+        and span verified at commit f3e18b1.</p>
+    </div>
+  </section>
+
+  <!-- 15 CH7b -->
+  <section class="page" id="p-c7b">
+    <div class="rh"><span>Seven &middot; The god-struct</span><span>Consequence</span></div>
+    <div class="leaf">
+      <h3 class="sub">Read the first line again</h3>
+      <p><code>Mutex&lt;rusqlite::Connection&gt;</code> is not a storage <em>interface</em>. It is
+        a specific SQLite connection, held by value, reachable from every subsystem that can see
+        <code>BridgeCore</code>. There is no <code>trait Store</code>.</p>
+      <p>So swapping persistence &mdash; for a remote runner, a test double, or the hosted plan
+        Bridge's own issue #119 describes &mdash; means touching every call site that reached
+        through that field. The same holds for the event bus, the worktree root, the skill store
+        path, the credential broker and the browser supervisor. Each is a concrete type in a
+        field, and each was the cheapest correct thing to write at the time.</p>
+      <div class="box">
+        <span class="lab">Measured</span>
+        <p>The Rust core is 70,481 lines and declares 12 public traits. Seven are real extension
+          points: <code>HarnessAdapter</code>, <code>AgentIntegration</code>,
+          <code>BackendDriver</code>, <code>ArtifactFetcher</code>,
+          <code>ProcessSupervisor</code>, <code>ReadinessProbe</code>, <code>Transport</code>.
+          Storage, sessions, the agent loop, scheduling and the UI are not among them.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 16 CH8 -->
+  <section class="page w" id="p-c8">
+    <div class="rh"><span>Eight &middot; Missing seams</span><span>Bridge today</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter eight</span>The seams that are missing</h2>
+      <p class="lede">DeepSeek names nine capabilities it puts behind plugin boundaries. Scoring
+        Bridge against that list is the clearest statement of the gap.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Capability</th><th>Bridge today</th><th>Seam?</th></tr></thead>
+          <tbody>
+            <tr><td>Models</td><td><code>HarnessAdapter</code> + string&#8209;keyed registry</td><td>yes</td></tr>
+            <tr><td>Tools</td><td>Delegated to the provider; Bridge owns authorization</td><td>partial</td></tr>
+            <tr><td>Skills</td><td><code>skill_marketplace</code>, consent records, install RPC</td><td>partial</td></tr>
+            <tr><td>Sandboxes</td><td>Git worktrees + write&#8209;scope policy, hard&#8209;wired</td><td>no</td></tr>
+            <tr><td>Sessions</td><td>Session forest, concrete SQLite tables</td><td>no</td></tr>
+            <tr><td>Storage</td><td><code>Mutex&lt;rusqlite::Connection&gt;</code> in a public field</td><td>no</td></tr>
+            <tr><td>Loops</td><td>Provider owns it; <code>live_turn.rs</code> supervises</td><td>no</td></tr>
+            <tr><td>Scheduling</td><td>Learning jobs, watchdogs, poll timers, each bespoke</td><td>no</td></tr>
+            <tr><td>UI</td><td>One React tree; see Part III</td><td>no</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 17 CH8b -->
+  <section class="page" id="p-c8b">
+    <div class="rh"><span>Eight &middot; Missing seams</span><span>Two defences</span></div>
+    <div class="leaf">
+      <h3 class="sub">Two rows deserve defending, not fixing</h3>
+      <p><em>Tools</em> and <em>loops</em> are genuinely the provider's job in Bridge's design. The
+        whole premise is supervising Codex and Claude Code rather than reimplementing them, and
+        issue #116 tracks a first&#8209;party loop as a separate deliberate project. Scoring those
+        &ldquo;no&rdquo; is not a criticism.</p>
+      <p>The other five are not design choices. Storage, sessions, sandboxes, scheduling and the
+        UI are concrete because concrete was cheaper &mdash; and each now blocks something already
+        in the tracker: the remote runner split (#108), the hosted plan's metering (#119), and a
+        terminal client needing the conversation projection without the React tree (#148).</p>
+      <div class="box trap">
+        <span class="lab">Trap</span>
+        <p>Bridge's roadmap has already priced the missing seams without naming them. Issue #148
+          asks for &ldquo;pure conversation projection + parity harness against
+          <code>conversation.ts</code>&rdquo; &mdash; a request to extract a plugin boundary out
+          of the UI after the fact. Doing that once per client is the cost of not having done it
+          once.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 18 PART III -->
+  <section class="page part">
+    <div class="leaf">
+      <div class="rule-long"></div>
+      <p class="part-num">Part three</p>
+      <h2 class="part-title">The interface, measured</h2>
+      <p class="part-gloss">Counted evidence, each number with the command that produced it.
+        &ldquo;The UI feels bad&rdquo; is not a finding and cannot be fixed.</p>
+    </div>
+  </section>
+
+  <!-- 19 CH9 -->
+  <section class="page" id="p-c9">
+    <div class="rh"><span>Nine &middot; App.tsx</span><span>The interface</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter nine</span>962 lines, 36 states</h2>
+      <p class="lede">One React component holds 36 <code>useState</code> calls, 17
+        <code>useEffect</code> blocks, and the definitions of four other components. It is not a
+        screen; it is the application.</p>
+      <pre class="code"><code>$ wc -l src/App.tsx
+     962 src/App.tsx
+$ for h in useState useEffect useMemo useRef; do \
+    echo "$h: $(grep -c $h src/App.tsx)"; done
+useState: 36
+useEffect: 17
+useMemo: 13
+useRef: 9</code></pre>
+      <p>Across all 37 non&#8209;test <code>.tsx</code> files there are 140 <code>useState</code>
+        calls. More than a quarter of the application's client state lives in one function body.</p>
+      <p>The consequence is coupling, not slowness. <code>App.tsx</code> owns the polling loop, the
+        agent&#8209;event batching timer, the file&#8209;mention index, the slash&#8209;command
+        list, the usage rate samples, the forest snapshot key, the pending&#8209;adoption queue and
+        the composer draft &mdash; simultaneously. No part of it can be tested, reused by the
+        planned TUI, or reasoned about alone.</p>
+    </div>
+  </section>
+
+  <!-- 20 CH9b -->
+  <section class="page" id="p-c9b">
+    <div class="rh"><span>Nine &middot; App.tsx</span><span>Its own rule</span></div>
+    <div class="leaf">
+      <h3 class="sub">The repository already knows better</h3>
+      <p><code>AGENTS.md</code> states the right rule: &ldquo;<code>App.tsx</code> owns app state
+        and composes <code>BridgeSidebar</code>, the <code>ComposerPill</code>,
+        <code>AgentConversation</code>, and dialogs. Prefer small, prop&#8209;driven presentational
+        components in <code>src/components/</code>.&rdquo;</p>
+      <p>Four components violate it by being defined <em>inside</em> <code>App.tsx</code> instead:
+        <code>EventPanel</code>, <code>Welcome</code>, <code>WelcomeModelBadge</code> and
+        <code>CommandPalette</code>.</p>
+      <div class="box trap">
+        <span class="lab">Trap</span>
+        <p>Two of those four are unreachable. Chapter 12 shows <code>CommandPalette</code> and
+          <code>EventPanel</code> are defined and never rendered. The build is strict enough to
+          reject an unused <em>icon import</em> and does not notice an unused local
+          <em>component</em> &mdash; so the two defects that look alike get opposite treatment.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 21 CH10 -->
+  <section class="page" id="p-c10">
+    <div class="rh"><span>Ten &middot; Navigation</span><span>The interface</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter ten</span>The combinatorial shell</h2>
+      <p class="lede">Bridge's navigation is not a hierarchy. It is four independent switches read
+        by one render function.</p>
+      <pre class="code"><code>const [view, setView] = useState&lt;
+  "workspace" | "marketplace" | "settings"&gt;("workspace");
+const [paradigm, setParadigm] = useState&lt;
+  "single" | "grid"&gt;("single");
+const [activeTab, setActiveTab] = useState&lt;
+  "agent" | "changes" | "events" | "terminal"&gt;("agent");
+const [modal, setModal] = useState&lt;
+  "chat" | "workspace" | "orchestrator" | "router" | null&gt;(null);</code></pre>
+      <p class="cap"><b>Source</b> <code>src/App.tsx</code> 74&ndash;80, reflowed to fit. Four
+        orthogonal axes, declared four lines apart, resolved by one nested ternary chain.</p>
+      <p>The symptom a user feels is inconsistency. Switching to Mission Control silently discards
+        which tab you were on, and <code>openSession</code> resets three axes at once &mdash;
+        <code>setView("workspace"); setParadigm("single"); setActiveTab("agent")</code> &mdash;
+        because with four independent switches the only way to reach a known state is to stamp on
+        all of them.</p>
+    </div>
+  </section>
+
+  <!-- 22 CH10 FIGURE -->
+  <section class="page w">
+    <div class="rh"><span>Ten &middot; Navigation</span><span>Figure</span></div>
+    <div class="leaf wide">
+      <figure>
+        <svg viewBox="0 0 600 200" role="img" aria-label="Four independent switches labelled view, paradigm, activeTab and modal each feed into a single render function, which produces twenty four layouts and five overlay states. The render node is emphasized because it is the only place the four axes are reconciled.">
+          <text x="14" y="14" class="fig-text-sm">FOUR SWITCHES, ONE READER</text>
+          <rect x="14" y="30" width="132" height="26" class="fig-stroke-thin" />
+          <text x="24" y="47" class="fig-text-sm">view &nbsp;&times;3</text>
+          <rect x="14" y="66" width="132" height="26" class="fig-stroke-thin" />
+          <text x="24" y="83" class="fig-text-sm">paradigm &nbsp;&times;2</text>
+          <rect x="14" y="102" width="132" height="26" class="fig-stroke-thin" />
+          <text x="24" y="119" class="fig-text-sm">activeTab &nbsp;&times;4</text>
+          <rect x="14" y="138" width="132" height="26" class="fig-stroke-thin" />
+          <text x="24" y="155" class="fig-text-sm">modal &nbsp;&times;5</text>
+          <path d="M146 43 L232 90" class="fig-stroke-thin" />
+          <path d="M146 79 L232 94" class="fig-stroke-thin" />
+          <path d="M146 115 L232 100" class="fig-stroke-thin" />
+          <path d="M146 151 L232 104" class="fig-stroke-thin" />
+          <rect x="232" y="76" width="128" height="42" class="fig-stroke" style="stroke-width:2" />
+          <text x="244" y="94" class="fig-text-sm">one return (),</text>
+          <text x="244" y="107" class="fig-text-sm">nested ternaries</text>
+          <path d="M360 97 L404 97" class="fig-stroke" /><path d="M398 93 L404 97 L398 101" class="fig-stroke" />
+          <rect x="404" y="60" width="182" height="30" class="fig-stroke" />
+          <text x="418" y="79" class="fig-text-sm">24 layout combinations</text>
+          <rect x="404" y="104" width="182" height="30" class="fig-stroke" />
+          <text x="418" y="123" class="fig-text-sm">&times; 5 overlay states</text>
+          <line x1="14" y1="176" x2="586" y2="176" class="fig-stroke-thin" />
+          <text x="14" y="192" class="fig-text-sm">nobody chose 120 states; they are the arithmetic of four switches nobody unified</text>
+        </svg>
+        <p class="cap"><b>Figure 10.1</b> The switches are thin because individually each is
+          reasonable. The emphasized node is the problem: one function is the only place they meet,
+          so no combination was ever designed &mdash; only permitted. Mission Control proves the
+          cost: it renders agent activity from the same events as
+          <code>AgentConversation</code> and imports none of it.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 23 CH11 -->
+  <section class="page" id="p-c11">
+    <div class="rh"><span>Eleven &middot; Tokens</span><span>The interface</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter eleven</span>A design system on paper</h2>
+      <p class="lede">Bridge defines 49 theme tokens and then bypasses them 612 times. The most
+        reproducible finding in the book, and the one with the clearest cause.</p>
+      <p><code>AGENTS.md</code> is unambiguous: &ldquo;<strong>Tokens over hardcoded values.</strong>
+        Reach for theme tokens … before arbitrary values.&rdquo; And on glass: &ldquo;Prefer them
+        over hand&#8209;rolled <code>bg-white/[0.0x] backdrop-blur-*</code> combinations.&rdquo;</p>
+      <pre class="code"><code>$ TSX=$(find src -name '*.tsx' -not -name '*.test.tsx')   <span class="c"># 37 files</span>
+$ echo "$TSX" | xargs grep -oh 'text-\[[0-9.]*px\]' | wc -l
+     343   <span class="c"># arbitrary font sizes, 17 distinct values</span>
+$ echo "$TSX" | xargs grep -oh -- '[a-z0-9]-\[[^]]*\]' | wc -l
+     777   <span class="c"># arbitrary-value utilities of every kind</span></code></pre>
+      <p class="cap"><b>Measured</b> The palette query is on the facing page and in Appendix A.</p>
+    </div>
+  </section>
+
+  <!-- 24 CH11b -->
+  <section class="page w" id="p-c11b">
+    <div class="rh"><span>Eleven &middot; Tokens</span><span>The tally</span></div>
+    <div class="leaf wide">
+      <div class="tw">
+        <table>
+          <thead><tr><th>Rule in AGENTS.md</th><th>Follows it</th><th>Bypasses it</th></tr></thead>
+          <tbody>
+            <tr><td>Semantic colour tokens</td><td>49 defined</td><td>612 hardcoded palette utilities</td></tr>
+            <tr><td><code>.u-glass*</code> over hand&#8209;rolled glass</td><td>32</td><td>17 <code>backdrop-blur</code>, 96 <code>bg-white/</code>, 99 <code>border-white/</code></td></tr>
+            <tr><td>Arbitrary values only when no token fits</td><td>&mdash;</td><td>777</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The type scale is the clearest tell: there is no scale. Seventeen pixel sizes appear as
+        arbitrary values &mdash; 8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 15, 20,
+        22, 26, 32 &mdash; the commonest being 11px (72 uses), 10px (66), 9px (43), 10.5px (35). A
+        half&#8209;pixel distinction between <code>text-[10px]</code> and
+        <code>text-[10.5px]</code> is not a decision anyone can defend. It is what happens when
+        each component's typography is chosen locally, by eye, months apart.</p>
+      <div class="box trap">
+        <span class="lab">Trap &mdash; the real cause</span>
+        <p>Nothing enforces the token rule. Protocol drift fails <code>cargo test</code>; an unused
+          icon import fails the build; a 612nd hardcoded <code>text-neutral-500</code> fails
+          nothing. There are six design documents under <code>docs/</code> &mdash; session forest,
+          delegation, compaction, learning, browser bridge, managed runtimes &mdash; and
+          <strong>zero</strong> for the interface. The backend has contracts and tests; the
+          frontend has prose. The drift is what that asymmetry predicts.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 25 CH12 -->
+  <section class="page" id="p-c12">
+    <div class="rh"><span>Twelve &middot; Dead affordances</span><span>The interface</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter twelve</span>Dead affordances</h2>
+      <p class="lede">Three pieces of interface exist in the codebase and cannot be reached. One of
+        them advertises keyboard shortcuts it does not implement.</p>
+      <h3 class="sub">The command palette that cannot search</h3>
+      <p><code>CommandPalette</code> is the last function in <code>App.tsx</code>, at line 962. It
+        renders a focused search input, a list of every workspace, and a footer reading
+        &ldquo;↑↓ navigate&rdquo; and &ldquo;esc close&rdquo;.</p>
+      <pre class="code"><code>&lt;InputGroupInput autoFocus
+  placeholder="Search workspaces and actions…" /&gt;
+<span class="c">// no value, no onChange, no key handling —</span>
+<span class="c">// yet the footer promises ↑↓ and esc</span></code></pre>
+      <p>Nothing filters the list, nothing moves a selection, nothing handles Escape. It is also
+        never rendered: <code>grep -rn 'CommandPalette' src</code> returns one line, its own
+        definition.</p>
+    </div>
+  </section>
+
+  <!-- 26 CH12b -->
+  <section class="page" id="p-c12b">
+    <div class="rh"><span>Twelve &middot; Dead affordances</span><span>Two more</span></div>
+    <div class="leaf">
+      <h3 class="sub">The events tab with no tab</h3>
+      <p><code>activeTab</code>'s union includes <code>"events"</code>. The
+        <code>TabsList</code> offers three tabs &mdash; Agent, Changes, Terminal. No control sets
+        <code>"events"</code> and no branch renders it. <code>EventPanel</code> is fully
+        implemented and referenced nowhere.</p>
+      <h3 class="sub">Two welcome screens</h3>
+      <p><code>src/components/WelcomeScreen.tsx</code> is 174 lines, has its own keydown listener,
+        and is imported by nothing. A second, 20&#8209;line <code>Welcome</code> defined inside
+        <code>App.tsx</code> is the one that renders.</p>
+      <div class="box trap">
+        <span class="lab">Trap</span>
+        <p>The README advertises &ldquo;Local observability&rdquo;. The workspace event ledger that
+          would show a session's own history is written by the backend, has a panel built for it,
+          and has no route to it. The feature is not missing. Its last three lines of wiring
+          are.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 27 CH13 -->
+  <section class="page" id="p-c13">
+    <div class="rh"><span>Thirteen &middot; Status</span><span>The interface</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter thirteen</span>Thirteen statuses, shouted</h2>
+      <p class="lede">A session has thirteen states. The interface renders all thirteen as
+        capitalised words and distinguishes five by colour. The other eight look identical.</p>
+      <pre class="code"><code>export type SessionStatus = "idle" | "starting" | "working"
+  | "waiting" | "warm" | "checkpointing" | "ready" | "stopped"
+  | "resuming" | "restored" | "failed" | "completed" | "cancelled";</code></pre>
+      <p class="cap"><b>Source</b> <code>src/protocol/generated/protocol.ts</code> line 800 &mdash;
+        generated from the Rust contract, so the vocabulary is deliberate.</p>
+      <p>Twelve of the thirteen UI labels are the variant in capitals. Only
+        <code>waiting → "NEEDS YOU"</code> was translated into something a user can act on: the
+        right instinct, applied exactly once. In <code>StatusDot</code>, eight statuses collapse to
+        the same grey dot.</p>
+    </div>
+  </section>
+
+  <!-- 28 CH13b -->
+  <section class="page w" id="p-c13b">
+    <div class="rh"><span>Thirteen &middot; Status</span><span>The projection</span></div>
+    <div class="leaf wide">
+      <div class="tw">
+        <table>
+          <thead><tr><th>What a supervisor asks</th><th>Statuses answering it</th><th>Rendered as</th></tr></thead>
+          <tbody>
+            <tr><td>Is it my turn?</td><td><code>waiting</code></td><td>amber dot, &ldquo;NEEDS YOU&rdquo;</td></tr>
+            <tr><td>Is it moving?</td><td><code>working</code>, <code>starting</code>, <code>resuming</code></td><td>one green, two grey</td></tr>
+            <tr><td>Did it end badly?</td><td><code>failed</code>, <code>cancelled</code></td><td>one red, one grey</td></tr>
+            <tr><td>Can I resume it?</td><td><code>warm</code>, <code>restored</code>, <code>stopped</code>, <code>completed</code></td><td>four identical grey dots</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>A session list is read at a glance, and at a glance <code>warm</code>,
+        <code>checkpointing</code>, <code>resuming</code>, <code>restored</code>,
+        <code>stopped</code>, <code>completed</code>, <code>cancelled</code> and
+        <code>idle</code> are the same pixel.</p>
+      <p>The fix is not fewer statuses &mdash; the backend needs its thirteen. It is a projection
+        from thirteen protocol states onto the four questions above, written once and shared with
+        every client. Which is to say: a plugin boundary, at the presentation seam.</p>
+    </div>
+  </section>
+
+  <!-- 29 CH14 -->
+  <section class="page" id="p-c14">
+    <div class="rh"><span>Fourteen &middot; Keyboard</span><span>The interface</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter fourteen</span>Five keymaps, no keymap</h2>
+      <p class="lede">A console for supervising concurrent agents is a keyboard tool. Bridge has
+        five separate <code>keydown</code> listeners, no shared registry, and zero occurrences of
+        <code>tabIndex</code>.</p>
+      <p>Two attach to <code>window</code>, two to <code>document</code>, one sits in the dead
+        <code>WelcomeScreen</code>. Each decides its own precedence and removes itself on unmount,
+        so nothing can answer &ldquo;what does Escape do right now&rdquo; &mdash; the answer
+        depends on mount order.</p>
+      <p>What is absent matters more than what is duplicated. There is no shortcut to switch
+        sessions, none to approve or reject a pending approval, none to move between the three
+        trees, and no working command palette. Every one of those is a keystroke in the tools
+        Bridge competes with.</p>
+      <div class="box">
+        <span class="lab">In fairness</span>
+        <p>Accessibility is not the weak spot. The codebase carries 209 <code>aria-*</code>
+          attributes, 39 explicit <code>role=</code>s and 144 <code>aria-hidden</code> on
+          decorative icons &mdash; deliberate, consistent work. The gap is keyboard
+          <em>operation</em>, not screen&#8209;reader labelling. Those two are usually neglected
+          together; here only one was.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 30 CH15 FIGURE -->
+  <section class="page w" id="p-c15">
+    <div class="rh"><span>Fifteen &middot; Diagnosis</span><span>The interface</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter fifteen</span>Not a styling problem</h2>
+      <p class="lede">Every finding in Part III has one cause, and it is not taste.</p>
+      <figure>
+        <svg viewBox="0 0 600 200" role="img" aria-label="Two parallel paths. The backend path runs from a written contract to generated types to a drift test to an emphasized build failure. The frontend path runs from prose in AGENTS.md to self-review to nothing, drawn dashed, ending in 612 violations.">
+          <text x="14" y="14" class="fig-text-sm">BACKEND: the rule has teeth</text>
+          <rect x="14" y="28" width="112" height="34" class="fig-stroke" />
+          <text x="24" y="49" class="fig-text-sm">bridge-protocol</text>
+          <path d="M126 45 L160 45" class="fig-stroke" /><path d="M154 41 L160 45 L154 49" class="fig-stroke" />
+          <rect x="160" y="28" width="112" height="34" class="fig-stroke" />
+          <text x="170" y="49" class="fig-text-sm">generated types</text>
+          <path d="M272 45 L306 45" class="fig-stroke" /><path d="M300 41 L306 45 L300 49" class="fig-stroke" />
+          <rect x="306" y="28" width="112" height="34" class="fig-stroke" />
+          <text x="330" y="49" class="fig-text-sm">drift test</text>
+          <path d="M418 45 L452 45" class="fig-stroke" /><path d="M446 41 L452 45 L446 49" class="fig-stroke" />
+          <rect x="452" y="28" width="134" height="34" class="fig-stroke" style="stroke-width:2" />
+          <text x="462" y="49" class="fig-text-sm">build fails: 0 drift</text>
+          <line x1="14" y1="86" x2="586" y2="86" class="fig-dash" />
+          <text x="14" y="110" class="fig-text-sm">FRONTEND: the rule is a sentence</text>
+          <rect x="14" y="124" width="112" height="34" class="fig-stroke-thin" />
+          <text x="24" y="145" class="fig-text-sm">AGENTS.md prose</text>
+          <path d="M126 141 L160 141" class="fig-stroke-thin" /><path d="M154 137 L160 141 L154 145" class="fig-stroke-thin" />
+          <rect x="160" y="124" width="112" height="34" class="fig-stroke-thin" />
+          <text x="178" y="145" class="fig-text-sm">self-review</text>
+          <path d="M272 141 L306 141" class="fig-dash" /><path d="M300 137 L306 141 L300 145" class="fig-dash" />
+          <rect x="306" y="124" width="112" height="34" class="fig-dash" />
+          <text x="342" y="145" class="fig-text-sm">nothing</text>
+          <path d="M418 141 L452 141" class="fig-dash" /><path d="M446 137 L452 141 L446 145" class="fig-dash" />
+          <rect x="452" y="124" width="134" height="34" class="fig-stroke-thin" />
+          <text x="472" y="145" class="fig-text-sm">612 violations</text>
+          <line x1="14" y1="176" x2="586" y2="176" class="fig-stroke-thin" />
+          <text x="14" y="192" class="fig-text-sm">same author, same discipline, same year &mdash; the only difference is which rule a machine can check</text>
+        </svg>
+        <p class="cap"><b>Figure 15.1</b> Both paths drawn to the same width, so the comparison is
+          fair. The dashed segment is where the frontend rule loses its enforcement, and every
+          number in Part III accumulated to the right of that gap.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 31 CH15b -->
+  <section class="page" id="p-c15b">
+    <div class="rh"><span>Fifteen &middot; Diagnosis</span><span>Conclusion</span></div>
+    <div class="leaf">
+      <h3 class="sub">Read the findings again</h3>
+      <p>612 bypassed tokens. Seventeen ad&#8209;hoc font sizes. Three dead components. An inert
+        command palette. Four competing navigation switches. Five uncoordinated keydown listeners.
+        Two implementations of the welcome screen, two of agent rendering.</p>
+      <p>Not one of those is a visual judgement. Each is a <em>structural</em> defect that no
+        reviewer was obliged to catch &mdash; which is why a redesign would not fix them and would
+        regenerate them.</p>
+      <p>This is why the rest of this book is about plugin architecture rather than typography. A
+        design system that lives in prose will always lose to a deadline. A design system that
+        lives behind a boundary &mdash; where a component can obtain a colour, a size, a status
+        projection or a keybinding only by asking a service for it &mdash; cannot be bypassed by
+        accident, because bypassing it means not calling anything.</p>
+    </div>
+  </section>
+
+  <!-- 32 PART IV -->
+  <section class="page part">
+    <div class="leaf">
+      <div class="rule-long"></div>
+      <p class="part-num">Part four</p>
+      <h2 class="part-title">The DeepSeek design</h2>
+      <p class="part-gloss">What DeepSeek Harness and its Cordis kernel actually claim, read from
+        the project's own documentation rather than the coverage of it.</p>
+    </div>
+  </section>
+
+  <!-- 33 CH16 -->
+  <section class="page w" id="p-c16">
+    <div class="rh"><span>Sixteen &middot; The claim</span><span>DeepSeek Harness</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter sixteen</span>Everything is a plugin</h2>
+      <p class="lede">The motto is load&#8209;bearing rather than decorative: the agent loop and the
+        user interface are plugins on the same footing as a tool.</p>
+      <pre class="code"><code>npx @deepseek-ai/dsh web        <span class="c"># serves the UI on 127.0.0.1:3080</span></code></pre>
+      <p>The project states the scope in one sentence: &ldquo;Every capability is a plugin that can
+        be swapped or recomposed: models, tools, skills, sessions, sandboxes, storage, loops,
+        scheduling, and the UI&rdquo; &mdash; selectable <em>in configuration</em>, without changing
+        Harness source. Most frameworks advertising plugins mean the last two items and keep the
+        rest fixed. Four entries make this different:</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Category</th><th>Why making it swappable is unusual</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Loops</strong></td><td>The agent loop is normally <em>the</em> framework. Mounted, a ReAct loop and a plan&#8209;then&#8209;execute loop are two packages, not two forks.</td></tr>
+            <tr><td><strong>UI</strong></td><td>Web, terminal and headless become configurations of one core rather than three clients chasing it.</td></tr>
+            <tr><td><strong>Storage</strong></td><td>Persistence behind a boundary is what makes local and hosted the same build.</td></tr>
+            <tr><td><strong>Sessions</strong></td><td>How a transcript is projected into a prompt becomes a policy you choose, not a behaviour you inherit.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Harness also drives other coding agents as sub&#8209;agents, Claude Code and Codex
+        included &mdash; Bridge's product, reached from the opposite direction. Bridge built a
+        console that hosts three agents; DeepSeek built a kernel and made hosting agents one of the
+        things you plug in.</p>
+    </div>
+  </section>
+
+  <!-- 34 CH17 -->
+  <section class="page" id="p-c17">
+    <div class="rh"><span>Seventeen &middot; Cordis</span><span>DeepSeek Harness</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter seventeen</span>Context as service repository</h2>
+      <p class="lede">Cordis is the kernel underneath, and its central idea is that plugins find
+        each other through a shared context keyed by name, never through an import.</p>
+      <p>A context holds services under stable identifiers &mdash; <code>ctx.tools</code>,
+        <code>ctx.llm</code>, <code>ctx.sessions</code>, <code>ctx.agents</code>. A plugin needing
+        the tool registry asks the context for <code>tools</code>. It does not import a
+        <code>ToolRegistry</code> class, so it cannot depend on that implementation's internals.</p>
+      <p>Cordis calls itself a meta&#8209;framework for <em>spatiotemporal</em> composability, and
+        both halves work. <strong>Spatially</strong>, components can be added and removed without
+        the rest of the system being edited &mdash; that is what naming rather than importing buys.
+        <strong>Temporally</strong>, they can be added and removed while running, in any order,
+        with no boot sequence anyone maintains by hand.</p>
+      <div class="box">
+        <span class="lab">The comparison to hold on to</span>
+        <p>Bridge's equivalent of <code>ctx</code> is <code>BridgeCore</code>, and the whole
+          difference is naming versus typing. <code>core.db</code> is a
+          <code>Mutex&lt;rusqlite::Connection&gt;</code> &mdash; the caller knows it is SQLite.
+          <code>ctx.storage</code> is whatever answered to <code>storage</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 35 CH18 -->
+  <section class="page w" id="p-c18">
+    <div class="rh"><span>Eighteen &middot; Lifecycle</span><span>DeepSeek Harness</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter eighteen</span>inject, apply, dispose</h2>
+      <p class="lede">A Cordis plugin is a function with two properties. The smallness is the
+        point: a boundary nobody minds implementing is a boundary that gets implemented.</p>
+      <figure>
+        <svg viewBox="0 0 600 200" role="img" aria-label="A plugin is mounted, then an emphasized gate checks whether its injected dependencies are present. If not it stays dormant and waits for a service, shown as a dashed detour. If yes, apply runs and registers effects, and a return edge above shows dispose reversing every registration.">
+          <rect x="14" y="76" width="98" height="36" class="fig-stroke" />
+          <text x="34" y="99" class="fig-text-sm">mount</text>
+          <path d="M112 94 L150 94" class="fig-stroke" /><path d="M144 90 L150 94 L144 98" class="fig-stroke" />
+          <path d="M212 62 L268 94 L212 126 L156 94 Z" class="fig-stroke" style="stroke-width:2" />
+          <text x="192" y="90" class="fig-text-sm">inject</text>
+          <text x="180" y="103" class="fig-text-sm">satisfied?</text>
+          <path d="M268 94 L312 94" class="fig-stroke" /><path d="M306 90 L312 94 L306 98" class="fig-stroke" />
+          <text x="274" y="86" class="fig-text-sm">yes</text>
+          <rect x="312" y="76" width="110" height="36" class="fig-stroke" />
+          <text x="326" y="99" class="fig-text-sm">apply(ctx)</text>
+          <path d="M422 94 L466 94" class="fig-stroke" /><path d="M460 90 L466 94 L460 98" class="fig-stroke" />
+          <rect x="466" y="76" width="120" height="36" class="fig-stroke" />
+          <text x="476" y="94" class="fig-text-sm">ctx.on / ctx.effect</text>
+          <text x="476" y="107" class="fig-text-sm">register</text>
+          <path d="M212 126 L212 164 L300 164" class="fig-dash" /><path d="M294 160 L300 164 L294 168" class="fig-dash" />
+          <text x="218" y="150" class="fig-text-sm">not yet: stay dormant, no error</text>
+          <rect x="300" y="148" width="122" height="32" class="fig-stroke-thin" />
+          <text x="312" y="168" class="fig-text-sm">wait for service</text>
+          <path d="M422 164 L448 164 L448 132" class="fig-dash" /><path d="M444 138 L448 132 L452 138" class="fig-dash" />
+          <path d="M526 76 L526 34 L36 34 L36 70" class="fig-stroke-thin" />
+          <path d="M32 64 L36 70 L40 64" class="fig-stroke-thin" />
+          <text x="212" y="28" class="fig-text-sm">dispose() reverses every registration, in reverse order</text>
+        </svg>
+        <p class="cap"><b>Figure 18.1</b> The diamond is emphasized because it is the substitution
+          being made: a declarative requirement in place of an ordering someone must keep correct.
+          The dashed detour is not an error path &mdash; a dormant plugin is a normal state.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 36 CH18b -->
+  <section class="page" id="p-c18b">
+    <div class="rh"><span>Eighteen &middot; Lifecycle</span><span>Compared</span></div>
+    <div class="leaf">
+      <h3 class="sub">The shape Bridge already half has</h3>
+      <p>A plugin implements <code>Service</code> either as a function carrying an optional
+        <code>inject</code> list and an <code>apply(ctx)</code> body, or as a
+        <code>Service</code> subclass. <code>inject</code> names required services;
+        <code>apply</code> registers what the plugin provides. The kernel handles mounting,
+        unmounting and dependency order.</p>
+      <p>Compare <code>HarnessAdapter</code> from Chapter 6. Bridge's <code>descriptor()</code> is
+        the declaration step; <code>register()</code> is the mount. What Bridge has no equivalent
+        of is <code>inject</code> &mdash; the ability for a component to state its dependencies and
+        be activated once they exist.</p>
+      <p>That absence has a visible cost. Bridge's startup order is written by hand in
+        <code>built_in_with_opencode_notify</code>, complete with a callback threaded through three
+        functions because OpenCode's catalog discovery finishes <em>after</em> boot. Under
+        <code>inject</code>, that is not a callback. It is a dormant plugin that wakes when its
+        service appears.</p>
+    </div>
+  </section>
+
+  <!-- 37 CH19 -->
+  <section class="page w" id="p-c19">
+    <div class="rh"><span>Nineteen &middot; Dispatch</span><span>DeepSeek Harness</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter nineteen</span>Four ways to dispatch</h2>
+      <p class="lede">Cordis gives services four dispatch modes, and choosing between them is the
+        design decision the framework actually asks you to make.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Mode</th><th>Awaited</th><th>Order</th><th>Returns</th><th>Use it when</th></tr></thead>
+          <tbody>
+            <tr><td><code>emit</code></td><td>no</td><td>registration</td><td>no</td><td>listeners only observe</td></tr>
+            <tr><td><code>waterfall</code></td><td>no</td><td>registration</td><td>yes</td><td>listeners may wrap or veto</td></tr>
+            <tr><td><code>parallel</code></td><td>yes</td><td>parallel</td><td>no</td><td>fan out and wait</td></tr>
+            <tr><td><code>serial</code></td><td>yes</td><td>registration</td><td>yes</td><td>run in turn, take a result</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><code>waterfall</code> is the mode that matters for Bridge. A listener receives the
+        arguments plus a <code>next</code>. Calling <code>next()</code> passes the possibly&#8209;wrapped
+        result down the chain; returning <em>without</em> calling it short&#8209;circuits. So a
+        cooperative listener mutates a shared object and delegates, while a listener that owns a
+        decision terminates the chain.</p>
+    </div>
+  </section>
+
+  <!-- 38 CH19 FIGURE -->
+  <section class="page w">
+    <div class="rh"><span>Nineteen &middot; Dispatch</span><span>Figure</span></div>
+    <div class="leaf wide">
+      <figure>
+        <svg viewBox="0 0 600 180" role="img" aria-label="A waterfall chain: a request passes through an observer, then a wrapper, then an emphasized policy listener that either delegates to the executor or short-circuits sideways with a refusal drawn as a dashed edge.">
+          <rect x="14" y="54" width="92" height="34" class="fig-stroke-thin" />
+          <text x="30" y="75" class="fig-text-sm">observe</text>
+          <path d="M106 71 L142 71" class="fig-stroke" /><path d="M136 67 L142 71 L136 75" class="fig-stroke" />
+          <text x="108" y="63" class="fig-text-sm">next()</text>
+          <rect x="142" y="54" width="92" height="34" class="fig-stroke-thin" />
+          <text x="170" y="75" class="fig-text-sm">wrap</text>
+          <path d="M234 71 L270 71" class="fig-stroke" /><path d="M264 67 L270 71 L264 75" class="fig-stroke" />
+          <text x="236" y="63" class="fig-text-sm">next()</text>
+          <rect x="270" y="50" width="110" height="42" class="fig-stroke" style="stroke-width:2" />
+          <text x="284" y="68" class="fig-text-sm">policy owns</text>
+          <text x="284" y="81" class="fig-text-sm">this decision</text>
+          <path d="M380 71 L424 71" class="fig-stroke" /><path d="M418 67 L424 71 L418 75" class="fig-stroke" />
+          <text x="384" y="63" class="fig-text-sm">next()</text>
+          <rect x="424" y="54" width="92" height="34" class="fig-stroke" />
+          <text x="440" y="75" class="fig-text-sm">execute</text>
+          <path d="M325 92 L325 134 L440 134" class="fig-dash" /><path d="M434 130 L440 134 L434 138" class="fig-dash" />
+          <text x="331" y="118" class="fig-text-sm">return without next(): refuse, chain ends</text>
+          <rect x="440" y="118" width="92" height="32" class="fig-stroke-thin" />
+          <text x="456" y="138" class="fig-text-sm">refusal</text>
+          <line x1="14" y1="162" x2="586" y2="162" class="fig-stroke-thin" />
+          <text x="14" y="176" class="fig-text-sm">a gate is not a special mechanism here &mdash; it is a listener that declines to delegate</text>
+        </svg>
+        <p class="cap"><b>Figure 19.1</b> The refusal exits sideways and dashed because it is the
+          exception route, and the policy node is emphasized because for Bridge that node
+          <em>is</em> the product. Chapter 23 argues this is the primitive to copy first and the
+          one place arbitrary plugins must not be allowed.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 39 CH20 -->
+  <section class="page w" id="p-c20">
+    <div class="rh"><span>Twenty &middot; Profiles</span><span>DeepSeek Harness</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter twenty</span>Profiles instead of forks</h2>
+      <p class="lede">The payoff is mundane and enormous: several products out of one codebase,
+        expressed as different sets of mounted plugins. Harness ships Standard, Code, Minimal and
+        Creator profiles &mdash; not presets of settings, different assemblies of the same parts.</p>
+      <p>Bridge needs exactly this, and its own tracker proves it:</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Bridge issue</th><th>What it is really asking for</th></tr></thead>
+          <tbody>
+            <tr><td>#139, #149&ndash;#154 (TUI)</td><td>the same core with a terminal UI mounted</td></tr>
+            <tr><td>#148</td><td>conversation projection separated from the React tree</td></tr>
+            <tr><td>#107</td><td><code>bridge exec --json</code> &mdash; the core with no UI at all</td></tr>
+            <tr><td>#108</td><td>the core split across a remote runner and a coordinator</td></tr>
+            <tr><td>#116, #117</td><td>a first&#8209;party agent loop beside the three adapted ones</td></tr>
+            <tr><td>#119</td><td>metering and quotas &mdash; a different storage and policy assembly</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Six epics, and every one is a profile. Today each will be built as a client or a mode that
+        chases <code>bridge-core</code>'s changes. Under a composition model they are
+        configurations, and most of the fourteen TUI issues become &ldquo;mount a different UI
+        plugin&rdquo;.</p>
+    </div>
+  </section>
+
+  <!-- 40 CH20b -->
+  <section class="page" id="p-c20b">
+    <div class="rh"><span>Twenty &middot; Profiles</span><span>Teardown</span></div>
+    <div class="leaf">
+      <h3 class="sub">The rule that makes profiles real</h3>
+      <p>Cordis's least glamorous rule is the one the rest depends on: every registration must be
+        reversible. Prompt sections, tools, adapters and listeners install through
+        <code>ctx.effect()</code> or <code>ctx.on()</code>, and both hand back the disposer. The
+        primer is blunt about it &mdash; every registration needs a disposer for clean teardown.</p>
+      <p>Reversibility is what makes reconfiguration <em>true</em> rather than approximately true. A
+        plugin system where mounting works and unmounting leaks is a system you can configure once,
+        at startup, which is a build flag with extra ceremony.</p>
+      <p>Bridge's teardown is real but hand&#8209;written per subsystem. The daemon stops the accept
+        loop, drains connections, refuses new requests with <code>2003 shutting_down</code>, then
+        stops adapters so sessions land recoverable. Careful engineering &mdash; repeated once per
+        subsystem. It is also why <code>BridgeCore</code> carries fields like
+        <code>worker_activity_persisted</code>: a cadence&#8209;limiting cache with no registration
+        mechanism to hang off went into the root instead.</p>
+      <div class="box trap">
+        <span class="lab">Trap</span>
+        <p>This is the strongest argument in the book and also the reason not to rush. The profiles
+          Bridge wants are known <em>now</em>, so the boundaries can be cut to fit them rather than
+          guessed at. Cutting seams for hypothetical plugins is how abstraction earned its bad
+          name; cutting them for six issues already filed is just doing the work once.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 41 PART V -->
+  <section class="page part">
+    <div class="leaf">
+      <div class="rule-long"></div>
+      <p class="part-num">Part five</p>
+      <h2 class="part-title">Adoption</h2>
+      <p class="part-gloss">What Bridge can take, what it cannot, what it must refuse to make
+        swappable, and an order of work that never leaves the product broken.</p>
+    </div>
+  </section>
+
+  <!-- 42 CH21 -->
+  <section class="page w" id="p-c21">
+    <div class="rh"><span>Twenty-one &middot; Translation</span><span>Adoption</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter twenty-one</span>The translation table</h2>
+      <p class="lede">Cordis is TypeScript; <code>bridge-core</code> is 70,481 lines of Rust.
+        Bridge cannot adopt the library, so it must adopt the pattern &mdash; which translates
+        cleanly, because Bridge already built the expensive half.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Cordis concept</th><th>Nearest thing Bridge has</th><th>Work required</th></tr></thead>
+          <tbody>
+            <tr><td><code>ctx</code> service repository</td><td><code>BridgeCore</code>, 23 concrete fields</td><td>fields become named trait objects</td></tr>
+            <tr><td>Plugin with <code>apply</code></td><td><code>HarnessAdapter</code> + <code>register()</code></td><td>already right &mdash; copy its shape</td></tr>
+            <tr><td><code>inject</code></td><td>nothing; hand&#8209;written boot order</td><td>new: a declared&#8209;requirements gate</td></tr>
+            <tr><td><code>waterfall</code></td><td><code>policy.rs</code> decision path</td><td>generalise into a typed chain</td></tr>
+            <tr><td><code>emit</code> / listeners</td><td><code>EventBus</code>, publish&#8209;after&#8209;commit</td><td>already right</td></tr>
+            <tr><td><code>ctx.effect()</code> disposers</td><td>bespoke shutdown per subsystem</td><td>new: a registration handle</td></tr>
+            <tr><td>Config&#8209;composed profiles</td><td>Cargo features + hand&#8209;wired startup</td><td>new: a manifest read at boot</td></tr>
+            <tr><td>Plugin isolation</td><td><strong>JSON&#8209;RPC over a Unix socket, owner lease</strong></td><td>already built &mdash; and better</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 43 CH21b -->
+  <section class="page" id="p-c21b">
+    <div class="rh"><span>Twenty-one &middot; Translation</span><span>The strategy</span></div>
+    <div class="leaf">
+      <h3 class="sub">Build on the last row</h3>
+      <p>Cordis achieves composability in&#8209;process, because it is one TypeScript runtime.
+        Bridge's plugin boundary can instead be the <code>bridged</code> protocol it already ships:
+        87 contracted methods, generated client types, drift&#8209;tested, newline&#8209;delimited
+        JSON&#8209;RPC 2.0, a single&#8209;owner lease, bounded per&#8209;connection queues and
+        explicit lag notification.</p>
+      <p>For Bridge's actual product, an out&#8209;of&#8209;process boundary is strictly stronger
+        than an in&#8209;process one. A plugin that crashes does not take the supervisor down. A
+        plugin cannot reach around a trait to touch <code>core.db</code>, because it shares no
+        address space with it. And a third&#8209;party plugin gets no ambient credentials &mdash;
+        which is the whole subject of Bridge's issue #105 on credential policy.</p>
+      <div class="box">
+        <span class="lab">The one-sentence version</span>
+        <p>Bridge should not mount Cordis. It should recognise that <code>bridged</code> is already
+          its Cordis, stop adding fields to <code>BridgeCore</code>, and start expressing
+          capabilities as things that register against a contract.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 44 CH22 FIGURE -->
+  <section class="page w" id="p-c22">
+    <div class="rh"><span>Twenty-two &middot; The UI</span><span>Adoption</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter twenty-two</span>Dissolving App.tsx</h2>
+      <p class="lede">Part III is not fixed by a redesign. It is fixed by the UI having interior
+        boundaries at all &mdash; and unlike the Rust core, the frontend can use this pattern
+        literally, today, in TypeScript.</p>
+      <figure>
+        <svg viewBox="0 0 600 215" role="img" aria-label="On the left, one App component with thirty-six states and four switches connects to every panel with tangled thin lines. On the right, a thin shell resolves one route through an emphasized surface registry and each surface registers itself, in straight non-crossing lines.">
+          <text x="10" y="14" class="fig-text-sm">NOW: 962 lines, 36 states, 4 switches</text>
+          <rect x="16" y="86" width="92" height="46" class="fig-stroke" style="stroke-width:2" />
+          <text x="30" y="105" class="fig-text-sm">App.tsx</text>
+          <text x="30" y="118" class="fig-text-sm">owns all</text>
+          <line x1="108" y1="100" x2="196" y2="34" class="fig-stroke-thin" />
+          <line x1="108" y1="104" x2="196" y2="72" class="fig-stroke-thin" />
+          <line x1="108" y1="112" x2="196" y2="110" class="fig-stroke-thin" />
+          <line x1="108" y1="118" x2="196" y2="148" class="fig-stroke-thin" />
+          <line x1="108" y1="124" x2="196" y2="186" class="fig-stroke-thin" />
+          <line x1="108" y1="86" x2="196" y2="186" class="fig-stroke-thin" />
+          <line x1="108" y1="132" x2="196" y2="34" class="fig-stroke-thin" />
+          <line x1="196" y1="34" x2="196" y2="186" class="fig-stroke-thin" />
+          <rect x="196" y="22" width="74" height="24" class="fig-stroke-thin" />
+          <text x="206" y="38" class="fig-text-sm">agent</text>
+          <rect x="196" y="60" width="74" height="24" class="fig-stroke-thin" />
+          <text x="204" y="76" class="fig-text-sm">changes</text>
+          <rect x="196" y="98" width="74" height="24" class="fig-stroke-thin" />
+          <text x="210" y="114" class="fig-text-sm">grid</text>
+          <rect x="196" y="136" width="74" height="24" class="fig-stroke-thin" />
+          <text x="206" y="152" class="fig-text-sm">market</text>
+          <rect x="196" y="174" width="74" height="24" class="fig-stroke-thin" />
+          <text x="204" y="190" class="fig-text-sm">settings</text>
+          <text x="10" y="210" class="fig-text-sm">to add a surface: edit the switch, add state</text>
+          <line x1="300" y1="8" x2="300" y2="202" class="fig-dash" />
+          <text x="318" y="14" class="fig-text-sm">AFTER: a shell that resolves one route</text>
+          <rect x="318" y="86" width="86" height="46" class="fig-stroke-thin" />
+          <text x="332" y="105" class="fig-text-sm">shell</text>
+          <text x="328" y="118" class="fig-text-sm">routes only</text>
+          <path d="M404 109 L444 109" class="fig-stroke" /><path d="M438 105 L444 109 L438 113" class="fig-stroke" />
+          <rect x="444" y="86" width="70" height="46" class="fig-stroke" style="stroke-width:2" />
+          <text x="454" y="105" class="fig-text-sm">surface</text>
+          <text x="454" y="118" class="fig-text-sm">registry</text>
+          <path d="M479 86 L479 34 L528 34" class="fig-stroke" />
+          <rect x="528" y="22" width="62" height="24" class="fig-stroke-thin" />
+          <text x="540" y="38" class="fig-text-sm">agent</text>
+          <path d="M479 86 L479 72 L528 72" class="fig-stroke" />
+          <rect x="528" y="60" width="62" height="24" class="fig-stroke-thin" />
+          <text x="536" y="76" class="fig-text-sm">changes</text>
+          <path d="M479 132 L479 148 L528 148" class="fig-stroke" />
+          <rect x="528" y="136" width="62" height="24" class="fig-stroke-thin" />
+          <text x="538" y="152" class="fig-text-sm">market</text>
+          <path d="M479 132 L479 186 L528 186" class="fig-stroke" />
+          <rect x="528" y="174" width="62" height="24" class="fig-stroke-thin" />
+          <text x="536" y="190" class="fig-text-sm">tui, cli…</text>
+          <text x="318" y="210" class="fig-text-sm">to add a surface: register it, shell untouched</text>
+        </svg>
+        <p class="cap"><b>Figure 22.1</b> The left tangle is Chapter 10's four switches drawn as
+          wiring. The right side is not fewer components; it is the same components with one
+          indirection &mdash; which is what makes the TUI in issue #149 a registration rather than
+          a rewrite.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 45 CH22b -->
+  <section class="page" id="p-c22b">
+    <div class="rh"><span>Twenty-two &middot; The UI</span><span>Four services</span></div>
+    <div class="leaf">
+      <h3 class="sub">Four services, and Part III dies with them</h3>
+      <p>A <strong>surface registry</strong> replaces the four navigation switches, so a route is
+        one value &mdash; and Mission Control cannot silently discard your tab, because there is no
+        second axis to discard.</p>
+      <p>A <strong>presentation service</strong> owns the thirteen&#8209;to&#8209;four status
+        projection from Chapter 13. Written once, the TUI in issue #148 gets it for free instead of
+        reimplementing it.</p>
+      <p>A <strong>keymap service</strong> replaces five listeners with one registration that
+        returns its own disposer, so &ldquo;what does Escape do right now&rdquo; has an answer that
+        does not depend on mount order.</p>
+      <p>A <strong>token service</strong> becomes the only way to obtain a colour or a size. At that
+        point the 612 hardcoded values are not a style violation but a call to a function that does
+        not exist &mdash; and the difference between those two sentences is the whole argument of
+        Chapter 15.</p>
+    </div>
+  </section>
+
+  <!-- 46 CH23 -->
+  <section class="page" id="p-c23">
+    <div class="rh"><span>Twenty-three &middot; The exception</span><span>Adoption</span></div>
+    <div class="leaf">
+      <h2 class="ch-title"><span class="cn">Chapter twenty-three</span>What must never be a plugin</h2>
+      <p class="lede">Bridge should refuse one part of the DeepSeek design, and the refusal is not
+        conservatism. If the policy engine is swappable, Bridge has no product.</p>
+      <p>Return to Figure 1.1: the approval gate is the only node a human touches, and Bridge's
+        claim is that it is <em>deterministic</em>. The README says so of the learning system in as
+        many words &mdash; it &ldquo;can rank eligible candidates, but it cannot grant permissions,
+        widen a write scope, or bypass an approval.&rdquo;</p>
+      <p>That sentence is the difference between Bridge and a nicer terminal. &ldquo;Everything is a
+        plugin&rdquo; is right for a research harness under MIT; it is wrong for a supervision tool,
+        where an installable plugin that can replace the authorization chain is a
+        supply&#8209;chain vulnerability with a manifest file.</p>
+      <div class="box trap">
+        <span class="lab">The precise line to draw</span>
+        <p><strong>Composition is plural; authorization is singular.</strong> Anything may
+          <em>participate</em> in a decision &mdash; that is what <code>waterfall</code> is for, and
+          a plugin declining to call <code>next()</code> is a perfectly good veto. But only
+          first&#8209;party compiled&#8209;in policy may <em>widen</em> a permission. A plugin can
+          make Bridge more careful; nothing installable may make it less careful. The constraint is
+          cheap: it restricts one direction of one chain and leaves every other seam untouched.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 47 CH24 -->
+  <section class="page w" id="p-c24">
+    <div class="rh"><span>Twenty-four &middot; Order of work</span><span>Adoption</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Chapter twenty-four</span>A migration that ships</h2>
+      <p class="lede">Five phases, ordered so each is independently valuable and none requires the
+        app to stop working. Nothing here is a rewrite.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>&nbsp;</th><th>Phase</th><th>What it does</th><th>Proof it worked</th></tr></thead>
+          <tbody>
+            <tr><td>P0</td><td>Make the frontend rules enforceable</td><td>A token lint in <code>bun run check</code>: no bare palette colours, no font size outside a named scale. Ratchet from today's counts.</td><td>612 falls weekly and can never rise</td></tr>
+            <tr><td>P1</td><td>Kill the dead affordances</td><td>Delete <code>CommandPalette</code> and <code>WelcomeScreen</code>; either wire <code>EventPanel</code> to a fourth tab or drop <code>"events"</code> from the union.</td><td>no unreachable component in <code>src/</code></td></tr>
+            <tr><td>P2</td><td>Four frontend services</td><td>Surface registry, presentation, keymap, tokens. <code>App.tsx</code> keeps routing only.</td><td><code>App.tsx</code> &lt; 200 lines, &lt; 10 <code>useState</code></td></tr>
+            <tr><td>P3</td><td>Extract the projection</td><td>Issue #148 as written: conversation projection with no React dependency, plus the parity harness.</td><td>the TUI renders a session importing no component</td></tr>
+            <tr><td>P4</td><td>Cut the core seams</td><td><code>trait Store</code> behind <code>core.db</code>; scheduling and sandbox as registries shaped like <code>AdapterRegistry</code>; then a boot manifest.</td><td>an in&#8209;memory store passes the suite</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 48 CH24b -->
+  <section class="page" id="p-c24b">
+    <div class="rh"><span>Twenty-four &middot; Order of work</span><span>Rationale</span></div>
+    <div class="leaf">
+      <h3 class="sub">Why this order</h3>
+      <p>P0 first because it is cheapest and it stops the bleeding. Every later phase adds code, and
+        adding code to a codebase with 612 unenforced violations means adding violations. A ratchet
+        &mdash; the count may fall, never rise &mdash; needs no cleanup campaign and no debate
+        about which of the seventeen font sizes was correct.</p>
+      <p>P2 before P3 because the frontend services are the smaller, reversible version of the same
+        idea; getting them wrong costs a week rather than an epic. P4 last because
+        <code>trait Store</code> across 70,481 lines is the only genuinely expensive item, and by
+        then three phases will have taught you what the boundary should look like.</p>
+      <div class="box">
+        <span class="lab">What not to do</span>
+        <p>Do not start at P4, and do not take Cordis as a dependency. The temptation is to fix the
+          core first, because that is where the real coupling is. But the UI is where the user is,
+          the UI is where every finding in Part III lives, and the UI is the one layer where this
+          pattern applies in the same language Cordis is written in &mdash; no rewrite, no new
+          dependency, results this month.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 49 APPENDIX A -->
+  <section class="page w" id="p-base">
+    <div class="rh"><span>Appendix A &middot; Baseline</span><span>Reproducible</span></div>
+    <div class="leaf wide">
+      <h2 class="ch-title"><span class="cn">Appendix A</span>The measured baseline</h2>
+      <p class="lede">Every number in this book at commit f3e18b1. Re&#8209;run after each phase;
+        the point of a baseline is to be beaten.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Measure</th><th>Value</th><th>Target</th></tr></thead>
+          <tbody>
+            <tr><td><code>src/App.tsx</code> lines</td><td>962</td><td>&lt; 200</td></tr>
+            <tr><td><code>useState</code> in <code>App.tsx</code> / all UI</td><td>36 / 140</td><td>&lt; 10 / &mdash;</td></tr>
+            <tr><td>Navigation axes in one component</td><td>4 (3&times;2&times;4, +5 overlays)</td><td>1 route value</td></tr>
+            <tr><td>Hardcoded palette colours vs 49 tokens</td><td>612</td><td>0, ratcheted</td></tr>
+            <tr><td>Arbitrary font sizes / distinct values</td><td>343 / 17</td><td>0 / a named scale</td></tr>
+            <tr><td>Hand-rolled glass vs <code>.u-glass*</code></td><td>212 vs 32</td><td>0 hand-rolled</td></tr>
+            <tr><td>Keydown listeners / keymaps / dead components</td><td>5 / 0 / 3</td><td>0 / 1 / 0</td></tr>
+            <tr><td>UI design documents in <code>docs/</code></td><td>0 of 6</td><td>&ge; 1</td></tr>
+            <tr><td><code>BridgeCore</code> fields / core traits</td><td>23 / 12</td><td>falling / rising</td></tr>
+            <tr><td>Protocol methods / domains / schemas</td><td>87 / 18 / 105</td><td>hold the contract</td></tr>
+            <tr><td>Capabilities behind a real seam</td><td>1 of 9 (2 partial)</td><td>7 of 9</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 50 COLOPHON -->
+  <section class="page" id="p-colophon">
+    <div class="rh"><span>Colophon</span><span>Sources</span></div>
+    <div class="leaf">
+      <div class="rule-long"></div>
+      <h2 class="ch-title" style="margin-bottom:1rem">Sources and honesty</h2>
+      <p class="small"><b>Bridge</b> &mdash; read at <code>Atharva-Kanherkar/bridge-harness</code>,
+        commit <code>f3e18b1</code>, 18 Aug 2026. Concepts from <code>README.md</code>,
+        <code>AGENTS.md</code>, <code>docs/protocol/README.md</code>; code from
+        <code>src/App.tsx</code>, <code>src/protocol/generated/protocol.ts</code>,
+        <code>bridge-core/src/{adapters,runtime}.rs</code>. Excerpts are copied, not reconstructed;
+        elisions are marked.</p>
+      <p class="small"><b>Contribution record</b> &mdash; <code>gh</code> over 89 pull requests. No
+        external contributor record exists: one author, 89 of 89 PRs, no bots, median merge latency
+        0 days, no <code>LICENSE</code>. A chapter on &ldquo;what actually gets merged&rdquo; would
+        be vacuous, so Part III took its place &mdash; that self&#8209;review let the frontend's own
+        rules drift 612 times <em>is</em> this repository's merge&#8209;behaviour finding.</p>
+    </div>
+  </section>
+
+  <!-- 51 COLOPHON II -->
+  <section class="page">
+    <div class="rh"><span>Colophon</span><span>What I could not verify</span></div>
+    <div class="leaf">
+      <p class="small"><b>DeepSeek Harness</b> &mdash; from <code>deepseek.com/harness/en</code>, the
+        <code>deepseek-ai/deepseek-harness</code> README and that repo's
+        <code>docs/cordis-primer.md</code>, retrieved 18&ndash;19 Aug 2026. <strong>A limitation
+        worth stating:</strong> those pages returned prose summaries rather than verbatim source, so
+        Part IV names Cordis's API vocabulary and documented semantics but deliberately shows
+        <em>no</em> Cordis code sample. Rather than invent a plausible one, the only DeepSeek command
+        printed is the one I read verbatim. Check the primer before writing a plugin.</p>
+      <p class="small"><b>General background</b> &mdash; Chapters 1&ndash;3 are background, not
+        repository documentation. The nine categories in Chapter 8 are DeepSeek's list; the
+        &ldquo;seam?&rdquo; column is my assessment. Phases and targets in Chapters 22&ndash;24 and
+        Appendix A are proposals, not project plans. Bridge merged 89 PRs in five weeks and Harness
+        is a preview with ongoing breaking changes: both halves of this book will drift, which is
+        why Appendix A is designed to be re&#8209;run rather than trusted.</p>
+    </div>
+  </section>
+
+</div>
+<div class="hint">&larr; &rarr; pages &middot; G jump</div>
+
+<nav class="nav" aria-label="Book controls">
+  <button id="theme" type="button" aria-label="Switch between dark and light">&#9788;</button>
+  <button id="prev" type="button" aria-label="Previous page">&larr;</button>
+  <button class="count" id="count" type="button" aria-label="Jump to a page"></button>
+  <button id="next" type="button" aria-label="Next page">&rarr;</button>
+</nav>
+
+<div class="palette" id="palette" data-open="false" role="dialog" aria-modal="true" aria-label="Jump to page">
+  <h2>Jump to a page</h2>
+  <ol id="palette-list"></ol>
+  <button class="qbtn close" id="palette-close" type="button">Close &middot; Esc</button>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var book = document.getElementById('book');
+    var pages = Array.prototype.slice.call(book.querySelectorAll('.page'));
+    var total = pages.length;
+
+    /* ---------- theme: OS default, reader's choice wins and persists ---------- */
+    var THEME_KEY = 'repo-book-theme';
+    var themeBtn = document.getElementById('theme');
+
+    function currentTheme() {
+      var set = root.getAttribute('data-book-theme');
+      if (set) return set;
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light' : 'dark';
+    }
+    function paintThemeBtn() {
+      var dark = currentTheme() === 'dark';
+      // show what pressing it will give you
+      themeBtn.innerHTML = dark ? '&#9788;' : '&#9789;';
+      themeBtn.setAttribute('aria-label', dark ? 'Switch to light' : 'Switch to dark');
+    }
+    try {
+      var saved = localStorage.getItem(THEME_KEY);
+      if (saved === 'dark' || saved === 'light') root.setAttribute('data-book-theme', saved);
+    } catch (e) { /* private mode: fall back to OS preference */ }
+    paintThemeBtn();
+
+    themeBtn.addEventListener('click', function () {
+      var next = currentTheme() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-book-theme', next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+      paintThemeBtn();
+    });
+
+    /* ---------- folios stamped from page order, so they cannot drift ---------- */
+    pages.forEach(function (p, i) {
+      if (i === 0) return;
+      var f = document.createElement('div');
+      f.className = 'folio';
+      f.textContent = String(i + 1).padStart(2, '0');
+      p.appendChild(f);
+    });
+
+    /* ---------- paging ---------- */
+    var prev = document.getElementById('prev');
+    var next = document.getElementById('next');
+    var count = document.getElementById('count');
+    var tick = document.getElementById('tick');
+
+    function current() { return Math.round(book.scrollLeft / book.clientWidth); }
+    function paint() {
+      var i = current();
+      count.textContent = String(i + 1).padStart(2, '0') + ' / ' + total;
+      prev.disabled = i <= 0;
+      next.disabled = i >= total - 1;
+      tick.style.width = (total > 1 ? (i / (total - 1)) * 100 : 0) + '%';
+    }
+    function goTo(i) {
+      i = Math.min(total - 1, Math.max(0, i));
+      book.scrollTo({ left: i * book.clientWidth, behavior: 'smooth' });
+    }
+    function go(d) { goTo(current() + d); }
+
+    prev.addEventListener('click', function () { go(-1); });
+    next.addEventListener('click', function () { go(1); });
+    book.addEventListener('scroll', function () { window.requestAnimationFrame(paint); },
+      { passive: true });
+    window.addEventListener('resize', paint);
+
+    /* ---------- jump palette ---------- */
+    var palette = document.getElementById('palette');
+    var paletteList = document.getElementById('palette-list');
+
+    function labelFor(page, i) {
+      if (i === 0) return 'Cover';
+      var rh = page.querySelector('.rh span');
+      if (rh && rh.textContent.trim()) return rh.textContent.trim();
+      var pt = page.querySelector('.part-title, .ch-title');
+      // innerText, not textContent: a <br> inside a title would otherwise join two words
+      return pt ? (pt.innerText || pt.textContent).replace(/\s+/g, ' ').trim()
+                : 'Page ' + (i + 1);
+    }
+    pages.forEach(function (p, i) {
+      var li = document.createElement('li');
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'jump';
+      b.innerHTML = '<span class="n">' + String(i + 1).padStart(2, '0') + '</span><span></span>';
+      b.lastChild.textContent = labelFor(p, i);
+      b.addEventListener('click', function () { setPalette(false); goTo(i); });
+      li.appendChild(b);
+      paletteList.appendChild(li);
+    });
+    function setPalette(open) {
+      palette.setAttribute('data-open', open ? 'true' : 'false');
+      if (open) { var f = paletteList.querySelector('button'); if (f) f.focus(); }
+      else { count.focus(); }
+    }
+    count.addEventListener('click', function () { setPalette(true); });
+    document.getElementById('palette-close').addEventListener('click', function () { setPalette(false); });
+
+    /* ---------- keyboard ---------- */
+    document.addEventListener('keydown', function (e) {
+      if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+      var open = palette.getAttribute('data-open') === 'true';
+      if (e.key === 'Escape' && open) { e.preventDefault(); setPalette(false); return; }
+      if (open) return;
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(1); }
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(-1); }
+      else if (e.key === 'Home') { e.preventDefault(); goTo(0); }
+      else if (e.key === 'End') { e.preventDefault(); goTo(total - 1); }
+      else if (e.key === 'g' || e.key === 'G') { e.preventDefault(); setPalette(true); }
+    });
+
+    /* ---------- contents links ---------- */
+    document.querySelectorAll('.toc a').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        var el = document.getElementById(a.getAttribute('href').slice(1));
+        var idx = pages.indexOf(el);
+        if (idx >= 0) goTo(idx);
+      });
+    });
+
+    /* ---------- copy buttons on code blocks ---------- */
+    document.querySelectorAll('pre.code').forEach(function (pre) {
+      var wrap = document.createElement('div');
+      wrap.className = 'codewrap';
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'copy';
+      b.textContent = 'copy';
+      b.addEventListener('click', function () {
+        var text = pre.innerText;
+        var done = function () {
+          b.textContent = 'copied';
+          window.setTimeout(function () { b.textContent = 'copy'; }, 1400);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { b.textContent = 'failed'; });
+        } else {
+          // older engines: a hidden textarea is the only portable path
+          var ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); done(); } catch (err) { b.textContent = 'failed'; }
+          document.body.removeChild(ta);
+        }
+      });
+      wrap.appendChild(b);
+    });
+
+    /* ---------- self-scoring quizzes ---------- */
+    var LETTERS = ['a', 'b', 'c', 'd', 'e'];
+
+    document.querySelectorAll('form.quiz').forEach(function (form) {
+      var qs = Array.prototype.slice.call(form.querySelectorAll('li.q'));
+      var score = form.querySelector('.score');
+
+      function grade() {
+        var right = 0, answered = 0;
+        qs.forEach(function (q) {
+          var picked = q.querySelector('input:checked');
+          q.classList.remove('ok', 'no');
+          q.classList.add('graded');
+          var v = q.querySelector('.verdict');
+          if (!picked) { if (v) v.textContent = 'unanswered'; return; }
+          answered++;
+          var correct = picked.value === q.getAttribute('data-answer');
+          q.classList.add(correct ? 'ok' : 'no');
+          if (correct) right++;
+          if (v) v.textContent = correct ? 'correct' : 'not quite';
+        });
+        if (score) {
+          score.textContent = right + ' of ' + qs.length + ' correct' +
+            (answered < qs.length ? ' · ' + (qs.length - answered) + ' unanswered' : '');
+        }
+      }
+
+      function reset() {
+        qs.forEach(function (q) {
+          q.classList.remove('graded', 'ok', 'no');
+          var v = q.querySelector('.verdict'); if (v) v.textContent = '';
+          q.querySelectorAll('input').forEach(function (i) { i.checked = false; });
+        });
+        if (score) score.textContent = '';
+      }
+
+      form.querySelectorAll('[data-action]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (btn.getAttribute('data-action') === 'check') grade(); else reset();
+        });
+      });
+    });
+
+    /* ---------- answer key, generated from the questions ---------- */
+    var keyBox = document.getElementById('answer-key');
+    if (keyBox) {
+      var n = 0;
+      document.querySelectorAll('form.quiz li.q').forEach(function (q) {
+        n++;
+        var want = q.getAttribute('data-answer');
+        var idx = LETTERS.indexOf(want);
+        var s = document.createElement('span');
+        s.innerHTML = String(n).padStart(2, '0') + ' &nbsp; <b>' +
+          (idx >= 0 ? LETTERS[idx] : want) + '</b>';
+        keyBox.appendChild(s);
+      });
+      if (!n) keyBox.textContent = 'No practice questions in this book.';
+    }
+
+    paint();
+  })();
+</script>

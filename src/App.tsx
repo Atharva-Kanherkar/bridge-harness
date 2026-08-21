@@ -4,7 +4,7 @@ import { appendFileMention, applyFileMention as insertFileMention, fileMentionQu
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
@@ -18,6 +18,8 @@ import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { MissionControl } from "./components/MissionControl";
+import { BypassBadge } from "./components/BypassBadge";
+import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
@@ -162,7 +164,13 @@ export function App() {
   const agentEventTimerRef = useRef<number | undefined>(undefined);
   const browserSessionRef = useRef<string>();
 
-  const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
+  const reload = useCallback(async () => {
+    setState(await bridgeApi.state());
+    // Re-read with the state it was published alongside: `save_permission_policy`
+    // publishes StateChanged precisely so the badge repaints, and another window
+    // flipping the switch has to reach this one too.
+    setPermissionPolicy((await bridgeApi.configState()).permissionPolicy);
+  }, []);
   useEffect(() => {
     void Promise.all([reload(), bridgeApi.modelSetup()])
       .then(([, setup]) => { setModelSetup(setup); })
@@ -269,6 +277,17 @@ export function App() {
     [expandedWorkerId, state.sessions],
   );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  // Read from config rather than held in component state: the badge has to agree
+  // with what the host stored, including after another window changed it.
+  const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>();
+  // Which settings section to open on. The badge is the one entry point that has
+  // an opinion: sending someone hunting through Agents for the switch they just
+  // clicked "click to change" on is the wrong end of the promise.
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("agents");
+  const autoApprovals = useMemo(
+    () => state.events.filter(event => event.kind === "approval.auto_allowed"),
+    [state.events],
+  );
   // What the submit affordance does while this session is working. Read from the
   // harness's advertised capabilities: a provider that cannot take input
   // mid-turn gets its follow-up queued, and the button says Queue, not Steer.
@@ -921,6 +940,7 @@ export function App() {
   return <div className="relative flex h-[100dvh] overflow-hidden bg-background text-foreground">
 
     {!fullscreen && <div className="fixed right-2 top-1.5 z-40 flex items-center gap-1.5 sm:right-5 sm:top-5">
+      <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
       {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
       <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>}
@@ -981,7 +1001,7 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}

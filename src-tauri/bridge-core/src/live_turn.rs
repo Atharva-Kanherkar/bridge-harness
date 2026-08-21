@@ -1780,6 +1780,11 @@ fn handle_agent_value(
     let mut pending_peek: Option<delegation::PeekRequest> = None;
     let mut pending_steer: Option<delegation::SteerRequest> = None;
     let mut pending_invalid_steer: Option<String> = None;
+    // A policy-granted approval is answered after the correctness lock, through
+    // the same call a human click makes. Holds the persisted sequence, which is
+    // the id `resolve_approval` answers by.
+    let mut pending_auto_approval: Option<i64> = None;
+    let mut auto_approve_this_event = false;
     // Child approvals and their resolutions are surfaced to the parent after the
     // correctness lock is released, because reaching the parent's live runtime
     // needs the adapter map.
@@ -1896,6 +1901,39 @@ fn handle_agent_value(
                     }
                 }
                 "approval.requested" => {
+                    // One switch, read where the request lands, so a flip takes
+                    // effect on the next approval without restarting anything.
+                    //
+                    // Write-scope approvals are authorization, not convenience:
+                    // they are raised by `policy.rs` as typed forest entries and
+                    // never travel a provider control channel, so they cannot
+                    // reach this arm. Checked anyway — a structural guarantee
+                    // that is also asserted is one that survives a refactor.
+                    let is_write_scope = event
+                        .data
+                        .get("approvalType")
+                        .or_else(|| event.data.pointer("/data/approvalType"))
+                        .and_then(|value| value.as_str())
+                        == Some("delegation_path_scope");
+                    // Not every control request that normalizes to
+                    // `approval.requested` is an approval. Codex folds
+                    // `item/tool/requestUserInput` and
+                    // `mcpServer/elicitation/request` into the same event, and
+                    // those are questions: `respond` answers with
+                    // `{"result":{"decision":…}}`, which is the wrong shape for
+                    // them and wedges the turn. Granting is for requests that
+                    // asked for permission. Claude and OpenCode set no
+                    // `requestMethod` because every request they raise is one.
+                    let is_approval_request = event
+                        .data
+                        .get("requestMethod")
+                        .and_then(|value| value.as_str())
+                        .is_none_or(|method| method.ends_with("requestApproval"));
+                    auto_approve_this_event = !is_write_scope
+                        && is_approval_request
+                        && agent_config::permission_policy(&db)
+                            .map(|policy| policy.bypass_all)
+                            .unwrap_or(false);
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
@@ -1911,12 +1949,19 @@ fn handle_agent_value(
                             "UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested',updated_at=?2 WHERE session_id=?1",
                             params![session_id, Utc::now().to_rfc3339()],
                         );
-                        pending_child_approval = Some(serde_json::json!({
+                        // The lifecycle still goes Waiting and back, exactly as it
+                        // would if a human resolved instantly — `transition`
+                        // clears `waiting_since` on the way out, and
+                        // `resolve_approval` needs Waiting as its starting state.
+                        // What must not happen is telling the parent a worker is
+                        // blocked when policy has already unblocked it.
+                        pending_child_approval = (!auto_approve_this_event).then(|| serde_json::json!({
                             "title": event.title,
                             "text": event.text,
                             "command": event.data.get("command").or_else(|| event.data.pointer("/data/command")),
                             "cwd": event.data.get("cwd").or_else(|| event.data.pointer("/data/cwd")),
                         }));
+
                     } else {
                         let _ = db.execute(
                             "UPDATE sessions SET status='waiting' WHERE id=?1",
@@ -2124,11 +2169,19 @@ fn handle_agent_value(
                     &normalized_event,
                     &event.created_at,
                 ));
+                // A policy match needs the durable sequence of the request it
+                // is answering. `session_event` returns sequence 0 for a frame it
+                // chose not to persist, and answering 0 would resolve whatever
+                // approval happens to sit at that sequence.
+                if auto_approve_this_event && event.sequence > 0 {
+                    pending_auto_approval = Some(event.sequence);
+                }
                 // Publish while the database mutex is still held. This keeps
                 // durable live delivery in commit/sequence order: another
                 // thread cannot persist and publish sequence N+1 before N.
                 state.events.publish(CoreEvent::Agent(event));
             }
+            auto_approve_this_event = false;
             if own_depth > 0 {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
@@ -2265,6 +2318,11 @@ fn handle_agent_value(
         finish_orchestrator_shutdown(core, session_id, adapters::ShutdownReason::UserStopped);
     }
 
+    // Before the parent is told a child is blocked: if policy already answered
+    // the approval, nobody is blocked and mirroring a card would be a lie.
+    if let Some(event_id) = pending_auto_approval {
+        apply_bypass_approval(core, session_id, event_id);
+    }
     if let Some(detail) = &pending_child_approval {
         surface_child_approval_on_parent(core, session_id, detail);
     }
@@ -4472,6 +4530,49 @@ pub fn notify_parent_child_left_waiting(
         core.events.publish(CoreEvent::Agent(stored));
     }
     core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Answer an approval the permission policy granted.
+///
+/// Goes through [`crate::api::resolve_approval`] — the same call a human click
+/// makes — on purpose. A second decision path is where auto-approval would drift
+/// into granting something the human path refuses: the lifecycle transition, the
+/// `approval.resolved` event, the session and workspace status updates, and the
+/// parent's mirrored card all have to happen identically, and the only way to
+/// guarantee that is to not write them twice.
+///
+/// The reason ledger names the policy that matched, so an auto-approval is
+/// auditable after the fact rather than merely absent from the UI.
+fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64) {
+    match crate::api::resolve_approval(core, session_id, event_id, "accept") {
+        Ok(()) => {
+            {
+                let db = core.db.lock().unwrap();
+                let _ = store::event(
+                    &db,
+                    "approval",
+                    "approval.auto_allowed",
+                    session_id,
+                    &format!("bypass_all granted approval {event_id}"),
+                );
+            }
+            // `resolve_approval` already published, but it published before this
+            // row existed. The audit list reads the ledger, so it needs a nudge
+            // that comes after the row it is meant to show.
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        Err(error) => {
+            // A policy that could not be applied must not look like one that was.
+            let db = core.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "approval",
+                "approval.auto_allow_failed",
+                session_id,
+                &format!("bypass_all could not answer approval {event_id}: {error}"),
+            );
+        }
+    }
 }
 
 /// Who redirected a worker mid-run. The parent needs the distinction: its own
@@ -8595,27 +8696,41 @@ mod submit_input_tests {
 
     /// A live provider that records what it was told, and can be made to fail
     /// the write so the queue's release path is reachable.
-    struct FakeRuntime {
+    pub(super) struct FakeRuntime {
         steering: bool,
         sent: Arc<Mutex<Vec<String>>>,
+        /// Approval answers, as `(requestId, decision)`. Recorded rather than
+        /// swallowed: "the provider was told accept" is the whole assertion for
+        /// an auto-approved request.
+        responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
         refuse: Arc<AtomicBool>,
     }
 
-    struct FakeHandles {
-        sent: Arc<Mutex<Vec<String>>>,
-        refuse: Arc<AtomicBool>,
+    pub(super) struct FakeHandles {
+        pub(super) sent: Arc<Mutex<Vec<String>>>,
+        pub(super) responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
+        pub(super) refuse: Arc<AtomicBool>,
     }
 
     impl FakeRuntime {
-        fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+        pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
+            let responded = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 steering,
                 sent: sent.clone(),
+                responded: responded.clone(),
                 refuse: refuse.clone(),
             };
-            (Box::new(runtime), FakeHandles { sent, refuse })
+            (
+                Box::new(runtime),
+                FakeHandles {
+                    sent,
+                    responded,
+                    refuse,
+                },
+            )
         }
     }
 
@@ -8642,7 +8757,14 @@ mod submit_input_tests {
         fn interrupt(&self) -> Result<(), BridgeError> {
             Ok(())
         }
-        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+        fn respond(&self, request_id: serde_json::Value, decision: &str) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.responded
+                .lock()
+                .unwrap()
+                .push((request_id, decision.to_owned()));
             Ok(())
         }
         fn stop(&mut self, _: adapters::ShutdownReason) {}
@@ -9737,6 +9859,376 @@ mod submit_input_tests {
             .contains("do not assume the guidance landed"));
         assert!(ledger_kinds(&core, "delegation.steer.")
             .contains(&"delegation.steer.refused".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod permission_policy_tests {
+    use super::submit_input_tests::FakeRuntime;
+    use super::*;
+
+    /// A provider approval as it arrives on the control channel. Codex's shape,
+    /// because it is the one with an explicit `requestId` to answer.
+    fn approval_frame(request_id: i64) -> serde_json::Value {
+        // The JSON-RPC envelope `id` is both what routes this to the request
+        // normalizer and what becomes the `requestId` an answer is addressed to.
+        serde_json::json!({
+            "id": request_id,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "itemId": "item-1",
+                "command": "rm -rf build",
+                "cwd": "/repo",
+            },
+        })
+    }
+
+    type Fixture = (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        std::sync::MutexGuard<'static, ()>,
+    );
+
+    fn core_with_session(bypass: bool) -> Fixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth)
+                 VALUES('chat',NULL,'codex','Chat','working','reported','direct',0)",
+                [],
+            )
+            .unwrap();
+            if bypass {
+                agent_config::save_permission_policy(
+                    &db,
+                    agent_config::PermissionPolicy {
+                        bypass_all: true,
+                        updated_at: String::new(),
+                    },
+                )
+                .unwrap();
+            }
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    fn attach(core: &Arc<BridgeCore>, session_id: &str) -> super::submit_input_tests::FakeHandles {
+        let (runtime, handles) = FakeRuntime::new(false);
+        core.adapters
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned(), runtime);
+        handles
+    }
+
+    fn ledger(core: &Arc<BridgeCore>, prefix: &str) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM events WHERE kind LIKE ?1 ORDER BY id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(params![format!("{prefix}%")], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    fn entry_kinds(core: &Arc<BridgeCore>) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM session_entries WHERE session_id='chat' ORDER BY sequence")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    fn deliver(core: &Arc<BridgeCore>, frame: &serde_json::Value) {
+        deliver_to(core, "chat", frame);
+    }
+
+    fn deliver_to(core: &Arc<BridgeCore>, session_id: &str, frame: &serde_json::Value) {
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".to_owned())));
+        handle_agent_value(core, session_id, &current_turn, frame);
+    }
+
+    /// A parent orchestrator with one live worker child, so the mirrored
+    /// blocked-card path is reachable.
+    fn core_with_worker(bypass: bool) -> Fixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('parent','w','codex','Orchestrator','working','reported','orchestrator',0)", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,started_at) VALUES('child','w','codex','Implementation · strong','working','reported','parent',1,'now')", []).unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(&db, &crate::model::WorkerRuntimeRecord {
+                session_id: "child".into(), parent_session_id: "parent".into(),
+                lifecycle_state: "working".into(), task_family: "implementation".into(),
+                compatibility_key: "key".into(), result_status: "pending".into(), retry_count: 0,
+                warm_until: None, worktree_path: None, worktree_branch: None, last_result: None,
+                last_activity_at: None, waiting_since: None, waiting_reason: None,
+                progress_summary: None, updated_at: Utc::now().to_rfc3339(),
+            }).unwrap();
+            if bypass {
+                agent_config::save_permission_policy(&db, agent_config::PermissionPolicy {
+                    bypass_all: true, updated_at: String::new(),
+                }).unwrap();
+            }
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    #[test]
+    fn an_approval_is_auto_accepted_when_bypass_is_on() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &approval_frame(42));
+
+        let answered = handles.responded.lock().unwrap().clone();
+        assert_eq!(answered.len(), 1, "the provider was answered exactly once");
+        assert_eq!(answered[0].1, "accept");
+        assert_eq!(answered[0].0, serde_json::json!(42));
+        // Visible, not silent: the conversation shows the resolution and the
+        // ledger names the policy that matched.
+        let kinds = entry_kinds(&core);
+        assert!(kinds.contains(&"approval.requested".to_owned()));
+        assert!(kinds.contains(&"approval.resolved".to_owned()));
+        assert_eq!(
+            ledger(&core, "approval."),
+            vec!["approval.auto_allowed".to_owned()]
+        );
+    }
+
+    #[test]
+    fn an_approval_waits_for_a_human_when_bypass_is_off() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+
+        deliver(&core, &approval_frame(42));
+
+        assert!(
+            handles.responded.lock().unwrap().is_empty(),
+            "nothing may be granted before someone asks for it"
+        );
+        assert!(ledger(&core, "approval.").is_empty());
+        let status: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT status FROM sessions WHERE id='chat'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "waiting");
+        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+    }
+
+    /// The gate that must survive bypass. Write scope is authorization, not
+    /// convenience — a worker writing outside its lease is the one thing a
+    /// convenience switch must never grant.
+    #[test]
+    fn a_write_scope_approval_is_never_auto_accepted() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+
+        let mut frame = approval_frame(42);
+        frame["params"]["approvalType"] = serde_json::json!("delegation_path_scope");
+        deliver(&core, &frame);
+
+        assert!(
+            handles.responded.lock().unwrap().is_empty(),
+            "bypass must not answer a write-scope approval"
+        );
+        assert!(ledger(&core, "approval.").is_empty());
+        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+    }
+
+    /// A failure to apply the policy must not read as a grant.
+    #[test]
+    fn a_policy_that_could_not_be_applied_says_so() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+        handles.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        deliver(&core, &approval_frame(42));
+
+        assert!(handles.responded.lock().unwrap().is_empty());
+        assert_eq!(
+            ledger(&core, "approval."),
+            vec!["approval.auto_allow_failed".to_owned()],
+            "an unapplied policy is recorded as unapplied, never as allowed"
+        );
+        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+    }
+
+    /// Two of the three Codex methods that normalize to `approval.requested` are
+    /// questions, not approvals. `respond` answers with `{"decision":…}`, which is
+    /// the wrong shape for them, so granting one sends the provider a malformed
+    /// result and the turn stops going anywhere.
+    #[test]
+    fn bypass_answers_approvals_and_leaves_questions_alone() {
+        for method in ["item/tool/requestUserInput", "mcpServer/elicitation/request"] {
+            let (_fixture, core, _managed_root) = core_with_session(true);
+            let handles = attach(&core, "chat");
+
+            let mut frame = approval_frame(42);
+            frame["method"] = serde_json::json!(method);
+            deliver(&core, &frame);
+
+            assert!(
+                handles.responded.lock().unwrap().is_empty(),
+                "{method} is a question; answering it with a decision wedges the turn"
+            );
+            assert!(ledger(&core, "approval.").is_empty(), "{method}");
+        }
+        // And the real thing still gets granted, so the narrowing did not turn
+        // the feature off.
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+        deliver(&core, &approval_frame(42));
+        assert_eq!(handles.responded.lock().unwrap().len(), 1);
+    }
+
+    /// `session_event` returns sequence 0 for a frame it did not persist, and
+    /// answering 0 would resolve whatever approval happens to sit there.
+    #[test]
+    fn auto_approval_never_answers_an_unpersisted_approval() {
+        let (_fixture, core, _managed_root) = core_with_session(true);
+        let handles = attach(&core, "chat");
+
+        // A frame for a session that does not exist persists nothing.
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".to_owned())));
+        handle_agent_value(&core, "no-such-session", &current_turn, &approval_frame(42));
+
+        assert!(handles.responded.lock().unwrap().is_empty());
+        assert!(ledger(&core, "approval.").is_empty());
+    }
+
+    /// The regression test for the bug this slice's review found: the grant ran,
+    /// and then the handler mirrored a blocked card anyway, telling the parent to
+    /// stop waiting on a worker that had already resumed.
+    #[test]
+    fn a_worker_approval_auto_accepted_leaves_the_worker_running_not_waiting() {
+        let (_fixture, core, _managed_root) = core_with_worker(true);
+        let child = attach(&core, "child");
+        let parent = attach(&core, "parent");
+
+        deliver_to(&core, "child", &approval_frame(42));
+
+        assert_eq!(child.responded.lock().unwrap().len(), 1, "the child was granted");
+        // The blocked *state* is what must never appear. `delegation.blocked` is
+        // also the kind the resolution half uses (`childBlocked: false`, folded
+        // under one item id), so the assertion is on the payload, not the kind —
+        // asserting on the kind alone would forbid the correct event too.
+        let blocked_cards: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.blocked'
+                   AND json_extract(payload,'$.data.childBlocked')=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            blocked_cards, 0,
+            "a granted approval must not tell the parent its worker is blocked"
+        );
+        // The parent is still told the worker is running again, which is true and
+        // is the same notice a human resolution sends. Deliberately not
+        // suppressed: diverging from the human path here would be a second
+        // decision path, which is the thing this design avoids.
+        let _ = &parent;
+        // The worker is running, and its wait was never stamped.
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.lifecycle_state, "working");
+        assert_eq!(runtime.waiting_reason, None);
+    }
+
+    /// One answer per request. The approval is published to every client before
+    /// anything resolves it, so a human click and the policy can both reach the
+    /// resolver for the same id — and two `respond` calls is a contradictory
+    /// answer to the provider plus two resolutions in the transcript.
+    #[test]
+    fn an_approval_is_answered_once_even_when_two_deciders_race() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+        deliver(&core, &approval_frame(42));
+        let event_id: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='approval.requested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        crate::api::resolve_approval(&core, "chat", event_id, "accept").unwrap();
+        let second = crate::api::resolve_approval(&core, "chat", event_id, "decline");
+
+        assert!(second.is_err(), "the second decider must be refused");
+        assert_eq!(
+            handles.responded.lock().unwrap().len(),
+            1,
+            "the provider heard exactly one answer, not two contradictory ones"
+        );
+    }
+
+    /// The browser gate is a different channel with a different state machine.
+    ///
+    /// The previous version of this test asserted that no session approval
+    /// existed while never raising a browser approval, so it was true either way
+    /// and proved nothing. Faking a browser approval would need an attached
+    /// browser and a lease; what actually matters is narrower and checkable: the
+    /// permission policy is consulted in exactly one place, and the browser
+    /// bridge is not it. If someone wires the policy into that module, this fails.
+    #[test]
+    fn the_permission_policy_is_not_reachable_from_the_browser_gate() {
+        let browser = include_str!("browser_bridge.rs");
+        for marker in ["permission_policy", "bypass_all", "PermissionPolicy"] {
+            assert!(
+                !browser.contains(marker),
+                "the browser outward-effect gate must not consult the permission \
+                 policy — it is authorization, not convenience (found {marker:?})"
+            );
+        }
+        // And the policy's only reader is this module's approval seam.
+        // Split so this assertion does not match its own source text.
+        let needle = format!("{}::{}(", "agent_config", "permission_policy");
+        let live = include_str!("live_turn.rs");
+        assert_eq!(
+            live.matches(needle.as_str()).count(),
+            1,
+            "one policy read, at the approval seam; a second reader is a second policy"
+        );
     }
 }
 
