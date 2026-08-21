@@ -6193,6 +6193,16 @@ pub fn submit_input(
     submit_input_internal(core, session_id, text, false)
 }
 
+/// Relaunch a session's adapter so a user-initiated send can be delivered,
+/// naming the send as the reason when the resume itself fails.
+fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    start_chat(core, session_id.to_owned()).map(|_| ()).map_err(|error| {
+        BridgeError::Invalid(format!(
+            "The session had stopped and Bridge could not resume it for this message: {error}"
+        ))
+    })
+}
+
 fn submit_input_internal(
     core: &Arc<BridgeCore>,
     session_id: String,
@@ -6207,6 +6217,14 @@ fn submit_input_internal(
         return Err(BridgeError::Invalid(
             "Worker turns are scheduled through the policy-controlled worker pool".into(),
         ));
+    }
+    // A send into a session whose adapter is gone — the app restarted, or the
+    // provider process died — is explicit consent to bring it back. Resume
+    // through the same seam the UI uses before routing; without this the
+    // delivery dead-ends on "Structured adapter session is not running" and
+    // the person just sees a toast (#252).
+    if !state.adapters.lock().unwrap().contains_key(&session_id) {
+        resume_for_send(core, &session_id)?;
     }
 
     let route = if force_new_turn {
@@ -6348,6 +6366,16 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let Some(queued) = queued else {
         return false;
     };
+    // Without a live adapter there is nothing to deliver into, and an
+    // unattended sweep must not spawn provider processes to make one. Leave
+    // the row unclaimed and quiet — claiming here made every sweep fail with
+    // "Structured adapter session is not running", release, and retry
+    // forever (#252). The next user-initiated send resumes the adapter
+    // (`resume_for_send`), and the first idle boundary after that delivers
+    // this row.
+    if !state.adapters.lock().unwrap().contains_key(session_id) {
+        return false;
+    }
     let claimed = {
         let db = state.db.lock().unwrap();
         session_input::claim(&db, &queued.id).unwrap_or(false)
@@ -7622,6 +7650,74 @@ mod submit_input_tests {
             session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
             1,
             "the follow-up is back at the front of the queue, not lost"
+        );
+    }
+
+    #[test]
+    fn a_dead_adapter_parks_the_queue_instead_of_spinning_on_it() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "keep this for later".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='stopped',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        // The app restarted: the session row survived, the adapter did not.
+        core.adapters.lock().unwrap().remove("chat");
+
+        for _ in 0..3 {
+            assert!(!drain_queued_input(&core, "chat"));
+        }
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            1,
+            "the follow-up waits for a resume; it is neither delivered nor lost"
+        );
+        let failed_deliveries: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind='session.input.delivery_failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            failed_deliveries, 0,
+            "an adapter that is not running is a parked queue, not a failure loop"
+        );
+    }
+
+    #[test]
+    fn a_send_into_an_adapterless_session_attempts_a_resume_not_a_raw_error() {
+        let (_fixture, core, _managed_root) = core_with_chat("stopped");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth)
+                 VALUES('ghost',NULL,'no-such-harness','Ghost','stopped','reported','direct',0)",
+                [],
+            )
+            .unwrap();
+
+        // No adapter is attached, and the harness cannot launch: the send must
+        // surface the resume attempt and its reason, never the bare
+        // "Structured adapter session is not running" the user cannot act on.
+        let error = submit_input(&core, "ghost".into(), "hello again".into()).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("could not resume it for this message"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("Structured adapter session is not running"),
+            "{message}"
         );
     }
 
