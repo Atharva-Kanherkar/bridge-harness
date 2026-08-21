@@ -71,6 +71,7 @@ pub(crate) struct EvidenceRow {
     intervention: bool,
     confidence_bps: Option<i64>,
     decision: RouterDecision,
+    recorded_at: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -221,7 +222,7 @@ pub(crate) fn load_evidence(
                 (SELECT e.score_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),
                 o.cost_microusd,o.runtime_ms,o.retry_count,o.human_intervention,
                 COALESCE((SELECT e.confidence_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),o.confidence_bps),
-                d.decision
+                d.decision,o.recorded_at
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
          WHERE d.workspace_id=?1 AND o.rowid<=?2
          ORDER BY o.rowid DESC
@@ -258,11 +259,33 @@ pub(crate) fn load_evidence(
             intervention: row.get(12)?,
             confidence_bps: row.get(13)?,
             decision,
+            recorded_at: row.get(15)?,
         })
         },
     )?;
     let mut evidence = rows.collect::<Result<Vec<_>, _>>().map_err(BridgeError::from)?;
     evidence.reverse();
+    // The same recency rule as the online histories, beside the row cap: rows
+    // older than the evidence window before the newest row are not evidence.
+    // A row whose timestamp does not parse stays, like legacy history.
+    let anchor = evidence
+        .iter()
+        .filter_map(|row| {
+            chrono::DateTime::parse_from_rfc3339(&row.recorded_at)
+                .ok()
+                .map(|value| value.with_timezone(&chrono::Utc))
+        })
+        .max();
+    if let Some(anchor) = anchor {
+        evidence.retain(|row| match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
+            Err(_) => true,
+            Ok(recorded) => {
+                let age_days =
+                    (anchor - recorded.with_timezone(&chrono::Utc)).num_seconds() / 86_400;
+                age_days <= crate::learning_router::EVIDENCE_WINDOW_DAYS
+            }
+        });
+    }
     Ok(evidence)
 }
 

@@ -24,6 +24,26 @@ pub const ROUTER_SCHEMA_VERSION: u32 = 2;
 pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
 pub const LEGACY_GLOBAL_SCOPE: &str = "legacy:global";
 const PRIOR_WEIGHT: i64 = 4;
+/// Decay is anchored to the newest outcome, not the wall clock: an idle
+/// workspace keeps its history, while inside an active one fresh evidence
+/// outweighs stale volume. Providers change models in place; a candidate that
+/// was great in March is not evidence about August.
+pub const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+pub const EVIDENCE_WINDOW_DAYS: i64 = 120;
+
+pub(crate) fn decay_weight(recorded_at: &str, anchor: chrono::DateTime<chrono::Utc>) -> Option<f64> {
+    let recorded = chrono::DateTime::parse_from_rfc3339(recorded_at)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let age_days = (anchor - recorded).num_seconds() as f64 / 86_400.0;
+    if age_days <= 0.0 {
+        return Some(1.0);
+    }
+    if age_days > EVIDENCE_WINDOW_DAYS as f64 {
+        return None;
+    }
+    Some(0.5_f64.powf(age_days / DECAY_HALF_LIFE_DAYS))
+}
 /// Sessions that can still report *current* quota/context. Ended, ready, and
 /// idle rows are stale snapshots: missing capacity is unknown, which stays
 /// eligible rather than permanently excluding the harness. This is the same
@@ -1232,28 +1252,96 @@ fn load_histories(
     task_family: &str,
 ) -> Result<BTreeMap<String, HistoricalOutcome>, BridgeError> {
     let mut statement = db.prepare(
-        "SELECT o.candidate,COUNT(*),SUM(CASE WHEN o.succeeded THEN 1 ELSE 0 END),
-                COALESCE(SUM(o.runtime_ms),0),COALESCE(SUM(o.normalized_cost),0),
-                SUM(CASE WHEN o.retry_count>0 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN o.human_intervention THEN 1 ELSE 0 END)
+        "SELECT o.candidate,o.succeeded,COALESCE(o.runtime_ms,0),COALESCE(o.normalized_cost,0),
+                o.retry_count,o.human_intervention,o.recorded_at
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE d.workspace_id=?1 AND d.task_family=?2 GROUP BY o.candidate",
+         WHERE d.workspace_id=?1 AND d.task_family=?2",
     )?;
-    let rows = statement.query_map(params![workspace_id, task_family], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            HistoricalOutcome {
-                samples: row.get(1)?,
-                successes: row.get(2)?,
-                runtime_ms_total: row.get(3)?,
-                normalized_cost_total: row.get(4)?,
-                retries: row.get(5)?,
-                human_interventions: row.get(6)?,
+    struct OutcomeRow {
+        candidate: String,
+        succeeded: bool,
+        runtime_ms: i64,
+        normalized_cost: i64,
+        retried: bool,
+        human_intervention: bool,
+        recorded_at: String,
+    }
+    let rows: Vec<OutcomeRow> = statement
+        .query_map(params![workspace_id, task_family], |row| {
+            Ok(OutcomeRow {
+                candidate: row.get(0)?,
+                succeeded: row.get(1)?,
+                runtime_ms: row.get(2)?,
+                normalized_cost: row.get(3)?,
+                retried: row.get::<_, i64>(4)? > 0,
+                human_intervention: row.get(5)?,
+                recorded_at: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Anchor on the newest parseable timestamp. A row whose timestamp does
+    // not parse counts at full weight — legacy evidence degrades to the old
+    // undecayed behavior instead of vanishing.
+    let anchor = rows
+        .iter()
+        .filter_map(|row| {
+            chrono::DateTime::parse_from_rfc3339(&row.recorded_at)
+                .ok()
+                .map(|value| value.with_timezone(&chrono::Utc))
+        })
+        .max();
+    #[derive(Default)]
+    struct Weighted {
+        samples: f64,
+        successes: f64,
+        runtime_ms_total: f64,
+        normalized_cost_total: f64,
+        retries: f64,
+        human_interventions: f64,
+    }
+    let mut weighted = BTreeMap::<String, Weighted>::new();
+    for row in rows {
+        let weight = match anchor {
+            None => 1.0,
+            Some(anchor) => match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
+                Err(_) => 1.0,
+                Ok(_) => match decay_weight(&row.recorded_at, anchor) {
+                    Some(weight) => weight,
+                    None => continue,
+                },
             },
-        ))
-    })?;
-    rows.collect::<Result<BTreeMap<_, _>, _>>()
-        .map_err(BridgeError::from)
+        };
+        let entry = weighted.entry(row.candidate).or_default();
+        entry.samples += weight;
+        if row.succeeded {
+            entry.successes += weight;
+        }
+        entry.runtime_ms_total += weight * row.runtime_ms as f64;
+        entry.normalized_cost_total += weight * row.normalized_cost as f64;
+        if row.retried {
+            entry.retries += weight;
+        }
+        if row.human_intervention {
+            entry.human_interventions += weight;
+        }
+    }
+    Ok(weighted
+        .into_iter()
+        .filter(|(_, value)| value.samples.round() as i64 > 0)
+        .map(|(candidate, value)| {
+            (
+                candidate,
+                HistoricalOutcome {
+                    samples: value.samples.round() as i64,
+                    successes: value.successes.round() as i64,
+                    runtime_ms_total: value.runtime_ms_total.round() as i64,
+                    normalized_cost_total: value.normalized_cost_total.round() as i64,
+                    retries: value.retries.round() as i64,
+                    human_interventions: value.human_interventions.round() as i64,
+                },
+            )
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2001,6 +2089,58 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("without a workspace"), "{error}");
+    }
+
+    #[test]
+    fn stale_history_decays_out_of_the_prediction() {
+        let db = routing_db();
+        let mut insert = |suffix: &str, succeeded: bool, recorded_at: &str| {
+            let decision = format!("decision-{suffix}");
+            db.execute(
+                "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+                 VALUES(?1,'w','parent',?2,'trace','implementation','fp',1,'implementer','codex','codex-standard','medium','shadow',0,'codex:codex-standard','codex:codex-standard','codex:codex-standard','{}',?3)",
+                params![decision, format!("turn-{suffix}"), recorded_at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![format!("child-{suffix}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,'codex:codex-standard',?3,'completed',100,1000,0,0,?4,?5,?6)",
+                params![
+                    decision,
+                    format!("child-{suffix}"),
+                    succeeded,
+                    if succeeded { "success" } else { "failure" },
+                    if succeeded { "accepted" } else { "rejected" },
+                    recorded_at,
+                ],
+            )
+            .unwrap();
+        };
+        for index in 0..8 {
+            insert(&format!("stale-{index}"), false, "2026-06-02T00:00:00Z");
+        }
+        for index in 0..5 {
+            insert(&format!("ancient-{index}"), false, "2026-01-01T00:00:00Z");
+        }
+        for index in 0..3 {
+            insert(&format!("fresh-{index}"), true, "2026-08-01T00:00:00Z");
+        }
+        let history = &load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"];
+        // 8 failures at 60 days weigh 0.25 each; 5 at 212 days are outside the
+        // window entirely; 3 fresh successes weigh 1.0. Raw counting would say
+        // 3 passes in 16 samples — decayed, fresh evidence carries the day.
+        assert_eq!(history.successes, 3);
+        assert_eq!(history.samples, 5, "8*0.25 + 3, ancient rows gone");
+        assert!(
+            history.successes * 2 > history.samples,
+            "the weighted pass rate flips above one half"
+        );
     }
 
     #[test]
