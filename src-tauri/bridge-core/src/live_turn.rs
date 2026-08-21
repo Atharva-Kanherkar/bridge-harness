@@ -14,10 +14,11 @@ use crate::sessions;
 use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
-    memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, restoration,
-    secret_interception, session_forest, session_input, session_recall, session_supervisor,
-    skill_marketplace, slash, store, worker_adoption, worker_guard, worker_lifecycle,
-    worker_pool, worker_retry, worker_sandbox, workspace_files, worktree_coordinator,
+    memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
+    prompts, restoration, secret_interception, session_forest, session_input, session_recall,
+    session_supervisor, skill_marketplace, slash, store, worker_adoption, worker_guard,
+    worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
+    worktree_coordinator,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
@@ -60,13 +61,12 @@ pub fn live_available_capabilities(state: &BridgeCore) -> std::collections::Hash
 }
 
 fn compile_orchestrator_prompt(
+    stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
     credential_context: &str,
     checkpoint_context: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
-    let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
-        .stable_section("bridge_role", orchestrator::briefing())
-        .stable_section("delegation_protocol", delegation::protocol(0))
+    let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::Orchestrator)?
         .project_rule("configured_project_rules", configured_prompt)
         .variable_section("session_capabilities", credential_context);
     if let Some(context) = checkpoint_context {
@@ -76,40 +76,501 @@ fn compile_orchestrator_prompt(
 }
 
 fn compile_session_prompt(
+    stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
     credential_context: &str,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
-    prompt_compiler::PromptCompiler::new("session")
+    compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
         .project_rule("configured_project_rules", configured_prompt)
         .variable_section("session_capabilities", credential_context)
         .compile()
 }
 
 fn compile_worker_prompt(
+    stack: &prompt_sections::ResolvedPromptStack,
     directive: &delegation::DelegationRequest,
-    depth: i64,
     branch: &str,
     evidence: &[delegation::WorkerEvidence],
     configured_prompt: &str,
     credential_context: &str,
     checkpoint_context: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
-    let mut compiler =
-        prompt_compiler::PromptCompiler::new(format!("worker:{}", directive.role.as_str()))
-            .stable_section(
-                "worker_contract",
-                delegation::worker_contract(directive.role, depth),
-            )
-            .project_rule("configured_project_rules", configured_prompt)
-            .variable_section(
-                "task_context",
-                delegation::worker_task_context(directive, branch, evidence),
-            )
-            .variable_section("session_capabilities", credential_context);
+    let mut compiler = compiler_for_stack(
+        stack,
+        prompts::PromptTarget::Worker(directive.role),
+    )?
+    .project_rule("configured_project_rules", configured_prompt)
+    .variable_section(
+        "task_context",
+        delegation::worker_task_context(directive, branch, evidence),
+    )
+    .variable_section("session_capabilities", credential_context);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
     }
     compiler.compile()
+}
+
+fn compiler_for_stack(
+    stack: &prompt_sections::ResolvedPromptStack,
+    expected_target: prompts::PromptTarget,
+) -> Result<prompt_compiler::PromptCompiler, BridgeError> {
+    if stack.target != expected_target {
+        return Err(BridgeError::Invalid(format!(
+            "prompt stack target {} cannot compile as {}",
+            stack.target.storage_key(),
+            expected_target.storage_key()
+        )));
+    }
+    let mut compiler = prompt_compiler::PromptCompiler::new(stack.target.compiler_role());
+    for section in &stack.sections {
+        compiler = compiler.stable_section(&section.id, &section.text);
+    }
+    Ok(compiler)
+}
+
+fn prompt_compilation_matches(
+    previous: &PromptCompilationRecord,
+    harness: &str,
+    model: Option<&str>,
+    prompt: &prompt_compiler::CompiledPrompt,
+) -> bool {
+    previous.harness == harness
+        && previous.model.as_deref() == model
+        && previous.prefix_hash == prompt.metadata.prefix_hash
+        && previous.schema_version == i64::from(prompt.metadata.schema_version)
+}
+
+fn orchestrator_context_event(
+    stack: &prompt_sections::ResolvedPromptStack,
+    tier: CapabilityTier,
+    model: Option<&str>,
+) -> agent::NormalizedEvent {
+    let section_ids = stack
+        .sections
+        .iter()
+        .map(|section| section.id.as_str())
+        .collect::<Vec<_>>();
+    let deleted_section_ids = stack
+        .target
+        .section_ids()
+        .iter()
+        .copied()
+        .filter(|id| !section_ids.contains(id))
+        .collect::<Vec<_>>();
+    let all_deleted = stack.sections.is_empty();
+    let text = if all_deleted {
+        "All Bridge-stable orchestrator sections are deleted for this prompt launch.".into()
+    } else {
+        stack
+            .sections
+            .iter()
+            .map(|section| format!("## {}\n{}", section.id, section.text))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+    agent::NormalizedEvent {
+        kind: "session.context".into(),
+        item_id: Some("orchestrator-briefing".into()),
+        role: Some("system".into()),
+        status: Some("ready".into()),
+        title: Some(if all_deleted {
+            "Orchestrator routing policy removed".into()
+        } else {
+            "Orchestrator routing policy".into()
+        }),
+        text: Some(text),
+        data: serde_json::json!({
+            "source": "capability-policy",
+            "sectionState": if all_deleted { "deleted" } else { "active" },
+            "sectionIds": section_ids,
+            "deletedSectionIds": deleted_section_ids,
+            "requestedTier": tier,
+            "runtimeModel": model
+        }),
+    }
+}
+
+#[cfg(test)]
+mod prompt_section_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn directive(role: delegation::WorkerRole) -> delegation::DelegationRequest {
+        delegation::DelegationRequest {
+            schema_version: delegation::SCHEMA_VERSION,
+            role,
+            objective: "Map the current prompt path".into(),
+            acceptance_criteria: vec!["Prompt bytes stay stable".into()],
+            known_facts: Vec::new(),
+            decisions: Vec::new(),
+            evidence_ids: Vec::new(),
+            relevant_files: Vec::new(),
+            owned_paths: Vec::new(),
+            write_mode: role.default_write_mode(),
+            capability_tier: CapabilityTier::Standard,
+            effort: delegation::Effort::Medium,
+            network_access: false,
+            writable_output_paths: Vec::new(),
+            verification: Vec::new(),
+            output_contract: role.output_contract(),
+            harness: None,
+            model: None,
+        }
+    }
+
+    fn legacy_orchestrator_prompt(
+        configured_prompt: &str,
+        credential_context: &str,
+        checkpoint_context: Option<&str>,
+    ) -> prompt_compiler::CompiledPrompt {
+        let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
+            .stable_section("bridge_role", orchestrator::briefing())
+            .stable_section("delegation_protocol", delegation::protocol(0))
+            .project_rule("configured_project_rules", configured_prompt)
+            .variable_section("session_capabilities", credential_context);
+        if let Some(context) = checkpoint_context {
+            compiler = compiler.variable_section("restoration_context", context);
+        }
+        compiler.compile().unwrap()
+    }
+
+    fn legacy_session_prompt(
+        configured_prompt: &str,
+        credential_context: &str,
+    ) -> prompt_compiler::CompiledPrompt {
+        prompt_compiler::PromptCompiler::new("session")
+            .project_rule("configured_project_rules", configured_prompt)
+            .variable_section("session_capabilities", credential_context)
+            .compile()
+            .unwrap()
+    }
+
+    fn legacy_worker_prompt(
+        directive: &delegation::DelegationRequest,
+        depth: i64,
+        branch: &str,
+        configured_prompt: &str,
+        credential_context: &str,
+        checkpoint_context: Option<&str>,
+    ) -> prompt_compiler::CompiledPrompt {
+        let mut compiler = prompt_compiler::PromptCompiler::new(format!(
+            "worker:{}",
+            directive.role.as_str()
+        ))
+        .stable_section(
+            "worker_contract",
+            delegation::worker_contract(directive.role, depth),
+        )
+        .project_rule("configured_project_rules", configured_prompt)
+        .variable_section(
+            "task_context",
+            delegation::worker_task_context(directive, branch, &[]),
+        )
+        .variable_section("session_capabilities", credential_context);
+        if let Some(context) = checkpoint_context {
+            compiler = compiler.variable_section("restoration_context", context);
+        }
+        compiler.compile().unwrap()
+    }
+
+    #[test]
+    fn default_target_stacks_match_legacy_live_bytes() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let configured = "Repository-specific rule";
+        let credential = "Use [secret:sec_example] through /credential-proxy/session/ref";
+
+        let orchestrator_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        for checkpoint in [None, Some("Restore this orchestrator checkpoint")] {
+            let compiled = compile_orchestrator_prompt(
+                &orchestrator_stack,
+                configured,
+                credential,
+                checkpoint,
+            )
+            .unwrap();
+            assert_eq!(
+                compiled,
+                legacy_orchestrator_prompt(configured, credential, checkpoint)
+            );
+            assert_eq!(
+                compiled
+                    .instructions()
+                    .matches("Rich rendering in the Bridge chat UI")
+                    .count(),
+                1
+            );
+        }
+
+        let direct_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+        let direct = compile_session_prompt(&direct_stack, configured, credential).unwrap();
+        assert_eq!(direct, legacy_session_prompt(configured, credential));
+        assert!(!direct.instructions().contains("bridge-delegate"));
+        assert!(!direct.instructions().contains("worker_contract"));
+
+        for role in [
+            delegation::WorkerRole::Research,
+            delegation::WorkerRole::Implementation,
+            delegation::WorkerRole::Verification,
+            delegation::WorkerRole::Planning,
+            delegation::WorkerRole::Documentation,
+        ] {
+            let directive = directive(role);
+            let stack = prompt_sections::resolve(
+                &db,
+                prompts::PromptTarget::Worker(role),
+                1,
+            )
+            .unwrap();
+            for checkpoint in [None, Some("Restore this worker checkpoint")] {
+                let compiled = compile_worker_prompt(
+                    &stack,
+                    &directive,
+                    "bridge/prompt-studio",
+                    &[],
+                    configured,
+                    credential,
+                    checkpoint,
+                )
+                .unwrap();
+                assert_eq!(
+                    compiled,
+                    legacy_worker_prompt(
+                        &directive,
+                        1,
+                        "bridge/prompt-studio",
+                        configured,
+                        credential,
+                        checkpoint,
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn worker_live_stack_preserves_rendering_note_omission() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let directive = directive(delegation::WorkerRole::Implementation);
+        let stack = prompt_sections::resolve(
+            &db,
+            prompts::PromptTarget::Worker(directive.role),
+            1,
+        )
+        .unwrap();
+        let compiled =
+            compile_worker_prompt(&stack, &directive, "main", &[], "", "capabilities", None)
+                .unwrap();
+        assert!(!compiled
+            .instructions()
+            .contains("Rich rendering in the Bridge chat UI"));
+    }
+
+    #[test]
+    fn persisted_states_compile_through_the_live_orchestrator_path() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let key = prompt_sections::PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::BRIDGE_ROLE_SECTION_ID,
+        )
+        .unwrap();
+        let baseline_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None)
+            .unwrap();
+
+        let overridden =
+            prompt_sections::save_override(&db, &key, "Custom orchestrator policy").unwrap();
+        let override_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let override_prompt =
+            compile_orchestrator_prompt(&override_stack, "", "capabilities", None).unwrap();
+        assert!(override_prompt.stable_prefix.contains("Custom orchestrator policy"));
+        assert!(!override_prompt.stable_prefix.contains("starter orchestrator"));
+
+        prompt_sections::delete_section(&db, &key).unwrap();
+        let deleted_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let deleted =
+            compile_orchestrator_prompt(&deleted_stack, "", "capabilities", None).unwrap();
+        assert!(!deleted.stable_prefix.contains("\"bridge_role\""));
+
+        prompt_sections::reset_section(&db, &key).unwrap();
+        let reset_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let reset = compile_orchestrator_prompt(&reset_stack, "", "capabilities", None).unwrap();
+        assert_eq!(reset, baseline);
+
+        prompt_sections::restore_revision(&db, &key, overridden.id).unwrap();
+        let restored_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let restored =
+            compile_orchestrator_prompt(&restored_stack, "", "capabilities", None).unwrap();
+        assert_eq!(restored, override_prompt);
+    }
+
+    #[test]
+    fn direct_sessions_reject_non_session_stacks() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let orchestrator_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let error = compile_session_prompt(&orchestrator_stack, "", "capabilities").unwrap_err();
+        assert!(error.to_string().contains("cannot compile as direct_session"));
+    }
+
+    #[test]
+    fn hot_prompt_reuse_rejects_a_changed_effective_prefix() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let key = prompt_sections::PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::BRIDGE_ROLE_SECTION_ID,
+        )
+        .unwrap();
+        let baseline_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None)
+            .unwrap();
+        let previous = PromptCompilationRecord {
+            id: 1,
+            session_id: "session".into(),
+            turn_id: None,
+            prefix_id: baseline.metadata.prefix_id.clone(),
+            prefix_hash: baseline.metadata.prefix_hash.clone(),
+            schema_version: i64::from(baseline.metadata.schema_version),
+            prefix_bytes: baseline.metadata.prefix_bytes as i64,
+            prefix_token_estimate: baseline.metadata.prefix_token_estimate as i64,
+            harness: "codex".into(),
+            model: Some("model".into()),
+            role: "orchestrator".into(),
+            task_family: "orchestration".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+        };
+        assert!(prompt_compilation_matches(
+            &previous,
+            "codex",
+            Some("model"),
+            &baseline,
+        ));
+
+        prompt_sections::save_override(&db, &key, "Changed policy").unwrap();
+        let changed_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let changed = compile_orchestrator_prompt(&changed_stack, "", "capabilities", None)
+            .unwrap();
+        assert!(!prompt_compilation_matches(
+            &previous,
+            "codex",
+            Some("model"),
+            &changed,
+        ));
+    }
+
+    #[test]
+    fn durable_context_records_the_effective_stack_and_section_deletions() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let key = prompt_sections::PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::BRIDGE_ROLE_SECTION_ID,
+        )
+        .unwrap();
+
+        prompt_sections::save_override(&db, &key, "Custom durable policy").unwrap();
+        let overridden =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let event = orchestrator_context_event(
+            &overridden,
+            CapabilityTier::Standard,
+            Some("model"),
+        );
+        assert!(event.text.as_deref().unwrap().contains("Custom durable policy"));
+        assert!(event
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("delegation_protocol"));
+        assert_eq!(event.data["sectionState"], "active");
+
+        prompt_sections::delete_section(&db, &key).unwrap();
+        let deleted =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let event = orchestrator_context_event(
+            &deleted,
+            CapabilityTier::Standard,
+            Some("model"),
+        );
+        assert_eq!(event.data["sectionState"], "active");
+        assert_eq!(
+            event.data["deletedSectionIds"],
+            serde_json::json!(["bridge_role"])
+        );
+        assert!(event
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("delegation_protocol"));
+        assert!(!event.text.as_deref().unwrap().contains("starter orchestrator"));
+
+        let protocol_key = prompt_sections::PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::DELEGATION_PROTOCOL_SECTION_ID,
+        )
+        .unwrap();
+        prompt_sections::delete_section(&db, &protocol_key).unwrap();
+        let deleted =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        let event = orchestrator_context_event(
+            &deleted,
+            CapabilityTier::Standard,
+            Some("model"),
+        );
+        assert_eq!(event.data["sectionState"], "deleted");
+        assert!(event
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("All Bridge-stable orchestrator sections are deleted"));
+    }
+
+    #[test]
+    fn invalidating_a_launch_prevents_its_reader_from_settling_a_replacement() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(scratch.path());
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(
+                id,workspace_id,harness,label,status,metric_source,started_at,provider_session_id
+             ) VALUES('session',NULL,'codex','Orchestrator','working','reported','launch-one','provider-one')",
+            [],
+        )
+        .unwrap();
+        assert!(reader_launch_is_current(
+            &core.db.lock().unwrap(),
+            "session",
+            "launch-one",
+            "provider-one"
+        ));
+
+        invalidate_reader_launch(&core, "session").unwrap();
+
+        assert!(!reader_launch_is_current(
+            &core.db.lock().unwrap(),
+            "session",
+            "launch-one",
+            "provider-one"
+        ));
+        assert_eq!(
+            core.db.lock().unwrap().query_row(
+                "SELECT status FROM sessions WHERE id='session'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "stopped"
+        );
+    }
 }
 
 pub fn persist_prompt_compilation(
@@ -295,11 +756,20 @@ pub fn start_session(
             .to_string()
     });
     std::fs::create_dir_all(&path)?;
-    let configured_prompt =
-        agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
+    let (configured_prompt, prompt_stack) = {
+        let db = state.db.lock().unwrap();
+        (
+            agent_config::orchestrator_prompt(&db, adapter_id),
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0)?,
+        )
+    };
     let credential_context = state.credential_broker.instructions(&session_id);
-    let orchestrator_prompt =
-        compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
+    let orchestrator_prompt = compile_orchestrator_prompt(
+        &prompt_stack,
+        &configured_prompt,
+        &credential_context,
+        None,
+    )?;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
@@ -350,6 +820,7 @@ pub fn start_session(
             )?;
             return store::state(&db);
         }
+        invalidate_reader_launch(state, &session_id)?;
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Replaced);
         }
@@ -385,8 +856,13 @@ pub fn start_session(
     let checkpoint_instructions = checkpoint_context
         .as_deref()
         .map(|context| {
-            compile_orchestrator_prompt(&configured_prompt, &credential_context, Some(context))
-                .map(|prompt| prompt.instructions().to_owned())
+            compile_orchestrator_prompt(
+                &prompt_stack,
+                &configured_prompt,
+                &credential_context,
+                Some(context),
+            )
+            .map(|prompt| prompt.instructions().to_owned())
         })
         .transpose()?;
     let (mut started, restoration_mode, resume_eligibility) = match plan {
@@ -588,20 +1064,15 @@ pub fn start_session(
             restoration_mode.as_str()
         ),
     )?;
-    if adapter_id == orchestrator::HARNESS {
-        let context = agent::NormalizedEvent {
-            kind: "session.context".into(),
-            item_id: Some("orchestrator-briefing".into()),
-            role: Some("system".into()),
-            status: Some("ready".into()),
-            title: Some("Orchestrator routing policy".into()),
-            text: Some(orchestrator::briefing()),
-            data: serde_json::json!({
-                "source": "capability-policy",
-                "requestedTier": orchestrator::TIER,
-                "runtimeModel": chosen_model
-            }),
-        };
+    // start_session only launches orchestrator sessions; direct chats use
+    // start_chat, which has its own harness-aware gate.
+    let is_orchestrator = session_label == orchestrator::SESSION_LABEL;
+    if is_orchestrator {
+        let context = orchestrator_context_event(
+            &prompt_stack,
+            orchestrator::TIER,
+            chosen_model.as_deref(),
+        );
         let _ = store::session_event(
             &db,
             &session_id,
@@ -628,7 +1099,10 @@ pub fn start_session(
     spawn_reader_thread(
         core.clone(),
         session_id.clone(),
+        adapter_id.to_owned(),
         started_at,
+        thread_id,
+        process_id,
         current_turn,
         reader,
     );
@@ -661,9 +1135,6 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?
     };
-    if state.adapters.lock().unwrap().contains_key(&session_id) {
-        return store::state(&state.db.lock().unwrap());
-    }
     let is_orchestrator = kind == "orchestrator";
     let cwd = match cwd_col.filter(|value| !value.is_empty()) {
         Some(value) => value,
@@ -732,17 +1203,85 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 .map(|resolution| resolution.actual_model)
         });
     let proxy_instructions = state.credential_broker.instructions(&session_id);
-    let configured_prompt = if is_orchestrator {
-        agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id)
-    } else {
-        agent_config::session_prompt(&state.db.lock().unwrap(), adapter_id)
+    let (configured_prompt, prompt_stack) = {
+        let db = state.db.lock().unwrap();
+        let target = if is_orchestrator {
+            prompts::PromptTarget::Orchestrator
+        } else {
+            prompts::PromptTarget::DirectSession
+        };
+        let configured_prompt = if is_orchestrator {
+            agent_config::orchestrator_prompt(&db, adapter_id)
+        } else {
+            agent_config::session_prompt(&db, adapter_id)
+        };
+        (configured_prompt, prompt_sections::resolve(&db, target, 0)?)
     };
     let compiled_prompt = if is_orchestrator {
-        compile_orchestrator_prompt(&configured_prompt, &proxy_instructions, None)?
+        compile_orchestrator_prompt(&prompt_stack, &configured_prompt, &proxy_instructions, None)?
     } else {
-        compile_session_prompt(&configured_prompt, &proxy_instructions)?
+        compile_session_prompt(&prompt_stack, &configured_prompt, &proxy_instructions)?
     };
     let runtime_instructions = compiled_prompt.instructions().to_owned();
+    let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
+    if process_is_hot {
+        let hot_prompt_compatible = store::latest_prompt_compilation(
+            &state.db.lock().unwrap(),
+            &session_id,
+        )?
+        .is_some_and(|previous| {
+            prompt_compilation_matches(
+                &previous,
+                adapter_id,
+                chosen_model.as_deref(),
+                &compiled_prompt,
+            )
+        });
+        if hot_prompt_compatible {
+            let db = state.db.lock().unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Hot,
+                if provider_id.is_some() {
+                    ResumeEligibility::Native
+                } else {
+                    ResumeEligibility::CheckpointRestored
+                },
+                provider_id.as_deref(),
+            )?;
+            handoff::record_fidelity(&db, &session_id, ContinuationFidelity::Native)?;
+            persist_prompt_compilation(
+                &db,
+                &session_id,
+                adapter_id,
+                chosen_model.as_deref(),
+                if is_orchestrator {
+                    "orchestrator"
+                } else {
+                    "session"
+                },
+                if is_orchestrator {
+                    "orchestration"
+                } else {
+                    "direct"
+                },
+                RestorationMode::Hot,
+                "not_applicable",
+                &compiled_prompt,
+            )?;
+            return store::state(&db);
+        }
+        invalidate_reader_launch(state, &session_id)?;
+        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+            runtime.stop(adapters::ShutdownReason::Replaced);
+        }
+        record_shutdown_reason(
+            &state.db.lock().unwrap(),
+            &session_id,
+            adapters::ShutdownReason::Replaced,
+        )?;
+    }
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
@@ -879,15 +1418,8 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             ),
         )?;
         if is_orchestrator {
-            let context = agent::NormalizedEvent {
-                kind: "session.context".into(),
-                item_id: Some("orchestrator-briefing".into()),
-                role: Some("system".into()),
-                status: Some("ready".into()),
-                title: Some("Orchestrator routing policy".into()),
-                text: Some(orchestrator::briefing()),
-                data: serde_json::json!({"source": "capability-policy", "requestedTier": tier, "runtimeModel": chosen_model}),
-            };
+            let context =
+                orchestrator_context_event(&prompt_stack, tier, chosen_model.as_deref());
             let _ = store::session_event(
                 &db,
                 &session_id,
@@ -913,7 +1445,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     spawn_reader_thread(
         core.clone(),
         session_id.clone(),
+        adapter_id.to_owned(),
         started_at,
+        thread_id,
+        process_id,
         current_turn,
         reader,
     );
@@ -932,15 +1467,116 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     store::state(&state.db.lock().unwrap())
 }
 
+fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), BridgeError> {
+    deactivate_reader_launch(core, session_id);
+    let harness = core.db.lock().unwrap().query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    let provider_session_id = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|runtime| runtime.provider_session_id().to_owned());
+    if let Some(provider_session_id) = provider_session_id.filter(|id| !id.is_empty()) {
+        core.adapter_registry
+            .forget_session(&harness, &provider_session_id);
+    }
+    let db = core.db.lock().unwrap();
+    db.execute(
+        "UPDATE sessions
+         SET started_at=NULL,status='stopped',ended_at=?2,active_turn_id=NULL
+         WHERE id=?1",
+        params![session_id, Utc::now().to_rfc3339()],
+    )?;
+    db.execute(
+        "UPDATE workspaces
+         SET status=CASE WHEN EXISTS(
+             SELECT 1 FROM sessions
+             WHERE workspace_id=workspaces.id
+               AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')
+         ) THEN 'working' ELSE 'stopped' END
+         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
+        params![session_id],
+    )?;
+    Ok(())
+}
+
+fn deactivate_reader_launch(core: &BridgeCore, session_id: &str) {
+    core.deactivate_reader_launch(session_id);
+}
+
+fn reader_launch_is_current(
+    db: &Connection,
+    session_id: &str,
+    started_at: &str,
+    provider_session_id: &str,
+) -> bool {
+    db.query_row(
+        "SELECT started_at=?2 AND provider_session_id=?3 FROM sessions WHERE id=?1",
+        params![session_id, started_at, provider_session_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
+fn cleanup_reader_state(
+    core: &BridgeCore,
+    session_id: &str,
+    adapter_id: &str,
+    provider_session_id: &str,
+    tracks_worker: bool,
+    launch_started_at: &str,
+) {
+    let db = core.db.lock().unwrap();
+    let active_provider = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|runtime| runtime.provider_session_id().to_owned());
+    // Only drop normalization state for this provider session if this launch
+    // is still the current one. A concurrent native resume may have already
+    // pinned a new provider_session_id to the row; forgetting it now would
+    // wipe the new stream's normalization maps mid-flight.
+    let is_current_launch =
+        reader_launch_is_current(&db, session_id, launch_started_at, provider_session_id);
+    drop(db);
+    if is_current_launch
+        && !provider_session_id.is_empty()
+        && active_provider.as_deref() != Some(provider_session_id)
+    {
+        core.adapter_registry
+            .forget_session(adapter_id, provider_session_id);
+    }
+    if tracks_worker && active_provider.is_none() {
+        core.worker_activity.lock().unwrap().remove(session_id);
+        core.worker_activity_persisted
+            .lock()
+            .unwrap()
+            .remove(session_id);
+    }
+}
+
 /// Drive one structured session's stdout: normalize every frame, then on exit
 /// mark the session stopped and unblock any parent that was waiting on it.
 fn spawn_reader_thread(
     core: Arc<BridgeCore>,
     session_id: String,
+    launch_adapter_id: String,
     launch_started_at: String,
+    launch_provider_session_id: String,
+    launch_process_id: u32,
     current_turn: Arc<Mutex<Option<String>>>,
     mut reader: Box<dyn BufRead + Send>,
 ) {
+    let launch_gate = Arc::new(Mutex::new(true));
+    core.reader_launches
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), launch_gate.clone());
     thread::spawn(move || {
         let tracks_worker = store::worker_runtime(&core.clone().db.lock().unwrap(), &session_id)
             .ok()
@@ -956,6 +1592,13 @@ fn spawn_reader_thread(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    // Check the gate without holding it across handler work:
+                    // handle_agent_value may complete a worker, which calls
+                    // deactivate_reader_launch and re-locks the same mutex.
+                    let launch_active = *launch_gate.lock().unwrap();
+                    if !launch_active {
+                        break;
+                    }
                     // Every line proves liveness — refresh the heartbeat before
                     // normalization so tool-run and reasoning frames all count.
                     if tracks_worker {
@@ -967,93 +1610,115 @@ fn spawn_reader_thread(
                 }
             }
         }
-        if tracks_worker {
-            core.clone()
-                .worker_activity
-                .lock()
-                .unwrap()
-                .remove(&session_id);
-            core.clone()
-                .worker_activity_persisted
-                .lock()
-                .unwrap()
-                .remove(&session_id);
+        {
+            let mut launches = core.reader_launches.lock().unwrap();
+            if launches
+                .get(&session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &launch_gate))
+            {
+                launches.remove(&session_id);
+            }
         }
         let state = core.clone();
-        let is_current_launch = state
-            .db
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT started_at=?2 FROM sessions WHERE id=?1",
-                params![session_id, launch_started_at],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-        if !is_current_launch {
-            return;
-        }
         // Keep the exited runtime long enough to ask it why it died — the
         // exit status and stderr tail are the only real diagnostics a worker
         // that never produced a typed result leaves behind.
-        let exited_runtime = state.adapters.lock().unwrap().remove(&session_id);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
-            &state.db.lock().unwrap(),
-            &session_id,
-        );
-        // The runtime is gone either way (user stop or process exit), so drop
-        // the adapter's normalization state for this provider session — those
-        // maps otherwise grow for the life of the process. The exited runtime
-        // itself names the provider session that owns the map entry; the
-        // persisted row is only the fallback for the user-stop path, where the
-        // runtime left the map before this thread saw EOF. Never the other way
-        // around: a concurrent relaunch may already have persisted the *new*
-        // runtime's id into that row.
-        {
-            let provider_session_id = exited_runtime
-                .as_ref()
-                .map(|runtime| runtime.provider_session_id().to_owned())
-                .filter(|id| !id.is_empty());
-            let (harness, persisted_id): (Option<String>, Option<String>) = state
+        let exited_runtime = {
+            let mut adapters = state.adapters.lock().unwrap();
+            let is_this_launch = adapters.get(&session_id).is_some_and(|runtime| {
+                runtime.process_id() == launch_process_id
+                    && runtime.provider_session_id() == launch_provider_session_id
+            });
+            is_this_launch
+                .then(|| adapters.remove(&session_id))
+                .flatten()
+        };
+        let Some(mut exited_runtime) = exited_runtime else {
+            cleanup_reader_state(
+                &state,
+                &session_id,
+                &launch_adapter_id,
+                &launch_provider_session_id,
+                tracks_worker,
+                &launch_started_at,
+            );
+            // The runtime was already removed (likely by a replacement
+            // launch), but observers still need the workspace rollup refresh.
+            let workspace: Option<String> = state
                 .db
                 .lock()
                 .unwrap()
                 .query_row(
-                    "SELECT harness,provider_session_id FROM sessions WHERE id=?1",
+                    "SELECT workspace_id FROM sessions WHERE id=?1",
                     params![session_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get(0),
                 )
-                .map(|(harness, id): (String, Option<String>)| (Some(harness), id))
-                .unwrap_or((None, None));
-            if let (Some(harness), Some(provider_session_id)) =
-                (harness, provider_session_id.or(persisted_id))
-            {
-                state
-                    .adapter_registry
-                    .forget_session(&harness, &provider_session_id);
+                .ok();
+            if let Some(workspace) = workspace {
+                let db = state.db.lock().unwrap();
+                let _ = db.execute(
+                    "UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",
+                    params![workspace],
+                );
             }
-        }
-        let failure_context = exited_runtime.and_then(|mut runtime| runtime.failure_context());
+            core.events.publish(CoreEvent::StateChanged);
+            return;
+        };
+
+        // Hold the database guard from generation check through all session
+        // mutations. A replacement launch either invalidates this generation
+        // first, or waits and then overwrites this launch's terminal state.
+        let workspace = {
+            let db = state.db.lock().unwrap();
+            let is_current_launch = reader_launch_is_current(
+                &db,
+                &session_id,
+                &launch_started_at,
+                &launch_provider_session_id,
+            );
+            if !is_current_launch {
+                drop(db);
+                cleanup_reader_state(
+                    &state,
+                    &session_id,
+                    &launch_adapter_id,
+                    &launch_provider_session_id,
+                    tracks_worker,
+                    &launch_started_at,
+                );
+                return;
+            }
+            let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id);
+            let is_worker = store::worker_runtime(&db, &session_id)
+                .ok()
+                .flatten()
+                .is_some();
+            let workspace: Option<String> = db
+                .query_row(
+                    "SELECT workspace_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            if !is_worker {
+                let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+            }
+            workspace
+        };
+        cleanup_reader_state(
+            &state,
+            &session_id,
+            &launch_adapter_id,
+            &launch_provider_session_id,
+            tracks_worker,
+            &launch_started_at,
+        );
+        let failure_context = exited_runtime.failure_context();
         notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
-        let db = state.db.lock().unwrap();
-        let is_worker = store::worker_runtime(&db, &session_id)
-            .ok()
-            .flatten()
-            .is_some();
-        let workspace: Option<String> = db
-            .query_row(
-                "SELECT workspace_id FROM sessions WHERE id=?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .ok();
-        if !is_worker {
-            let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
-        }
         if let Some(workspace) = workspace {
+            let db = state.db.lock().unwrap();
             let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
         }
-        drop(db);
         core.events.publish(CoreEvent::StateChanged);
     });
 }
@@ -1805,6 +2470,7 @@ fn finish_worker_checkpoint(
         checkpointing
     };
     if should_stop {
+        deactivate_reader_launch(&state, session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
@@ -1821,6 +2487,7 @@ fn finish_orchestrator_shutdown(
     reason: adapters::ShutdownReason,
 ) {
     let state = core.clone();
+    deactivate_reader_launch(&state, session_id);
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
         runtime.stop(reason);
     }
@@ -2636,13 +3303,33 @@ pub fn launch_worker_outcome(
         }
     };
     let role = directive.role.as_str();
-    let configured_prompt = agent_config::prompt_suffix(&state.db.lock().unwrap(), &harness, role);
+    let prompt_inputs = {
+        let db = state.db.lock().unwrap();
+        prompt_sections::resolve(
+            &db,
+            prompts::PromptTarget::Worker(directive.role),
+            reservation.depth,
+        )
+        .map(|stack| (agent_config::prompt_suffix(&db, &harness, role), stack))
+    };
+    let (configured_prompt, prompt_stack) = match prompt_inputs {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            fail_reserved_worker(
+                core,
+                &reservation.session_id,
+                &label,
+                &format!("Could not resolve worker prompt sections: {error}"),
+            );
+            return WorkerLaunchOutcome::Failed;
+        }
+    };
     let credential_context = state
         .credential_broker
         .instructions(&reservation.session_id);
     let compiled_prompt = match compile_worker_prompt(
+        &prompt_stack,
         directive,
-        reservation.depth,
         &reservation.branch,
         &evidence,
         &configured_prompt,
@@ -2855,6 +3542,7 @@ pub fn launch_worker_outcome(
             .contains_key(&reservation.session_id)
         && !hot_prompt_compatible
     {
+        let _ = invalidate_reader_launch(&state, &reservation.session_id);
         if let Some(mut runtime) = state
             .adapters
             .lock()
@@ -2979,8 +3667,8 @@ pub fn launch_worker_outcome(
     let compile_restored_prompt = |checkpoint: Option<String>| {
         let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
         compile_worker_prompt(
+            &prompt_stack,
             directive,
-            reservation.depth,
             &reservation.branch,
             &evidence,
             &configured_prompt,
@@ -3142,12 +3830,13 @@ pub fn launch_worker_outcome(
     let reader = started.reader;
     let startup_messages = started.startup_messages;
     let mut runtime = started.runtime;
+    let process_id = runtime.process_id();
     let started_at = Utc::now().to_rfc3339();
 
     if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
         &state.db.lock().unwrap(),
         &session_id,
-        runtime.process_id(),
+        process_id,
     ) {
         runtime.stop(adapters::ShutdownReason::Failed);
         verify_read_only_worker(core, &session_id);
@@ -3259,7 +3948,7 @@ pub fn launch_worker_outcome(
     {
         let db = state.db.lock().unwrap();
         let _ = db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,provider_session_id=?3,label=?4,model=?5,effort=?6 WHERE id=?1",
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,label=?4,model=?5,effort=?6 WHERE id=?1",
             params![
                 session_id,
                 started_at,
@@ -3394,7 +4083,10 @@ pub fn launch_worker_outcome(
     spawn_reader_thread(
         core.clone(),
         session_id.clone(),
+        harness.clone(),
         started_at,
+        thread_id,
+        process_id,
         current_turn,
         reader,
     );
@@ -4333,6 +5025,7 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
         )
         .unwrap_or(false);
     if terminal {
+        deactivate_reader_launch(&state, child_session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
             runtime.stop(adapters::ShutdownReason::Completed);
         }
@@ -6695,6 +7388,7 @@ pub fn stop_session(
             ));
         }
         report_to_parent(&core, &session_id, &result);
+        deactivate_reader_launch(state, &session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::UserCancelled);
         }
@@ -6763,6 +7457,7 @@ pub fn stop_session(
             }
         }
     }
+    deactivate_reader_launch(state, &session_id);
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }

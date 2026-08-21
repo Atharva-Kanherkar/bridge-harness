@@ -36,6 +36,7 @@ pub struct BridgeCore {
     pub telemetry_db: Mutex<rusqlite::Connection>,
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    pub reader_launches: Mutex<HashMap<String, Arc<Mutex<bool>>>>,
     pub adapter_registry: Arc<adapters::AdapterRegistry>,
     /// Which backend serves each agent. The registry executes; this decides
     /// what may execute, and what a session recorded last time.
@@ -180,6 +181,20 @@ impl BridgeCore {
         store::state(&self.db.lock().unwrap())
     }
 
+    /// Flip the reader-launch gate for `session_id` so its reader thread stops
+    /// processing new lines. Idempotent and safe to call from teardown paths.
+    pub fn deactivate_reader_launch(&self, session_id: &str) {
+        if let Some(gate) = self
+            .reader_launches
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+        {
+            *gate.lock().unwrap() = false;
+        }
+    }
+
     /// Claim exclusive lifecycle access to a session for the duration of the
     /// returned guard. Every flow that starts, replaces, or tears down a
     /// session's adapter runtime must hold this across its whole
@@ -214,6 +229,7 @@ impl BridgeCore {
             ),
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
+            reader_launches: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
             backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             catalog: Arc::new(
@@ -318,6 +334,7 @@ impl BridgeCore {
             telemetry_db: Mutex::new(telemetry_connection),
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
+            reader_launches: Mutex::new(HashMap::new()),
             adapter_registry,
             backend_resolver: Arc::new(backend_resolver),
             catalog: Arc::new(loaded.catalog),

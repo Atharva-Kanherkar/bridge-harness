@@ -397,7 +397,10 @@ pub fn set_default(db: &Connection, id: &str) -> Result<ConfigState, BridgeError
 }
 
 pub fn reset_all(db: &Connection) -> Result<ConfigState, BridgeError> {
-    db.execute("DELETE FROM configuration_entries", [])?;
+    let transaction = db.unchecked_transaction()?;
+    crate::prompt_sections::append_reset_all_revisions(&transaction)?;
+    transaction.execute("DELETE FROM configuration_entries", [])?;
+    transaction.commit()?;
     state(db)
 }
 
