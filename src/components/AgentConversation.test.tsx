@@ -354,7 +354,7 @@ describe("AgentConversation", () => {
     const steered = event(35, "delegation.steered", {
       itemId: "steer-1", role: "system", status: "delivered", title: "You steered Implementation · strong",
       text: "use the existing store",
-      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "user", delivered: true },
+      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "user", steerDelivered: true, landed: "now", orchestratorNotified: true },
     });
     const html = renderToStaticMarkup(<AgentConversation
       session={session}
@@ -371,10 +371,33 @@ describe("AgentConversation", () => {
   it("says so when a steer never reached the worker", () => {
     const undelivered = event(36, "delegation.steered", {
       itemId: "steer-2", role: "system", status: "undelivered", title: "Orchestrator steered Implementation · strong",
-      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "orchestrator", delivered: false },
+      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "orchestrator", steerDelivered: false, landed: "undelivered", orchestratorNotified: true },
     });
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[undelivered]}/>);
     expect(html).toContain("NOT DELIVERED");
+  });
+
+  it("marks a queued steer as landing at the next step, not as failed", () => {
+    // A provider that cannot take input mid-turn has the guidance durably
+    // queued. That is a success with a delay, not a failure.
+    const queued = event(37, "delegation.steered", {
+      itemId: "steer-3", role: "system", status: "next_turn_boundary", title: "You steered Implementation · strong",
+      text: "use the existing store",
+      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "user", steerDelivered: true, landed: "next_turn_boundary", orchestratorNotified: true },
+    });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[queued]}/>);
+    expect(html).toContain("AT NEXT STEP");
+    expect(html).not.toContain("NOT DELIVERED");
+  });
+
+  it("keeps a landed steer out of the failure state when only the orchestrator missed the notice", () => {
+    const unnotified = event(38, "delegation.steered", {
+      itemId: "steer-4", role: "system", status: "now", title: "You steered Implementation · strong",
+      data: { childSessionId: "w1", label: "Implementation · strong", steeredBy: "user", steerDelivered: true, landed: "now", orchestratorNotified: false },
+    });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[unnotified]}/>);
+    expect(html).not.toContain("NOT DELIVERED");
+    expect(html).toContain("ORCHESTRATOR NOT TOLD");
   });
 
   it("surfaces projected continuation fidelity with stronger mid-turn warning", () => {

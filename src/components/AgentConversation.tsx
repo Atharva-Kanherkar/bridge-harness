@@ -791,11 +791,20 @@ function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession,
 /// who typed it already knows; this is here so the *other* surfaces agree.
 function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void }) {
   const childSessionId = delegationChildSessionId(item);
-  const undelivered = item.data.delivered === false;
+  // Two separate facts. Whether the guidance reached the worker is the one the
+  // person who typed it cares about; whether the orchestrator was told is a
+  // quieter footnote. Reading one flag for both made a landed steer read as
+  // failed whenever the parent's runtime happened to be down.
+  const undelivered = item.data.steerDelivered === false;
+  const queued = item.data.landed === "next_turn_boundary";
+  const unnotified = item.data.orchestratorNotified === false;
   return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-[12.5px] text-muted-foreground">
     <Navigation size={12} className={cn("shrink-0", undelivered && "text-warning")} aria-hidden="true"/>
     <span className="min-w-0 flex-1 truncate">{item.title || "Worker steered"}{item.text && <span className="text-muted-foreground/70"> — {item.text}</span>}</span>
-    {undelivered && <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-warning">NOT DELIVERED</span>}
+    {undelivered
+      ? <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-warning">NOT DELIVERED</span>
+      : queued && <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-muted-foreground/70">AT NEXT STEP</span>}
+    {!undelivered && unnotified && <span className="shrink-0 text-[9px] tracking-[0.06em] text-muted-foreground/70">ORCHESTRATOR NOT TOLD</span>}
     {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10.5px] transition-colors hover:bg-accent">Open</button>}
   </div>;
 }

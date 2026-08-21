@@ -4481,6 +4481,40 @@ impl SteerSource {
     }
 }
 
+/// Whether guidance actually got to the worker, and when.
+///
+/// A provider that cannot take input mid-turn has its guidance queued for the
+/// next phase boundary. That is a success, not a failure — but it is a different
+/// success from "the running turn has it now", and the chip in the chat has to be
+/// able to say which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerReach {
+    Now,
+    NextTurnBoundary,
+    NotReached,
+}
+
+impl WorkerReach {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::NextTurnBoundary => "next_turn_boundary",
+            Self::NotReached => "undelivered",
+        }
+    }
+
+    const fn reached(self) -> bool {
+        !matches!(self, Self::NotReached)
+    }
+
+    const fn from_route(route: session_input::InputRoute) -> Self {
+        match route {
+            session_input::InputRoute::Queue => Self::NextTurnBoundary,
+            _ => Self::Now,
+        }
+    }
+}
+
 /// The chat-visible trace of a steer: one durable event on the parent, so the
 /// person reading the orchestrator conversation can see that a worker was
 /// redirected and by whom.
@@ -4488,32 +4522,57 @@ impl SteerSource {
 /// Written on the parent rather than the worker because the parent's chat is
 /// where the user actually is — the same reason the mirrored approval card
 /// exists.
+/// One steer, as the chat needs to describe it.
+///
+/// Grouped rather than passed as six positional arguments, because the two
+/// booleans in it are the pair that were previously collapsed into one and got
+/// this wrong — keeping them named at the call site is the point.
+struct SteerRecord<'a> {
+    child_session_id: &'a str,
+    label: &'a str,
+    guidance: &'a str,
+    source: SteerSource,
+    reached_worker: WorkerReach,
+    orchestrator_notified: bool,
+}
+
 fn record_worker_steer_on_parent(
     core: &Arc<BridgeCore>,
     parent_session_id: &str,
-    child_session_id: &str,
-    label: &str,
-    guidance: &str,
-    source: SteerSource,
-    delivered: bool,
+    record: SteerRecord<'_>,
 ) {
+    let SteerRecord {
+        child_session_id,
+        label,
+        guidance,
+        source,
+        reached_worker,
+        orchestrator_notified,
+    } = record;
     let event = agent::NormalizedEvent {
         kind: "delegation.steered".into(),
         // A fresh item per steer: two redirections of the same worker are two
         // interventions, and folding them would hide the first.
         item_id: Some(format!("steer-{}", Uuid::new_v4())),
         role: Some("system".into()),
-        status: Some(if delivered { "delivered" } else { "undelivered" }.into()),
+        status: Some(reached_worker.label().into()),
         title: Some(match source {
             SteerSource::User => format!("You steered {label}"),
             SteerSource::Orchestrator => format!("Orchestrator steered {label}"),
         }),
         text: Some(digest_line(guidance)),
+        // Two independent facts, never one. Whether the guidance reached the
+        // worker is what the person who typed it needs to know; whether the
+        // orchestrator heard about it is a separate, quieter concern. Collapsing
+        // them into one `delivered` flag made a landed steer read as failed
+        // whenever the parent's runtime happened to be down.
         data: serde_json::json!({
             "childSessionId": child_session_id,
             "label": label,
             "steeredBy": source.label(),
-            "delivered": delivered,
+            "steerDelivered": reached_worker.reached(),
+            "landed": reached_worker.label(),
+            "orchestratorNotified": orchestrator_notified,
         }),
     };
     if let Ok(stored) = store::session_event(
@@ -4557,7 +4616,7 @@ fn notify_parent_worker_steered(
         "instruction": "The user sent this worker guidance directly. Treat it as an amendment to the objective you issued, not as a defect. Do not contradict it or re-delegate the same objective; keep waiting for the worker's typed result."
     })
     .to_string();
-    let delivered = state
+    let notified = state
         .adapters
         .lock()
         .unwrap()
@@ -4568,7 +4627,7 @@ fn notify_parent_worker_steered(
         let _ = store::event(
             &db,
             "delegation",
-            if delivered {
+            if notified {
                 "delegation.steer.user_notified"
             } else {
                 "delegation.steer.user_undeliverable"
@@ -4577,14 +4636,20 @@ fn notify_parent_worker_steered(
             child_session_id,
         );
     }
+    // The guidance already reached the worker — `submit_input` delivered or
+    // durably queued it before calling this. Whether the orchestrator heard
+    // about it is a separate fact and must not be reported as the steer failing.
     record_worker_steer_on_parent(
         core,
         &context.parent_session_id,
-        child_session_id,
-        &context.label,
-        guidance,
-        SteerSource::User,
-        delivered,
+        SteerRecord {
+            child_session_id,
+            label: &context.label,
+            guidance,
+            source: SteerSource::User,
+            reached_worker: WorkerReach::from_route(route),
+            orchestrator_notified: notified,
+        },
     );
 }
 
@@ -5835,19 +5900,19 @@ fn deliver_orchestrator_steer(
     steer: &delegation::SteerRequest,
 ) {
     let state = core.clone();
-    let target: Option<(String, String)> = state
+    let target: Option<(String, String, String)> = state
         .db
         .lock()
         .unwrap()
         .query_row(
-            "SELECT s.label,r.result_status FROM worker_runtime r
+            "SELECT s.label,r.result_status,r.lifecycle_state FROM worker_runtime r
              JOIN sessions s ON s.id=r.session_id
              WHERE r.session_id=?1 AND r.parent_session_id=?2",
             params![steer.session_id, parent_session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .ok();
-    let Some((label, result_status)) = target else {
+    let Some((label, result_status, lifecycle_state)) = target else {
         refuse_orchestrator_steer(
             core,
             parent_session_id,
@@ -5858,57 +5923,116 @@ fn deliver_orchestrator_steer(
         );
         return;
     };
-    if result_status == "reported" {
-        refuse_orchestrator_steer(
-            core,
-            parent_session_id,
-            &format!("{label} already reported its typed result; guidance cannot reach it. Delegate a follow-up objective instead."),
-        );
+    // The same gate the user's steer passes through, so a worker is reachable on
+    // one set of rules regardless of who is speaking.
+    let has_live_runtime = state
+        .adapters
+        .lock()
+        .unwrap()
+        .contains_key(&steer.session_id);
+    if let Err(refusal) =
+        session_input::worker_steer_gate(&result_status, &lifecycle_state, has_live_runtime)
+    {
+        let reason = match refusal {
+            session_input::WorkerSteerRefusal::AlreadyReported => format!(
+                "{label} already reported its typed result; guidance cannot reach it. Delegate a follow-up objective instead."
+            ),
+            session_input::WorkerSteerRefusal::Checkpointing => format!(
+                "{label} is checkpointing its context; nothing was steered. Wait for it to finish."
+            ),
+            session_input::WorkerSteerRefusal::NotRunning => {
+                format!("{label} has no live provider process, so nothing was steered")
+            }
+        };
+        refuse_orchestrator_steer(core, parent_session_id, &reason);
         return;
     }
-    let delivered = state
+    // A steer is not exempt from the active-turn contract. `send_turn` on a
+    // provider that cannot take input mid-turn *starts a second turn*, which
+    // races the objective turn and the typed result. Route it the way any other
+    // input into a busy session is routed, and queue when the provider cannot
+    // absorb it now.
+    let steering_capable = state
         .adapters
         .lock()
         .unwrap()
         .get(&steer.session_id)
-        .is_some_and(|runtime| {
-            runtime
-                .send_turn(&orchestrator_steer_envelope(steer.guidance()))
-                .is_ok()
-        });
-    if !delivered {
+        .is_some_and(|runtime| runtime.supports_active_turn_steering());
+    let turn_active = turn_is_active(core, &steer.session_id).unwrap_or(true);
+    let route = session_input::route(turn_active, steering_capable);
+    let envelope = orchestrator_steer_envelope(steer.guidance());
+    let reached = match route {
+        session_input::InputRoute::Queue => {
+            let db = state.db.lock().unwrap();
+            match session_input::enqueue(&db, &steer.session_id, &envelope, steer.guidance()) {
+                Ok(_) => WorkerReach::NextTurnBoundary,
+                Err(_) => WorkerReach::NotReached,
+            }
+        }
+        _ => {
+            let sent = state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(&steer.session_id)
+                .is_some_and(|runtime| runtime.send_turn(&envelope).is_ok());
+            if sent {
+                WorkerReach::Now
+            } else {
+                WorkerReach::NotReached
+            }
+        }
+    };
+    if reached == WorkerReach::NotReached {
         refuse_orchestrator_steer(
             core,
             parent_session_id,
-            &format!("{label} has no live provider process, so nothing was steered"),
+            &format!("{label} could not take the guidance, so nothing was steered"),
         );
         return;
     }
+    let queued = reached == WorkerReach::NextTurnBoundary;
     {
         let db = state.db.lock().unwrap();
         let _ = store::event(
             &db,
             "delegation",
-            "delegation.steer.delivered",
+            if queued {
+                "delegation.steer.queued"
+            } else {
+                "delegation.steer.delivered"
+            },
             parent_session_id,
             &steer.session_id,
         );
         let _ = store::event(
             &db,
             "session",
-            "session.input.steered",
+            if queued {
+                "session.input.queued"
+            } else {
+                "session.input.steered"
+            },
             &steer.session_id,
-            "Orchestrator guidance delivered into the active turn",
+            if queued {
+                "Orchestrator guidance queued for the worker's next phase boundary"
+            } else {
+                "Orchestrator guidance delivered into the active turn"
+            },
         );
     }
     record_worker_steer_on_parent(
         core,
         parent_session_id,
-        &steer.session_id,
-        &label,
-        steer.guidance(),
-        SteerSource::Orchestrator,
-        true,
+        SteerRecord {
+            child_session_id: &steer.session_id,
+            label: &label,
+            guidance: steer.guidance(),
+            source: SteerSource::Orchestrator,
+            reached_worker: reached,
+            // The orchestrator is the one who asked; nothing to notify it of.
+            orchestrator_notified: true,
+        },
     );
 }
 
@@ -9266,6 +9390,121 @@ mod submit_input_tests {
             serde_json::from_str(&parent_sent.lock().unwrap()[1]).unwrap();
         assert!(dead["reason"].as_str().unwrap().contains("no live provider"));
         assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    /// The review finding this exists for: `send_turn` on a provider that cannot
+    /// take input mid-turn *starts a second turn*, which races the worker's
+    /// objective turn and its typed result. An orchestrator steer is not exempt
+    /// from the active-turn contract just because the orchestrator sent it.
+    #[test]
+    fn an_orchestrator_steer_is_queued_when_the_worker_cannot_take_input_mid_turn() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", false); // cannot steer
+        let parent_sent = attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "use the existing store"));
+
+        assert!(
+            worker_sent.lock().unwrap().is_empty(),
+            "a second turn must not be started against a busy provider"
+        );
+        assert!(
+            parent_sent.lock().unwrap().is_empty(),
+            "queuing is a success, not a refusal"
+        );
+        let queued = session_input::next_queued(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .expect("the guidance is durably queued for the next boundary");
+        let parsed: serde_json::Value = serde_json::from_str(&queued.provider_text).unwrap();
+        assert_eq!(
+            parsed["type"], "bridge-orchestrator-steer",
+            "the orchestrator envelope survives the queue"
+        );
+        assert_eq!(queued.display_text, "use the existing store");
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.queued".to_owned()));
+
+        // And it lands for real at the boundary the drain is waiting for.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='child'",
+                [],
+            )
+            .unwrap();
+        assert!(drain_queued_input(&core, "child"));
+        assert_eq!(worker_sent.lock().unwrap().len(), 1);
+    }
+
+    /// A steering-capable worker still gets it immediately — the routing change
+    /// must not have turned every steer into a deferred one.
+    #[test]
+    fn a_steering_capable_worker_takes_an_orchestrator_steer_immediately() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "narrow the scope"));
+
+        assert_eq!(worker_sent.lock().unwrap().len(), 1);
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "child").unwrap(),
+            0
+        );
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.delivered".to_owned()));
+    }
+
+    #[test]
+    fn an_orchestrator_steer_respects_the_checkpoint_refusal_too() {
+        let (_fixture, core, _managed_root) =
+            core_with_worker("checkpointing", "checkpointing", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "stop that"));
+
+        assert!(worker_sent.lock().unwrap().is_empty());
+        let refusal: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert!(refusal["reason"].as_str().unwrap().contains("checkpointing"));
+    }
+
+    /// The second review finding: a landed steer was reported as failed whenever
+    /// the parent's runtime happened to be down, because one `delivered` flag
+    /// carried two unrelated facts.
+    #[test]
+    fn a_steer_that_reached_the_worker_is_not_reported_as_failed_when_the_parent_is_deaf() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        // No adapter for the parent: the notice cannot be delivered.
+
+        submit_input(&core, "child".into(), "use the existing store".into()).unwrap();
+
+        assert_eq!(worker_sent.lock().unwrap().len(), 1, "the worker got it");
+        let chip = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.steered'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&chip).unwrap();
+        let data = payload.get("data").unwrap_or(&payload);
+        assert_eq!(
+            data["steerDelivered"], true,
+            "the guidance reached the worker, so the chip must not read as failed"
+        );
+        assert_eq!(
+            data["orchestratorNotified"], false,
+            "and the notification failure is recorded as its own fact"
+        );
+        assert_eq!(data["landed"], "now");
     }
 
     #[test]
