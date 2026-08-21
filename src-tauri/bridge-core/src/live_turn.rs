@@ -1768,6 +1768,8 @@ fn handle_agent_value(
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
     let mut pending_peek: Option<delegation::PeekRequest> = None;
+    let mut pending_steer: Option<delegation::SteerRequest> = None;
+    let mut pending_invalid_steer: Option<String> = None;
     // Child approvals and their resolutions are surfaced to the parent after the
     // correctness lock is released, because reaching the parent's live runtime
     // needs the adapter map.
@@ -2068,6 +2070,36 @@ fn handle_agent_value(
                         delegation::ParseOutcome::Absent => {}
                     }
                 }
+                // A steer redirects a running worker. Held to the turn boundary
+                // like a peek, and stripped from the prose for the same reason:
+                // the machine block is plumbing, not something to read.
+                if let Some(text) = normalized_event.text.clone() {
+                    match delegation::parse_steer_request(&text) {
+                        delegation::ParseOutcome::Parsed(steer) => {
+                            pending_steer = Some(steer);
+                            let stripped = delegation::strip_steer(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                "_Steering a worker…_".to_owned()
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Invalid { reason, .. } => {
+                            // Unlike a peek, a malformed steer has no safe
+                            // default — there is no "all workers" reading of a
+                            // redirection. Hand the reason back instead.
+                            let _ = store::event(&db, "delegation", "delegation.steer.invalid", session_id, &reason);
+                            pending_invalid_steer = Some(reason.clone());
+                            let stripped = delegation::strip_steer(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                format!("_Steer rejected: {reason}._")
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Absent => {}
+                    }
+                }
             }
             if let Ok(event) = store::session_event(
                 &db,
@@ -2240,6 +2272,14 @@ fn handle_agent_value(
             .pending_worker_peeks
             .insert(session_id.to_owned(), peek);
     }
+    if let Some(steer) = pending_steer {
+        state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_steers
+            .insert(session_id.to_owned(), steer);
+    }
     // The assistant message and turn completion are separate provider frames.
     // Reply only after completion instead of racing active-turn steering.
     if turn_completed {
@@ -2252,6 +2292,20 @@ fn handle_agent_value(
         if let Some(peek) = peek {
             deliver_worker_activity_digest(core, session_id, &peek);
         }
+        let steer = state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_steers
+            .remove(session_id);
+        if let Some(steer) = steer {
+            deliver_orchestrator_steer(core, session_id, &steer);
+        }
+    }
+    // A steer Bridge could not even parse is fed back rather than dropped: the
+    // orchestrator asked to redirect a worker and has to learn that it did not.
+    if let Some(reason) = &pending_invalid_steer {
+        refuse_orchestrator_steer(core, session_id, reason);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -5737,6 +5791,141 @@ fn deliver_worker_activity_digest(
     );
 }
 
+/// Hand a refusal back to the orchestrator that asked to steer.
+///
+/// A dropped steer is worse than a rejected one: the orchestrator carries on
+/// believing the worker was redirected, and only the wrong result reveals
+/// otherwise. Same shape as the delegation-rejection feedback.
+fn refuse_orchestrator_steer(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
+    let notice = serde_json::json!({
+        "type": "bridge-steer-rejected",
+        "reason": reason,
+        "instruction": "No worker was redirected. Correct the block and re-emit it, or leave the worker alone; do not assume the guidance landed."
+    })
+    .to_string();
+    let delivered = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .is_some_and(|runtime| runtime.send_turn(&notice).is_ok());
+    let db = core.db.lock().unwrap();
+    let _ = store::event(
+        &db,
+        "delegation",
+        if delivered {
+            "delegation.steer.refused"
+        } else {
+            "delegation.steer.undeliverable"
+        },
+        session_id,
+        reason,
+    );
+}
+
+/// Deliver one `bridge-steer` into the named worker.
+///
+/// The target is checked against the parent's own live children on the host
+/// side. A model-supplied session id is untrusted input: without this check an
+/// orchestrator could reach a sibling's worker, or a session that is not a
+/// worker at all, just by naming it.
+fn deliver_orchestrator_steer(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    steer: &delegation::SteerRequest,
+) {
+    let state = core.clone();
+    let target: Option<(String, String)> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT s.label,r.result_status FROM worker_runtime r
+             JOIN sessions s ON s.id=r.session_id
+             WHERE r.session_id=?1 AND r.parent_session_id=?2",
+            params![steer.session_id, parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+    let Some((label, result_status)) = target else {
+        refuse_orchestrator_steer(
+            core,
+            parent_session_id,
+            &format!(
+                "{} is not one of your workers, so nothing was steered",
+                steer.session_id
+            ),
+        );
+        return;
+    };
+    if result_status == "reported" {
+        refuse_orchestrator_steer(
+            core,
+            parent_session_id,
+            &format!("{label} already reported its typed result; guidance cannot reach it. Delegate a follow-up objective instead."),
+        );
+        return;
+    }
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&steer.session_id)
+        .is_some_and(|runtime| {
+            runtime
+                .send_turn(&orchestrator_steer_envelope(steer.guidance()))
+                .is_ok()
+        });
+    if !delivered {
+        refuse_orchestrator_steer(
+            core,
+            parent_session_id,
+            &format!("{label} has no live provider process, so nothing was steered"),
+        );
+        return;
+    }
+    {
+        let db = state.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "delegation",
+            "delegation.steer.delivered",
+            parent_session_id,
+            &steer.session_id,
+        );
+        let _ = store::event(
+            &db,
+            "session",
+            "session.input.steered",
+            &steer.session_id,
+            "Orchestrator guidance delivered into the active turn",
+        );
+    }
+    record_worker_steer_on_parent(
+        core,
+        parent_session_id,
+        &steer.session_id,
+        &label,
+        steer.guidance(),
+        SteerSource::Orchestrator,
+        true,
+    );
+}
+
+/// The wrapper an orchestrator's correction wears on its way into a worker.
+///
+/// Says who is speaking, because a worker that mistakes routing guidance for a
+/// user request will start negotiating with it instead of folding it in — and
+/// restates the envelope contract for the same reason the user path does.
+fn orchestrator_steer_envelope(guidance: &str) -> String {
+    serde_json::json!({
+        "type": "bridge-orchestrator-steer",
+        "guidance": guidance,
+        "instruction": "Your orchestrator is correcting your course mid-task. Fold this into the objective you were given; it refines the objective and does not replace it. Still end with exactly one fenced `bridge-worker-result` envelope describing the work you actually did. Do not reply to this conversationally."
+    })
+    .to_string()
+}
+
 /// Refresh a session's liveness heartbeat for the stall watchdog.
 fn reset_worker_heartbeat(state: &BridgeCore, session_id: &str) {
     state
@@ -8963,6 +9152,138 @@ mod submit_input_tests {
             .unwrap();
         assert_eq!(runtime.result_status, "pending");
         assert!(runtime.last_result.is_none());
+    }
+
+    /* ── bridge-steer, the orchestrator's own verb ────────────────────────── */
+
+    fn steer(session_id: &str, message: &str) -> delegation::SteerRequest {
+        let delegation::ParseOutcome::Parsed(request) = delegation::parse_steer_request(&format!(
+            "```bridge-steer\n{}\n```",
+            serde_json::json!({"sessionId": session_id, "message": message})
+        )) else {
+            panic!("fixture steer did not parse");
+        };
+        request
+    }
+
+    fn ledger_kinds(core: &Arc<BridgeCore>, prefix: &str) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM events WHERE kind LIKE ?1 ORDER BY id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(params![format!("{prefix}%")], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn an_orchestrator_steer_reaches_its_own_live_child() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        attach_to(&core, "parent", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "use the existing store"));
+
+        let delivered = worker_sent.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&delivered[0]).unwrap();
+        assert_eq!(parsed["type"], "bridge-orchestrator-steer");
+        assert_eq!(parsed["guidance"], "use the existing store");
+        assert!(
+            parsed["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("bridge-worker-result"),
+            "the envelope contract travels with every steer"
+        );
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.delivered".to_owned()));
+        assert!(parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    /// A model-supplied session id is untrusted input. Reaching a session that is
+    /// not this parent's worker would be a cross-session write dressed up as
+    /// guidance.
+    #[test]
+    fn an_orchestrator_cannot_steer_a_session_that_is_not_its_worker() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        // A session that exists but belongs to nobody here.
+        core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('stranger','w','codex','Stranger','working','reported','orchestrator',0)", []).unwrap();
+
+        for target in ["stranger", "parent", "does-not-exist"] {
+            deliver_orchestrator_steer(&core, "parent", &steer(target, "stop that"));
+        }
+
+        assert!(
+            worker_sent.lock().unwrap().is_empty(),
+            "nothing reached the real worker either"
+        );
+        let refusals = parent_sent.lock().unwrap().clone();
+        assert_eq!(refusals.len(), 3);
+        for refusal in &refusals {
+            let parsed: serde_json::Value = serde_json::from_str(refusal).unwrap();
+            assert_eq!(parsed["type"], "bridge-steer-rejected");
+            assert!(parsed["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not one of your workers"));
+        }
+        assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    #[test]
+    fn steering_a_reported_or_dead_worker_is_refused_with_a_reason() {
+        let (_fixture, core, _managed_root) = core_with_worker("ready", "completed", "reported");
+        let parent_sent = attach_to(&core, "parent", true);
+        attach_to(&core, "child", true);
+
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "one more thing"));
+        let reported: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert!(reported["reason"]
+            .as_str()
+            .unwrap()
+            .contains("already reported"));
+
+        // Same worker, still pending, but the process is gone.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worker_runtime SET result_status='pending' WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+        core.adapters.lock().unwrap().remove("child");
+        deliver_orchestrator_steer(&core, "parent", &steer("child", "one more thing"));
+        let dead: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[1]).unwrap();
+        assert!(dead["reason"].as_str().unwrap().contains("no live provider"));
+        assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    #[test]
+    fn a_malformed_steer_is_handed_back_not_dropped() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let parent_sent = attach_to(&core, "parent", true);
+
+        refuse_orchestrator_steer(&core, "parent", "bridge-steer message cannot be empty");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert_eq!(parsed["type"], "bridge-steer-rejected");
+        assert!(parsed["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("do not assume the guidance landed"));
+        assert!(ledger_kinds(&core, "delegation.steer.")
+            .contains(&"delegation.steer.refused".to_owned()));
     }
 }
 
