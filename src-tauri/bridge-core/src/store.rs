@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 33;
+const LATEST_SCHEMA_VERSION: i64 = 34;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -258,6 +258,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             31 => migration_31_memory_ledger(&transaction)?,
             32 => migration_32_memory_lifecycle(&transaction)?,
             33 => migration_33_memory_extraction(&transaction)?,
+            34 => migration_34_memory_packet(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -933,6 +934,10 @@ fn migration_32_memory_lifecycle(transaction: &Transaction<'_>) -> Result<(), Br
 fn migration_33_memory_extraction(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_ledger::install_trust_fields(transaction)?;
     crate::memory_extraction::install(transaction)
+}
+
+fn migration_34_memory_packet(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::memory_packet::install(transaction)
 }
 
 fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -3049,6 +3054,8 @@ mod tests {
             "session_entry_fts",
             "memory_records",
             "memory_record_fts",
+            "memory_retrieval_audits",
+            "memory_injection_settings",
         ] {
             assert!(
                 db.query_row(
