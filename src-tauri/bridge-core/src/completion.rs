@@ -930,6 +930,90 @@ pub fn labels_for_paths(paths: &[String]) -> Vec<String> {
     labels.into_iter().collect()
 }
 
+/// Whether an implementation worker's result is a **completion candidate** — a
+/// revision that has to be verified before the task can be called done.
+///
+/// Not every revision is one. A `needs_delegation` handoff can mean two very
+/// different things, and only one of them is a candidate:
+///
+/// - "the implementation is done, please verify it" — `suggestedRole:
+///   verification`. The change set is real, usually sitting uncommitted in the
+///   worker's own worktree awaiting adoption, and it is exactly the kind of
+///   result that most needs review. Gating only on `completed` left it with no
+///   `eval_attempts` row, so the verifier the orchestrator routed next had no
+///   revision to bind to and died on a raw `QueryReturnedNoRows`.
+/// - "I need another implementation worker" — anything else. That is a **partial
+///   revision**: real work, but not a claim of completeness. Opening a gate over
+///   it would let a verifier drive incomplete work to `verified` while the
+///   follow-up the worker actually asked for never ran. It opens nothing, and the
+///   routing notice carries `suggestedRole`/`suggestedTask` so the orchestrator
+///   routes what was asked for instead.
+///
+/// `suggestedRole` is always populated for `needs_delegation` — `delegation`
+/// derives it from `suggestedTask` and falls back to `implementation` — so the
+/// default direction is the safe one.
+///
+/// `files_changed` is trustworthy here because `worker_adoption` has already
+/// replaced it with the paths derived from Git, empty list included, so a worker
+/// cannot open a gate by naming files it never touched. Every other status
+/// (`failed`, `blocked`, `cancelled`, `protocol_invalid`) opens nothing: there is
+/// either no work to judge or nothing readable to judge it by.
+fn opens_completion_gate(result: &WorkerResult) -> bool {
+    match result.status {
+        WorkerResultStatus::Completed => true,
+        WorkerResultStatus::NeedsDelegation => {
+            !result.files_changed.is_empty()
+                && result.suggested_role == Some(crate::delegation::WorkerRole::Verification)
+        }
+        _ => false,
+    }
+}
+
+/// Typed reason reported when a verification worker has no revision to bind to.
+pub const VERIFICATION_TARGET_UNAVAILABLE: &str = "implementation_revision_unavailable";
+
+/// The checkout a verifier must run in: the repository behind the newest open
+/// completion gate for this task.
+///
+/// The newest attempt is selected *first* and only then asked whether it is
+/// live. Filtering by status inside the query let an older `failed` attempt be
+/// handed back while a newer terminal one existed, and `failed` was never a
+/// bindable target anyway — `settle_verification_result` treats it as final and
+/// refuses to re-open it, so a verifier sent there could only die at settlement.
+///
+/// `Ok(None)` is the routing fact "this task has no live gate to verify" —
+/// unroutable, but not a database failure, and the two must not reach the
+/// orchestrator as the same sentence.
+pub fn verification_target_path(
+    db: &Connection,
+    parent_session_id: &str,
+) -> Result<Option<String>, BridgeError> {
+    let newest: Option<(String, String)> = db
+        .query_row(
+            "SELECT status,repository_path FROM eval_attempts WHERE session_id=?1 ORDER BY started_at DESC,rowid DESC LIMIT 1",
+            params![parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    // Matched on the stored status rather than through `parse_verdict`, whose
+    // catch-all reads anything unrecognized as `verifying`. A status Bridge does
+    // not know is not a gate it should send a verifier into.
+    Ok(newest.and_then(|(status, path)| {
+        matches!(status.as_str(), "verifying" | "changes_requested").then_some(path)
+    }))
+}
+
+/// What the orchestrator can actually do about a missing implementation
+/// revision. `permanent` is the right failure class for this, but "retry will
+/// not help" is only half the answer the orchestrator needs.
+pub fn verification_target_unavailable_reason() -> String {
+    format!(
+        "no implementation revision is recorded for this task ({VERIFICATION_TARGET_UNAVAILABLE}), \
+         so there is nothing for a verifier to bind to. Adopt or commit the implementation \
+         worker's worktree changes, or re-run the implementation, before delegating verification."
+    )
+}
+
 pub fn create_from_worker_result(
     db: &Connection,
     child_session_id: &str,
@@ -950,7 +1034,7 @@ pub fn create_from_worker_result(
         })?;
         return settle_verification_result(db, &context, &request, result);
     }
-    if context.role != "implementation" || result.status != WorkerResultStatus::Completed {
+    if context.role != "implementation" || !opens_completion_gate(result) {
         return Ok(None);
     }
     let serialized_request = context.serialized_request.as_deref().ok_or_else(|| {
@@ -1930,6 +2014,261 @@ mod tests {
             )
             .unwrap(),
             "superseded"
+        );
+    }
+
+    /// An implementation worker that finished in `worktree`, with its durable
+    /// completion input registered, ready to hand a result to
+    /// `create_from_worker_result`.
+    fn implementation_worker(db: &Connection, session_id: &str, worktree: &str) {
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind,continuation_fidelity) VALUES(?1,'w','claude','impl','completed','estimated','s','worker','native')", params![session_id]).unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES(?1,'w','implementation','standard','implementation','[]','isolated','released','now','now')", params![session_id]).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES(?1,'s','completed','implementation','key','reported',0,?2,'now')", params![session_id, worktree]).unwrap();
+        let request = serde_json::json!({"schemaVersion":1,"role":"implementation","objective":"Implement proof","acceptanceCriteria":["Proof card is visible"],"knownFacts":[],"decisions":[],"evidenceIds":[],"relevantFiles":["src/App.tsx"],"ownedPaths":["src/**"],"writeMode":"isolated","capabilityTier":"standard","effort":"medium","verification":["bun run test"],"outputContract":"implementation-result","harness":"claude"});
+        db.execute("INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,'now')", params![session_id, request.to_string()]).unwrap();
+    }
+
+    /// A handoff asking for verification: the shape that is a completion
+    /// candidate. `asking_for` overrides the requested follow-up.
+    fn implementation_result(
+        status: WorkerResultStatus,
+        files_changed: Vec<String>,
+    ) -> WorkerResult {
+        asking_for(
+            crate::delegation::WorkerRole::Verification,
+            status,
+            files_changed,
+        )
+    }
+
+    fn asking_for(
+        role: crate::delegation::WorkerRole,
+        status: WorkerResultStatus,
+        files_changed: Vec<String>,
+    ) -> WorkerResult {
+        WorkerResult {
+            schema_version: 1,
+            status,
+            summary: "handing off".into(),
+            files_changed,
+            tests: vec![],
+            decisions: vec![],
+            risks: vec![],
+            remaining_work: vec![],
+            suggested_next_action: crate::delegation::SuggestedNextAction::FollowUp,
+            suggested_role: Some(role),
+            suggested_task: Some("take it from here".into()),
+        }
+    }
+
+    /// The regression: a worker that hands off with its change set still
+    /// uncommitted in its own worktree used to open no gate at all, which left
+    /// the verification worker the orchestrator routed next with no revision to
+    /// bind to.
+    #[test]
+    fn needs_delegation_with_changes_opens_a_bindable_gate() {
+        let db = fixture();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        implementation_worker(&db, "child", &cwd);
+        // The worktree the worker wrote in, still awaiting adoption: a recorded
+        // base revision and branch, but no commit of its own.
+        db.execute(
+            "INSERT INTO worker_worktree_adoptions(session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,task_worktree_path,state,base_commit,base_branch,baseline_dirty_paths,changed_paths,dirty,created_at,updated_at)
+             VALUES('child','s','w',?1,'codex/fix-model-profile-migration',?1,'pending_adoption','7d7e79fe','main','[]','[]',1,'now','now')",
+            params![cwd],
+        )
+        .unwrap();
+        let summary = create_from_worker_result(
+            &db,
+            "child",
+            &implementation_result(
+                WorkerResultStatus::NeedsDelegation,
+                vec!["src/App.tsx".into()],
+            ),
+            &HashSet::new(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(summary.verdict, CompletionVerdict::Verifying);
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some(cwd),
+            "the verifier binds to the worktree the implementation left dirty"
+        );
+        // And the attempt still says what the change is relative to and who
+        // produced it, so the verifier reviews a revision rather than a folder.
+        assert_eq!(
+            db.query_row(
+                "SELECT base_commit,base_ref,worker_branch,worker_session_id FROM eval_attempts WHERE id=?1",
+                params![summary.attempt_id],
+                |row| Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                )),
+            )
+            .unwrap(),
+            (
+                Some("7d7e79fe".into()),
+                Some("main".into()),
+                Some("codex/fix-model-profile-migration".into()),
+                Some("child".into()),
+            )
+        );
+    }
+
+    #[test]
+    fn a_handoff_that_changed_nothing_opens_no_gate() {
+        let db = fixture();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        implementation_worker(&db, "child", &cwd);
+        // Nothing changed, so there is nothing to verify — and a failure still
+        // opens nothing even when it did change files.
+        for (status, files) in [
+            (WorkerResultStatus::NeedsDelegation, vec![]),
+            (WorkerResultStatus::Failed, vec!["src/App.tsx".into()]),
+            (WorkerResultStatus::Blocked, vec!["src/App.tsx".into()]),
+            (WorkerResultStatus::Cancelled, vec!["src/App.tsx".into()]),
+            (
+                WorkerResultStatus::ProtocolInvalid,
+                vec!["src/App.tsx".into()],
+            ),
+        ] {
+            assert!(create_from_worker_result(
+                &db,
+                "child",
+                &implementation_result(status, files),
+                &HashSet::new()
+            )
+            .unwrap()
+            .is_none());
+        }
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    /// A handoff can mean "please verify this" or "I need another implementation
+    /// worker". Only the first is a completion candidate: opening a gate over the
+    /// second would let a verifier drive incomplete work to `verified` while the
+    /// follow-up the worker asked for never ran.
+    #[test]
+    fn only_a_handoff_asking_for_verification_opens_a_gate() {
+        use crate::delegation::WorkerRole;
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for role in [
+            WorkerRole::Implementation,
+            WorkerRole::Research,
+            WorkerRole::Planning,
+            WorkerRole::Documentation,
+        ] {
+            let db = fixture();
+            implementation_worker(&db, "child", &cwd);
+            assert!(
+                create_from_worker_result(
+                    &db,
+                    "child",
+                    &asking_for(
+                        role,
+                        WorkerResultStatus::NeedsDelegation,
+                        vec!["src/App.tsx".into()]
+                    ),
+                    &HashSet::new()
+                )
+                .unwrap()
+                .is_none(),
+                "a handoff asking for {} is a partial revision, not a completion candidate",
+                role.as_str()
+            );
+            assert_eq!(
+                verification_target_path(&db, "s").unwrap(),
+                None,
+                "and it is not offered as a verification target"
+            );
+        }
+        // The same result asking for verification is a candidate.
+        let db = fixture();
+        implementation_worker(&db, "child", &cwd);
+        assert!(create_from_worker_result(
+            &db,
+            "child",
+            &asking_for(
+                WorkerRole::Verification,
+                WorkerResultStatus::NeedsDelegation,
+                vec!["src/App.tsx".into()]
+            ),
+            &HashSet::new()
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    /// "There is no revision to verify" is a routing fact with a remediation,
+    /// not the raw `QueryReturnedNoRows` the bind site used to forward.
+    #[test]
+    fn a_task_without_a_gate_reports_a_typed_unroutable_reason() {
+        let db = fixture();
+        assert_eq!(verification_target_path(&db, "s").unwrap(), None);
+        let reason = verification_target_unavailable_reason();
+        assert!(reason.contains(VERIFICATION_TARGET_UNAVAILABLE));
+        assert!(reason.contains("Adopt or commit"));
+        // "Nothing to verify" and "the database is broken" are different facts,
+        // and the bind site reports them differently.
+        db.execute("DROP TABLE eval_attempts", []).unwrap();
+        assert!(verification_target_path(&db, "s").is_err());
+    }
+
+    /// Only the newest attempt decides, and only two of its statuses are a
+    /// target. The old query filtered inside the SELECT, so an older `failed`
+    /// attempt could be handed back while a newer terminal one existed — and
+    /// `failed` was never bindable to begin with.
+    #[test]
+    fn only_the_newest_live_attempt_is_a_verification_target() {
+        let db = fixture();
+        let mut planned = 0;
+        let mut attempt = |status: &str, path: &str| {
+            planned += 1;
+            let id = format!("attempt-{planned}");
+            let plan_id = format!("plan-{planned}");
+            let contract_id = format!("contract-{planned}");
+            db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES(?1,'w','s',1,'[]',0,'open','now','now')", params![contract_id]).unwrap();
+            db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES(?1,?2,1,'high','{}','now')", params![plan_id, contract_id]).unwrap();
+            db.execute(
+                "INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,started_at) VALUES(?1,?2,'s','head','clean',?3,?4,?5)",
+                params![id, plan_id, path, status, format!("2026-08-2{planned}T00:00:00Z")],
+            )
+            .unwrap();
+        };
+        attempt("verifying", "/live/older");
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some("/live/older".into())
+        );
+        for terminal in ["verified", "waived", "superseded", "failed"] {
+            attempt(terminal, "/terminal");
+            assert_eq!(
+                verification_target_path(&db, "s").unwrap(),
+                None,
+                "a newer {terminal} attempt hides the older live one"
+            );
+        }
+        attempt("changes_requested", "/live/newest");
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some("/live/newest".into())
         );
     }
 

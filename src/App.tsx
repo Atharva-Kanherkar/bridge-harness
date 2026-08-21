@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -10,7 +10,7 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
@@ -29,6 +29,7 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
+import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -36,7 +37,7 @@ import { useThemePreference } from "./theme";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
-import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
+import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { startSerialPoll } from "./polling";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -123,6 +124,7 @@ export function App() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
@@ -137,6 +139,16 @@ export function App() {
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
+  // The composer's inline typeahead. Loaded once and kept fresh by Settings'
+  // own save path (`onSuggestionSettingsChange`) — off by default, so no
+  // request fires until the user opts in.
+  const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
+  const suggestionGeneration = useRef(0);
+  // Shown once per fallback episode, not on every debounce firing while the
+  // configured model stays in cooldown.
+  const [fallbackNotice, setFallbackNotice] = useState<string>();
+  const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
@@ -301,6 +313,42 @@ export function App() {
     return () => { active = false; window.clearTimeout(timer); };
   }, [composer, session]);
 
+  // The inline typeahead's own settings — loaded once; Settings' save path
+  // keeps this fresh via `onSuggestionSettingsChange`.
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
+
+  // A new configured model/provider earns its own one-time fallback notice.
+  useEffect(() => { fallbackNoticeShownRef.current = false; }, [suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // Debounced draft completion: 400ms after the last keystroke, with a
+  // generation counter so a stale response from an earlier draft can never
+  // overwrite a newer one — the same latest-wins discipline `readWorkBoard`
+  // uses. No request fires with the toggle off, no session, or an empty draft.
+  useEffect(() => scheduleSuggestion({
+    text: composer,
+    enabled: !!suggestionSettings?.settings.enabled && !!session,
+    request: bridgeApi.suggestCompletion,
+    onResult: setDraftSuggestion,
+    generation: suggestionGeneration,
+  }), [composer, session, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // The fallback chip: shown once per episode, not re-shown on every debounce
+  // firing while the configured model stays in its cooldown window.
+  useEffect(() => {
+    if (!draftSuggestion?.usedFallback || fallbackNoticeShownRef.current) return;
+    fallbackNoticeShownRef.current = true;
+    const reason = draftSuggestion.fallbackReason?.replace(/_/g, " ");
+    setFallbackNotice(`Suggestions switched to a fallback model${reason ? ` (${reason})` : ""} while yours is unavailable.`);
+    const timer = window.setTimeout(() => setFallbackNotice(undefined), 6000);
+    return () => window.clearTimeout(timer);
+  }, [draftSuggestion]);
+
+  const acceptSuggestion = useCallback(() => {
+    if (!draftSuggestion?.suggestion) return;
+    setComposer(current => current + draftSuggestion.suggestion);
+    setDraftSuggestion(undefined);
+  }, [draftSuggestion]);
+
   useEffect(() => {
     if (!slashOpen) return;
     setSlashIndex(index => Math.min(index, Math.max(0, slashMatches.length - 1)));
@@ -344,17 +392,28 @@ export function App() {
     setPendingAdoptions([]);
     if (!session?.id) return;
     let active = true;
+    let pollsSinceFullFetch = 0;
     const refresh = async () => {
+      // The digest is tens of bytes; the snapshot is the entire history. Only
+      // fetch the snapshot when the digest moves, with a periodic forced
+      // fetch as the safety net for state the store cannot see (repository
+      // divergence above all).
+      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
+      const force = pollsSinceFullFetch >= 9 || digest === undefined;
+      if (!active) return;
+      if (!force && digest === forestKeyRef.current) {
+        pollsSinceFullFetch += 1;
+        return;
+      }
       const [value, adoptions] = await Promise.all([
         bridgeApi.sessionForest(session.id).catch(() => undefined),
         bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
       ]);
       if (!active) return;
+      pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
-      const key = forestSnapshotKey(value);
-      if (key === forestKeyRef.current) return;
-      forestKeyRef.current = key;
+      forestKeyRef.current = digest ?? "";
       setForest(current => mergeForestSnapshot(current, value));
     };
     const stop = startSerialPoll(refresh, 3000);
@@ -734,7 +793,8 @@ export function App() {
       bridgeApi.sessionForest(session.id),
       bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
     ]);
-    forestKeyRef.current = forestSnapshotKey(next);
+    // Out-of-band fetch: reset the digest so the next poll reconciles.
+    forestKeyRef.current = "";
     setForest(next);
     setPendingAdoptions(adoptions);
   }, [session]);
@@ -754,6 +814,30 @@ export function App() {
     setComposer(`/${command.name} `);
     setSlashIndex(0);
     setSlashDismissed(true);
+  }
+  // The `+` control: the system file dialog, so any file on the machine can be
+  // attached to any chat — including one with no folder connected. The chosen
+  // paths become `@path` mentions, which the backend reads as bounded,
+  // secret-sanitized, untrusted context at submit time. The draft is never
+  // touched, only added to.
+  async function attachFile() {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      // No system dialog outside the desktop shell; fall back to the workspace
+      // picker `@` drives rather than doing nothing.
+      setMentionDismissed(false);
+      setMentionIndex(0);
+      setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
+      composerRef.current?.focus();
+      return;
+    }
+    try {
+      const picked = await open({ multiple: true, title: "Attach files" });
+      if (picked == null) return;
+      const paths = (Array.isArray(picked) ? picked : [picked]).filter(path => typeof path === "string");
+      if (paths.length === 0) return;
+      setComposer(current => paths.reduce(appendFileMention, current));
+    } catch (e) { setError(errorMessage(e)); }
+    finally { composerRef.current?.focus(); }
   }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
@@ -851,12 +935,14 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
+        fullscreen={fullscreen}
+        onToggleFullscreen={() => setFullscreen(value => !value)}
         onFocusSession={openSession}
       /> : session ? <>
         <SessionToolbar
@@ -938,6 +1024,11 @@ export function App() {
                     <em className="not-italic font-mono text-[11px]"><b className="text-success">+{workspace.additions}</b> <b className="text-destructive">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
+                {fallbackNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
+                    <span>{fallbackNotice}</span>
+                  </div>
+                </div>}
                 {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
                   {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -975,14 +1066,15 @@ export function App() {
                       controls: "file-mention-listbox",
                       activeDescendant: `file-mention-option-${mentionIndex}`,
                     } : undefined}
+                    suggestion={draftSuggestion?.suggestion}
+                    onAcceptSuggestion={acceptSuggestion}
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}
                     activeAction={activeAction}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
-                    // What the control's own label says: open the workspace
-                    // dialog. It must never erase the draft the user is holding.
-                    onPlusClick={() => { setTitle(""); setModal("workspace"); }}
+                    inputRef={composerRef}
+                    onPlusClick={() => void attachFile()}
                     trailing={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
@@ -1319,6 +1411,9 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
       disabled={busy || !canStartChat}
+      // There is no conversation or folder here yet, so there is nothing to
+      // attach to. This surface keeps the structural action — and says so.
+      plusLabel="New workspace"
       onPlusClick={onNewWorkspace}
       trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />

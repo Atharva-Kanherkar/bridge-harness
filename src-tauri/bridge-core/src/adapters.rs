@@ -12,6 +12,7 @@ use std::{
     any::Any,
     collections::HashMap,
     io::BufRead,
+    path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex, RwLock},
     thread,
@@ -21,6 +22,11 @@ use std::{
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
+    /// Live event-queue pressure for diagnostics; `None` for providers
+    /// without a bounded frame queue.
+    fn event_queue_metrics(&self) -> Option<crate::frame_queue::QueueMetricsSnapshot> {
+        None
+    }
     fn current_turn(&self) -> Arc<Mutex<Option<String>>>;
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
     /// Send a user turn with trusted, application-owned context that must not
@@ -143,6 +149,65 @@ pub fn process_failure_context(
         (None, Some(tail)) => Some(format!("Provider stderr tail:\n{tail}")),
         (None, None) => None,
     }
+}
+
+pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
+
+/// Kills the wrapped child when the supervisor that spawned it dies. `Drop`
+/// never runs after SIGKILL, a crash, or an aborted test binary, and boot
+/// recovery only helps once something boots again — this monitor closes the
+/// window in between by polling its own parentage and tearing the child down
+/// the moment it is re-parented to init.
+// The wrapper is its own process-group leader (configure_process_group runs
+// on it), so `-$$` names the whole group: the child and anything it forked.
+// Killing only `$child` would leave forked helpers as the very PID-1 orphans
+// this monitor exists to prevent. TERM is ignored first so the group signal
+// does not interrupt the wrapper's own escalation.
+#[cfg(unix)]
+const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
+"$cmd" "$@" &
+child=$!
+trap 'trap "" TERM INT; kill -TERM -- -$$ 2>/dev/null' TERM INT
+while kill -0 "$child" 2>/dev/null; do
+  ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+  if [ -z "$ppid" ] || [ "$ppid" -le 1 ]; then
+    trap '' TERM
+    kill -TERM -- -$$ 2>/dev/null
+    sleep 2
+    kill -KILL -- -$$ 2>/dev/null
+    exit 143
+  fi
+  sleep 2 &
+  wait $! 2>/dev/null
+done
+wait "$child""#;
+
+/// A `Command` for `executable` wrapped in the parent-death watchdog. The
+/// wrapper shares the child's process group, so group termination and the
+/// existing identity/tracking primitives keep working against the returned
+/// process id; the child's exit status propagates through the wrapper.
+#[cfg(unix)]
+pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
+    if std::env::var_os(PARENT_WATCHDOG_DISABLE_ENV).is_some() {
+        let mut command = Command::new(executable);
+        command.args(args);
+        return command;
+    }
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(PARENT_WATCHDOG_SCRIPT)
+        .arg("bridge-watchdog")
+        .arg(executable);
+    command.args(args);
+    command
+}
+
+#[cfg(not(unix))]
+pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(executable);
+    command.args(args);
+    command
 }
 
 #[cfg(unix)]
@@ -285,6 +350,10 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
+    /// Drop any normalization state kept for `provider_session_id`. Called
+    /// when the session's runtime is gone; adapters without per-session state
+    /// ignore it.
+    fn forget_session(&self, _provider_session_id: &str) {}
 }
 
 pub struct AdapterRegistry {
@@ -421,6 +490,12 @@ impl AdapterRegistry {
             .get(id)
             .map(|adapter| adapter.normalize(value))
             .unwrap_or_default()
+    }
+
+    pub fn forget_session(&self, id: &str, provider_session_id: &str) {
+        if let Some(adapter) = self.adapters.get(id) {
+            adapter.forget_session(provider_session_id);
+        }
     }
 
     pub fn refresh_opencode(
@@ -702,6 +777,14 @@ impl HarnessAdapter for OpenCodeAdapter {
         let state = streams.entry(session_key).or_default();
         agent::normalize_opencode_message_with_state(value, state)
     }
+    fn forget_session(&self, provider_session_id: &str) {
+        // "default" aggregates events that arrive without a session id;
+        // per-session teardown must not evict it.
+        if provider_session_id == "default" {
+            return;
+        }
+        self.streams.lock().unwrap().remove(provider_session_id);
+    }
 }
 
 struct CodexAdapter;
@@ -848,6 +931,12 @@ impl HarnessAdapter for ClaudeAdapter {
         let mut streams = self.streams.lock().unwrap();
         let state = streams.entry(session_key).or_default();
         agent::normalize_claude_message_with_state(value, state)
+    }
+    fn forget_session(&self, provider_session_id: &str) {
+        if provider_session_id == "default" {
+            return;
+        }
+        self.streams.lock().unwrap().remove(provider_session_id);
     }
 }
 
@@ -1066,5 +1155,113 @@ mod tests {
         assert!(process_failure_context(&mut child, &tail).is_none());
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn forget_session_drops_stream_state_but_never_the_default_key() {
+        let adapter = OpenCodeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            settings: RwLock::new(Default::default()),
+            catalog: Arc::new(RwLock::new(None)),
+            catalog_error: Arc::new(RwLock::new(None)),
+        };
+        let with_session = serde_json::json!({
+            "type": "message.updated",
+            "properties": {"sessionID": "ses_1", "info": {"id": "m1", "role": "assistant"}}
+        });
+        let without_session = serde_json::json!({
+            "type": "message.updated",
+            "properties": {"info": {"id": "m2", "role": "assistant"}}
+        });
+        let _ = adapter.normalize(&with_session);
+        let _ = adapter.normalize(&without_session);
+        assert!(adapter.streams.lock().unwrap().contains_key("ses_1"));
+        adapter.forget_session("ses_1");
+        adapter.forget_session("default");
+        let streams = adapter.streams.lock().unwrap();
+        assert!(!streams.contains_key("ses_1"), "the ended session is dropped");
+        assert!(
+            streams.contains_key("default"),
+            "the shared fallback entry survives per-session teardown"
+        );
+    }
+
+    /// The wrapped child — and anything it forked into the group — must die
+    /// when the supervisor is SIGKILLed, the path where no destructor, drain,
+    /// or boot recovery can help; and everything must stay up while the
+    /// supervisor lives.
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_reaps_child_and_group_mates_after_supervisor_sigkill() {
+        use std::time::Instant;
+        let stamp = std::process::id() % 1000;
+        let mate_marker = format!("300.1{stamp:03}");
+        let child_marker = format!("300.2{stamp:03}");
+        // Exact-command patterns so neither the shells nor the intermediate
+        // supervisor (whose argv carries the markers) satisfy the probes.
+        let probe = |marker: &str| {
+            let pattern = format!("^/bin/sleep {marker}$");
+            Command::new("pgrep")
+                .args(["-f", &pattern])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        // The wrapped command forks a group-mate, then execs into the pid the
+        // watchdog tracks — killing only that pid would leave the mate as a
+        // PID-1 orphan. `set -m` gives the watchdog its own process group, as
+        // configure_process_group does in production.
+        let mut intermediate = Command::new("/bin/sh");
+        intermediate
+            .env("BRIDGE_WATCHDOG_UNDER_TEST", PARENT_WATCHDOG_SCRIPT)
+            .env(
+                "BRIDGE_WATCHDOG_INNER",
+                format!("/bin/sleep {mate_marker} & exec /bin/sleep {child_marker}"),
+            )
+            .args([
+                "-c",
+                "set -m; /bin/sh -c 'eval \"$BRIDGE_WATCHDOG_UNDER_TEST\"' bridge-watchdog /bin/sh -c \"$BRIDGE_WATCHDOG_INNER\" & sleep 600",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut intermediate);
+        let mut supervisor = intermediate.spawn().expect("intermediate supervisor spawns");
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !(probe(&mate_marker) && probe(&child_marker)) {
+            assert!(
+                Instant::now() < deadline,
+                "the wrapped child and its group-mate never started"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        // Longer than a watchdog poll interval: a false trigger would have
+        // reaped by now.
+        thread::sleep(Duration::from_millis(2_500));
+        assert!(
+            probe(&mate_marker) && probe(&child_marker),
+            "the watchdog must not reap while the supervisor lives"
+        );
+
+        let _ = Command::new("kill")
+            .args(["-KILL", &supervisor.id().to_string()])
+            .status();
+        let _ = supervisor.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while probe(&mate_marker) || probe(&child_marker) {
+            assert!(
+                Instant::now() < deadline,
+                "the watchdog must reap the whole group once the supervisor dies"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
+
+        // The intermediate's own `sleep 600` shares its group; sweep it so
+        // the test leaves nothing behind.
+        let _ = terminate_process_group(supervisor.id());
     }
 }

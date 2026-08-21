@@ -17,6 +17,24 @@ pub struct GetSessionForestParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetSessionForestDigestParams {
+    pub session_id: String,
+}
+
+/// `sessions/get_session_forest_digest`'s result: an opaque change token for
+/// one session's forest. Equal digests mean the snapshot would be unchanged;
+/// clients compare tokens instead of fetching and stringifying complete
+/// histories every poll. External state the store cannot see (repository
+/// divergence) is not covered — poll a full snapshot at a low cadence for
+/// that.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForestDigestResult {
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivateSessionEntryParams {
     pub session_id: String,
@@ -68,6 +86,10 @@ pub struct ReplaySessionEventsParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 1_000))]
     pub limit: Option<u32>,
+    /// Return the newest `limit` durable events, still ordered oldest to
+    /// newest. Intended for bounded activity surfaces, not cursor recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail: Option<bool>,
 }
 
 /// Structured provider data accepted by normalized events.

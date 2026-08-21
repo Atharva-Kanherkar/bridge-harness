@@ -55,6 +55,7 @@ methods![
     (WorkspaceChanges, "workspaces", "workspace_changes"),
     // sessions
     (GetSessionForest, "sessions", "get_session_forest"),
+    (GetSessionForestDigest, "sessions", "get_session_forest_digest"),
     (ReplaySessionEvents, "sessions", "replay_session_events"),
     (ActivateSessionEntry, "sessions", "activate_session_entry"),
     (CreateChat, "sessions", "create_chat"),
@@ -106,6 +107,10 @@ methods![
     (RecommendedModelProfiles, "models", "recommended_model_profiles"),
     (SaveModelProfiles, "models", "save_model_profiles"),
     (ResetModelProfiles, "models", "reset_model_profiles"),
+    // inline composer suggestions
+    (GetSuggestionSettings, "models", "get_suggestion_settings"),
+    (SaveSuggestionSettings, "models", "save_suggestion_settings"),
+    (SuggestCompletion, "models", "suggest_completion"),
     // configuration
     (GetConfigState, "config", "get_config_state"),
     (SaveHarnessConfig, "config", "save_harness_config"),
@@ -173,6 +178,9 @@ methods![
     (SkillSuggestions, "skills", "skill_suggestions"),
     (PreviewSkillChange, "skills", "preview_skill_change"),
     (ExecuteSkillChange, "skills", "execute_skill_change"),
+    // automations — each harness's native scheduled jobs, one catalog
+    (AutomationCatalog, "automations", "automation_catalog"),
+    (ExecuteAutomationAction, "automations", "execute_automation_action"),
 ];
 
 impl MethodName {

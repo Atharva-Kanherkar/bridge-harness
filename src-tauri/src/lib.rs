@@ -12,8 +12,8 @@ use bridge_core::live_turn;
 use bridge_core::work_observation;
 use bridge_core::model::*;
 use bridge_core::{
-    agent_config, browser_bridge, marketplace, opencode_adapter, secret_interception,
-    skill_marketplace, slash,
+    agent_config, automations, browser_bridge, marketplace, opencode_adapter,
+    secret_interception, skill_marketplace, slash,
 };
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use std::{
@@ -277,6 +277,28 @@ async fn execute_skill_change(
 }
 
 #[tauri::command]
+async fn automation_catalog(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationCatalog, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation discovery", move || api::automation_catalog(&core)).await
+}
+
+#[tauri::command]
+async fn execute_automation_action(
+    provider: automations::AutomationProvider,
+    id: String,
+    action: automations::AutomationAction,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationActionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation update", move || {
+        api::execute_automation_action(&core, provider, &id, action)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn list_managed_agents(
 ) -> Result<bridge_protocol::messages::ManagedAgentList, managed_agents::ManagedAgentError> {
     api::list_managed_agents()
@@ -338,6 +360,18 @@ async fn get_session_forest(
     // run it on the macOS event loop or while holding the global SQLite lock.
     let core = state.inner().clone();
     blocking("Repository refresh", move || api::get_session_forest(&core, &session_id)).await
+}
+
+#[tauri::command]
+async fn get_session_forest_digest(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ForestDigest, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Forest digest", move || {
+        api::get_session_forest_digest(&core, &session_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -488,6 +522,36 @@ async fn reset_model_profiles(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
     api::reset_model_profiles(state.inner())
+}
+
+#[tauri::command]
+async fn get_suggestion_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SuggestionSettingsSnapshot, BridgeError> {
+    api::get_suggestion_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_suggestion_settings(
+    state: State<'_, Arc<BridgeCore>>,
+    settings: bridge_protocol::messages::SuggestionSettings,
+) -> Result<bridge_protocol::messages::SuggestionSettingsSnapshot, BridgeError> {
+    api::save_suggestion_settings(
+        state.inner(),
+        &bridge_protocol::messages::SaveSuggestionSettingsParams { settings },
+    )
+}
+
+#[tauri::command]
+async fn suggest_completion(
+    state: State<'_, Arc<BridgeCore>>,
+    text: String,
+) -> Result<bridge_protocol::messages::SuggestCompletionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Inline suggestion", move || {
+        api::suggest_completion(&core, &bridge_protocol::messages::SuggestCompletionParams { text })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -973,6 +1037,7 @@ async fn replay_session_events(
     session_id: String,
     after_sequence: i64,
     limit: Option<u32>,
+    tail: Option<bool>,
     app: AppHandle,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
     blocking("Session replay", move || {
@@ -981,6 +1046,7 @@ async fn replay_session_events(
             &session_id,
             after_sequence,
             limit,
+            tail,
         )
     })
     .await
@@ -1302,8 +1368,11 @@ pub fn run() {
             skill_suggestions,
             preview_skill_change,
             execute_skill_change,
+            automation_catalog,
+            execute_automation_action,
             get_state,
             get_session_forest,
+            get_session_forest_digest,
             replay_session_events,
             create_completion_plan,
             record_completion_check,
@@ -1321,6 +1390,9 @@ pub fn run() {
             recommended_model_profiles,
             save_model_profiles,
             reset_model_profiles,
+            get_suggestion_settings,
+            save_suggestion_settings,
+            suggest_completion,
             get_config_state,
             save_harness_config,
             reset_harness_config,

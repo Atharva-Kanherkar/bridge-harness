@@ -80,6 +80,8 @@ pub struct OpenCodeModel {
 
 pub struct OpenCodeRuntime {
     child: Child,
+    // Held so the launch record outlives the child and is removed with it.
+    _ledger: crate::process_ledger::LaunchGuard,
     stderr_tail: crate::adapters::StderrTail,
     client: Option<Client>,
     base_url: String,
@@ -91,6 +93,7 @@ pub struct OpenCodeRuntime {
     current_turn: Arc<Mutex<Option<String>>>,
     shutting_down: Arc<AtomicBool>,
     stopped: bool,
+    queue_metrics: crate::frame_queue::QueueMetrics,
 }
 
 pub struct StartedOpenCode {
@@ -156,15 +159,12 @@ fn launch(
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
-    let mut command = Command::new(&binary);
+    let port_argument = port.to_string();
+    let mut command = crate::adapters::supervised_command(
+        &binary,
+        &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
+    );
     command
-        .args([
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ])
         .current_dir(request.cwd)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
         .env("OPENCODE_SERVER_PASSWORD", &server_password)
@@ -175,6 +175,7 @@ fn launch(
         .stderr(Stdio::piped());
     crate::adapters::configure_process_group(&mut command);
     let mut child = command.spawn()?;
+    let ledger = crate::process_ledger::record_launch("opencode.session", request.cwd, child.id());
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let client = match build_authenticated_client(&server_password) {
         Ok(client) => client,
@@ -241,7 +242,8 @@ fn launch(
     }
 
     let shutting_down = Arc::new(AtomicBool::new(false));
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver, queue_metrics) =
+        crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
     if let Err(error) = spawn_event_stream(
         client.clone(),
         base_url.clone(),
@@ -261,6 +263,7 @@ fn launch(
     Ok(StartedOpenCode {
         runtime: OpenCodeRuntime {
             child,
+            _ledger: ledger,
             stderr_tail,
             client: Some(client),
             base_url,
@@ -272,6 +275,7 @@ fn launch(
             current_turn: Arc::new(Mutex::new(None)),
             shutting_down,
             stopped: false,
+            queue_metrics,
         },
         reader: ChannelReader::new(receiver),
         startup_messages,
@@ -475,7 +479,7 @@ fn spawn_event_stream(
     base_url: String,
     directory: String,
     session_id: String,
-    sender: mpsc::Sender<String>,
+    sender: crate::frame_queue::FrameSender,
     shutting_down: Arc<AtomicBool>,
 ) -> Result<(), BridgeError> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -516,7 +520,22 @@ fn spawn_event_stream(
                 .pointer("/properties/sessionID")
                 .and_then(Value::as_str)
                 == Some(session_id.as_str());
-            if belongs_to_session && sender.send(format!("{value}\n")).is_err() {
+            if !belongs_to_session {
+                continue;
+            }
+            // Streaming deltas are the only sheddable frames: their terminal
+            // `message.part.updated` carries the complete content. Everything
+            // else is durable and back-pressures this socket when the
+            // consumer stalls, instead of buffering without bound.
+            let transient =
+                value.get("type").and_then(Value::as_str) == Some("message.part.delta");
+            let frame = format!("{value}\n");
+            let delivered = if transient {
+                sender.send_transient(frame).map(|_| ())
+            } else {
+                sender.send_durable(frame)
+            };
+            if delivered.is_err() {
                 break;
             }
         }
@@ -530,7 +549,7 @@ fn spawn_event_stream(
                     "error": { "message": "OpenCode event stream disconnected unexpectedly" }
                 }
             });
-            let _ = sender.send(format!("{error_event}\n"));
+            let _ = sender.send_durable(format!("{error_event}\n"));
         }
     });
     ready_receiver
@@ -611,6 +630,9 @@ impl AdapterRuntime for OpenCodeRuntime {
     }
     fn provider_session_id(&self) -> &str {
         &self.session_id
+    }
+    fn event_queue_metrics(&self) -> Option<crate::frame_queue::QueueMetricsSnapshot> {
+        Some(self.queue_metrics.snapshot())
     }
     fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
         self.current_turn.clone()
@@ -912,6 +934,20 @@ fn validate_path_id(kind: &str, value: &str) -> Result<(), BridgeError> {
     })
 }
 
+/// Owns a short-lived control server: the child dies and its launch record
+/// clears on every exit from the scope, unwinding included, instead of only on
+/// the straight-line return path.
+struct ControlServer {
+    child: Child,
+    _ledger: crate::process_ledger::LaunchGuard,
+}
+
+impl Drop for ControlServer {
+    fn drop(&mut self) {
+        stop_child(&mut self.child);
+    }
+}
+
 fn with_control_server<T>(
     executable: &Path,
     directory: &str,
@@ -920,15 +956,12 @@ fn with_control_server<T>(
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let password = uuid::Uuid::new_v4().to_string();
-    let mut command = Command::new(executable);
+    let port_argument = port.to_string();
+    let mut command = crate::adapters::supervised_command(
+        executable,
+        &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
+    );
     command
-        .args([
-            "serve",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-        ])
         .current_dir(directory)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
         .env("OPENCODE_SERVER_PASSWORD", &password)
@@ -936,18 +969,21 @@ fn with_control_server<T>(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     crate::adapters::configure_process_group(&mut command);
-    let mut child = command.spawn()?;
-    let result = match build_authenticated_client(&password) {
+    let child = command.spawn()?;
+    let ledger = crate::process_ledger::record_launch("opencode.control", directory, child.id());
+    let mut server = ControlServer {
+        child,
+        _ledger: ledger,
+    };
+    match build_authenticated_client(&password) {
         Ok(client) => {
-            let result = wait_until_ready(&client, &base_url, &mut child)
+            let result = wait_until_ready(&client, &base_url, &mut server.child)
                 .and_then(|_| action(&client, &base_url));
             drop_client_safely(client);
             result
         }
         Err(error) => Err(error),
-    };
-    stop_child(&mut child);
-    result
+    }
 }
 
 fn parse_catalog(
@@ -1178,13 +1214,13 @@ fn model_strength(model: &OpenCodeModel) -> f64 {
 }
 
 pub struct ChannelReader {
-    receiver: mpsc::Receiver<String>,
+    receiver: crate::frame_queue::FrameReceiver,
     buffer: Vec<u8>,
     position: usize,
 }
 
 impl ChannelReader {
-    fn new(receiver: mpsc::Receiver<String>) -> Self {
+    fn new(receiver: crate::frame_queue::FrameReceiver) -> Self {
         Self {
             receiver,
             buffer: Vec::new(),

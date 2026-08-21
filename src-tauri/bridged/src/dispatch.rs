@@ -87,9 +87,19 @@ pub fn dispatch(
             let p: wire::GetSessionForestParams = decode(method, params)?;
             reply(api::get_session_forest(core, &p.session_id))
         }
+        MethodName::GetSessionForestDigest => {
+            let p: wire::GetSessionForestDigestParams = decode(method, params)?;
+            reply(api::get_session_forest_digest(core, &p.session_id))
+        }
         MethodName::ReplaySessionEvents => {
             let p: wire::ReplaySessionEventsParams = decode(method, params)?;
-            reply(api::replay_session_events(core, &p.session_id, p.after_sequence, p.limit))
+            reply(api::replay_session_events(
+                core,
+                &p.session_id,
+                p.after_sequence,
+                p.limit,
+                p.tail,
+            ))
         }
         MethodName::ActivateSessionEntry => {
             let p: wire::ActivateSessionEntryParams = decode(method, params)?;
@@ -282,6 +292,16 @@ pub fn dispatch(
             reply(api::save_model_profiles(core, &profiles))
         }
         MethodName::ResetModelProfiles => reply(api::reset_model_profiles(core)),
+
+        MethodName::GetSuggestionSettings => reply(api::get_suggestion_settings(core)),
+        MethodName::SaveSuggestionSettings => {
+            let p: wire::SaveSuggestionSettingsParams = decode(method, params)?;
+            reply(api::save_suggestion_settings(core, &p))
+        }
+        MethodName::SuggestCompletion => {
+            let p: wire::SuggestCompletionParams = decode(method, params)?;
+            reply(api::suggest_completion(core, &p))
+        }
 
         MethodName::GetConfigState => reply(api::get_config_state(core)),
         MethodName::SaveHarnessConfig => {
@@ -478,6 +498,17 @@ pub fn dispatch(
         MethodName::ExecuteSkillChange => {
             let p: wire::ExecuteSkillChangeParams = decode(method, params)?;
             reply(api::execute_skill_change(core, &p.confirmation_id))
+        }
+
+        MethodName::AutomationCatalog => reply(api::automation_catalog(core)),
+        MethodName::ExecuteAutomationAction => {
+            let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
+            reply(api::execute_automation_action(
+                core,
+                into_core(method, &p.provider)?,
+                &p.id,
+                into_core(method, &p.action)?,
+            ))
         }
     }
 }
