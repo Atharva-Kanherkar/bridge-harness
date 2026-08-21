@@ -49,7 +49,11 @@ export function LearningRunSummary({ learning, running = false, onApprove, onCan
   onRollback?: () => void;
 }) {
   const run = learning.latestRun;
-  if (!run) return null;
+  if (!run) {
+    return <div className="mt-4 rounded-2xl border border-dashed border-border p-4 text-xs text-muted-foreground">
+      No learning runs yet. Run learning now replays the routing evidence this workspace has collected; until then the router uses its conservative priors.
+    </div>;
+  }
   const report = run.report;
   const rollbackTarget = learning.rollbackTargetVersion;
   return <div className="mt-4 rounded-2xl border border-border bg-muted/50 p-4 text-xs text-muted-foreground">
@@ -76,6 +80,9 @@ export function RouterSettingsDialog({
   onError: (message: string) => void;
 }) {
   const [preferences, setPreferences] = useState<RouterPreferences>(defaults);
+  // The field keeps draft text and commits on blur: an emptied input must
+  // never commit a 0% quality floor on the way to typing a number.
+  const [passDraft, setPassDraft] = useState(String(Math.round(defaults.minimumPassBps / 100)));
   const [excludedHarnesses, setExcludedHarnesses] = useState("");
   const [excludedModels, setExcludedModels] = useState("");
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
@@ -109,6 +116,7 @@ export function RouterSettingsDialog({
     Promise.all([bridgeApi.routerPreferences(workspaceId), bridgeApi.modelSetup(), bridgeApi.learningState(workspaceId)]).then(([value, setup, learningState]) => {
       if (!active) return;
       setPreferences(value);
+      setPassDraft(String(Math.round(value.minimumPassBps / 100)));
       setExcludedHarnesses((value.excludedHarnesses ?? []).join(", "));
       setExcludedModels((value.excludedModels ?? []).join(", "));
       setModelSetup(setup);
@@ -254,7 +262,16 @@ export function RouterSettingsDialog({
             </select>
           </label>
           <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Minimum pass probability
-            <div className="relative"><input className={fieldClass} type="number" min={0} max={100} step={1} value={Math.round(preferences.minimumPassBps / 100)} disabled={busy} onChange={event => setPreferences(current => ({ ...current, minimumPassBps: Math.max(0, Math.min(10000, Number(event.target.value) * 100)) }))} /><span className="pointer-events-none absolute right-3 top-2.5 text-sm text-muted-foreground">%</span></div>
+            <div className="relative"><input className={fieldClass} type="number" min={0} max={100} step={1} value={passDraft} disabled={busy} onChange={event => setPassDraft(event.target.value)} onBlur={() => {
+              const parsed = Number(passDraft);
+              if (passDraft.trim() === "" || Number.isNaN(parsed)) {
+                setPassDraft(String(Math.round(preferences.minimumPassBps / 100)));
+                return;
+              }
+              const clamped = Math.max(0, Math.min(10000, Math.round(parsed) * 100));
+              setPreferences(current => ({ ...current, minimumPassBps: clamped }));
+              setPassDraft(String(Math.round(clamped / 100)));
+            }} /><span className="pointer-events-none absolute right-3 top-2.5 text-sm text-muted-foreground">%</span></div>
           </label>
           <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Pin harness
             <select className={fieldClass} value={preferences.pinnedHarness ?? ""} disabled={busy} onChange={event => setPreferences(current => ({ ...current, pinnedHarness: event.target.value || null, pinnedModel: null }))}>
