@@ -44,6 +44,7 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   onOpenWorkBoard: () => {},
   onOpenProjects: noop,
   onOpenMarketplace: noop,
+  onOpenMemory: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
   ...overrides,
