@@ -152,6 +152,10 @@ pub struct DelegationState {
     /// A peek is emitted before the provider's separate turn-completed frame;
     /// hold it until that boundary so its reply starts a clean turn.
     pub pending_worker_peeks: HashMap<String, delegation::PeekRequest>,
+    /// A steer is held for the same reason a peek is: it arrives on the
+    /// assistant frame, and delivering it before the parent's turn completes
+    /// would race the reply into a turn that is still running.
+    pub pending_worker_steers: HashMap<String, delegation::SteerRequest>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.

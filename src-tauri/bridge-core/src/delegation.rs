@@ -576,6 +576,10 @@ fn is_peek_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("peek")
 }
 
+fn is_steer_tag(tag: &str) -> bool {
+    tag.contains("bridge") && tag.contains("steer")
+}
+
 /// What the host filled in, corrected, or ignored on the model's behalf.
 ///
 /// Recorded rather than applied silently: a normalized envelope has to be
@@ -1064,13 +1068,9 @@ impl PeekRequest {
     }
 
     fn has_valid_session_id(&self) -> bool {
-        self.session_id.as_deref().is_none_or(|id| {
-            !id.is_empty()
-                && id.len() <= 128
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        })
+        self.session_id
+            .as_deref()
+            .is_none_or(valid_child_session_id)
     }
 }
 
@@ -1106,6 +1106,89 @@ pub fn parse_peek_request(text: &str) -> ParseOutcome<PeekRequest> {
 
 pub fn strip_peek(text: &str) -> String {
     strip_machine_blocks(text, is_peek_tag)
+}
+
+/// The longest guidance a `bridge-steer` may carry.
+///
+/// A steer is a course correction, not a re-briefing: an orchestrator that needs
+/// to say more than this is really issuing a new objective, and should delegate
+/// one instead of narrating into a worker mid-run.
+pub const MAX_STEER_MESSAGE_BYTES: usize = 2_000;
+
+/// A mid-run course correction from the orchestrator to one of its own workers.
+///
+/// Deliberately the mirror image of [`PeekRequest`]: peek reads, steer writes,
+/// and neither is a substitute for the other. Both fields are required — a steer
+/// without a target or without words is a mistake worth naming rather than
+/// guessing at.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SteerRequest {
+    pub session_id: String,
+    pub message: String,
+}
+
+impl SteerRequest {
+    fn validate(&self) -> Result<(), String> {
+        if !valid_child_session_id(&self.session_id) {
+            return Err("bridge-steer sessionId must be 1-128 identifier characters".into());
+        }
+        if self.message.trim().is_empty() {
+            return Err("bridge-steer message cannot be empty".into());
+        }
+        if self.message.len() > MAX_STEER_MESSAGE_BYTES {
+            return Err(format!(
+                "bridge-steer message must be at most {MAX_STEER_MESSAGE_BYTES} bytes; delegate a new objective instead of re-briefing a running worker"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The guidance with surrounding whitespace gone, which is what actually
+    /// reaches the worker.
+    pub fn guidance(&self) -> &str {
+        self.message.trim()
+    }
+}
+
+fn valid_child_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+pub fn parse_steer_request(text: &str) -> ParseOutcome<SteerRequest> {
+    let blocks = fenced_blocks(text, is_steer_tag);
+    if blocks.is_empty() {
+        return ParseOutcome::Absent;
+    }
+    if blocks.len() != 1 {
+        return ParseOutcome::Invalid {
+            raw: blocks
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            reason: "expected at most one bridge-steer block per message".into(),
+        };
+    }
+    let raw = blocks[0].body.clone();
+    match serde_json::from_str::<SteerRequest>(&raw) {
+        Ok(request) => match request.validate() {
+            Ok(()) => ParseOutcome::Parsed(request),
+            Err(reason) => ParseOutcome::Invalid { raw, reason },
+        },
+        Err(error) => ParseOutcome::Invalid {
+            raw,
+            reason: format!("invalid bridge-steer JSON: {error}"),
+        },
+    }
+}
+
+pub fn strip_steer(text: &str) -> String {
+    strip_machine_blocks(text, is_steer_tag)
 }
 
 pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
@@ -1379,7 +1462,17 @@ While workers run you are not blind. Bridge attaches a compact `fleet` digest (p
 {}
 ```
 
-Optional fields: `{"sessionId":"<one child>","limit":10}`. Bridge replies with a `bridge-worker-activity` notice: each worker's runtime state plus its most recent tool calls and messages, as a bounded host-built digest. Use it to answer the user concretely; never ask a worker itself for status, and never present the digest as your own work."#
+Optional fields: `{"sessionId":"<one child>","limit":10}`. Bridge replies with a `bridge-worker-activity` notice: each worker's runtime state plus its most recent tool calls and messages, as a bounded host-built digest. Use it to answer the user concretely; never ask a worker itself for status, and never present the digest as your own work.
+
+## Redirecting a worker (bridge-steer)
+
+When a peek shows a worker going the wrong way, you can correct it mid-run instead of waiting for a wrong result. Emit one fenced `bridge-steer` block and stop:
+
+```bridge-steer
+{"sessionId":"<one of your live children>","message":"Use the existing SQLite token store; do not add a new table."}
+```
+
+Both fields are required. Steer to **redirect** — a constraint, a correction, a narrowed scope. Never to ask for status: that is `bridge-peek`, and a worker asked for status stops working to answer. Keep the message short; if you need more than a couple of sentences you are issuing a new objective, so delegate one. Bridge validates that the target is your own live worker and refuses anything else. Steering never replaces the worker's typed `bridge-worker-result`; you still wait for it."#
         .into()
 }
 
@@ -1870,6 +1963,94 @@ mod tests {
         assert_eq!(parse_peek_request("no blocks here"), ParseOutcome::Absent);
         // A delegate block is not a peek block.
         assert_eq!(parse_peek_request("```bridge-delegate\n{}\n```"), ParseOutcome::Absent);
+        // Nor is a steer block: reading and redirecting are different verbs.
+        assert_eq!(
+            parse_peek_request("```bridge-steer\n{\"sessionId\":\"c\",\"message\":\"stop\"}\n```"),
+            ParseOutcome::Absent
+        );
+    }
+
+    #[test]
+    fn steer_requests_parse_and_reject_garbage() {
+        let valid = "Redirecting the worker.\n```bridge-steer\n{\"sessionId\":\"child-1\",\"message\":\"  use the existing store  \"}\n```\n";
+        let ParseOutcome::Parsed(request) = parse_steer_request(valid) else {
+            panic!("a well-formed steer did not parse");
+        };
+        assert_eq!(request.session_id, "child-1");
+        assert_eq!(request.guidance(), "use the existing store");
+
+        // Both fields are load-bearing; neither is guessable.
+        for body in [
+            "{\"sessionId\":\"child-1\"}",
+            "{\"message\":\"do it\"}",
+            "{\"sessionId\":\"child-1\",\"message\":\"   \"}",
+            "{\"sessionId\":\"\",\"message\":\"do it\"}",
+            "{\"sessionId\":\"child 1\",\"message\":\"do it\"}",
+            "{\"sessionId\":\"child-1\",\"message\":\"do it\",\"urgent\":true}",
+            "not json at all",
+        ] {
+            assert!(
+                matches!(
+                    parse_steer_request(&format!("```bridge-steer\n{body}\n```")),
+                    ParseOutcome::Invalid { .. }
+                ),
+                "{body} should not have parsed"
+            );
+        }
+
+        let oversized = format!(
+            "```bridge-steer\n{{\"sessionId\":\"child-1\",\"message\":\"{}\"}}\n```",
+            "x".repeat(MAX_STEER_MESSAGE_BYTES + 1)
+        );
+        let ParseOutcome::Invalid { reason, .. } = parse_steer_request(&oversized) else {
+            panic!("an oversized steer was accepted");
+        };
+        assert!(
+            reason.contains("delegate a new objective"),
+            "the refusal should say what to do instead: {reason}"
+        );
+
+        assert!(matches!(
+            parse_steer_request(
+                "```bridge-steer\n{\"sessionId\":\"a\",\"message\":\"x\"}\n```\n```bridge-steer\n{\"sessionId\":\"b\",\"message\":\"y\"}\n```"
+            ),
+            ParseOutcome::Invalid { .. }
+        ));
+        assert_eq!(parse_steer_request("no blocks here"), ParseOutcome::Absent);
+        assert_eq!(
+            parse_steer_request("```bridge-delegate\n{}\n```"),
+            ParseOutcome::Absent
+        );
+        assert_eq!(
+            parse_steer_request("```bridge-peek\n{}\n```"),
+            ParseOutcome::Absent
+        );
+    }
+
+    #[test]
+    fn strip_steer_removes_only_the_steer_block() {
+        let text = "Course-correcting the implementer.\n```bridge-steer\n{\"sessionId\":\"c\",\"message\":\"skip the migration\"}\n```\nAlso checking on the others.\n```bridge-peek\n{}\n```\n";
+        let stripped = strip_steer(text);
+        assert!(stripped.contains("Course-correcting the implementer."));
+        assert!(stripped.contains("Also checking on the others."));
+        assert!(!stripped.contains("skip the migration"));
+        assert!(
+            stripped.contains("```bridge-peek"),
+            "stripping one verb must not eat another: {stripped}"
+        );
+    }
+
+    #[test]
+    fn protocol_teaches_steering_as_redirection_not_status() {
+        let orchestrator = protocol(0);
+        assert!(orchestrator.contains("```bridge-steer"));
+        assert!(
+            orchestrator.contains("bridge-peek"),
+            "the two verbs are taught together so they are not confused"
+        );
+        // A depth-limited worker does not delegate, so it does not steer either.
+        let worker = protocol(DEFAULT_MAX_DEPTH);
+        assert!(!worker.contains("bridge-steer"));
     }
 
     #[test]
