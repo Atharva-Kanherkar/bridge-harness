@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Pin, X } from "lucide-react";
+import { Check, Pin, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
-import type { MemoryCapabilities, MemoryRecord } from "../types";
+import type { AdapterDescriptor, MemoryCapabilities, MemoryExtractionSettings, MemoryRecord } from "../types";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 /** Mirrors the contract cap in bridge-protocol's memory messages. */
@@ -25,35 +25,47 @@ export function rememberAction(text: string): "save" | "open-dialog" {
 export function MemoryDialog({
   open,
   initialBody,
+  adapters = [],
   onClose,
   onError,
 }: {
   open: boolean;
   /** Pre-filled composer text (a too-long "Remember this"); never auto-saved. */
   initialBody?: string | null;
+  adapters?: AdapterDescriptor[];
   onClose: () => void;
   onError: (message: string) => void;
 }) {
+  const [tab, setTab] = useState<"pins" | "queue">("pins");
   const [records, setRecords] = useState<MemoryRecord[]>();
+  const [proposed, setProposed] = useState<MemoryRecord[]>();
+  const [settings, setSettings] = useState<MemoryExtractionSettings>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [filter, setFilter] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [kind, setKind] = useState<string>("preference");
+  const [profileHarness, setProfileHarness] = useState("");
+  const [profileModel, setProfileModel] = useState("");
   const [busy, setBusy] = useState(false);
-  // Which list read is the newest. The initial load and every memory-changed
-  // hint read, so a slow earlier call must not land over a fresher one. Same
-  // shape as RouterSettingsDialog's learningReadGeneration.
+  // Which read is the newest. The initial load and every memory-changed hint
+  // read, so a slow earlier call must not land over a fresher one. Same shape
+  // as RouterSettingsDialog's learningReadGeneration.
   const readGeneration = useRef(0);
 
   useEffect(() => {
     if (open) return;
     // A closed dialog keeps no state, and an in-flight read must not land on it.
     readGeneration.current += 1;
+    setTab("pins");
     setRecords(undefined);
+    setProposed(undefined);
+    setSettings(undefined);
     setCapabilities(undefined);
     setFilter(null);
     setBody("");
     setKind("preference");
+    setProfileHarness("");
+    setProfileModel("");
   }, [open]);
 
   useEffect(() => {
@@ -66,9 +78,17 @@ export function MemoryDialog({
     let off: (() => void) | undefined;
     const load = () => {
       const generation = ++readGeneration.current;
-      bridgeApi.listMemoryRecords("account:local").then(result => {
+      Promise.all([
+        bridgeApi.listMemoryRecords("account:local"),
+        bridgeApi.listMemoryRecords("account:local", "proposed"),
+        bridgeApi.getExtractionSettings(),
+      ]).then(([activeList, proposedList, extraction]) => {
         if (!active || generation !== readGeneration.current) return;
-        setRecords(result.records);
+        setRecords(activeList.records);
+        setProposed(proposedList.records);
+        setSettings(extraction);
+        setProfileHarness(current => current || extraction.harness || "");
+        setProfileModel(current => current || extraction.model || "");
       }).catch(error => { if (active) onError(String(error)); });
     };
     load();
@@ -95,23 +115,30 @@ export function MemoryDialog({
   const trimmed = body.trim();
   const overLimit = body.length > MAX_MEMORY_BODY_CHARS;
   const visible = (records ?? []).filter(record => !filter || record.kind === filter);
+  const queueCount = proposed?.length ?? 0;
 
-  const save = async () => {
+  const act = async (work: () => Promise<unknown>) => {
     setBusy(true);
-    try {
-      await bridgeApi.saveMemoryRecord(body, kind, undefined);
-      setBody("");
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
-  };
-  const forget = async (recordId: string) => {
-    setBusy(true);
-    try { await bridgeApi.deleteMemoryRecord(recordId); }
+    try { await work(); }
     catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     finally { setBusy(false); }
   };
+  const save = () => act(async () => {
+    await bridgeApi.saveMemoryRecord(body, kind, undefined);
+    setBody("");
+  });
+  const setMode = (mode: string) => act(async () => {
+    const next = mode === "propose"
+      ? await bridgeApi.updateExtractionSettings("propose", profileHarness, profileModel)
+      : await bridgeApi.updateExtractionSettings(mode);
+    setSettings(next);
+  });
 
   const fieldClass = "w-full min-w-0 rounded-xl border border-input bg-card px-3 text-sm text-foreground transition-colors disabled:opacity-45";
+  const tabClass = (active: boolean) =>
+    `rounded-full px-3 py-1 text-[12px] font-medium transition-colors ${active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`;
+  const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
+
   return <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="memory-title" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="u-overlay-strong animate-page-enter flex max-h-[90dvh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl">
       <header className="flex shrink-0 items-start gap-3 border-b border-border px-5 py-4">
@@ -123,7 +150,13 @@ export function MemoryDialog({
         </div>
         <button type="button" className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" onClick={onClose} aria-label="Close"><X size={16} aria-hidden="true" /></button>
       </header>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-5 py-2">
+        <button type="button" aria-pressed={tab === "pins"} className={tabClass(tab === "pins")} onClick={() => setTab("pins")}>About me</button>
+        <button type="button" aria-pressed={tab === "queue"} className={tabClass(tab === "queue")} onClick={() => setTab("queue")}>
+          Review queue{queueCount > 0 && <span className="ml-1.5 rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{queueCount}</span>}
+        </button>
+      </div>
+      {tab === "pins" && <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
         <div className="space-y-2">
           <textarea
             className={`${fieldClass} min-h-24 py-2.5`}
@@ -171,7 +204,7 @@ export function MemoryDialog({
                 aria-label="Forget"
                 title="Forget"
                 disabled={busy}
-                onClick={() => void forget(record.id)}
+                onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id))}
               ><X size={14} aria-hidden="true" /></button>
             </li>
           ))}
@@ -193,7 +226,64 @@ export function MemoryDialog({
             </ul>
           </div>
         )}
-      </div>
+      </div>}
+      {tab === "queue" && <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+        <div className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">After a chat turn</p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button type="button" aria-pressed={settings?.mode === "remember"} className={tabClass(settings?.mode === "remember")} disabled={busy} onClick={() => void setMode("remember")}>Remember</button>
+            <button type="button" aria-pressed={settings?.mode === "propose"} className={tabClass(settings?.mode === "propose")} disabled={busy} onClick={() => void setMode("propose")}>Propose</button>
+            <button type="button" aria-pressed={false} className={`${tabClass(false)} opacity-45`} disabled title="Auto-apply needs the replay bench before it can exist.">Auto-apply</button>
+          </div>
+          <p className="text-[12px] leading-relaxed text-muted-foreground">Remember saves only what you ask. Propose replays finished turns on your pinned helper and queues suggestions here — nothing activates without you.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <select className={`${fieldClass} h-9 w-40`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
+              <option value="">Helper…</option>
+              {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
+            </select>
+            <select className={`${fieldClass} h-9 w-48`} value={profileModel} disabled={busy || !profileHarness} onChange={event => setProfileModel(event.target.value)} aria-label="Extraction model">
+              <option value="">Model…</option>
+              {models.map(model => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
+            </select>
+          </div>
+          {settings?.lastRun && (
+            <p className="text-[11px] tabular-nums text-muted-foreground">
+              Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} proposed · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
+            </p>
+          )}
+        </div>
+        <ul className="space-y-2">
+          {(proposed ?? []).map(record => (
+            <li key={record.id} className="u-glass-soft rounded-2xl px-3.5 py-3">
+              <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                <span className="font-medium">{record.kind}</span>
+                {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
+                {record.rationale && <> · {record.rationale}</>}
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-opacity disabled:opacity-45"
+                  disabled={busy}
+                  onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}
+                ><Check size={13} aria-hidden="true" />Approve</button>
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+                  disabled={busy}
+                  onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}
+                >Reject</button>
+              </div>
+            </li>
+          ))}
+          {proposed !== undefined && proposed.length === 0 && (
+            <li className="rounded-2xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
+              Nothing to review. Proposals from finished turns land here when Propose is on.
+            </li>
+          )}
+        </ul>
+      </div>}
     </div>
   </div>;
 }

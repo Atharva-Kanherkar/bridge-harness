@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { MemoryChangedPayload, MemoryRecord } from "../types";
+import type { MemoryChangedPayload, MemoryExtractionSettings, MemoryRecord } from "../types";
 import { MemoryDialog, rememberAction } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
@@ -24,6 +24,7 @@ const record = (id: string, body: string, kind = "preference"): MemoryRecord => 
 let container: HTMLDivElement;
 let root: Root;
 let store: MemoryRecord[];
+let extractionSettings: MemoryExtractionSettings;
 let memoryHandler: ((payload: MemoryChangedPayload) => void) | undefined;
 
 const flush = async () => { await act(async () => {}); };
@@ -53,12 +54,42 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  store = [record("r-tabs", "Prefers tabs over spaces"), record("r-tz", "Works in IST", "fact")];
+  store = [
+    record("r-tabs", "Prefers tabs over spaces"),
+    record("r-tz", "Works in IST", "fact"),
+    {
+      ...record("r-prop", "Deploys only on Fridays", "constraint"),
+      status: "proposed",
+      provenance: "model_proposal",
+      confidenceBps: 8200,
+      rationale: "Said twice in one chat",
+    },
+  ];
   memoryHandler = undefined;
-  vi.spyOn(bridgeApi, "listMemoryRecords").mockImplementation(async scopeKey => ({
+  extractionSettings = { scopeKey: "account:local", mode: "remember" };
+  vi.spyOn(bridgeApi, "listMemoryRecords").mockImplementation(async (scopeKey, status) => ({
     scopeKey,
-    records: store.filter(item => item.status === "active"),
+    records: store.filter(item => item.status === (status ?? "active")),
   }));
+  vi.spyOn(bridgeApi, "getExtractionSettings").mockImplementation(async () => structuredClone(extractionSettings));
+  vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async (mode, harness, model) => {
+    if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it.");
+    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
+    return structuredClone(extractionSettings);
+  });
+  vi.spyOn(bridgeApi, "approveMemoryRecord").mockImplementation(async recordId => {
+    const found = store.find(item => item.id === recordId && item.status === "proposed")!;
+    found.status = "active";
+    memoryHandler?.({ scopeKey: "account:local" });
+    return found;
+  });
+  vi.spyOn(bridgeApi, "rejectMemoryRecord").mockImplementation(async recordId => {
+    const found = store.find(item => item.id === recordId && item.status === "proposed")!;
+    found.status = "rejected";
+    memoryHandler?.({ scopeKey: "account:local" });
+    return found;
+  });
   vi.spyOn(bridgeApi, "saveMemoryRecord").mockImplementation(async (body, kind) => {
     const saved = record(`r-${store.length}`, body, kind ?? "preference");
     store = [saved, ...store];
@@ -185,6 +216,79 @@ describe("MemoryDialog", () => {
     mount();
     await flush();
     expect(textarea().value).toBe("");
+  });
+});
+
+describe("MemoryDialog review queue", () => {
+  it("lists proposals with confidence and rationale, and pins carry no fake confidence", async () => {
+    mount();
+    await flush();
+    click(buttonByText("Review queue"));
+    expect(container.textContent).toContain("Deploys only on Fridays");
+    expect(container.textContent).toContain("82% confident");
+    expect(container.textContent).toContain("Said twice in one chat");
+    click(buttonByText("About me"));
+    expect(container.textContent).not.toContain("% confident");
+  });
+
+  it("approve activates through the api and the row leaves the queue", async () => {
+    mount();
+    await flush();
+    click(buttonByText("Review queue"));
+    click(buttonByText("Approve"));
+    await flush();
+    expect(bridgeApi.approveMemoryRecord).toHaveBeenCalledWith("r-prop");
+    expect(container.textContent).toContain("Nothing to review");
+    click(buttonByText("About me"));
+    expect(container.textContent).toContain("Deploys only on Fridays");
+  });
+
+  it("reject settles through the api and activates nothing", async () => {
+    mount();
+    await flush();
+    click(buttonByText("Review queue"));
+    click(buttonByText("Reject"));
+    await flush();
+    expect(bridgeApi.rejectMemoryRecord).toHaveBeenCalledWith("r-prop");
+    click(buttonByText("About me"));
+    expect(container.textContent).not.toContain("Deploys only on Fridays");
+  });
+
+  it("speaks memory words, and auto-apply is visibly disabled until the bench exists", async () => {
+    mount();
+    await flush();
+    click(buttonByText("Review queue"));
+    expect(container.textContent).toContain("Remember");
+    expect(container.textContent).toContain("Propose");
+    const autoApply = buttonByText("Auto-apply");
+    expect(autoApply.disabled).toBe(true);
+    expect(autoApply.title).toContain("replay bench");
+  });
+
+  it("propose without a pinned profile is refused and the mode does not flip", async () => {
+    const onError = vi.fn();
+    mount({ onError });
+    await flush();
+    click(buttonByText("Review queue"));
+    click(buttonByText("Propose"));
+    await flush();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("pinned harness and model"));
+    expect(buttonByText("Remember").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("the last run's observed spend is on screen", async () => {
+    extractionSettings = {
+      scopeKey: "account:local",
+      mode: "propose",
+      harness: "codex",
+      model: "gpt-5.6-luna",
+      lastRun: { status: "completed", proposalCount: 2, observedTokens: 420, spendMicrousd: 1700, updatedAt: "2026-08-21T00:00:00Z" },
+    };
+    mount();
+    await flush();
+    click(buttonByText("Review queue"));
+    expect(container.textContent).toContain("Last run completed");
+    expect(container.textContent).toContain("$0.0017");
   });
 });
 

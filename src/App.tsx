@@ -1072,7 +1072,7 @@ export function App() {
       onClose={() => void newWorkspaceSession(false)}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
-    <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} onClose={() => { setModal(null); setMemoryDraft(null); }} onError={setError} />
+    <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { setModal(null); setMemoryDraft(null); }} onError={setError} />
   </div>;
 }
 

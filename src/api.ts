@@ -871,14 +871,16 @@ export const bridgeApi = {
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
-  listMemoryRecords: async (scopeKey: string): Promise<ListMemoryRecordsResult> => {
-    if (isTauri()) return call("memory/list_memory_records", { scopeKey });
+  listMemoryRecords: async (scopeKey: string, status?: string): Promise<ListMemoryRecordsResult> => {
+    if (isTauri()) return call("memory/list_memory_records", { scopeKey, ...(status ? { status } : {}) });
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    const wanted = status ?? "active";
+    if (wanted !== "active" && wanted !== "proposed") throw new Error(`Memory list can show active or proposed records, not '${wanted}'.`);
     return {
       scopeKey: trimmed,
       records: mockMemoryRecords
-        .filter(record => record.scopeKey === trimmed && record.status === "active")
+        .filter(record => record.scopeKey === trimmed && record.status === wanted)
         .slice(0, 50)
         .map(record => structuredClone(record)),
     };
