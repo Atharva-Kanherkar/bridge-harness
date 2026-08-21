@@ -4410,6 +4410,130 @@ pub fn notify_parent_child_left_waiting(
     core.events.publish(CoreEvent::StateChanged);
 }
 
+/// Who redirected a worker mid-run. The parent needs the distinction: its own
+/// `bridge-steer` is a decision it already made, a user steer is news.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteerSource {
+    User,
+    Orchestrator,
+}
+
+impl SteerSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Orchestrator => "orchestrator",
+        }
+    }
+}
+
+/// The chat-visible trace of a steer: one durable event on the parent, so the
+/// person reading the orchestrator conversation can see that a worker was
+/// redirected and by whom.
+///
+/// Written on the parent rather than the worker because the parent's chat is
+/// where the user actually is — the same reason the mirrored approval card
+/// exists.
+fn record_worker_steer_on_parent(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    child_session_id: &str,
+    label: &str,
+    guidance: &str,
+    source: SteerSource,
+    delivered: bool,
+) {
+    let event = agent::NormalizedEvent {
+        kind: "delegation.steered".into(),
+        // A fresh item per steer: two redirections of the same worker are two
+        // interventions, and folding them would hide the first.
+        item_id: Some(format!("steer-{}", Uuid::new_v4())),
+        role: Some("system".into()),
+        status: Some(if delivered { "delivered" } else { "undelivered" }.into()),
+        title: Some(match source {
+            SteerSource::User => format!("You steered {label}"),
+            SteerSource::Orchestrator => format!("Orchestrator steered {label}"),
+        }),
+        text: Some(digest_line(guidance)),
+        data: serde_json::json!({
+            "childSessionId": child_session_id,
+            "label": label,
+            "steeredBy": source.label(),
+            "delivered": delivered,
+        }),
+    };
+    if let Ok(stored) = store::session_event(
+        &core.db.lock().unwrap(),
+        parent_session_id,
+        &event,
+        &serde_json::json!({"delegation": true}),
+    ) {
+        core.events.publish(CoreEvent::Agent(stored));
+    }
+    core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Tell the orchestrator that a human redirected one of its workers.
+///
+/// Same seam as [`notify_parent_child_left_waiting`]: a routing notice into the
+/// parent's live runtime plus a durable event for the chat. Without the notice
+/// the orchestrator keeps steering toward the objective it issued and treats the
+/// worker's changed course as a defect.
+fn notify_parent_worker_steered(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    guidance: &str,
+    route: session_input::InputRoute,
+) {
+    let state = core.clone();
+    let Some(context) = child_approval_context(&state.db.lock().unwrap(), child_session_id) else {
+        return;
+    };
+    let fleet = fleet_digest(&state.db.lock().unwrap(), &context.parent_session_id);
+    let routing_notice = serde_json::json!({
+        "type": "bridge-worker-steered-by-user",
+        "childSessionId": child_session_id,
+        "label": context.label,
+        "guidance": digest_line(guidance),
+        "landed": match route {
+            session_input::InputRoute::Queue => "next_turn_boundary",
+            _ => "now",
+        },
+        "fleet": fleet,
+        "instruction": "The user sent this worker guidance directly. Treat it as an amendment to the objective you issued, not as a defect. Do not contradict it or re-delegate the same objective; keep waiting for the worker's typed result."
+    })
+    .to_string();
+    let delivered = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&context.parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    {
+        let db = state.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "delegation",
+            if delivered {
+                "delegation.steer.user_notified"
+            } else {
+                "delegation.steer.user_undeliverable"
+            },
+            &context.parent_session_id,
+            child_session_id,
+        );
+    }
+    record_worker_steer_on_parent(
+        core,
+        &context.parent_session_id,
+        child_session_id,
+        &context.label,
+        guidance,
+        SteerSource::User,
+        delivered,
+    );
+}
+
 /// Resolve workers that have waited past the approval deadline. `waiting` is
 /// intentionally excluded from the stall watchdog, so this is the only thing that
 /// stops an unanswered approval from pinning the parent forever.
@@ -6906,21 +7030,34 @@ fn submit_input_internal(
     if text.trim().is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
-    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
-        return Err(BridgeError::Invalid(
-            "Worker turns are scheduled through the policy-controlled worker pool".into(),
-        ));
-    }
-    // A send into a session whose adapter is gone — the app restarted, or the
-    // provider process died — is explicit consent to bring it back. Resume
-    // through the same seam the UI uses before routing; without this the
-    // delivery dead-ends on "Structured adapter session is not running" and
-    // the person just sees a toast (#252).
-    if !state.adapters.lock().unwrap().contains_key(&session_id) {
+    // A user who can watch a worker go down the wrong path has to be able to say
+    // so. The old blanket refusal made the worker focus view read-only, which
+    // meant the only person who could see the mistake was the only one who could
+    // not mention it. Three durable states still refuse, and they name themselves.
+    let worker = store::worker_runtime(&state.db.lock().unwrap(), &session_id)?;
+    if let Some(runtime) = &worker {
+        let has_live_runtime = state.adapters.lock().unwrap().contains_key(&session_id);
+        session_input::worker_steer_gate(
+            &runtime.result_status,
+            &runtime.lifecycle_state,
+            has_live_runtime,
+        )
+        .map_err(|refusal| BridgeError::Invalid(refusal.message().into()))?;
+    } else if !state.adapters.lock().unwrap().contains_key(&session_id) {
+        // A send into a session whose adapter is gone — the app restarted, or the
+        // provider process died — is explicit consent to bring it back. Resume
+        // through the same seam the UI uses before routing; without this the
+        // delivery dead-ends on "Structured adapter session is not running" and
+        // the person just sees a toast (#252). Never for a worker: the gate above
+        // already refused a worker with no live runtime, because launching one is
+        // the pool's decision, not a side effect of typing.
         resume_for_send(core, &session_id)?;
     }
 
-    let route = if force_new_turn {
+    // The legacy `send_turn` entry point forces a new turn, which is the one
+    // thing a worker cannot absorb: its turn is the objective, and a second
+    // `turn/start` underneath it races the typed result. Workers always route.
+    let route = if force_new_turn && worker.is_none() {
         session_input::InputRoute::NewTurn
     } else {
         let steering_capable = state
@@ -6947,8 +7084,20 @@ fn submit_input_internal(
         }
         InputPreparation::Ready(prepared) => prepared,
     };
+    // The words stay the user's; the contract reminder is Bridge's. A worker
+    // asked something mid-run will otherwise answer in prose and never emit its
+    // envelope, so the reminder travels with the provider text while the
+    // transcript keeps showing exactly what the person typed.
+    let prepared = match worker.as_ref() {
+        Some(_) => PreparedInput {
+            provider_text: worker_steer_envelope(&prepared.provider_text),
+            ..prepared
+        },
+        None => prepared,
+    };
     let interceptions = mirror_interceptions(&prepared.interceptions);
 
+    let mut queued_input_id = None;
     match route {
         session_input::InputRoute::NewTurn => {
             deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Submitted)?;
@@ -7001,18 +7150,33 @@ fn submit_input_internal(
                 queued
             };
             core.events.publish(CoreEvent::StateChanged);
-            return Ok(wire::SubmitInputResult {
-                disposition: route.disposition(),
-                queued_input_id: Some(queued.id),
-                interceptions,
-            });
+            queued_input_id = Some(queued.id);
         }
+    }
+    // The orchestrator has to learn that a human redirected its worker, or it
+    // keeps planning against the objective it issued and argues with guidance it
+    // never saw. Told at submission time rather than at delivery: knowing a steer
+    // is inbound is what stops the fight, and a queued one lands next boundary.
+    if worker.is_some() {
+        notify_parent_worker_steered(core, &session_id, &prepared.display_text, route);
     }
     Ok(wire::SubmitInputResult {
         disposition: route.disposition(),
-        queued_input_id: None,
+        queued_input_id,
         interceptions,
     })
+}
+
+/// The wrapper a user's words wear on their way into a running worker.
+///
+/// Steering is supervision, not a conversation. Without the reminder a worker
+/// treats the message as a chat turn, answers it, and never emits the typed
+/// envelope the completion gate is waiting for — so a single human sentence
+/// would quietly make the result contract optional.
+fn worker_steer_envelope(guidance: &str) -> String {
+    format!(
+        "The user is watching you work and has sent guidance mid-task. Fold it into the objective you were already given; it refines the objective, it does not replace it.\n\n{guidance}\n\nThis changes nothing about how you finish: still end with exactly one fenced `bridge-worker-result` envelope describing the work you actually did. Do not answer this as a chat message."
+    )
 }
 
 /// Core interceptions as the wire shape. The protocol crate deliberately does
@@ -8416,8 +8580,12 @@ mod submit_input_tests {
         );
     }
 
+    /// A worker is steerable on its *own* liveness. Workers used to refuse every
+    /// message outright; now that they accept guidance, the live-runtime check has
+    /// to read the worker's adapter and not its parent's — otherwise a busy
+    /// orchestrator would make every one of its dead children look reachable.
     #[test]
-    fn worker_sessions_stay_policy_controlled() {
+    fn a_workers_liveness_is_its_own_not_its_parents() {
         let (_fixture, core, _managed_root) = core_with_chat("working");
         attach(&core, true);
         {
@@ -8447,10 +8615,15 @@ mod submit_input_tests {
             .unwrap();
         }
 
+        // The parent has a live provider; the worker does not.
         let error = submit_input(&core, "worker".into(), "do it differently".into()).unwrap_err();
         assert!(
-            error.to_string().contains("policy-controlled"),
-            "workers take direction from their orchestrator: {error}"
+            error.to_string().contains("not running"),
+            "a parent's adapter must not stand in for its child's: {error}"
+        );
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("worker"),
+            "and the refusal must not quietly launch one"
         );
     }
 
@@ -8578,6 +8751,218 @@ mod submit_input_tests {
             session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
             0
         );
+    }
+
+    /* ── Steering a live worker ──────────────────────────────────────────── */
+
+    fn attach_to(core: &Arc<BridgeCore>, session_id: &str, steering: bool) -> Arc<Mutex<Vec<String>>> {
+        let (runtime, handles) = FakeRuntime::new(steering);
+        core.adapters
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned(), runtime);
+        handles.sent
+    }
+
+    /// A parent orchestrator with one worker child, in whatever durable state the
+    /// test needs. No adapters attached: each test decides who is live.
+    fn core_with_worker(session_status: &str, lifecycle: &str, result_status: &str) -> ChatFixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('parent','w','codex','Orchestrator','working','reported','orchestrator',0)", []).unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,started_at)
+                 VALUES('child','w','claude','Implementation · strong',?1,'reported','parent',1,'now')",
+                params![session_status],
+            )
+            .unwrap();
+            db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
+            store::upsert_worker_runtime(
+                &db,
+                &crate::model::WorkerRuntimeRecord {
+                    session_id: "child".into(),
+                    parent_session_id: "parent".into(),
+                    lifecycle_state: lifecycle.into(),
+                    task_family: "implementation".into(),
+                    compatibility_key: "key".into(),
+                    result_status: result_status.into(),
+                    retry_count: 0,
+                    warm_until: None,
+                    worktree_path: None,
+                    worktree_branch: None,
+                    last_result: None,
+                    last_activity_at: None,
+                    waiting_since: None,
+                    waiting_reason: None,
+                    progress_summary: None,
+                    updated_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .unwrap();
+        }
+        (fixture, Arc::new(core), managed_root)
+    }
+
+    fn parent_event_kinds(core: &Arc<BridgeCore>) -> Vec<String> {
+        core.db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM session_entries WHERE session_id='parent' ORDER BY sequence")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    }
+
+    /// The whole point of the change: a user who can see a worker going the wrong
+    /// way can now say so, and the orchestrator is told rather than left to fight
+    /// the new direction.
+    #[test]
+    fn a_user_steer_reaches_a_live_worker_and_tells_the_parent() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        let outcome = submit_input(&core, "child".into(), "use the existing store".into()).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        let delivered = worker_sent.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1);
+        assert!(
+            delivered[0].contains("use the existing store"),
+            "the user's own words have to survive the wrapper: {}",
+            delivered[0]
+        );
+        assert!(
+            delivered[0].contains("bridge-worker-result"),
+            "a steer must restate the envelope contract, not replace it"
+        );
+
+        let notice = parent_sent.lock().unwrap().clone();
+        assert_eq!(notice.len(), 1, "the orchestrator is told exactly once");
+        let parsed: serde_json::Value = serde_json::from_str(&notice[0]).unwrap();
+        assert_eq!(parsed["type"], "bridge-worker-steered-by-user");
+        assert_eq!(parsed["childSessionId"], "child");
+        assert_eq!(parsed["landed"], "now");
+        assert!(parsed["fleet"].is_array());
+
+        assert!(parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+        let db = core.db.lock().unwrap();
+        let ledger: Vec<String> = db
+            .prepare("SELECT kind FROM events WHERE kind LIKE 'session.input.%' OR kind LIKE 'delegation.steer.%' ORDER BY id")
+            .and_then(|mut statement| {
+                statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap();
+        assert!(ledger.contains(&"session.input.steered".to_owned()));
+        assert!(ledger.contains(&"delegation.steer.user_notified".to_owned()));
+    }
+
+    /// A provider that cannot take input mid-turn queues it, exactly as a chat
+    /// would — and the parent is still told, with the boundary named.
+    #[test]
+    fn a_worker_on_a_non_steering_provider_queues_the_guidance() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        attach_to(&core, "child", false);
+        let parent_sent = attach_to(&core, "parent", true);
+
+        let outcome = submit_input(&core, "child".into(), "skip the migration".into()).unwrap();
+
+        assert_eq!(
+            outcome.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary
+        );
+        assert!(outcome.queued_input_id.is_some());
+        let queued = session_input::next_queued(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap();
+        assert!(
+            queued.provider_text.contains("bridge-worker-result"),
+            "the contract reminder has to be queued with the words, not added later"
+        );
+        assert_eq!(
+            queued.display_text, "skip the migration",
+            "the transcript shows what the person typed, not Bridge's wrapper"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&parent_sent.lock().unwrap()[0]).unwrap();
+        assert_eq!(parsed["landed"], "next_turn_boundary");
+    }
+
+    #[test]
+    fn a_reported_worker_still_refuses_input() {
+        let (_fixture, core, _managed_root) = core_with_worker("ready", "completed", "reported");
+        let worker_sent = attach_to(&core, "child", true);
+
+        let error = submit_input(&core, "child".into(), "one more thing".into()).unwrap_err();
+
+        assert!(
+            error.to_string().contains("already reported"),
+            "the refusal has to say why: {error}"
+        );
+        assert!(worker_sent.lock().unwrap().is_empty());
+        assert!(!parent_event_kinds(&core).contains(&"delegation.steered".to_owned()));
+    }
+
+    /// A worker with no process is not resumed by a message. The pool launches
+    /// workers; typing at one must not become a back door into that decision.
+    #[test]
+    fn a_worker_with_no_live_provider_is_not_launched_by_a_message() {
+        let (_fixture, core, _managed_root) = core_with_worker("ready", "warm", "pending");
+
+        let error = submit_input(&core, "child".into(), "keep going".into()).unwrap_err();
+
+        assert!(error.to_string().contains("not running"), "{error}");
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("child"),
+            "no adapter was started behind the refusal"
+        );
+    }
+
+    #[test]
+    fn a_checkpointing_worker_refuses_until_the_checkpoint_finishes() {
+        let (_fixture, core, _managed_root) =
+            core_with_worker("checkpointing", "checkpointing", "pending");
+        let worker_sent = attach_to(&core, "child", true);
+
+        let error = submit_input(&core, "child".into(), "stop that".into()).unwrap_err();
+
+        assert!(error.to_string().contains("checkpointing"), "{error}");
+        assert!(worker_sent.lock().unwrap().is_empty());
+    }
+
+    /// Steering is supervision, never a substitute for the typed result. The
+    /// completion gate reads these two columns, so this is the assertion that
+    /// keeps a human sentence from being mistaken for a worker's report.
+    #[test]
+    fn steering_a_worker_leaves_the_result_contract_alone() {
+        let (_fixture, core, _managed_root) = core_with_worker("working", "working", "pending");
+        attach_to(&core, "child", true);
+        attach_to(&core, "parent", true);
+
+        submit_input(&core, "child".into(), "narrow the scope".into()).unwrap();
+
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.result_status, "pending");
+        assert!(runtime.last_result.is_none());
     }
 }
 
