@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -133,6 +134,8 @@ export function App() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
+  const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -348,6 +351,23 @@ export function App() {
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
+  // $harness shortcut: a bare `$token` at the start of the composer with
+  // nothing typed after it yet offers the available harnesses to complete to.
+  const harnessShortcutQueryValue = harnessShortcutQuery(composer);
+  const harnessShortcutMatches = useMemo(() => {
+    if (harnessShortcutQueryValue == null) return [];
+    const query = harnessShortcutQueryValue.toLowerCase();
+    return adapters
+      .filter(adapter => adapter.available && adapter.id.toLowerCase().includes(query))
+      .sort((a, b) => {
+        const aPrefix = Number(a.id.toLowerCase().startsWith(query));
+        const bPrefix = Number(b.id.toLowerCase().startsWith(query));
+        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
+        return a.id.localeCompare(b.id);
+      });
+  }, [harnessShortcutQueryValue, adapters]);
+  const harnessShortcutOpen = harnessShortcutQueryValue != null && harnessShortcutMatches.length > 0 && !harnessShortcutDismissed;
+  const harnessShortcutListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const query = composer.trim();
@@ -406,6 +426,19 @@ export function App() {
     const active = root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`);
     active?.scrollIntoView({ block: "nearest" });
   }, [slashOpen, slashIndex]);
+
+  useEffect(() => {
+    if (!harnessShortcutOpen) return;
+    setHarnessShortcutIndex(index => Math.min(index, Math.max(0, harnessShortcutMatches.length - 1)));
+  }, [harnessShortcutOpen, harnessShortcutMatches.length]);
+
+  useEffect(() => {
+    if (!harnessShortcutOpen) return;
+    const root = harnessShortcutListRef.current;
+    if (!root) return;
+    const active = root.querySelector<HTMLElement>(`[data-harness-shortcut-index="${harnessShortcutIndex}"]`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [harnessShortcutOpen, harnessShortcutIndex]);
 
   // Load the connected workspace's file list for @mention autocomplete.
   useEffect(() => {
@@ -668,16 +701,18 @@ export function App() {
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
-  async function openNewChat(initialMessage?: string) {
+  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor) {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
     setView("workspace");
     const currentAdapter = session?.kind === "direct"
       ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
       : undefined;
     const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
-    const model = currentAdapter
+    const model = harnessOverride
+      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
+      : currentAdapter
       ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
       : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
     const draft = initialMessage?.trim() ?? "";
@@ -693,6 +728,30 @@ export function App() {
       setError(errorMessage(e));
     }
     finally { setBusy(false); }
+  }
+
+  // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
+  // session is open and starts a fresh direct chat pinned to that harness,
+  // handing it the rest of the text as its first message. Returns whether
+  // the text was a shortcut at all, so the caller knows whether to fall back
+  // to its own normal send path.
+  async function openHarnessShortcut(text: string): Promise<boolean> {
+    const shortcut = parseHarnessShortcut(text);
+    if (!shortcut) return false;
+    const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
+    if (!adapter) return false;
+    if (!adapter.available) {
+      setError(`${adapter.label} isn't available${adapter.unavailableReason ? ` — ${adapter.unavailableReason}` : ""}.`);
+      return true;
+    }
+    await openNewChat(shortcut.rest, adapter);
+    return true;
+  }
+  // Entry point for the Welcome screen's own composer, which has no session
+  // to skip past — a `$harness` prefix there is the only branch either way.
+  async function startChatOrShortcut(text?: string) {
+    if (text && await openHarnessShortcut(text)) return;
+    await openNewChat(text);
   }
 
   // The new-chat dialog asks the two questions once; this routes its answer.
@@ -773,10 +832,13 @@ export function App() {
   }
   // Send a message. The agent starts lazily on the first message, like a normal
   // chat app — there is no explicit "start" step. Slash commands belonging to
-  // another provider auto-switch the direct-chat harness first.
+  // another provider auto-switch the direct-chat harness first. A `$harness`
+  // prefix skips this session entirely — see `openHarnessShortcut`.
   async function sendPrompt(forcedText?: string) {
     const submittedText = (forcedText ?? composer).trim();
-    if (!session || !submittedText) return;
+    if (!submittedText) return;
+    if (await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+    if (!session) return;
     const key = crypto.randomUUID();
     let target = session;
     let retryText = submittedText;
@@ -901,6 +963,13 @@ export function App() {
     setMentionIndex(0);
     setMentionDismissed(true);
   }
+  // Complete the `$token` being typed to `$id `, ready for the message that
+  // follows — picking one doesn't send anything by itself.
+  function applyHarnessShortcut(adapter: import("./types").AdapterDescriptor) {
+    setComposer(`$${adapter.id} `);
+    setHarnessShortcutIndex(0);
+    setHarnessShortcutDismissed(true);
+  }
   function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return;
     if (mentionOpen) {
@@ -908,6 +977,12 @@ export function App() {
       if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
       if (e.key === "Escape") { e.preventDefault(); setMentionDismissed(true); return; }
       if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyFileMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
+    }
+    if (harnessShortcutOpen) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setHarnessShortcutIndex(index => Math.min(index + 1, harnessShortcutMatches.length - 1)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setHarnessShortcutIndex(index => Math.max(index - 1, 0)); return; }
+      if (e.key === "Escape") { e.preventDefault(); setHarnessShortcutDismissed(true); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyHarnessShortcut(harnessShortcutMatches[Math.min(harnessShortcutIndex, harnessShortcutMatches.length - 1)]); return; }
     }
     if (slashOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
@@ -1119,7 +1194,7 @@ export function App() {
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
                 </div> : <div className="relative mx-auto max-w-2xl">
-                  {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                  {!slashOpen && !mentionOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Reference a file</span>
@@ -1145,10 +1220,22 @@ export function App() {
                       </button>)}
                     </div>
                   </div>}
+                  {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                      <span>Talk to a harness directly</span>
+                      <span className="normal-case tracking-normal text-muted-foreground/50">{harnessShortcutMatches.length}</span>
+                    </div>
+                    <div ref={harnessShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
+                      {harnessShortcutMatches.map((adapter, index) => <button key={adapter.id} type="button" data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === harnessShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                        <span className="font-mono text-[12px] text-foreground whitespace-nowrap">${adapter.id}</span>
+                        <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">Starts a new {adapter.label} chat with what follows</span>
+                      </button>)}
+                    </div>
+                  </div>}
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); }}
+                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     autocomplete={mentionOpen ? {
@@ -1185,7 +1272,7 @@ export function App() {
         modelSetup={modelSetup}
         canStartChat={adaptersReady}
         busy={busy}
-        onStartChat={text => void openNewChat(text)}
+        onStartChat={text => void startChatOrShortcut(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
     </main>
