@@ -1760,6 +1760,18 @@ pub fn set_default_agent(
     agent_config::set_default(&core.db.lock().unwrap(), id)
 }
 
+/// Persist the permission policy and hand back the whole config snapshot, the
+/// same shape every other config mutation returns.
+pub fn save_permission_policy(
+    core: &Arc<BridgeCore>,
+    policy: agent_config::PermissionPolicy,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let next = agent_config::save_permission_policy(&core.db.lock().unwrap(), policy)?;
+    // The badge in the app chrome renders from state, so a flip has to push.
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(next)
+}
+
 pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_all(&core.db.lock().unwrap())?;
     let directory = opencode_directory(None)?;

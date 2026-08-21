@@ -222,6 +222,7 @@ typed_methods![
     (SaveAgentConfig, SaveAgentConfigParams, ConfigState),
     (DeleteAgentConfig, DeleteAgentConfigParams, ConfigState),
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
+    (SavePermissionPolicy, SavePermissionPolicyParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
     // adaptive learning
     (GetLearningState, GetLearningStateParams, _),

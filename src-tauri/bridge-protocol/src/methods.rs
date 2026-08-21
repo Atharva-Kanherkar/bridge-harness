@@ -122,6 +122,7 @@ methods![
     (DeleteAgentConfig, "config", "delete_agent_config"),
     (SetDefaultAgent, "config", "set_default_agent"),
     (ResetAllConfig, "config", "reset_all_config"),
+    (SavePermissionPolicy, "config", "save_permission_policy"),
     // adaptive learning
     (GetLearningState, "learning", "get_learning_state"),
     (RunLearning, "learning", "run_learning"),

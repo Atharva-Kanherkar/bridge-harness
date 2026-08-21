@@ -120,6 +120,26 @@ pub struct SetDefaultAgentParams {
     pub id: String,
 }
 
+/// How much Bridge asks before an agent acts. Mirrors
+/// `bridge_core::agent_config::PermissionPolicy`.
+///
+/// `default` on the container, not just the fields: a policy payload written by
+/// an older build must still read once slice 3 adds the graduated modes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PermissionPolicy {
+    /// Auto-accept every provider approval, for every agent. Worker write scope
+    /// and browser outward effects are unaffected — those are authorization.
+    pub bypass_all: bool,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavePermissionPolicyParams {
+    pub policy: PermissionPolicy,
+}
+
 /// The configuration snapshot every config mutation returns. Mirrors
 /// `bridge_core::agent_config::ConfigState`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -128,6 +148,7 @@ pub struct ConfigState {
     pub harnesses: Vec<HarnessConfig>,
     pub agents: Vec<AgentDefinition>,
     pub default_agent_id: String,
+    pub permission_policy: PermissionPolicy,
 }
 
 #[cfg(test)]
