@@ -233,6 +233,13 @@
       "resultSchema": "memory-capabilities.json"
     },
     {
+      "command": "supersede_memory_record",
+      "domain": "memory",
+      "method": "memory/supersede_memory_record",
+      "paramsSchema": "supersede-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
       "command": "approve_memory_record",
       "domain": "memory",
       "method": "memory/approve_memory_record",

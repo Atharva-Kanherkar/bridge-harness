@@ -162,6 +162,15 @@ pub fn dispatch(
             reply(api::delete_memory_record(core, &p.record_id))
         }
         MethodName::GetMemoryCapabilities => reply(api::get_memory_capabilities(core)),
+        MethodName::SupersedeMemoryRecord => {
+            let p: wire::SupersedeMemoryRecordParams = decode(method, params)?;
+            reply(api::supersede_memory_record(
+                core,
+                &p.record_id,
+                &p.body,
+                p.kind.as_deref(),
+            ))
+        }
         MethodName::ApproveMemoryRecord => {
             let p: wire::ApproveMemoryRecordParams = decode(method, params)?;
             reply(api::approve_memory_record(core, &p.record_id))
