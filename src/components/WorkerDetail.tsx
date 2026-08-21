@@ -253,17 +253,20 @@ export function WorkerDetail({
 /// its orchestrator gave it, and what you type amends that objective rather than
 /// starting a conversation. Hidden once the worker has reported, because at that
 /// point the result is final and offering the box would be a lie.
-export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer this worker…" }: {
+export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer this worker…", className = "shrink-0 border-t border-border px-4 py-3 sm:px-6" }: {
   sessionId: string;
   steerable: boolean;
   onSteer: (sessionId: string, text: string) => Promise<void>;
   label?: string;
+  /** Container chrome. The overlay wants a full-width divider; the docked
+   *  composer in a session pane is already inside its own gutter. */
+  className?: string;
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
   if (!steerable) {
-    return <div className="shrink-0 border-t border-border px-4 py-3 text-[11px] text-muted-foreground sm:px-6" role="status">
+    return <div className={cn(className, "text-[11px] text-muted-foreground")} role="status">
       This worker has finished. Its typed result is final — ask the orchestrator to delegate a follow-up.
     </div>;
   }
@@ -276,10 +279,7 @@ export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer th
       .catch((cause: unknown) => setFailure(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setBusy(false));
   };
-  return <form
-    className="shrink-0 border-t border-border px-4 py-3 sm:px-6"
-    onSubmit={requested => { requested.preventDefault(); send(); }}
-  >
+  return <form className={className} onSubmit={requested => { requested.preventDefault(); send(); }}>
     <div className="flex items-end gap-2">
       <textarea
         value={draft}

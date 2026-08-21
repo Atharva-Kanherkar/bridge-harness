@@ -592,6 +592,10 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
 }
 
 function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRetryWorker }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
+  // Every hook before the first early return: an item's facet changes under it
+  // (a spawn becomes a result when the envelope lands), so the hook count must
+  // not depend on which branch renders.
+  const [open, setOpen] = useState(false);
   const facet = delegationFacet(item);
   const childSessionId = delegationChildSessionId(item);
   // The row the user watches while a worker runs. Everything needed to draw it
@@ -644,7 +648,6 @@ function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRe
   const isResult = facet === "result";
   const model = String(item.data.modelLabel ?? item.data.model ?? "");
   const effort = item.data.effort ? String(item.data.effort) : "";
-  const [open, setOpen] = useState(false);
   // Bridge no longer spends a hidden turn retrying a cause it cannot show has
   // changed, so a terminal failure has to arrive with its real reason and the
   // action the user would otherwise have had no way to take.
