@@ -983,7 +983,10 @@ export function App() {
                       {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                         <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
                         <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{harnessLabel(command.harness)}</span>
+                        {/* Keyed off the catalog's harness field, never a provider-name
+                            comparison: an unrecognised future harness badges as
+                            provider-owned, not as local. */}
+                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{command.harness === "bridge" ? "this Mac" : harnessLabel(command.harness)}</span>
                       </button>)}
                     </div>
                   </div>}
