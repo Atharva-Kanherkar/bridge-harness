@@ -968,6 +968,38 @@ async fn delete_memory_record(
 }
 
 #[tauri::command]
+async fn get_memory_injection(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory injection", move || api::get_memory_injection(&core)).await
+}
+
+#[tauri::command]
+async fn set_memory_injection(
+    enabled: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory injection", move || {
+        api::set_memory_injection(&core, enabled)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_packet_audit(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryPacketAudit, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get packet audit", move || {
+        api::get_packet_audit(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn get_memory_capabilities(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryCapabilities, BridgeError> {
@@ -1448,6 +1480,9 @@ pub fn run() {
             reject_memory_record,
             get_extraction_settings,
             update_extraction_settings,
+            get_memory_injection,
+            set_memory_injection,
+            get_packet_audit,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

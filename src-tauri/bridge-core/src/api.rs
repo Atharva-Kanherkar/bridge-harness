@@ -511,6 +511,60 @@ pub fn update_extraction_settings(
     extraction_settings_wire(&db, settings)
 }
 
+pub fn get_memory_injection(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryInjectionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    Ok(wire::MemoryInjectionSettings {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+        enabled: crate::memory_packet::injection_enabled(&db, memory_ledger::account_memory_scope())?,
+    })
+}
+
+pub fn set_memory_injection(
+    core: &Arc<BridgeCore>,
+    enabled: bool,
+) -> Result<wire::MemoryInjectionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let enabled =
+        crate::memory_packet::set_injection(&db, memory_ledger::account_memory_scope(), enabled)?;
+    Ok(wire::MemoryInjectionSettings {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+        enabled,
+    })
+}
+
+pub fn get_packet_audit(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<wire::MemoryPacketAudit, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let audit = crate::memory_packet::latest_audit(&db, session_id)?;
+    Ok(match audit {
+        None => wire::MemoryPacketAudit {
+            session_id: session_id.to_string(),
+            selected: Vec::new(),
+            token_estimate: 0,
+            created_at: None,
+        },
+        Some(audit) => wire::MemoryPacketAudit {
+            session_id: session_id.to_string(),
+            selected: audit
+                .selected
+                .into_iter()
+                .map(|item| wire::MemoryPacketItem {
+                    record_id: item.record_id,
+                    body: item.body,
+                    kind: item.kind,
+                    reason: item.reason,
+                })
+                .collect(),
+            token_estimate: audit.token_estimate,
+            created_at: Some(audit.created_at),
+        },
+    })
+}
+
 /// What memory exists here, so the UI can be honest about what it does not
 /// own. The provider half is derived from the slash catalog: an unavailable
 /// adapter contributes nothing, and no harness name is compared in this body.

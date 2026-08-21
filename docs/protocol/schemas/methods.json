@@ -268,6 +268,27 @@
       "resultSchema": "memory-extraction-settings.json"
     },
     {
+      "command": "get_memory_injection",
+      "domain": "memory",
+      "method": "memory/get_memory_injection",
+      "paramsSchema": null,
+      "resultSchema": "memory-injection-settings.json"
+    },
+    {
+      "command": "set_memory_injection",
+      "domain": "memory",
+      "method": "memory/set_memory_injection",
+      "paramsSchema": "set-memory-injection-params.json",
+      "resultSchema": "memory-injection-settings.json"
+    },
+    {
+      "command": "get_packet_audit",
+      "domain": "memory",
+      "method": "memory/get_packet_audit",
+      "paramsSchema": "get-packet-audit-params.json",
+      "resultSchema": "memory-packet-audit.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",
