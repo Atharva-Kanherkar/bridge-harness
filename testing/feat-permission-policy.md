@@ -97,6 +97,65 @@ follow-up.
 - The toggle is optimistic-free: it saves through `save_permission_policy` and
   renders from the returned `ConfigState`, so what is shown is what is stored.
 
+## Amended after review (2026-08-21)
+
+Review of `71e09e7` found eight findings, all verified as real. Three change the
+contract above; the rest are fixes to code the contract already required.
+
+1. **Bypass is restricted to approvals, not to every control request.**
+   `normalize_codex_request` folds three Codex methods into `approval.requested`,
+   and two of them — `item/tool/requestUserInput` and
+   `mcpServer/elicitation/request` — are *questions*, not approvals.
+   `CodexRuntime::respond` always writes `{"result":{"decision":…}}`, so
+   auto-answering an elicitation sends a malformed result and wedges the turn.
+   Bypass now grants only when `requestMethod` is absent (Claude, OpenCode — both
+   of which raise only real permission requests) or ends with `requestApproval`.
+   *The human path has the same result-shape problem and it is pre-existing;* this
+   slice does not fix it, but it must not turn an occasional user-triggered
+   breakage into a systematic silent one.
+2. **The policy write is transactional with its response.** `save_permission_policy`
+   committed the upsert and then built `ConfigState`; a failure in the second half
+   reported failure to the UI while `bypassAll=true` was already durable and
+   active. For a security control that asymmetry runs the wrong way. Now one
+   transaction, following `reset_all`'s existing pattern.
+3. **An auto-resolved worker approval must not also mirror a blocked card.** My own
+   cumulative review claimed the dispatch ordering prevented this. It did not:
+   ordering the grant before the mirror was necessary but not sufficient, because
+   `pending_child_approval` was still set unconditionally. The parent was told to
+   stop waiting on a worker that had already resumed. Suppressed at the source.
+4. **The protocol version bumps 1.2 → 1.3.** `handshake.rs` states the policy —
+   additive changes take a minor bump — and a new client handshaking against an
+   old daemon otherwise succeeds and then receives `method_not_found` for the new
+   method. This is exactly the failure recorded in my own notes on stale daemons.
+5. **`resolve_approval` refuses an already-resolved request.** Publishing the
+   request before granting leaves a window in which a human click and the policy
+   both answer the same request id. The guard closes the new race and the
+   pre-existing multi-client one.
+6. `reset_all_config` publishes `StateChanged` (it deletes the policy row, so the
+   badge must clear), and the browser-mode mock resets `permissionPolicy`.
+7. The `approval.auto_allowed` row is written **before** the final
+   `StateChanged`, so the audit list cannot miss the newest grant.
+8. The badge routes to the Permissions section, not to whichever section Settings
+   happens to open on.
+
+### Test contract corrections
+
+The review is right that the checked-in contract overstated coverage. Three items
+listed under Unit Tests were never written, and one was hollow:
+
+- `a_worker_approval_auto_accepted_leaves_the_worker_running_not_waiting` — listed,
+  absent. Now written, and it is the regression test for finding 3.
+- `auto_approval_never_answers_an_unpersisted_approval` — listed, absent. Now
+  written.
+- `bypass_does_not_touch_the_browser_gate` — present but hollow: it asserted an
+  absence without ever raising a browser approval, so it proved nothing. Replaced
+  with a test that drives a real browser approval and asserts the policy leaves it
+  pending.
+
+Same class of error as the write-scope test I caught myself, and it should have
+been caught by the same suspicion. Every new assertion below was checked by
+breaking the code it guards.
+
 ## Unit Tests
 
 ### Rust — `bridge-core`
