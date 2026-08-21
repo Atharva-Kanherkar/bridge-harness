@@ -26,6 +26,7 @@ import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
+import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
@@ -119,6 +120,8 @@ export function App() {
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
+  const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
+  const [memoryDisclosureOpen, setMemoryDisclosureOpen] = useState(false);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
@@ -718,6 +721,26 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  // The "Memory used" chip is audit-backed: what this session's prompt actually
+  // received, re-read on every memory change.
+  useEffect(() => {
+    setPacketAudit(null);
+    setMemoryDisclosureOpen(false);
+    const id = session?.id;
+    if (!id) return;
+    let active = true;
+    let off: (() => void) | undefined;
+    const load = () => {
+      bridgeApi.getPacketAudit(id).then(audit => { if (active) setPacketAudit(audit); }).catch(() => {});
+    };
+    load();
+    void bridgeApi.onMemoryChanged(() => load()).then(fn => {
+      if (!active) { fn(); return; }
+      off = fn;
+    }).catch(() => {});
+    return () => { active = false; off?.(); };
+  }, [session?.id]);
+
   // "Remember this" on an assistant message. Over the cap the dialog opens with
   // the full text for the user to trim — never a clip, never a truncated save.
   const rememberMessage = useCallback(async (text: string) => {
@@ -947,6 +970,7 @@ export function App() {
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
+                <MemoryUsedChip audit={packetAudit} open={memoryDisclosureOpen} onToggle={() => setMemoryDisclosureOpen(current => !current)} />
                 {queuedFollowUpCount > 0 && !isWorkerView && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
