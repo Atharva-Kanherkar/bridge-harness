@@ -280,12 +280,13 @@ pub(crate) fn load_evidence(
         })
         .max();
     if let Some(anchor) = anchor {
+        let window_days = crate::learning_router::tunables(db, workspace_id).evidence_window_days;
         evidence.retain(|row| match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
             Err(_) => true,
             Ok(recorded) => {
                 let age_days =
                     (anchor - recorded.with_timezone(&chrono::Utc)).num_seconds() / 86_400;
-                age_days <= crate::learning_router::EVIDENCE_WINDOW_DAYS
+                age_days <= window_days
             }
         });
     }

@@ -24,6 +24,87 @@ pub const ROUTER_SCHEMA_VERSION: u32 = 2;
 pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
 pub const LEGACY_GLOBAL_SCOPE: &str = "legacy:global";
 const PRIOR_WEIGHT: i64 = 4;
+
+/// The load-bearing learning constants, named in one place with their
+/// defaults, and readable per workspace from a `learning_tunables` row. A
+/// field outside its documented range falls back to the default — nonsense
+/// is never load-bearing. The confidence floor is deliberately absent: it is
+/// keyed to the named unknown-acceptance bucket, not a number to tune.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LearningTunables {
+    /// Completed shadow outcomes required before autonomous routing. 1..=1000.
+    pub min_shadow_outcomes_for_autonomy: i64,
+    /// Bayesian prior weight in predictions. 0..=100.
+    pub prior_weight: i64,
+    /// Exponential decay half-life for outcome history, in days. 1..=365.
+    pub decay_half_life_days: f64,
+    /// Rows older than this before the newest evidence are not evidence. 7..=730.
+    pub evidence_window_days: i64,
+    /// Canary traffic share, in buckets of 100. 1..=50.
+    pub canary_share_buckets: i64,
+}
+
+impl Default for LearningTunables {
+    fn default() -> Self {
+        Self {
+            min_shadow_outcomes_for_autonomy: MIN_SHADOW_OUTCOMES_FOR_AUTONOMY,
+            prior_weight: PRIOR_WEIGHT,
+            decay_half_life_days: DECAY_HALF_LIFE_DAYS,
+            evidence_window_days: EVIDENCE_WINDOW_DAYS,
+            canary_share_buckets: 20,
+        }
+    }
+}
+
+pub fn tunables(db: &Connection, workspace_id: &str) -> LearningTunables {
+    let defaults = LearningTunables::default();
+    let body: Option<String> = db
+        .query_row(
+            "SELECT body FROM learning_tunables WHERE workspace_id=?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some(body) = body else { return defaults };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return defaults;
+    };
+    fn in_range_i64(value: Option<&serde_json::Value>, low: i64, high: i64, fallback: i64) -> i64 {
+        value
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| (low..=high).contains(value))
+            .unwrap_or(fallback)
+    }
+    let half_life = parsed
+        .get("decayHalfLifeDays")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| (1.0..=365.0).contains(value))
+        .unwrap_or(defaults.decay_half_life_days);
+    LearningTunables {
+        min_shadow_outcomes_for_autonomy: in_range_i64(
+            parsed.get("minShadowOutcomesForAutonomy"),
+            1,
+            1_000,
+            defaults.min_shadow_outcomes_for_autonomy,
+        ),
+        prior_weight: in_range_i64(parsed.get("priorWeight"), 0, 100, defaults.prior_weight),
+        decay_half_life_days: half_life,
+        evidence_window_days: in_range_i64(
+            parsed.get("evidenceWindowDays"),
+            7,
+            730,
+            defaults.evidence_window_days,
+        ),
+        canary_share_buckets: in_range_i64(
+            parsed.get("canaryShareBuckets"),
+            1,
+            50,
+            defaults.canary_share_buckets,
+        ),
+    }
+}
 /// Decay is anchored to the newest outcome, not the wall clock: an idle
 /// workspace keeps its history, while inside an active one fresh evidence
 /// outweighs stale volume. Providers change models in place; a candidate that
@@ -38,7 +119,12 @@ pub const CONFIDENCE_NO_SIGNAL_BPS: i64 = 4_000;
 pub const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 pub const EVIDENCE_WINDOW_DAYS: i64 = 120;
 
-pub(crate) fn decay_weight(recorded_at: &str, anchor: chrono::DateTime<chrono::Utc>) -> Option<f64> {
+pub(crate) fn decay_weight(
+    recorded_at: &str,
+    anchor: chrono::DateTime<chrono::Utc>,
+    half_life_days: f64,
+    window_days: i64,
+) -> Option<f64> {
     let recorded = chrono::DateTime::parse_from_rfc3339(recorded_at)
         .ok()?
         .with_timezone(&chrono::Utc);
@@ -46,10 +132,10 @@ pub(crate) fn decay_weight(recorded_at: &str, anchor: chrono::DateTime<chrono::U
     if age_days <= 0.0 {
         return Some(1.0);
     }
-    if age_days > EVIDENCE_WINDOW_DAYS as f64 {
+    if age_days > window_days as f64 {
         return None;
     }
-    Some(0.5_f64.powf(age_days / DECAY_HALF_LIFE_DAYS))
+    Some(0.5_f64.powf(age_days / half_life_days))
 }
 /// Sessions that can still report *current* quota/context. Ended, ready, and
 /// idle rows are stale snapshots: missing capacity is unknown, which stays
@@ -333,7 +419,11 @@ fn active_policy(
     else {
         return Ok((0, BTreeMap::new()));
     };
-    if status == "canary" && canary_bucket(fingerprint) >= 20 {
+    let canary_share = match workspace_id_from_scope(scope.as_str()) {
+        Ok(workspace_id) => tunables(db, workspace_id).canary_share_buckets as u8,
+        Err(_) => 20,
+    };
+    if status == "canary" && canary_bucket(fingerprint) >= canary_share {
         if let Some(predecessor) = predecessor {
             (version, weights) = db.query_row(
                 "SELECT version,weights FROM routing_policies WHERE version=?1 AND learning_scope=?2",
@@ -376,6 +466,7 @@ pub struct EvaluationInput {
     pub remaining_capability_units: i64,
     pub budget_preference: Option<String>,
     pub latency_preference: Option<String>,
+    pub prior_weight: i64,
 }
 
 fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
@@ -386,16 +477,20 @@ fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
     }
 }
 
-fn predict(candidate: &RouteCandidate, history: &HistoricalOutcome) -> CandidatePrediction {
+fn predict(
+    candidate: &RouteCandidate,
+    history: &HistoricalOutcome,
+    prior_weight: i64,
+) -> CandidatePrediction {
     let (prior_pass, prior_latency) = tier_prior(candidate.tier);
-    let denominator = PRIOR_WEIGHT + history.samples;
+    let denominator = prior_weight + history.samples;
     let pass_probability_bps =
-        ((i64::from(prior_pass) * PRIOR_WEIGHT + history.successes * 10_000) / denominator) as u16;
-    let latency_ms = (prior_latency * PRIOR_WEIGHT + history.runtime_ms_total) / denominator;
+        ((i64::from(prior_pass) * prior_weight + history.successes * 10_000) / denominator) as u16;
+    let latency_ms = (prior_latency * prior_weight + history.runtime_ms_total) / denominator;
     let prior_cost = candidate.capability_units * 1_000;
     let normalized_quota_cost =
-        (prior_cost * PRIOR_WEIGHT + history.normalized_cost_total) / denominator;
-    let retry_risk_bps = (((10_000 - i64::from(prior_pass)) * PRIOR_WEIGHT
+        (prior_cost * prior_weight + history.normalized_cost_total) / denominator;
+    let retry_risk_bps = (((10_000 - i64::from(prior_pass)) * prior_weight
         + history.retries * 10_000)
         / denominator) as u16;
     CandidatePrediction {
@@ -493,6 +588,7 @@ pub fn evaluate(input: EvaluationInput) -> Vec<CandidateEvaluation> {
                     .histories
                     .get(&candidate.key())
                     .unwrap_or(&HistoricalOutcome::default()),
+                input.prior_weight,
             );
             if prediction.pass_probability_bps < input.preferences.minimum_pass_bps {
                 exclusions.insert(CandidateExclusion::BelowQualityFloor);
@@ -672,6 +768,7 @@ pub fn route(
     let availability = harness_capacity(db, &workspace_id)?;
     let candidates = build_candidates(descriptors, &profiled_request, &availability);
     let histories = load_histories(db, &workspace_id, policy::role_name(request.role))?;
+    let workspace_tunables = tunables(db, &workspace_id);
     let required_capabilities = vec!["tools".into(), "commands".into()];
     let mut evaluations = evaluate(EvaluationInput {
         candidates,
@@ -685,6 +782,7 @@ pub fn route(
         latency_preference: resolved_profile
             .as_ref()
             .and_then(|profile| profile.latency_preference.clone()),
+        prior_weight: workspace_tunables.prior_weight,
     });
     let implementer_family: Option<String> = if request.role == WorkerRole::Verification {
         db.query_row(
@@ -998,9 +1096,10 @@ fn ensure_autonomous_ready(db: &Connection, workspace_id: &str) -> Result<(), Br
         params![workspace_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if outcomes < MIN_SHADOW_OUTCOMES_FOR_AUTONOMY {
+    let required = tunables(db, workspace_id).min_shadow_outcomes_for_autonomy;
+    if outcomes < required {
         return Err(BridgeError::Invalid(format!(
-            "autonomous routing requires at least {MIN_SHADOW_OUTCOMES_FOR_AUTONOMY} completed shadow outcomes; found {outcomes}"
+            "autonomous routing requires at least {required} completed shadow outcomes; found {outcomes}"
         )));
     }
     if manual * 20 >= outcomes {
@@ -1337,13 +1436,19 @@ fn load_histories(
         retries: f64,
         human_interventions: f64,
     }
+    let workspace_tunables = tunables(db, workspace_id);
     let mut weighted = BTreeMap::<String, Weighted>::new();
     for row in rows {
         let weight = match anchor {
             None => 1.0,
             Some(anchor) => match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
                 Err(_) => 1.0,
-                Ok(_) => match decay_weight(&row.recorded_at, anchor) {
+                Ok(_) => match decay_weight(
+                    &row.recorded_at,
+                    anchor,
+                    workspace_tunables.decay_half_life_days,
+                    workspace_tunables.evidence_window_days,
+                ) {
                     Some(weight) => weight,
                     None => continue,
                 },
@@ -1536,6 +1641,7 @@ mod tests {
             remaining_capability_units: 24,
             budget_preference: None,
             latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
         })
     }
 
@@ -1634,6 +1740,7 @@ mod tests {
             remaining_capability_units: 24,
             budget_preference: Some("quality".into()),
             latency_preference: Some("patient".into()),
+            prior_weight: PRIOR_WEIGHT,
         });
         assert!(result.iter().all(CandidateEvaluation::eligible));
         assert_eq!(result[0].candidate.key(), "claude:standard");
@@ -1663,6 +1770,7 @@ mod tests {
             remaining_capability_units: 1,
             budget_preference: None,
             latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
         });
         assert_eq!(result[0].exclusions.len(), 12);
         assert!(!result[0].eligible());
@@ -1679,7 +1787,7 @@ mod tests {
             retries: 0,
             human_interventions: 0,
         };
-        let learned = predict(&route, &history);
+        let learned = predict(&route, &history, PRIOR_WEIGHT);
         assert!(learned.pass_probability_bps > 6_500);
         assert!(learned.pass_probability_bps < 10_000);
         assert!(learned.latency_ms < 10_000);
@@ -2169,6 +2277,7 @@ mod tests {
             remaining_capability_units: 24,
             budget_preference: None,
             latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
         });
         let claude = evaluated
             .iter()
@@ -2246,6 +2355,64 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("without a workspace"), "{error}");
+    }
+
+    #[test]
+    fn tunables_hold_their_defaults_and_clamp_nonsense() {
+        let db = routing_db();
+        assert_eq!(tunables(&db, "w"), LearningTunables::default(), "no row means defaults");
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', ?1, 'now')",
+            params![r#"{"minShadowOutcomesForAutonomy":5,"priorWeight":9000,"decayHalfLifeDays":7.0,"evidenceWindowDays":30,"canaryShareBuckets":95}"#],
+        )
+        .unwrap();
+        let tuned = tunables(&db, "w");
+        assert_eq!(tuned.min_shadow_outcomes_for_autonomy, 5, "in range applies");
+        assert_eq!(tuned.decay_half_life_days, 7.0);
+        assert_eq!(tuned.evidence_window_days, 30);
+        assert_eq!(
+            tuned.prior_weight,
+            LearningTunables::default().prior_weight,
+            "out of range falls back — nonsense is never load-bearing"
+        );
+        assert_eq!(tuned.canary_share_buckets, LearningTunables::default().canary_share_buckets);
+    }
+
+    #[test]
+    fn a_tuned_evidence_window_narrows_the_history() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', '{\"evidenceWindowDays\":30}', 'now')",
+            [],
+        )
+        .unwrap();
+        let insert = |suffix: &str, recorded_at: &str| {
+            let decision = format!("decision-window-{suffix}");
+            db.execute(
+                "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+                 VALUES(?1,'w','parent',?2,'trace','implementation','fp',1,'implementer','codex','codex-standard','medium','shadow',0,'codex:codex-standard','codex:codex-standard','codex:codex-standard','{}',?3)",
+                params![decision, format!("turn-window-{suffix}"), recorded_at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![format!("child-window-{suffix}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,'codex:codex-standard',1,'completed',100,1000,0,0,'success','accepted',?3)",
+                params![decision, format!("child-window-{suffix}"), recorded_at],
+            )
+            .unwrap();
+        };
+        insert("fresh", "2026-08-01T00:00:00Z");
+        insert("sixty", "2026-06-02T00:00:00Z");
+        let history = &load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"];
+        assert_eq!(history.samples, 1, "a 30-day window drops the 60-day row");
     }
 
     #[test]

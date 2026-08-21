@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 36;
+const LATEST_SCHEMA_VERSION: i64 = 37;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -261,6 +261,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             34 => migration_34_memory_packet(&transaction)?,
             35 => migration_35_family_only_preferences(&transaction)?,
             36 => migration_36_routing_catalogs(&transaction)?,
+            37 => migration_37_learning_tunables(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -940,6 +941,17 @@ fn migration_33_memory_extraction(transaction: &Transaction<'_>) -> Result<(), B
 
 fn migration_34_memory_packet(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_packet::install(transaction)
+}
+
+fn migration_37_learning_tunables(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS learning_tunables (
+            workspace_id TEXT PRIMARY KEY,
+            body TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
 }
 
 fn migration_36_routing_catalogs(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -3095,6 +3107,7 @@ mod tests {
             "memory_retrieval_audits",
             "memory_injection_settings",
             "routing_catalogs",
+            "learning_tunables",
         ] {
             assert!(
                 db.query_row(
