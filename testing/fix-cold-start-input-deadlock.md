@@ -42,15 +42,24 @@ session claiming `working` with no turn is the same inconsistency inverted.
   `liveStatuses`, so using it here would make the frontend re-start the session on
   every send.
 
-### 2. The drain does not spin against a dead provider
+### 2. The drain does not spin against a dead provider — *already fixed; guarded here*
 
-- `drain_queued_input` returns early — **without** claiming the row and without
-  writing a ledger event — when the session has no live adapter. Today it claims,
-  attempts delivery, fails, releases, and writes one
-  `session.input.delivery_failed` row, every 2 seconds, forever.
-  Measured on a real database: **2,254 rows in 42 minutes** across 3 sessions.
-- Nothing is lost by skipping: the row stays `queued` and the sweep delivers it
-  once the provider is back.
+**Corrected during implementation.** This section originally claimed the retry
+spin as a live second bug, on the strength of 2,254 `session.input.delivery_failed`
+rows measured in a 42-minute window (2026-08-21 06:07–06:49 UTC). That was a
+misattribution: `5be7f5ac` ("a send resumes a dead adapter, and a parked queue
+stops spinning", #252) landed at 06:37 UTC and already makes
+`drain_queued_input` return early — without claiming the row and without writing
+a ledger event — when the session has no live adapter. The rows I measured were
+the ledger of a *pre-fix build* that was still running; the app died at 06:49 and
+nothing has spun since.
+
+So there is nothing to fix here. What this contract keeps is a **regression
+guard**, because the behavior is easy to lose and expensive when lost:
+
+- With no live adapter, `drain_queued_input` is false, the row stays `queued`
+  (never `claiming`, never released), and no reason row is written.
+- Nothing is lost by skipping: the sweep delivers once the provider is back.
 
 ### 3. Input for a conversation that ended is retired, not left silently queued
 
@@ -58,6 +67,11 @@ session claiming `working` with no turn is the same inconsistency inverted.
   `completed`, `cancelled`) is retired as `abandoned` and surfaced in that
   session's transcript, reusing the existing `emit_local_assistant` copy path that
   already handles rows stranded mid-write across a restart.
+- Confirmed still missing: `discard_for_session` is called from exactly one place
+  (the `/clear` path, `live_turn.rs` ~7152, which resets a session to `idle`). A
+  session that merely *stops* — process exit, app death — leaves its queued rows
+  behind. Five such rows are sitting in a real database now, quiet since #252 but
+  never delivered and invisible.
 - Rationale, and the same one `session_input::discard_for_session` already states:
   the conversation the follow-up belonged to is gone. Delivering an hour-old
   message into a session the user has since restarted is a surprise, and leaving
