@@ -41,6 +41,19 @@ session claiming `working` with no turn is the same inconsistency inverted.
 - No status vocabulary is added. `Starting` exists in the enum but is absent from
   `liveStatuses`, so using it here would make the frontend re-start the session on
   every send.
+- **Amended after review (2026-08-21).** Every provider-boot path binds one
+  `STARTED_IDLE_STATUS` constant rather than writing a status literal. Review
+  [#4995024081](https://github.com/Atharva-Kanherkar/bridge-harness/pull/262#pullrequestreview-4995024081)
+  found that `start_session` — still exposed as `sessions/start_session` on both
+  the Tauri command and the daemon RPC — kept the pre-fix shape on both of its
+  branches, so any client calling it and then `submit_input` deadlocked
+  identically. The same review noted that seeding the post-fix state in tests
+  leaves the producing line unguarded. A constant fixes both: there is no literal
+  left to revert, and the four boot statements cannot drift apart.
+- `launch_worker` keeps `status='working'`, and that is correct:
+  `deliver_worker_objective` sends the objective as a real turn immediately after
+  launch. Checked, not assumed — a worker in a false `working` state would break
+  worker steering the same way.
 
 ### 2. The drain does not spin against a dead provider — *already fixed; guarded here*
 
@@ -104,6 +117,24 @@ investigation is §2's regression guard.
   released), and **no** `session.input.delivery_failed` row was written.
 - `a_queued_row_survives_a_provider_outage_and_lands_when_it_returns` — skipped
   while dead, delivered once an adapter is attached.
+- `the_status_a_started_session_carries_is_one_the_router_reads_as_idle` — pins
+  what `STARTED_IDLE_STATUS` must *mean*: not `working`, read as idle by
+  `turn_is_active`, and a first message that starts a turn.
+- `no_provider_boot_path_claims_a_turn_it_does_not_have` — reads the module and
+  fails on any single SQL statement that asserts `status='working'` while nulling
+  `active_turn_id`, which is the deadlock shape wherever it is written. There is no
+  fakeable seam around adapter launch to call `start_chat` from a test, so this
+  guards the producing lines instead of the state they produce. **Verified to
+  fail**: reintroducing the shape in `start_session` makes it red, restoring it
+  makes it green.
+
+### Acknowledged, not addressed
+
+The review also noted that route→deliver in `submit_input_internal` is not atomic,
+so two concurrent submits on a `ready` session can both start a turn. Pre-existing
+and true on `main` today for post-turn `ready` sessions; this fix widens the set of
+sessions taking that route. The reviewer requested no action here. Tracked
+separately rather than folded in.
 
 `session_input.rs`
 - existing suite must stay green unchanged: the queue's exactly-once, ordering,
