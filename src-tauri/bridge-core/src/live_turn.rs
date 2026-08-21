@@ -978,7 +978,7 @@ pub fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET harness=?2,status='working',started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
+            "UPDATE sessions SET harness=?2,status=?9,started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
                 adapter_id,
@@ -987,12 +987,13 @@ pub fn start_session(
                 chosen_model,
                 selection.tier.as_str(),
                 chosen_effort_name,
-                session_label
+                session_label,
+                STARTED_IDLE_STATUS
             ],
         )?;
     } else {
         db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,0,?10)",
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,?11,?5,'reported',?6,?7,?8,?9,0,?10)",
             params![
                 session_id,
                 workspace_id,
@@ -1003,7 +1004,8 @@ pub fn start_session(
                 chosen_model,
                 selection.tier.as_str(),
                 chosen_effort_name,
-                Uuid::new_v4().simple().to_string()
+                Uuid::new_v4().simple().to_string(),
+                STARTED_IDLE_STATUS
             ],
         )?;
     }
@@ -1347,15 +1349,23 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let started_at = Utc::now().to_rfc3339();
     {
         let db = state.db.lock().unwrap();
+        // `ready`, not `working`: the provider is up and nothing is running yet.
+        // Claiming `working` here was a lie about a turn that did not exist, and
+        // `turn_is_active` reads that as a turn in flight — so on any provider
+        // that cannot take input mid-turn, the session's very first message was
+        // queued for a phase boundary no turn would ever produce. Bridge already
+        // encodes this invariant from the other side: boot reconciliation clears
+        // `active_turn_id` for a `ready` session precisely because a ready
+        // session has no turn.
         if is_orchestrator {
             db.execute(
-                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
-                params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL],
+                "UPDATE sessions SET status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
+                params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL, STARTED_IDLE_STATUS],
             )?;
         } else {
             db.execute(
-                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
-                params![session_id, started_at, thread_id, chosen_model, cwd],
+                "UPDATE sessions SET status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
+                params![session_id, started_at, thread_id, chosen_model, cwd, STARTED_IDLE_STATUS],
             )?;
         }
         launch_plan.commit(&db, &session_id)?;
@@ -7281,12 +7291,28 @@ fn deliver_prepared_input(
     Ok(())
 }
 
+/// The status a session carries once its provider is up and nothing is running.
+///
+/// Deliberately not `working`. [`turn_is_active`] reads `working` as a turn in
+/// flight, so a session that claims it while merely idle has its next message
+/// routed to the queue — and the drain waits for a `turn.completed` that cannot
+/// arrive, because no turn was ever started (#261). Every provider-boot path
+/// binds this constant rather than writing a status literal, so the invariant
+/// cannot be reverted one call site at a time.
+pub const STARTED_IDLE_STATUS: &str = "ready";
+
 /// Whether a new provider turn would collide with one already in flight.
 ///
 /// Deliberately pessimistic: `status='working'` counts even before the provider
 /// has echoed `turn.started`, because the window between Bridge writing a turn
 /// and the provider acknowledging it is exactly where a second `turn/start`
 /// would land.
+///
+/// That pessimism is only sound while `status='working'` means a turn was
+/// actually submitted. `start_chat` used to set it on a session that was merely
+/// up and idle, which made a cold session look busy forever and queued its first
+/// message into a boundary that could never arrive (#261). Anything that marks a
+/// session `working` is asserting a turn exists.
 fn turn_is_active(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
     core.db
         .lock()
@@ -9053,6 +9079,194 @@ mod submit_input_tests {
             )
             .unwrap();
         assert_eq!(messages, 1);
+    }
+
+    /* ── #261: a cold session's first message ─────────────────────────────── */
+
+    /// The reproduction. `start_chat` leaves a session up and idle; a provider
+    /// that cannot steer must still get the first message as a real turn, not a
+    /// queue entry waiting on a boundary that no turn will produce.
+    #[test]
+    fn a_cold_sessions_first_message_starts_a_turn_instead_of_queueing_forever() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let sent = attach(&core, false);
+
+        let outcome = submit_input(&core, "chat".into(), "review this PR".into()).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert_eq!(sent.lock().unwrap().as_slice(), ["review this PR".to_owned()]);
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            0,
+            "nothing was queued, so nothing needs a boundary to arrive"
+        );
+    }
+
+    #[test]
+    fn a_started_session_is_idle_until_a_turn_is_actually_submitted() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        attach(&core, false);
+        assert!(
+            !turn_is_active(&core, "chat").unwrap(),
+            "up and idle is not a turn in flight"
+        );
+
+        submit_input(&core, "chat".into(), "go".into()).unwrap();
+
+        assert!(
+            turn_is_active(&core, "chat").unwrap(),
+            "a submitted turn is, even before the provider echoes it"
+        );
+    }
+
+    /// The guard this fix deliberately keeps. `deliver_prepared_input` leaves
+    /// `status='working'` with no `active_turn_id` until the provider echoes
+    /// `turn.started`, and a second `turn/start` must not land in that window.
+    #[test]
+    fn a_turn_bridge_has_written_but_the_provider_has_not_echoed_still_blocks_a_second() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let sent = attach(&core, false);
+
+        submit_input(&core, "chat".into(), "first".into()).unwrap();
+        // Exactly what deliver_prepared_input leaves behind: working, unechoed.
+        assert!(core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status='working' AND active_turn_id IS NULL FROM sessions WHERE id='chat'",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap());
+
+        let second = submit_input(&core, "chat".into(), "second".into()).unwrap();
+
+        assert_eq!(
+            second.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary,
+            "the acknowledgement window still counts as busy"
+        );
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            ["first".to_owned()],
+            "no second turn was started against the provider"
+        );
+    }
+
+    /* ── The drain, against a provider that is not there ──────────────────── */
+
+    #[test]
+    fn the_drain_does_not_claim_or_log_when_the_provider_is_gone() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "held".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        // The provider dies before the boundary is reached.
+        core.adapters.lock().unwrap().remove("chat");
+
+        for _ in 0..5 {
+            assert!(!drain_queued_input(&core, "chat"));
+        }
+
+        let db = core.db.lock().unwrap();
+        let state: String = db
+            .query_row(
+                "SELECT state FROM queued_session_input WHERE session_id='chat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "queued", "the row was never claimed and never released");
+        let failures: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='session.input.delivery_failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            failures, 0,
+            "five sweeps must not write five reason rows against a provider that is gone"
+        );
+    }
+
+    #[test]
+    fn a_queued_row_survives_a_provider_outage_and_lands_when_it_returns() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach(&core, false);
+        submit_input(&core, "chat".into(), "held".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        core.adapters.lock().unwrap().remove("chat");
+        assert!(!drain_queued_input(&core, "chat"));
+
+        let sent = attach(&core, false);
+        assert!(drain_queued_input(&core, "chat"));
+        assert_eq!(sent.lock().unwrap().as_slice(), ["held".to_owned()]);
+    }
+
+    /// What the started status has to *mean*, not merely what it is spelled.
+    ///
+    /// The review of this fix pointed out that seeding `core_with_chat("ready")`
+    /// tests the state's meaning while leaving the line that produces it
+    /// unguarded. There is no fakeable seam around adapter launch to call
+    /// `start_chat` from a test, so the invariant is pinned two other ways: every
+    /// provider-boot path binds `STARTED_IDLE_STATUS` instead of a literal, and
+    /// this asserts the properties that constant has to keep.
+    #[test]
+    fn the_status_a_started_session_carries_is_one_the_router_reads_as_idle() {
+        assert_ne!(
+            STARTED_IDLE_STATUS, "working",
+            "the whole defect was a started session claiming a turn (#261)"
+        );
+        let (_fixture, core, _managed_root) = core_with_chat(STARTED_IDLE_STATUS);
+        let sent = attach(&core, false);
+
+        assert!(
+            !turn_is_active(&core, "chat").unwrap(),
+            "a started session must not read as having a turn in flight"
+        );
+        // The other half of the deadlock: the drain's idle gate has to agree, or
+        // anything already queued could never be released.
+        submit_input(&core, "chat".into(), "first".into()).unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 1, "it started a turn");
+    }
+
+    /// No provider-boot path may reintroduce the deadlock shape.
+    ///
+    /// `start_chat` had it and `start_session` kept it after the first pass of
+    /// this fix — found in review, not by a test. A single SQL statement that
+    /// asserts `working` while nulling the turn id is that shape, wherever it is
+    /// written, so the guard reads the module instead of trusting the next author
+    /// to remember.
+    #[test]
+    fn no_provider_boot_path_claims_a_turn_it_does_not_have() {
+        let module = include_str!("live_turn.rs");
+        let offenders: Vec<&str> = module
+            .split('"')
+            .filter(|literal| {
+                literal.contains("status='working'") && literal.contains("active_turn_id=NULL")
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "these statements mark a session working while clearing its turn id — \
+             bind STARTED_IDLE_STATUS instead: {offenders:#?}"
+        );
     }
 
     #[test]
