@@ -1558,6 +1558,7 @@ mod tests {
         run_git(&["init", "-q"]);
         run_git(&["config", "user.email", "bridge-test@example.invalid"]);
         run_git(&["config", "user.name", "Bridge Test"]);
+        run_git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.join("README.md"), "base\n").unwrap();
         run_git(&["add", "."]);
         run_git(&["commit", "-m", "fixture", "-q"]);
@@ -2368,6 +2369,7 @@ mod tests {
         git(&["init", "--quiet"]);
         git(&["config", "user.email", "bridge@example.invalid"]);
         git(&["config", "user.name", "Bridge Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repository.join("tracked.txt"), "first\n").unwrap();
         git(&["add", "tracked.txt"]);
         git(&["commit", "--quiet", "-m", "initial"]);

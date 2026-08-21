@@ -453,6 +453,7 @@ mod tests {
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "test@bridge.invalid"],
             vec!["config", "user.name", "Bridge Test"],
+            vec!["config", "commit.gpgsign", "false"],
             vec!["commit", "--allow-empty", "-q", "-m", "root"],
         ] {
             let status = std::process::Command::new("git")

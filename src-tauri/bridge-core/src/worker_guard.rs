@@ -80,6 +80,7 @@ mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "bridge-test@example.invalid"]);
         git(&["config", "user.name", "Bridge Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(path.join("tracked.txt"), "before\n").unwrap();
         git(&["add", "tracked.txt"]);
         git(&["commit", "-m", "fixture", "-q"]);

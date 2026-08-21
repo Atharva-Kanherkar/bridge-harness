@@ -269,6 +269,10 @@ mod tests {
             &repo,
             &["config", "user.email", "bridge-test@example.invalid"],
         );
+        git(
+            &repo,
+            &["config", "commit.gpgsign", "false"],
+        );
         git(&repo, &["config", "user.name", "Bridge Test"]);
         std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
         git(&repo, &["add", "."]);

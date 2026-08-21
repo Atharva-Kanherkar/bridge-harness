@@ -903,6 +903,7 @@ mod tests {
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "bridge-test@example.invalid"],
             vec!["config", "user.name", "Bridge Test"],
+            vec!["config", "commit.gpgsign", "false"],
         ] {
             assert!(StdCommand::new("git")
                 .args(&args)
