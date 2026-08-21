@@ -711,14 +711,30 @@ pub fn route(
         .map(|profile| format!("{}:{}", profile.provider, profile.model))
         .filter(|key| candidate_for_key(&evaluations, key).is_some());
     let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
-    // Only role families are published (a fingerprint never recurs), so only
-    // role families are consulted.
+    // Only role families are published as preferences, so only role families
+    // are consulted here. The fingerprint recurs in exactly one situation — a
+    // retry of the same task — and that is where escalation belongs: after a
+    // recorded failure, prefer sideways before spending a tier.
     let policy_preference = preferred_candidates
         .get(policy::role_name(request.role))
         .filter(|key| {
             candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
         })
         .cloned();
+    let failed_candidate: Option<String> = db
+        .query_row(
+            "SELECT o.candidate FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+             WHERE d.workspace_id=?1 AND d.task_fingerprint=?2 AND o.succeeded=0
+             ORDER BY o.rowid DESC LIMIT 1",
+            params![workspace_id, fingerprint],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let retry_escalation = failed_candidate
+        .as_deref()
+        .and_then(|key| candidate_for_key(&evaluations, key))
+        .and_then(|failed| next_escalation(&failed.candidate, &evaluations))
+        .map(|candidate| candidate.key());
     let recommendation = if profile_locked {
         baseline
             .as_ref()
@@ -727,7 +743,7 @@ pub fn route(
             })
             .cloned()
     } else {
-        policy_preference.or_else(|| {
+        retry_escalation.or(policy_preference).or_else(|| {
             evaluations
                 .iter()
                 .find(|candidate| candidate.eligible())
@@ -1410,12 +1426,26 @@ pub fn benchmark(tasks: &[BenchmarkTask]) -> BenchmarkReport {
 }
 
 pub fn next_escalation(
-    current: CapabilityTier,
+    failed: &RouteCandidate,
     evaluations: &[CandidateEvaluation],
 ) -> Option<RouteCandidate> {
+    // A harness-specific failure is cheapest to test sideways: same tier,
+    // different family, before any tier is spent. Only then up-tier; still
+    // deterministic, still terminal after the strongest tier.
+    let lateral = evaluations
+        .iter()
+        .filter(|item| {
+            item.eligible()
+                && tier_rank(item.candidate.tier) == tier_rank(failed.tier)
+                && !item.candidate.harness.eq_ignore_ascii_case(&failed.harness)
+        })
+        .min_by_key(|item| item.expected_cost_score);
+    if let Some(item) = lateral {
+        return Some(item.candidate.clone());
+    }
     evaluations
         .iter()
-        .filter(|item| item.eligible() && tier_rank(item.candidate.tier) > tier_rank(current))
+        .filter(|item| item.eligible() && tier_rank(item.candidate.tier) > tier_rank(failed.tier))
         .min_by_key(|item| (tier_rank(item.candidate.tier), item.expected_cost_score))
         .map(|item| item.candidate.clone())
 }
@@ -1463,11 +1493,21 @@ mod tests {
     }
 
     fn evaluated(preferences: RouterPreferences) -> Vec<CandidateEvaluation> {
-        evaluate(EvaluationInput {
-            candidates: vec![
+        evaluated_with(
+            vec![
                 candidate("codex", "fast", CapabilityTier::Fast, 2),
                 candidate("claude", "standard", CapabilityTier::Standard, 4),
             ],
+            preferences,
+        )
+    }
+
+    fn evaluated_with(
+        candidates: Vec<RouteCandidate>,
+        preferences: RouterPreferences,
+    ) -> Vec<CandidateEvaluation> {
+        evaluate(EvaluationInput {
+            candidates,
             preferences,
             histories: BTreeMap::new(),
             required_capabilities: vec!["tools".into()],
@@ -1907,9 +1947,69 @@ mod tests {
         assert!(evaluated(preferences).iter().all(|item| !item.eligible()));
 
         let result = evaluated(RouterPreferences::default());
-        let escalation = next_escalation(CapabilityTier::Fast, &result).unwrap();
-        assert_eq!(escalation.tier, CapabilityTier::Standard);
-        assert!(next_escalation(CapabilityTier::Strong, &result).is_none());
+        let mut strong_failed = result[0].candidate.clone();
+        strong_failed.tier = CapabilityTier::Strong;
+        assert!(
+            next_escalation(&strong_failed, &result).is_none(),
+            "terminal after the strongest tier, sideways included"
+        );
+    }
+
+    #[test]
+    fn same_tier_family_switch_is_tried_before_tier_up() {
+        let result = evaluated_with(
+            vec![
+                candidate("codex", "codex-standard", CapabilityTier::Standard, 4),
+                candidate("claude", "claude-standard", CapabilityTier::Standard, 4),
+                candidate("codex", "codex-strong", CapabilityTier::Strong, 8),
+            ],
+            RouterPreferences::default(),
+        );
+        let failed = result
+            .iter()
+            .find(|item| {
+                item.candidate.harness == "codex" && item.candidate.tier == CapabilityTier::Standard
+            })
+            .unwrap()
+            .candidate
+            .clone();
+        let next = next_escalation(&failed, &result).unwrap();
+        assert_eq!(next.harness, "claude", "the cheapest fix for a harness-specific failure");
+        assert_eq!(
+            tier_rank(next.tier),
+            tier_rank(failed.tier),
+            "no tier is spent for a family switch"
+        );
+    }
+
+    #[test]
+    fn a_retried_task_is_recommended_sideways_after_its_failure() {
+        let db = routing_db();
+        let routed = route(&db, "parent", "turn-1", &request(), &descriptors()).unwrap();
+        let failed_key = routed.decision.executed_candidate.clone().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+             VALUES('child-retry','w','codex','Worker','failed','reported','parent')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+             VALUES(?1,'child-retry',?2,0,'failed',100,1000,0,0,'failure','rejected','2026-08-01T00:00:00Z')",
+            params![routed.decision.id, failed_key],
+        )
+        .unwrap();
+        let retried = route(&db, "parent", "turn-2", &request(), &descriptors()).unwrap();
+        let recommended = retried.decision.recommended_candidate.clone().unwrap();
+        assert_ne!(recommended, failed_key, "the failed candidate is not re-recommended");
+        assert!(
+            recommended.starts_with("claude:"),
+            "sideways before up: got {recommended}"
+        );
+        assert_eq!(
+            retried.decision.executed_candidate, retried.decision.baseline_candidate,
+            "shadow mode records the recommendation without acting on it"
+        );
     }
 
     #[test]
@@ -2094,7 +2194,7 @@ mod tests {
     #[test]
     fn stale_history_decays_out_of_the_prediction() {
         let db = routing_db();
-        let mut insert = |suffix: &str, succeeded: bool, recorded_at: &str| {
+        let insert = |suffix: &str, succeeded: bool, recorded_at: &str| {
             let decision = format!("decision-{suffix}");
             db.execute(
                 "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
