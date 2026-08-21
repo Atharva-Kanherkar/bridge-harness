@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectSessionConversation, reduceConversation, selectActiveBranch } from "./conversation";
+import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -113,5 +113,73 @@ describe("session forest conversation projection",()=>{
   it("falls back to a nested error message when the entry has no top-level text",()=>{
     const err=entry("e2","e1","error",{status:"failed",data:{error:{message:"rate limit exceeded"}}},2);
     expect(projectSessionConversation([root,err],"e2")[1]).toMatchObject({type:"error",text:"rate limit exceeded"});
+  });
+});
+
+describe("worker delegation fold",()=>{
+  const spawn = (childSessionId:string,sequence=1) => reduceConversation([event(sequence,"delegation.spawned",{itemId:`spawn-${childSessionId}`,role:"system",title:"Delegated to Implementation · strong",text:"add rotation",data:{childSessionId,modelLabel:"Fable",request:{objective:"add rotation"}}})])[0];
+  const result = (childSessionId:string,sequence=2,data:Record<string,unknown>={}) => reduceConversation([event(sequence,"delegation.result",{itemId:`result-${sequence}`,role:"system",status:"completed",title:"Worker result",text:"done",data:{childSessionId,delivered:true,status:"completed",...data}})])[0];
+
+  it("names each delegation facet from its own payload",()=>{
+    expect(delegationFacet(spawn("x"))).toBe("spawn");
+    expect(delegationFacet(result("x"))).toBe("result");
+    expect(delegationFacet({...spawn("x"),data:{childBlocked:true}})).toBe("blocked");
+    expect(delegationFacet({...spawn("x"),data:{willRetry:false}})).toBe("rejected");
+    expect(delegationFacet({...spawn("x"),data:{steeredBy:"user",delivered:true}})).toBe("steered");
+    expect(delegationChildSessionId(spawn("x"))).toBe("x");
+    expect(delegationChildSessionId({...spawn("x"),data:{}})).toBeUndefined();
+  });
+
+  it("folds a worker result into the panel that spawned it",()=>{
+    const folded = foldWorkerDelegations([spawn("x"), result("x")]);
+    expect(folded).toHaveLength(1);
+    // Both halves survive: the spawn's routing detail and the result's outcome.
+    expect(folded[0].data.modelLabel).toBe("Fable");
+    expect(folded[0].data.delivered).toBe(true);
+    expect(folded[0].text).toBe("done");
+    expect(folded[0].key).toBe(spawn("x").key);
+  });
+
+  it("keeps each worker's panel separate",()=>{
+    const folded = foldWorkerDelegations([spawn("x",1), spawn("y",2), result("y",3), result("x",4)]);
+    expect(folded).toHaveLength(2);
+    expect(folded.map(item => item.data.childSessionId)).toEqual(["x","y"]);
+    expect(folded.every(item => item.data.delivered === true)).toBe(true);
+  });
+
+  it("leaves an orphan worker result visible",()=>{
+    // Durable history truncated away the spawn, or the branch moved: the
+    // outcome must still be readable rather than folded into nothing.
+    const folded = foldWorkerDelegations([result("x")]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0].data.delivered).toBe(true);
+  });
+
+  it("does not fold a steer, a block, or a rejection onto the panel",()=>{
+    const steered = {...result("x",3),data:{childSessionId:"x",steeredBy:"user",delivered:true,label:"Implementation"}};
+    const folded = foldWorkerDelegations([spawn("x"), steered]);
+    expect(folded).toHaveLength(2);
+    expect(folded[0].data.steeredBy).toBeUndefined();
+  });
+
+  it("carries a classified failure onto the panel so its retry action survives",()=>{
+    const failed = result("x",2,{failureCause:"the worker stopped responding",failureClass:"stalled",canRetry:true});
+    const folded = foldWorkerDelegations([spawn("x"), failed]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0].data.failureCause).toBe("the worker stopped responding");
+    expect(folded[0].data.canRetry).toBe(true);
+  });
+
+  it("passes non-delegation items through untouched",()=>{
+    const items = reduceConversation([event(1,"message.completed",{itemId:"m",role:"assistant",text:"hi",status:"completed"})]);
+    expect(foldWorkerDelegations(items)).toEqual(items);
+  });
+
+  it("folds a durable spawn together with a live result",()=>{
+    const durable = projectSessionConversation([entry("e1",null,"delegation.spawned",{itemId:"spawn-x",title:"Delegated to Implementation",data:{childSessionId:"x"}},1)],"e1");
+    const folded = foldWorkerDelegations([...durable, result("x",2)]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0].entryId).toBe("e1");
+    expect(folded[0].data.delivered).toBe(true);
   });
 });

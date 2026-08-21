@@ -222,3 +222,65 @@ export function stripWorkerResultBlocks(text: string): string {
 }
 
 function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}
+
+/* ── Worker delegation items ─────────────────────────────────────────────
+   Four different provider events land as `delegation` items and the renderer
+   used to sniff them apart with inline `"key" in data` checks. Naming the
+   facets once means the fold below and the card that draws them can never
+   disagree about what a row is. */
+
+export type DelegationFacet = "spawn" | "result" | "blocked" | "rejected" | "steered";
+
+export function delegationFacet(item: ConversationItem): DelegationFacet {
+  if ("childBlocked" in item.data) return "blocked";
+  if ("willRetry" in item.data) return "rejected";
+  if ("steeredBy" in item.data) return "steered";
+  if ("delivered" in item.data) return "result";
+  return "spawn";
+}
+
+export function delegationChildSessionId(item: ConversationItem): string | undefined {
+  return typeof item.data.childSessionId === "string" ? item.data.childSessionId : undefined;
+}
+
+/**
+ * Collapse each worker's result onto the panel that spawned it.
+ *
+ * The spawn row is a live panel while the worker runs, so letting the result
+ * arrive as its own row further down left the user with two cards for one
+ * worker: a stale live one and a disconnected outcome. One worker is one place
+ * in the transcript, from "delegated" through to "done".
+ *
+ * Applied to the merged durable+live list rather than inside either projection,
+ * because a spawn read from the forest and a result still only in the live
+ * stream is the normal case mid-run.
+ */
+export function foldWorkerDelegations(items: ConversationItem[]): ConversationItem[] {
+  const panelByChild = new Map<string, ConversationItem>();
+  const folded: ConversationItem[] = [];
+  for (const item of items) {
+    if (item.type !== "delegation") { folded.push(item); continue; }
+    const childSessionId = delegationChildSessionId(item);
+    const facet = delegationFacet(item);
+    if (!childSessionId) { folded.push(item); continue; }
+    if (facet === "spawn") {
+      // Copied because the merge below mutates the row that is already in the
+      // output list, and the caller's item must not change underneath it.
+      const panel = { ...item, data: { ...item.data } };
+      panelByChild.set(childSessionId, panel);
+      folded.push(panel);
+      continue;
+    }
+    const panel = facet === "result" ? panelByChild.get(childSessionId) : undefined;
+    // An orphan result — durable history truncated, or a branch switched away
+    // from the spawn — still has to render. Folding must never lose a row.
+    if (!panel) { folded.push(item); continue; }
+    panel.data = { ...panel.data, ...item.data };
+    panel.status = item.status ?? panel.status;
+    panel.title = item.title ?? panel.title;
+    if (item.text) panel.text = item.text;
+    // The panel keeps its own key and eventId: the key is what React reconciles
+    // on, and the eventId is what the durable/live dedupe upstream matches.
+  }
+  return folded;
+}

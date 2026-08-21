@@ -5,6 +5,10 @@ import { cn } from "@/lib/utils";
 import { formatElapsed, harnessLabel } from "../utils";
 import { WorkerDetail } from "./WorkerDetail";
 import { isBroken, isRunning, isWaiting, workerStatus, type WorkerTone } from "./workerStatus";
+import { workerFeedLines } from "./workerPanel";
+
+// A tile is bigger than a chat-embedded panel, so it affords one more line.
+const TILE_FEED_LINES = 4;
 
 // Mission Control renders every live agent at once as its own window, instead of
 // the single-session view. It reuses the sidebar's tone vocabulary so a tile and
@@ -51,22 +55,6 @@ function TileIcon({ tone }: { tone: WorkerTone }) {
   if (tone === "done") return <Check size={13} className="text-muted-foreground" aria-hidden="true" />;
   if (tone === "waiting" || tone === "attention") return <Clock3 size={13} className="text-warning" aria-hidden="true" />;
   return <span className={cn("h-2 w-2 rounded-full", toneDot[tone])} />;
-}
-
-// The last few legible things this agent said or did, newest last. Deltas and
-// bare lifecycle events carry no text, so filtering on text keeps the ticker to
-// what a human can actually read.
-function recentLines(events: AgentEvent[], sessionId: string): { id: number; text: string }[] {
-  const out: { id: number; text: string }[] = [];
-  for (const event of events) {
-    if (event.sessionId !== sessionId) continue;
-    const text = (event.text ?? "").trim() || (event.title ?? "").trim();
-    if (!text) continue;
-    const last = out[out.length - 1];
-    if (last && last.text === text) { last.id = event.id; continue; }
-    out.push({ id: event.id, text });
-  }
-  return out.slice(-4);
 }
 
 // Workers get the lifecycle/result-driven resolver. A top-level session's own
@@ -228,7 +216,7 @@ export function MissionControl({
       const activity = reasons
         .filter(reason => reason.entityId === session.id)
         .sort((a, b) => b.id - a.id)[0]?.body;
-      list.push({ session, runtime, tone: status.tone, label: status.label, detail: status.detail, lines: recentLines(events, session.id), activity });
+      list.push({ session, runtime, tone: status.tone, label: status.label, detail: status.detail, lines: workerFeedLines(events, session.id, TILE_FEED_LINES), activity });
     }
     list.sort((a, b) => {
       const priority = tonePriority[a.tone] - tonePriority[b.tone];
