@@ -131,9 +131,18 @@ pub fn current_state(
     let Some(payload) = payload else {
         return Ok(PromptSectionState::Default);
     };
-    let state: PromptSectionState = serde_json::from_str(&payload).map_err(|error| {
-        BridgeError::Invalid(format!("invalid stored prompt section state: {error}"))
-    })?;
+    let state: PromptSectionState = match serde_json::from_str(&payload) {
+        Ok(state) => state,
+        Err(error) => {
+            // A corrupt or forward-incompatible payload should not hard-fail
+            // every session launch. Fall back to the compiled default.
+            eprintln!(
+                "bridge-core: falling back to default prompt section state for {:?}: {}",
+                key, error
+            );
+            return Ok(PromptSectionState::Default);
+        }
+    };
     if state == PromptSectionState::Default {
         return Err(BridgeError::Invalid(
             "stored prompt section state cannot be default".into(),
@@ -598,6 +607,27 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("append-only"));
+    }
+
+    #[test]
+    fn corrupt_stored_payload_falls_back_to_default() {
+        let db = db();
+        let key = PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::BRIDGE_ROLE_SECTION_ID,
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES(?1,?2,?3,datetime('now'),datetime('now'))",
+            params![CONFIG_KIND, key.configuration_id(), "not-json"],
+        )
+        .unwrap();
+        assert_eq!(current_state(&db, &key).unwrap(), PromptSectionState::Default);
+        let stack = resolve(&db, key.target, 0).unwrap();
+        assert!(stack
+            .sections
+            .iter()
+            .any(|section| section.id == prompts::BRIDGE_ROLE_SECTION_ID));
     }
 
     #[test]

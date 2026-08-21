@@ -181,6 +181,20 @@ impl BridgeCore {
         store::state(&self.db.lock().unwrap())
     }
 
+    /// Flip the reader-launch gate for `session_id` so its reader thread stops
+    /// processing new lines. Idempotent and safe to call from teardown paths.
+    pub fn deactivate_reader_launch(&self, session_id: &str) {
+        if let Some(gate) = self
+            .reader_launches
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+        {
+            *gate.lock().unwrap() = false;
+        }
+    }
+
     /// Claim exclusive lifecycle access to a session for the duration of the
     /// returned guard. Every flow that starts, replaces, or tears down a
     /// session's adapter runtime must hold this across its whole

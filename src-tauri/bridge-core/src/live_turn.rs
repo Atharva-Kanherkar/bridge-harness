@@ -1064,17 +1064,22 @@ pub fn start_session(
             restoration_mode.as_str()
         ),
     )?;
-    let context = orchestrator_context_event(
-        &prompt_stack,
-        orchestrator::TIER,
-        chosen_model.as_deref(),
-    );
-    let _ = store::session_event(
-        &db,
-        &session_id,
-        &context,
-        &serde_json::json!({"adapter": adapter_id, "hidden": true}),
-    );
+    // start_session only launches orchestrator sessions; direct chats use
+    // start_chat, which has its own harness-aware gate.
+    let is_orchestrator = session_label == orchestrator::SESSION_LABEL;
+    if is_orchestrator {
+        let context = orchestrator_context_event(
+            &prompt_stack,
+            orchestrator::TIER,
+            chosen_model.as_deref(),
+        );
+        let _ = store::session_event(
+            &db,
+            &session_id,
+            &context,
+            &serde_json::json!({"adapter": adapter_id, "hidden": true}),
+        );
+    }
     for message in &started.startup_messages {
         persist_agent_value(
             &db,
@@ -1462,8 +1467,6 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     store::state(&state.db.lock().unwrap())
 }
 
-/// Drive one structured session's stdout: normalize every frame, then on exit
-/// mark the session stopped and unblock any parent that was waiting on it.
 fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), BridgeError> {
     deactivate_reader_launch(core, session_id);
     let harness = core.db.lock().unwrap().query_row(
@@ -1502,9 +1505,7 @@ fn invalidate_reader_launch(core: &BridgeCore, session_id: &str) -> Result<(), B
 }
 
 fn deactivate_reader_launch(core: &BridgeCore, session_id: &str) {
-    if let Some(gate) = core.reader_launches.lock().unwrap().get(session_id).cloned() {
-        *gate.lock().unwrap() = false;
-    }
+    core.deactivate_reader_launch(session_id);
 }
 
 fn reader_launch_is_current(
@@ -1527,14 +1528,26 @@ fn cleanup_reader_state(
     adapter_id: &str,
     provider_session_id: &str,
     tracks_worker: bool,
+    launch_started_at: &str,
 ) {
+    let db = core.db.lock().unwrap();
     let active_provider = core
         .adapters
         .lock()
         .unwrap()
         .get(session_id)
         .map(|runtime| runtime.provider_session_id().to_owned());
-    if !provider_session_id.is_empty() && active_provider.as_deref() != Some(provider_session_id) {
+    // Only drop normalization state for this provider session if this launch
+    // is still the current one. A concurrent native resume may have already
+    // pinned a new provider_session_id to the row; forgetting it now would
+    // wipe the new stream's normalization maps mid-flight.
+    let is_current_launch =
+        reader_launch_is_current(&db, session_id, launch_started_at, provider_session_id);
+    drop(db);
+    if is_current_launch
+        && !provider_session_id.is_empty()
+        && active_provider.as_deref() != Some(provider_session_id)
+    {
         core.adapter_registry
             .forget_session(adapter_id, provider_session_id);
     }
@@ -1547,6 +1560,8 @@ fn cleanup_reader_state(
     }
 }
 
+/// Drive one structured session's stdout: normalize every frame, then on exit
+/// mark the session stopped and unblock any parent that was waiting on it.
 fn spawn_reader_thread(
     core: Arc<BridgeCore>,
     session_id: String,
@@ -1577,8 +1592,11 @@ fn spawn_reader_thread(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    let launch_active = launch_gate.lock().unwrap();
-                    if !*launch_active {
+                    // Check the gate without holding it across handler work:
+                    // handle_agent_value may complete a worker, which calls
+                    // deactivate_reader_launch and re-locks the same mutex.
+                    let launch_active = *launch_gate.lock().unwrap();
+                    if !launch_active {
                         break;
                     }
                     // Every line proves liveness — refresh the heartbeat before
@@ -1622,7 +1640,28 @@ fn spawn_reader_thread(
                 &launch_adapter_id,
                 &launch_provider_session_id,
                 tracks_worker,
+                &launch_started_at,
             );
+            // The runtime was already removed (likely by a replacement
+            // launch), but observers still need the workspace rollup refresh.
+            let workspace: Option<String> = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT workspace_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            if let Some(workspace) = workspace {
+                let db = state.db.lock().unwrap();
+                let _ = db.execute(
+                    "UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",
+                    params![workspace],
+                );
+            }
+            core.events.publish(CoreEvent::StateChanged);
             return;
         };
 
@@ -1645,6 +1684,7 @@ fn spawn_reader_thread(
                     &launch_adapter_id,
                     &launch_provider_session_id,
                     tracks_worker,
+                    &launch_started_at,
                 );
                 return;
             }
@@ -1653,14 +1693,13 @@ fn spawn_reader_thread(
                 .ok()
                 .flatten()
                 .is_some();
-            let workspace: Option<String> = match db.query_row(
-                "SELECT workspace_id FROM sessions WHERE id=?1",
-                params![session_id],
-                |row| row.get(0),
-            ) {
-                Ok(session) => session,
-                Err(_) => return,
-            };
+            let workspace: Option<String> = db
+                .query_row(
+                    "SELECT workspace_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .ok();
             if !is_worker {
                 let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
             }
@@ -1672,6 +1711,7 @@ fn spawn_reader_thread(
             &launch_adapter_id,
             &launch_provider_session_id,
             tracks_worker,
+            &launch_started_at,
         );
         let failure_context = exited_runtime.failure_context();
         notify_parent_on_worker_exit(&core, &session_id, failure_context.as_deref());
@@ -3908,7 +3948,7 @@ pub fn launch_worker_outcome(
     {
         let db = state.db.lock().unwrap();
         let _ = db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,provider_session_id=?3,label=?4,model=?5,effort=?6 WHERE id=?1",
+            "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,label=?4,model=?5,effort=?6 WHERE id=?1",
             params![
                 session_id,
                 started_at,
