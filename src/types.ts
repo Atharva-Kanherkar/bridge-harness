@@ -136,6 +136,9 @@ export type LearningTriggerKind = LocalLearningTriggerKind | ExternalLearningTri
 
 export interface TerminalChunk { sessionId: string; data: string }
 
+/** `memory-changed` refetch hint: names the scope, never carries a record. */
+export interface MemoryChangedPayload { scopeKey: string }
+
 // ---------------------------------------------------------------------------
 // Deferred result shapes (`resultDeferred` methods). Hand-written until their
 // contract slice lands; keep field-for-field with the core serializers.

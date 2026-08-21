@@ -385,8 +385,14 @@ pub fn save_memory_record(
     kind: Option<&str>,
     session_id: Option<&str>,
 ) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
-    let db = core.db.lock().unwrap();
-    memory_ledger::save(&db, body, kind, session_id)
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::save(&db, body, kind, session_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
 }
 
 pub fn list_memory_records(
@@ -401,8 +407,14 @@ pub fn delete_memory_record(
     core: &Arc<BridgeCore>,
     record_id: &str,
 ) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
-    let db = core.db.lock().unwrap();
-    memory_ledger::forget(&db, record_id)
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::forget(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
 }
 
 /// Run a finished worker's objective again because the user asked. Goes through
@@ -1980,6 +1992,39 @@ mod tests {
         ]
         .concat();
         assert!(!source.contains(&locked_learning_call));
+    }
+
+    #[test]
+    fn memory_saves_and_forgets_publish_the_scope_hint() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let mut events = core.events.subscribe();
+        let record = super::save_memory_record(&core, "Prefers tabs over spaces", None, None)
+            .expect("an explicit save is accepted");
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
+        ));
+        super::delete_memory_record(&core, &record.id).expect("forget tombstones");
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
+        ));
+        // A refused save changes nothing, so it owes no hint.
+        assert!(super::save_memory_record(&core, "   ", None, None).is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn slash_pin_arms_publish_the_same_hint_as_the_api() {
+        // live_turn has no test scaffold; its slash arms mirror the api seam,
+        // so the wiring claim is checked the way this module already checks
+        // cross-module wiring: against the source.
+        let source = include_str!("live_turn.rs");
+        assert!(
+            source.matches("core.events.publish(CoreEvent::MemoryChanged").count() >= 2,
+            "both /pin and /unpin publish the memory-changed hint"
+        );
     }
 }
 
