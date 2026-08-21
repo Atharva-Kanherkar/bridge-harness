@@ -61,23 +61,27 @@ guard**, because the behavior is easy to lose and expensive when lost:
   (never `claiming`, never released), and no reason row is written.
 - Nothing is lost by skipping: the sweep delivers once the provider is back.
 
-### 3. Input for a conversation that ended is retired, not left silently queued
+### 3. Input for a conversation that ended — *removed from scope*
 
-- A queued row whose session is in a terminal state (`stopped`, `failed`,
-  `completed`, `cancelled`) is retired as `abandoned` and surfaced in that
-  session's transcript, reusing the existing `emit_local_assistant` copy path that
-  already handles rows stranded mid-write across a restart.
-- Confirmed still missing: `discard_for_session` is called from exactly one place
-  (the `/clear` path, `live_turn.rs` ~7152, which resets a session to `idle`). A
-  session that merely *stops* — process exit, app death — leaves its queued rows
-  behind. Five such rows are sitting in a real database now, quiet since #252 but
-  never delivered and invisible.
-- Rationale, and the same one `session_input::discard_for_session` already states:
-  the conversation the follow-up belonged to is gone. Delivering an hour-old
-  message into a session the user has since restarted is a surprise, and leaving
-  it invisible in SQLite forever is worse.
-- A queued row for a session that is merely *between* providers (`idle`, `ready`,
-  `warm`, `resuming`) is **not** retired — that session can still come back.
+**Removed during implementation.** This section originally required retiring
+queued rows for a session in a terminal state, on the reasoning that a stopped
+session will never reach another phase boundary and an hour-old follow-up landing
+in a restarted conversation is a surprise. It was implemented, tested, and then
+reverted, because re-reading the adjacent code as this contract's Integration
+section demands turned up a direct contradiction:
+
+> The next user-initiated send resumes the adapter (`resume_for_send`), and the
+> first idle boundary after that delivers this row.
+> — `drain_queued_input`, from #252 (`5be7f5ac`, hours old)
+
+Parking a row for later delivery after a resume is a **deliberate decision**, not
+an oversight. Whether stale words should instead be retired and shown back to the
+user is a policy question with a real trade-off (never lose what the user typed
+versus never deliver it into a conversation that has moved on), and it belongs to
+the person who made that decision, not to a bug fix for an unrelated deadlock.
+
+Out of scope here. Raised separately. What this contract keeps from the
+investigation is §2's regression guard.
 
 ## Unit Tests
 
@@ -100,11 +104,6 @@ guard**, because the behavior is easy to lose and expensive when lost:
   released), and **no** `session.input.delivery_failed` row was written.
 - `a_queued_row_survives_a_provider_outage_and_lands_when_it_returns` — skipped
   while dead, delivered once an adapter is attached.
-- `input_for_a_stopped_session_is_retired_and_said_out_loud` — a terminal session's
-  queued row becomes `abandoned`, a `session.input.abandoned` ledger row exists,
-  and the session's transcript names the text that was not sent.
-- `input_for_a_session_between_providers_is_kept` — `idle`/`ready`/`warm` rows are
-  left `queued`.
 
 `session_input.rs`
 - existing suite must stay green unchanged: the queue's exactly-once, ordering,
