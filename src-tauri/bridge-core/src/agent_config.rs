@@ -66,7 +66,10 @@ pub struct AgentDefinition {
 /// grants, command allowlists) must be `#[serde(default)]` so a policy written by
 /// an older build still reads — the stored payload is durable and outlives the
 /// binary that wrote it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// The derived default is the safe one and that is load-bearing: `bypass_all`
+/// defaults to `false`, so a fresh install asks and an unreadable stored payload
+/// falls back to asking rather than to granting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PermissionPolicy {
     /// Auto-accept every provider approval, for every agent. The two structural
@@ -74,16 +77,6 @@ pub struct PermissionPolicy {
     /// they are authorization, not convenience.
     pub bypass_all: bool,
     pub updated_at: String,
-}
-
-impl Default for PermissionPolicy {
-    fn default() -> Self {
-        // A fresh install asks. Nothing is granted until someone opts in.
-        Self {
-            bypass_all: false,
-            updated_at: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
