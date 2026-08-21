@@ -266,15 +266,28 @@ pub(crate) fn load_evidence(
     Ok(evidence)
 }
 
+/// A fingerprint key is a 64-hex SHA-256; a family key never is. Used by the
+/// migration that retires dead per-fingerprint preferences from stored
+/// policy weights, and by nothing else — new policies never publish one.
+pub(crate) fn strip_fingerprint_preferences(weights: &mut serde_json::Value) -> bool {
+    let Some(preferred) = weights
+        .get_mut("preferredCandidates")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return false;
+    };
+    let before = preferred.len();
+    preferred.retain(|key, _| {
+        !(key.len() == 64 && key.chars().all(|character| character.is_ascii_hexdigit()))
+    });
+    preferred.len() != before
+}
+
 fn aggregate_key(row: &EvidenceRow) -> String {
     format!(
         "{}|{}|{}|{}",
         row.fingerprint, row.profile_key, row.candidate, row.effort
     )
-}
-
-fn learning_context_key(row: &EvidenceRow) -> String {
-    format!("{}|{}|{}", row.fingerprint, row.profile_key, row.effort)
 }
 
 fn rank_key(candidate: &str, aggregate: &Aggregate) -> (i64, i64, i64, i64, String) {
@@ -319,63 +332,20 @@ pub fn build_candidate(
         held_out.push(training.pop().expect("evidence is non-empty"));
     }
 
+    // Fingerprints are effectively unique per task, so a per-fingerprint
+    // preference can never match a future request — publishing them only
+    // accumulated dead keys on every promotion. Only role families generalize,
+    // so only role families are published. The fingerprint itself stays for
+    // canary bucketing and the held-out split.
     let mut aggregate_by_exact = BTreeMap::<String, Aggregate>::new();
-    let mut candidates_by_context = BTreeMap::<String, BTreeSet<String>>::new();
-    let mut rows_by_context = BTreeMap::<String, Vec<&EvidenceRow>>::new();
     for row in &training {
         aggregate_by_exact
             .entry(aggregate_key(row))
             .or_default()
             .add(row);
-        candidates_by_context
-            .entry(learning_context_key(row))
-            .or_default()
-            .insert(row.candidate.clone());
-        rows_by_context
-            .entry(learning_context_key(row))
-            .or_default()
-            .push(row);
     }
-
-    let mut context_preferred = BTreeMap::<String, String>::new();
     let mut evidence_groups = 0_i64;
-    for (context, candidates) in &candidates_by_context {
-        if candidates.len() < 2 {
-            continue;
-        }
-        let best = candidates
-            .iter()
-            .filter_map(|candidate| {
-                let key = format!("{}|{}", context, candidate);
-                let aggregate = aggregate_by_exact.get(&key)?;
-                aggregate
-                    .eligible_for_learning()
-                    .then(|| (candidate, aggregate))
-            })
-            .min_by_key(|(candidate, aggregate)| rank_key(candidate, aggregate));
-        if let Some((candidate, _)) = best {
-            context_preferred.insert(context.clone(), candidate.clone());
-            evidence_groups += 1;
-        }
-    }
-
-    // The runtime policy keys by stable task fingerprint. Keep profile/model/effort
-    // aggregation exact, and publish a fingerprint preference only when every
-    // eligible profile context for that fingerprint agrees on the same candidate.
     let mut preferred = BTreeMap::<String, String>::new();
-    let mut preferences_by_fingerprint = BTreeMap::<String, BTreeSet<String>>::new();
-    for (context, candidate) in &context_preferred {
-        let fingerprint = rows_by_context[context][0].fingerprint.clone();
-        preferences_by_fingerprint
-            .entry(fingerprint)
-            .or_default()
-            .insert(candidate.clone());
-    }
-    for (fingerprint, candidates) in preferences_by_fingerprint {
-        if candidates.len() == 1 {
-            preferred.insert(fingerprint, candidates.into_iter().next().unwrap());
-        }
-    }
 
     let mut family_contexts = BTreeMap::<String, Vec<&EvidenceRow>>::new();
     for row in &training {
@@ -561,4 +531,27 @@ pub fn build_candidate(
         replay,
         evidence_groups,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_fingerprint_preferences_are_stripped_and_families_survive() {
+        let fingerprint = "a".repeat(64);
+        let mut weights = serde_json::json!({
+            "preferredCandidates": {
+                fingerprint.clone(): "codex:gpt",
+                "implementation": "claude:sonnet",
+                "verification": "codex:gpt"
+            },
+            "other": true
+        });
+        assert!(strip_fingerprint_preferences(&mut weights));
+        let preferred = weights["preferredCandidates"].as_object().unwrap();
+        assert!(!preferred.contains_key(&fingerprint));
+        assert_eq!(preferred.len(), 2);
+        assert!(!strip_fingerprint_preferences(&mut weights), "idempotent");
+    }
 }

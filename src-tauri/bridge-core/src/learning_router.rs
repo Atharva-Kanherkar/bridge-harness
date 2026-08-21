@@ -691,9 +691,10 @@ pub fn route(
         .map(|profile| format!("{}:{}", profile.provider, profile.model))
         .filter(|key| candidate_for_key(&evaluations, key).is_some());
     let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
+    // Only role families are published (a fingerprint never recurs), so only
+    // role families are consulted.
     let policy_preference = preferred_candidates
-        .get(&fingerprint)
-        .or_else(|| preferred_candidates.get(policy::role_name(request.role)))
+        .get(policy::role_name(request.role))
         .filter(|key| {
             candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
         })
