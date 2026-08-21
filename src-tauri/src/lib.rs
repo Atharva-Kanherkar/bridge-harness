@@ -966,6 +966,17 @@ async fn delete_memory_record(
     .await
 }
 
+#[tauri::command]
+async fn get_memory_capabilities(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryCapabilities, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory capabilities", move || {
+        api::get_memory_capabilities(&core)
+    })
+    .await
+}
+
 /// Replay durable session events after a cursor — the recovery half of the
 /// notify-then-replay event contract.
 #[tauri::command]
@@ -1366,6 +1377,7 @@ pub fn run() {
             save_memory_record,
             list_memory_records,
             delete_memory_record,
+            get_memory_capabilities,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

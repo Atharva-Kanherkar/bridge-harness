@@ -417,6 +417,31 @@ pub fn delete_memory_record(
     Ok(record)
 }
 
+/// What memory exists here, so the UI can be honest about what it does not
+/// own. The provider half is derived from the slash catalog: an unavailable
+/// adapter contributes nothing, and no harness name is compared in this body.
+pub fn get_memory_capabilities(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryCapabilities, BridgeError> {
+    let provider_native = slash::provider_memory_commands(&available_adapter_ids(core))
+        .into_iter()
+        .map(|command| wire::ProviderMemoryCommand {
+            harness: command.harness,
+            command: command.name,
+            description: command.description,
+        })
+        .collect();
+    Ok(wire::MemoryCapabilities {
+        ledger: wire::MemoryLedgerCapability {
+            exists: true,
+            scope_key: wire::ACCOUNT_MEMORY_SCOPE.to_string(),
+            max_body_chars: wire::MAX_MEMORY_BODY_CHARS as u32,
+            kinds: wire::MEMORY_KINDS.iter().map(|kind| kind.to_string()).collect(),
+        },
+        provider_native,
+    })
+}
+
 /// Run a finished worker's objective again because the user asked. Goes through
 /// the ordinary launch path, so every policy limit applies as it did the first
 /// time.
@@ -2013,6 +2038,18 @@ mod tests {
         // A refused save changes nothing, so it owes no hint.
         assert!(super::save_memory_record(&core, "   ", None, None).is_err());
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn memory_capabilities_answer_without_a_harness_comparison() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let capabilities = super::get_memory_capabilities(&core).unwrap();
+        assert!(capabilities.ledger.exists);
+        assert_eq!(capabilities.ledger.scope_key, "account:local");
+        assert_eq!(capabilities.ledger.kinds.len(), 4);
+        // The test core registers no adapters, so no provider contributes.
+        assert!(capabilities.provider_native.is_empty());
     }
 
     #[test]

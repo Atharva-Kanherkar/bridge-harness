@@ -161,6 +161,7 @@ pub fn dispatch(
             let p: wire::DeleteMemoryRecordParams = decode(method, params)?;
             reply(api::delete_memory_record(core, &p.record_id))
         }
+        MethodName::GetMemoryCapabilities => reply(api::get_memory_capabilities(core)),
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;
             reply(api::retry_worker_task(core, &p.child_session_id))

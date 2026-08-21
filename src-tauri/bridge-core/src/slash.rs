@@ -138,6 +138,20 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
     out
 }
 
+/// Provider-owned memory commands in the current catalog. Derived from the
+/// catalog itself — an unavailable adapter contributes nothing, and no harness
+/// name is compared here, only command names the catalog already carries.
+pub fn provider_memory_commands(
+    available: &std::collections::HashSet<String>,
+) -> Vec<SlashCommand> {
+    list_commands(available)
+        .into_iter()
+        .filter(|command| {
+            command.harness != "bridge" && matches!(command.name.as_str(), "memory" | "memories")
+        })
+        .collect()
+}
+
 /// Parse a leading `/name …` turn and decide how Bridge should handle it.
 pub fn dispatch(
     text: &str,
@@ -674,6 +688,26 @@ mod tests {
             .iter()
             .any(|c| c.harness == "codex" && c.name == "status"));
         assert!(list.iter().any(|c| c.kind == "builtin"));
+    }
+
+    #[test]
+    fn provider_memory_commands_come_from_the_catalog_not_a_name_table() {
+        let all = HashSet::from(["claude".into(), "codex".into(), "opencode".into()]);
+        let commands = provider_memory_commands(&all);
+        assert!(commands
+            .iter()
+            .any(|c| c.harness == "claude" && c.name == "memory"));
+        assert!(commands
+            .iter()
+            .any(|c| c.harness == "codex" && c.name == "memories"));
+        assert!(
+            commands.iter().all(|c| c.harness != "bridge"),
+            "bridge-local pins are the ledger, not a provider memory"
+        );
+        assert!(
+            provider_memory_commands(&HashSet::new()).is_empty(),
+            "an unavailable adapter contributes nothing"
+        );
     }
 
     #[test]

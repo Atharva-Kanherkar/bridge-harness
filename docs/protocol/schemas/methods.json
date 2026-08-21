@@ -226,6 +226,13 @@
       "resultSchema": "memory-record.json"
     },
     {
+      "command": "get_memory_capabilities",
+      "domain": "memory",
+      "method": "memory/get_memory_capabilities",
+      "paramsSchema": null,
+      "resultSchema": "memory-capabilities.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

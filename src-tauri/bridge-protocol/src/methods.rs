@@ -75,6 +75,7 @@ methods![
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),
     (DeleteMemoryRecord, "memory", "delete_memory_record"),
+    (GetMemoryCapabilities, "memory", "get_memory_capabilities"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     // terminal

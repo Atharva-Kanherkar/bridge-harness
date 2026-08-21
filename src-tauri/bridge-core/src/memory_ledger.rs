@@ -335,6 +335,14 @@ mod tests {
         (dir, db)
     }
 
+    #[test]
+    fn kind_vocabulary_matches_the_wire_contract() {
+        for kind in bridge_protocol::messages::MEMORY_KINDS {
+            assert!(parse_kind(Some(kind)).is_ok(), "contract kind {kind} parses");
+        }
+        assert!(parse_kind(Some("runbook")).is_err());
+    }
+
     fn table_exists(db: &Connection, name: &str) -> bool {
         db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
