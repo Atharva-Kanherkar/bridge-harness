@@ -79,6 +79,8 @@ export type {
   SessionRecallHit,
   MemoryRecord,
   ListMemoryRecordsResult,
+  MemoryCapabilities,
+  ProviderMemoryCommand,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,

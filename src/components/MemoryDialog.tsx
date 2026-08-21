@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Pin, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import type { MemoryRecord } from "../types";
+import { harnessLabel } from "../utils";
+import type { MemoryCapabilities, MemoryRecord } from "../types";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 /** Mirrors the contract cap in bridge-protocol's memory messages. */
@@ -25,6 +26,7 @@ export function MemoryDialog({
   onError: (message: string) => void;
 }) {
   const [records, setRecords] = useState<MemoryRecord[]>();
+  const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [filter, setFilter] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [kind, setKind] = useState<string>("preference");
@@ -39,6 +41,7 @@ export function MemoryDialog({
     // A closed dialog keeps no state, and an in-flight read must not land on it.
     readGeneration.current += 1;
     setRecords(undefined);
+    setCapabilities(undefined);
     setFilter(null);
     setBody("");
     setKind("preference");
@@ -60,6 +63,8 @@ export function MemoryDialog({
       }).catch(error => { if (active) onError(String(error)); });
     };
     load();
+    bridgeApi.getMemoryCapabilities().then(value => { if (active) setCapabilities(value); })
+      .catch(error => { if (active) onError(String(error)); });
     void bridgeApi.onMemoryChanged(() => load()).then(fn => {
       if (!active) { fn(); return; }
       off = fn;
@@ -167,6 +172,18 @@ export function MemoryDialog({
             </li>
           )}
         </ul>
+        {capabilities && capabilities.providerNative.length > 0 && (
+          <div className="border-t border-border pt-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Provider-owned memory</p>
+            <ul className="mt-1.5 space-y-1">
+              {capabilities.providerNative.map(item => (
+                <li key={`${item.harness}:${item.command}`} className="text-[12px] text-muted-foreground">
+                  <span className="font-mono text-[11px] text-foreground">/{item.command}</span> · {harnessLabel(item.harness)} — {item.description}. Stays on that provider.
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   </div>;
