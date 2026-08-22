@@ -66,7 +66,7 @@ export function SessionToolbar({
         "flex h-11 shrink-0 items-center gap-2 border-b border-border pr-2",
         // In fullscreen this is the topmost row, so it leaves the traffic lights
         // their corner.
-        fullscreen ? "pl-[84px]" : "pl-4 sm:pl-6",
+        fullscreen ? "pl-24" : "pl-4 sm:pl-6",
       )}
       // The window has no native titlebar, so this strip is the grab handle:
       // "deep" makes the whole row draggable while buttons keep their clicks.

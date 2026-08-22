@@ -149,7 +149,7 @@ describe("SessionToolbar", () => {
   it("leaves the traffic lights their corner in fullscreen", () => {
     mount({ fullscreen: true });
     const row = container.firstElementChild as HTMLElement;
-    expect(row.className).toContain("pl-[84px]");
+    expect(row.className).toContain("pl-24");
     expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
   });
 

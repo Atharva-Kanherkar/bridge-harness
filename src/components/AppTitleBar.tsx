@@ -19,7 +19,7 @@ export function AppTitleBar({ title, navOpen, onOpenNav, actions }: AppTitleBarP
   return (
     <header
       data-tauri-drag-region="deep"
-      className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-sidebar pl-[84px] pr-2 sm:pr-3"
+      className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-sidebar pl-24 pr-2 sm:pr-3"
     >
       <button
         type="button"

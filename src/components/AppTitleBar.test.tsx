@@ -50,7 +50,7 @@ describe("AppTitleBar", () => {
 
   it("leaves the traffic lights their corner", () => {
     mount();
-    expect(header().className).toContain("pl-[84px]");
+    expect(header().className).toContain("pl-24");
   });
 
   it("opens navigation from the mobile toggle", () => {
