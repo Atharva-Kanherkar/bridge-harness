@@ -1,6 +1,12 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// The `requestMethod` marker for an OpenCode `question.asked` request
+/// normalized to `approval.requested`. It deliberately does not end with
+/// `requestApproval`, so `live_turn.rs`'s bypass-policy gate refuses to
+/// auto-grant it: a question needs an answer, not a decision.
+pub const OPENCODE_QUESTION_REQUEST_METHOD: &str = "opencode.question";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedEvent {
     pub kind: String,
@@ -162,6 +168,46 @@ pub fn normalize_opencode_message_with_state(
                 });
             event.status = Some("pending".into());
             event.data["requestId"] = properties.get("id").cloned().unwrap_or(Value::Null);
+            vec![event]
+        }
+        // OpenCode's `question` tool is a distinct channel from `permission`:
+        // it is answered with a text/option payload over
+        // `POST /question/{requestID}/reply`, never with an accept/decline
+        // decision. Folding it into `approval.requested` reuses the existing
+        // generic "mark the session waiting" handling in `live_turn.rs`
+        // instead of a parallel branch; the `requestMethod` marker is what
+        // stops it from ever being treated as an approval.
+        "question.asked" => {
+            let questions = properties
+                .get("questions")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let first_question = questions.get(0).cloned().unwrap_or_else(|| json!({}));
+            let mut event = with_data("approval.requested", &properties, properties.clone());
+            event.item_id = properties
+                .pointer("/tool/callID")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            event.title = first_question
+                .get("header")
+                .and_then(Value::as_str)
+                .filter(|header| !header.is_empty())
+                .map(str::to_owned)
+                .or_else(|| Some("Question".into()));
+            event.text = questions
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("question").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .filter(|text| !text.is_empty());
+            event.status = Some("pending".into());
+            event.data["requestId"] = properties.get("id").cloned().unwrap_or(Value::Null);
+            event.data["requestMethod"] = Value::String(OPENCODE_QUESTION_REQUEST_METHOD.into());
+            event.data["questions"] = questions;
             vec![event]
         }
         "session.error" => {
@@ -1102,5 +1148,53 @@ mod tests {
             &mut state,
         );
         assert_eq!(idle[0].kind, "turn.completed");
+    }
+
+    /// OpenCode's `question` tool is a different channel from `permission`:
+    /// it must never be treated as an approval an auto-approve policy can
+    /// grant, or a bare accept/decline could answer a question with no text.
+    #[test]
+    fn normalizes_opencode_question_asked_without_leaking_it_as_an_approval() {
+        let mut state = OpenCodeStreamState::default();
+        let question = normalize_opencode_message_with_state(
+            &json!({
+                "id":"evt_1",
+                "type":"question.asked",
+                "properties":{
+                    "id":"req_1",
+                    "sessionID":"ses_1",
+                    "questions":[{
+                        "question":"Your workspace is stale against origin/main. How do you want to proceed?",
+                        "header":"Stale workspace",
+                        "options":[{"label":"Rebase","description":"Rebase onto origin/main"}],
+                    }],
+                    "tool":{"messageID":"msg_1","callID":"call_1"},
+                },
+            }),
+            &mut state,
+        );
+        assert_eq!(question.len(), 1);
+        let event = &question[0];
+        assert_eq!(event.kind, "approval.requested");
+        assert_eq!(event.item_id.as_deref(), Some("call_1"));
+        assert_eq!(event.title.as_deref(), Some("Stale workspace"));
+        assert_eq!(
+            event.text.as_deref(),
+            Some("Your workspace is stale against origin/main. How do you want to proceed?")
+        );
+        assert_eq!(event.status.as_deref(), Some("pending"));
+        assert_eq!(event.data["requestId"], "req_1");
+        assert_eq!(
+            event.data["requestMethod"],
+            OPENCODE_QUESTION_REQUEST_METHOD
+        );
+        assert_eq!(event.data["questions"][0]["header"], "Stale workspace");
+        assert!(
+            !event.data["requestMethod"]
+                .as_str()
+                .unwrap()
+                .ends_with("requestApproval"),
+            "a question must never satisfy the bypass-policy auto-grant check"
+        );
     }
 }
