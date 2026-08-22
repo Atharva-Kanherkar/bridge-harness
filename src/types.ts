@@ -84,6 +84,13 @@ export type {
   SessionRecallHit,
   MemoryRecord,
   ListMemoryRecordsResult,
+  MemoryCapabilities,
+  ProviderMemoryCommand,
+  MemoryExtractionSettings,
+  MemoryExtractionRun,
+  MemoryInjectionSettings,
+  MemoryPacketAudit,
+  MemoryPacketItem,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,
@@ -140,6 +147,9 @@ export type LearningTriggerKind = LocalLearningTriggerKind | ExternalLearningTri
 // ---------------------------------------------------------------------------
 
 export interface TerminalChunk { sessionId: string; data: string }
+
+/** `memory-changed` refetch hint: names the scope, never carries a record. */
+export interface MemoryChangedPayload { scopeKey: string }
 
 // ---------------------------------------------------------------------------
 // Deferred result shapes (`resultDeferred` methods). Hand-written until their

@@ -1021,11 +1021,12 @@ async fn save_memory_record(
 #[tauri::command]
 async fn list_memory_records(
     scope_key: String,
+    status: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("List memory records", move || {
-        api::list_memory_records(&core, &scope_key)
+        api::list_memory_records(&core, &scope_key, status.as_deref())
     })
     .await
 }
@@ -1038,6 +1039,112 @@ async fn delete_memory_record(
     let core = state.inner().clone();
     blocking("Delete memory record", move || {
         api::delete_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_memory_injection(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory injection", move || api::get_memory_injection(&core)).await
+}
+
+#[tauri::command]
+async fn set_memory_injection(
+    enabled: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory injection", move || {
+        api::set_memory_injection(&core, enabled)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_packet_audit(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryPacketAudit, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get packet audit", move || {
+        api::get_packet_audit(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_memory_capabilities(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryCapabilities, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory capabilities", move || {
+        api::get_memory_capabilities(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn supersede_memory_record(
+    record_id: String,
+    body: String,
+    kind: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Supersede memory record", move || {
+        api::supersede_memory_record(&core, &record_id, &body, kind.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn approve_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Approve memory record", move || {
+        api::approve_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reject_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reject memory record", move || {
+        api::reject_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_extraction_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get extraction settings", move || {
+        api::get_extraction_settings(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_extraction_settings(
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Update extraction settings", move || {
+        api::update_extraction_settings(&core, &mode, harness.as_deref(), model.as_deref())
     })
     .await
 }
@@ -1335,6 +1442,7 @@ fn setup_embedded(
     work_observation::start_work_fact_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
+    bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
@@ -1451,6 +1559,15 @@ pub fn run() {
             save_memory_record,
             list_memory_records,
             delete_memory_record,
+            get_memory_capabilities,
+            supersede_memory_record,
+            approve_memory_record,
+            reject_memory_record,
+            get_extraction_settings,
+            update_extraction_settings,
+            get_memory_injection,
+            set_memory_injection,
+            get_packet_audit,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,
@@ -1632,6 +1749,7 @@ mod tests {
         run_git(&["init", "-q"]);
         run_git(&["config", "user.email", "bridge-test@example.invalid"]);
         run_git(&["config", "user.name", "Bridge Test"]);
+        run_git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.join("README.md"), "base\n").unwrap();
         run_git(&["add", "."]);
         run_git(&["commit", "-m", "fixture", "-q"]);
@@ -2442,6 +2560,7 @@ mod tests {
         git(&["init", "--quiet"]);
         git(&["config", "user.email", "bridge@example.invalid"]);
         git(&["config", "user.name", "Bridge Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repository.join("tracked.txt"), "first\n").unwrap();
         git(&["add", "tracked.txt"]);
         git(&["commit", "--quiet", "-m", "initial"]);

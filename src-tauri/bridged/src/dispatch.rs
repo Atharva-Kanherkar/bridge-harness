@@ -165,11 +165,48 @@ pub fn dispatch(
         }
         MethodName::ListMemoryRecords => {
             let p: wire::ListMemoryRecordsParams = decode(method, params)?;
-            reply(api::list_memory_records(core, &p.scope_key))
+            reply(api::list_memory_records(core, &p.scope_key, p.status.as_deref()))
         }
         MethodName::DeleteMemoryRecord => {
             let p: wire::DeleteMemoryRecordParams = decode(method, params)?;
             reply(api::delete_memory_record(core, &p.record_id))
+        }
+        MethodName::GetMemoryCapabilities => reply(api::get_memory_capabilities(core)),
+        MethodName::SupersedeMemoryRecord => {
+            let p: wire::SupersedeMemoryRecordParams = decode(method, params)?;
+            reply(api::supersede_memory_record(
+                core,
+                &p.record_id,
+                &p.body,
+                p.kind.as_deref(),
+            ))
+        }
+        MethodName::ApproveMemoryRecord => {
+            let p: wire::ApproveMemoryRecordParams = decode(method, params)?;
+            reply(api::approve_memory_record(core, &p.record_id))
+        }
+        MethodName::RejectMemoryRecord => {
+            let p: wire::RejectMemoryRecordParams = decode(method, params)?;
+            reply(api::reject_memory_record(core, &p.record_id))
+        }
+        MethodName::GetExtractionSettings => reply(api::get_extraction_settings(core)),
+        MethodName::GetMemoryInjection => reply(api::get_memory_injection(core)),
+        MethodName::SetMemoryInjection => {
+            let p: wire::SetMemoryInjectionParams = decode(method, params)?;
+            reply(api::set_memory_injection(core, p.enabled))
+        }
+        MethodName::GetPacketAudit => {
+            let p: wire::GetPacketAuditParams = decode(method, params)?;
+            reply(api::get_packet_audit(core, &p.session_id))
+        }
+        MethodName::UpdateExtractionSettings => {
+            let p: wire::UpdateExtractionSettingsParams = decode(method, params)?;
+            reply(api::update_extraction_settings(
+                core,
+                &p.mode,
+                p.harness.as_deref(),
+                p.model.as_deref(),
+            ))
         }
         MethodName::RetryWorkerTask => {
             let p: wire::RetryWorkerTaskParams = decode(method, params)?;

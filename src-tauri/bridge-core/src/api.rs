@@ -410,24 +410,209 @@ pub fn save_memory_record(
     kind: Option<&str>,
     session_id: Option<&str>,
 ) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
-    let db = core.db.lock().unwrap();
-    memory_ledger::save(&db, body, kind, session_id)
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::save(&db, body, kind, session_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
 }
 
 pub fn list_memory_records(
     core: &Arc<BridgeCore>,
     scope_key: &str,
+    status: Option<&str>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    memory_ledger::list(&db, scope_key)
+    memory_ledger::list(&db, scope_key, status)
 }
 
 pub fn delete_memory_record(
     core: &Arc<BridgeCore>,
     record_id: &str,
 ) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::forget(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+pub fn supersede_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+    body: &str,
+    kind: Option<&str>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::supersede(&db, record_id, body, kind)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+pub fn approve_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::approve(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+pub fn reject_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::reject(&db, record_id)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
+fn extraction_settings_wire(
+    db: &rusqlite::Connection,
+    settings: crate::memory_extraction::ExtractionSettings,
+) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let last_run = crate::memory_extraction::last_run(db, &settings.scope_key)?.map(|run| {
+        wire::MemoryExtractionRun {
+            status: run.status,
+            proposal_count: run.proposal_count,
+            observed_tokens: run.observed_tokens,
+            spend_microusd: run.spend_microusd,
+            detail: run.detail,
+            updated_at: run.updated_at,
+        }
+    });
+    Ok(wire::MemoryExtractionSettings {
+        scope_key: settings.scope_key,
+        mode: settings.mode,
+        harness: settings.harness,
+        model: settings.model,
+        last_run,
+    })
+}
+
+pub fn get_extraction_settings(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryExtractionSettings, BridgeError> {
     let db = core.db.lock().unwrap();
-    memory_ledger::forget(&db, record_id)
+    let settings =
+        crate::memory_extraction::settings(&db, memory_ledger::account_memory_scope())?;
+    extraction_settings_wire(&db, settings)
+}
+
+pub fn update_extraction_settings(
+    core: &Arc<BridgeCore>,
+    mode: &str,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> Result<wire::MemoryExtractionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings = crate::memory_extraction::update_settings(
+        &db,
+        memory_ledger::account_memory_scope(),
+        mode,
+        harness,
+        model,
+    )?;
+    extraction_settings_wire(&db, settings)
+}
+
+pub fn get_memory_injection(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryInjectionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    Ok(wire::MemoryInjectionSettings {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+        enabled: crate::memory_packet::injection_enabled(&db, memory_ledger::account_memory_scope())?,
+    })
+}
+
+pub fn set_memory_injection(
+    core: &Arc<BridgeCore>,
+    enabled: bool,
+) -> Result<wire::MemoryInjectionSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let enabled =
+        crate::memory_packet::set_injection(&db, memory_ledger::account_memory_scope(), enabled)?;
+    Ok(wire::MemoryInjectionSettings {
+        scope_key: memory_ledger::account_memory_scope().to_string(),
+        enabled,
+    })
+}
+
+pub fn get_packet_audit(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<wire::MemoryPacketAudit, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let audit = crate::memory_packet::latest_audit(&db, session_id)?;
+    Ok(match audit {
+        None => wire::MemoryPacketAudit {
+            session_id: session_id.to_string(),
+            selected: Vec::new(),
+            token_estimate: 0,
+            created_at: None,
+        },
+        Some(audit) => wire::MemoryPacketAudit {
+            session_id: session_id.to_string(),
+            selected: audit
+                .selected
+                .into_iter()
+                .map(|item| wire::MemoryPacketItem {
+                    record_id: item.record_id,
+                    body: item.body,
+                    kind: item.kind,
+                    reason: item.reason,
+                })
+                .collect(),
+            token_estimate: audit.token_estimate,
+            created_at: Some(audit.created_at),
+        },
+    })
+}
+
+/// What memory exists here, so the UI can be honest about what it does not
+/// own. The provider half is derived from the slash catalog: an unavailable
+/// adapter contributes nothing, and no harness name is compared in this body.
+pub fn get_memory_capabilities(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryCapabilities, BridgeError> {
+    let provider_native = slash::provider_memory_commands(&available_adapter_ids(core))
+        .into_iter()
+        .map(|command| wire::ProviderMemoryCommand {
+            harness: command.harness,
+            command: command.name,
+            description: command.description,
+        })
+        .collect();
+    Ok(wire::MemoryCapabilities {
+        ledger: wire::MemoryLedgerCapability {
+            exists: true,
+            scope_key: wire::ACCOUNT_MEMORY_SCOPE.to_string(),
+            max_body_chars: wire::MAX_MEMORY_BODY_CHARS as u32,
+            kinds: wire::MEMORY_KINDS.iter().map(|kind| kind.to_string()).collect(),
+        },
+        provider_native,
+    })
 }
 
 /// Run a finished worker's objective again because the user asked. Goes through
@@ -2109,6 +2294,85 @@ mod tests {
         ]
         .concat();
         assert!(!source.contains(&locked_learning_call));
+    }
+
+    #[test]
+    fn memory_saves_and_forgets_publish_the_scope_hint() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let mut events = core.events.subscribe();
+        let record = super::save_memory_record(&core, "Prefers tabs over spaces", None, None)
+            .expect("an explicit save is accepted");
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
+        ));
+        super::delete_memory_record(&core, &record.id).expect("forget tombstones");
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
+        ));
+        // A refused save changes nothing, so it owes no hint.
+        assert!(super::save_memory_record(&core, "   ", None, None).is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn lifecycle_transitions_publish_the_scope_hint() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let mut events = core.events.subscribe();
+        let saved = super::save_memory_record(&core, "Prefers tabs", None, None).unwrap();
+        events.try_recv().unwrap();
+        super::supersede_memory_record(&core, &saved.id, "Prefers spaces", None).unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
+        ));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
+                 VALUES('p1','account:local','fact','One','model_proposal','proposed','now','now'),
+                        ('p2','account:local','fact','Two','model_proposal','proposed','now','now')",
+                [],
+            )
+            .unwrap();
+        }
+        super::approve_memory_record(&core, "p1").unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { .. }
+        ));
+        super::reject_memory_record(&core, "p2").unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { .. }
+        ));
+    }
+
+    #[test]
+    fn memory_capabilities_answer_without_a_harness_comparison() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let capabilities = super::get_memory_capabilities(&core).unwrap();
+        assert!(capabilities.ledger.exists);
+        assert_eq!(capabilities.ledger.scope_key, "account:local");
+        assert_eq!(capabilities.ledger.kinds.len(), 4);
+        // The test core registers no adapters, so no provider contributes.
+        assert!(capabilities.provider_native.is_empty());
+    }
+
+    #[test]
+    fn slash_pin_arms_publish_the_same_hint_as_the_api() {
+        // live_turn has no test scaffold; its slash arms mirror the api seam,
+        // so the wiring claim is checked the way this module already checks
+        // cross-module wiring: against the source.
+        let source = include_str!("live_turn.rs");
+        assert!(
+            source.matches("core.events.publish(CoreEvent::MemoryChanged").count() >= 2,
+            "both /pin and /unpin publish the memory-changed hint"
+        );
     }
 }
 

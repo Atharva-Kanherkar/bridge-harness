@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
@@ -268,7 +268,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -308,7 +308,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             data-entry-id={entry.item.entryId}
             className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
           >
-            <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} errorContext={errorContext}/>
+            <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
           </div>)}
       {optimistic.map((text, index) => <div key={`pending-${index}`} className={BUBBLE}>{text}</div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
@@ -420,11 +420,22 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className={BUBBLE}>{item.text}</div>;
     // No bubble, no card: the agent writes straight onto the canvas.
-    return <div className="chat-message-enter w-full min-w-0 text-foreground">{item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}</div>;
+    return <div className="chat-message-enter group w-full min-w-0 text-foreground">
+      {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}
+      {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
+        <button
+          type="button"
+          aria-label="Remember this"
+          title="Remember this"
+          className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          onClick={() => onRemember(item.text)}
+        ><Pin size={12} aria-hidden="true" />Remember this</button>
+      )}
+    </div>;
   }
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;

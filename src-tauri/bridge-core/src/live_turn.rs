@@ -65,12 +65,16 @@ fn compile_orchestrator_prompt(
     configured_prompt: &str,
     credential_context: &str,
     checkpoint_context: Option<&str>,
+    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::Orchestrator)?
         .project_rule("configured_project_rules", configured_prompt)
         .variable_section("session_capabilities", credential_context);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
+    }
+    if let Some(packet) = memory_packet {
+        compiler = compiler.variable_section("memory_packet", packet);
     }
     compiler.compile()
 }
@@ -79,11 +83,24 @@ fn compile_session_prompt(
     stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
     credential_context: &str,
+    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
-    compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
+    let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
         .project_rule("configured_project_rules", configured_prompt)
-        .variable_section("session_capabilities", credential_context)
-        .compile()
+        .variable_section("session_capabilities", credential_context);
+    if let Some(packet) = memory_packet {
+        compiler = compiler.variable_section("memory_packet", packet);
+    }
+    compiler.compile()
+}
+
+/// The packet at its compile boundary: best-effort, because memory must never
+/// keep a session from starting. Skipped-on-error is consistent — no packet
+/// injected, no audit claiming one.
+fn compiled_memory_packet(state: &Arc<BridgeCore>, session_id: &str) -> Option<String> {
+    crate::memory_packet::for_compile(&state.db.lock().unwrap(), session_id)
+        .ok()
+        .flatten()
 }
 
 fn compile_worker_prompt(
@@ -94,6 +111,7 @@ fn compile_worker_prompt(
     configured_prompt: &str,
     credential_context: &str,
     checkpoint_context: Option<&str>,
+    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(
         stack,
@@ -107,6 +125,9 @@ fn compile_worker_prompt(
     .variable_section("session_capabilities", credential_context);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
+    }
+    if let Some(packet) = memory_packet {
+        compiler = compiler.variable_section("memory_packet", packet);
     }
     compiler.compile()
 }
@@ -288,6 +309,7 @@ mod prompt_section_tests {
                 configured,
                 credential,
                 checkpoint,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -305,7 +327,7 @@ mod prompt_section_tests {
 
         let direct_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
-        let direct = compile_session_prompt(&direct_stack, configured, credential).unwrap();
+        let direct = compile_session_prompt(&direct_stack, configured, credential, None).unwrap();
         assert_eq!(direct, legacy_session_prompt(configured, credential));
         assert!(!direct.instructions().contains("bridge-delegate"));
         assert!(!direct.instructions().contains("worker_contract"));
@@ -333,6 +355,7 @@ mod prompt_section_tests {
                     configured,
                     credential,
                     checkpoint,
+                    None,
                 )
                 .unwrap();
                 assert_eq!(
@@ -361,7 +384,7 @@ mod prompt_section_tests {
         )
         .unwrap();
         let compiled =
-            compile_worker_prompt(&stack, &directive, "main", &[], "", "capabilities", None)
+            compile_worker_prompt(&stack, &directive, "main", &[], "", "capabilities", None, None)
                 .unwrap();
         assert!(!compiled
             .instructions()
@@ -378,7 +401,7 @@ mod prompt_section_tests {
         .unwrap();
         let baseline_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None)
+        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None, None)
             .unwrap();
 
         let overridden =
@@ -386,7 +409,7 @@ mod prompt_section_tests {
         let override_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
         let override_prompt =
-            compile_orchestrator_prompt(&override_stack, "", "capabilities", None).unwrap();
+            compile_orchestrator_prompt(&override_stack, "", "capabilities", None, None).unwrap();
         assert!(override_prompt.stable_prefix.contains("Custom orchestrator policy"));
         assert!(!override_prompt.stable_prefix.contains("starter orchestrator"));
 
@@ -394,20 +417,20 @@ mod prompt_section_tests {
         let deleted_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
         let deleted =
-            compile_orchestrator_prompt(&deleted_stack, "", "capabilities", None).unwrap();
+            compile_orchestrator_prompt(&deleted_stack, "", "capabilities", None, None).unwrap();
         assert!(!deleted.stable_prefix.contains("\"bridge_role\""));
 
         prompt_sections::reset_section(&db, &key).unwrap();
         let reset_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let reset = compile_orchestrator_prompt(&reset_stack, "", "capabilities", None).unwrap();
+        let reset = compile_orchestrator_prompt(&reset_stack, "", "capabilities", None, None).unwrap();
         assert_eq!(reset, baseline);
 
         prompt_sections::restore_revision(&db, &key, overridden.id).unwrap();
         let restored_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
         let restored =
-            compile_orchestrator_prompt(&restored_stack, "", "capabilities", None).unwrap();
+            compile_orchestrator_prompt(&restored_stack, "", "capabilities", None, None).unwrap();
         assert_eq!(restored, override_prompt);
     }
 
@@ -416,7 +439,7 @@ mod prompt_section_tests {
         let db = store::open(Path::new(":memory:")).unwrap();
         let orchestrator_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let error = compile_session_prompt(&orchestrator_stack, "", "capabilities").unwrap_err();
+        let error = compile_session_prompt(&orchestrator_stack, "", "capabilities", None).unwrap_err();
         assert!(error.to_string().contains("cannot compile as direct_session"));
     }
 
@@ -430,7 +453,7 @@ mod prompt_section_tests {
         .unwrap();
         let baseline_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None)
+        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None, None)
             .unwrap();
         let previous = PromptCompilationRecord {
             id: 1,
@@ -459,7 +482,7 @@ mod prompt_section_tests {
         prompt_sections::save_override(&db, &key, "Changed policy").unwrap();
         let changed_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let changed = compile_orchestrator_prompt(&changed_stack, "", "capabilities", None)
+        let changed = compile_orchestrator_prompt(&changed_stack, "", "capabilities", None, None)
             .unwrap();
         assert!(!prompt_compilation_matches(
             &previous,
@@ -764,13 +787,18 @@ pub fn start_session(
         )
     };
     let credential_context = state.credential_broker.instructions(&session_id);
-    let orchestrator_prompt = compile_orchestrator_prompt(
+    // Compiled without the packet first, on purpose. The packet is a variable
+    // section and cannot move `prefix_hash`, so the hot-compatibility check
+    // below does not need it — and building it here would write a retrieval
+    // audit for a packet a hot process is never sent. The real prompt, packet
+    // included, is compiled past the early return.
+    let hot_check_prompt = compile_orchestrator_prompt(
         &prompt_stack,
         &configured_prompt,
         &credential_context,
         None,
+        None,
     )?;
-    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let current_model: Option<String> = state
@@ -790,8 +818,8 @@ pub fn start_session(
         )?
         .is_some_and(|previous| {
             previous.harness == adapter_id
-                && previous.prefix_hash == orchestrator_prompt.metadata.prefix_hash
-                && previous.schema_version == i64::from(orchestrator_prompt.metadata.schema_version)
+                && previous.prefix_hash == hot_check_prompt.metadata.prefix_hash
+                && previous.schema_version == i64::from(hot_check_prompt.metadata.schema_version)
         });
         if current_model.as_deref() == chosen_model.as_deref() && hot_prompt_compatible {
             let db = state.db.lock().unwrap();
@@ -816,7 +844,7 @@ pub fn start_session(
                 "orchestration",
                 RestorationMode::Hot,
                 "not_applicable",
-                &orchestrator_prompt,
+                &hot_check_prompt,
             )?;
             return store::state(&db);
         }
@@ -830,6 +858,19 @@ pub fn start_session(
             adapters::ShutdownReason::Replaced,
         )?;
     }
+
+    // Past the hot return: this call is really going to start a process, so the
+    // packet is built now and every audit it writes names a prompt that is
+    // actually delivered.
+    let memory_packet = compiled_memory_packet(state, &session_id);
+    let orchestrator_prompt = compile_orchestrator_prompt(
+        &prompt_stack,
+        &configured_prompt,
+        &credential_context,
+        None,
+        memory_packet.as_deref(),
+    )?;
+    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
@@ -861,6 +902,7 @@ pub fn start_session(
                 &configured_prompt,
                 &credential_context,
                 Some(context),
+                memory_packet.as_deref(),
             )
             .map(|prompt| prompt.instructions().to_owned())
         })
@@ -1219,10 +1261,22 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         };
         (configured_prompt, prompt_sections::resolve(&db, target, 0)?)
     };
+    let memory_packet = compiled_memory_packet(state, &session_id);
     let compiled_prompt = if is_orchestrator {
-        compile_orchestrator_prompt(&prompt_stack, &configured_prompt, &proxy_instructions, None)?
+        compile_orchestrator_prompt(
+            &prompt_stack,
+            &configured_prompt,
+            &proxy_instructions,
+            None,
+            memory_packet.as_deref(),
+        )?
     } else {
-        compile_session_prompt(&prompt_stack, &configured_prompt, &proxy_instructions)?
+        compile_session_prompt(
+            &prompt_stack,
+            &configured_prompt,
+            &proxy_instructions,
+            memory_packet.as_deref(),
+        )?
     };
     let runtime_instructions = compiled_prompt.instructions().to_owned();
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
@@ -2251,6 +2305,11 @@ fn handle_agent_value(
             if let Ok(Some(prompt)) = begin_pressure_compaction(&db, session_id) {
                 checkpoint_prompt_after_turn = Some(prompt);
             }
+        }
+        if turn_completed {
+            // Best-effort: a full extraction queue must never fail a turn, and
+            // the enqueue itself decides eligibility (mode, kind, open runs).
+            let _ = crate::memory_extraction::enqueue_after_turn(&db, session_id);
         }
     }
 
@@ -3449,6 +3508,7 @@ pub fn launch_worker_outcome(
     let credential_context = state
         .credential_broker
         .instructions(&reservation.session_id);
+    let memory_packet = compiled_memory_packet(&state, &reservation.session_id);
     let compiled_prompt = match compile_worker_prompt(
         &prompt_stack,
         directive,
@@ -3457,6 +3517,7 @@ pub fn launch_worker_outcome(
         &configured_prompt,
         &credential_context,
         None,
+        memory_packet.as_deref(),
     ) {
         Ok(prompt) => prompt,
         Err(error) => {
@@ -3786,6 +3847,7 @@ pub fn launch_worker_outcome(
     // `sessions.harness` holds and what `handoff::assess` compares against.
     let dispatch_id = launch_plan.adapter_id.clone();
 
+    let memory_packet = compiled_memory_packet(&state, &reservation.session_id);
     let compile_restored_prompt = |checkpoint: Option<String>| {
         let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
         compile_worker_prompt(
@@ -3796,6 +3858,7 @@ pub fn launch_worker_outcome(
             &configured_prompt,
             &credential_context,
             Some(&restoration_context),
+            memory_packet.as_deref(),
         )
         .map(|prompt| prompt.instructions().to_owned())
     };
@@ -7194,6 +7257,9 @@ fn prepare_input(
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Pin { body } => {
+            // The slash writes the same ledger the dialog reads, so it owes the
+            // same hint. A refused save publishes nothing.
+            let mut changed_scope = None;
             let text = if body.trim().is_empty() {
                 "Usage: /pin <text>. Saves an about-me pin on this machine (`account:local`). Not this chat, not the helper picker."
                     .to_string()
@@ -7202,16 +7268,22 @@ fn prepare_input(
             } else {
                 let db = state.db.lock().unwrap();
                 match memory_ledger::save(&db, &body, None, Some(&session_id)) {
-                    Ok(record) => memory_ledger::format_saved(&record),
+                    Ok(record) => {
+                        changed_scope = Some(record.scope_key.clone());
+                        memory_ledger::format_saved(&record)
+                    }
                     Err(error) => error.to_string(),
                 }
             };
+            if let Some(scope_key) = changed_scope {
+                core.events.publish(CoreEvent::MemoryChanged { scope_key });
+            }
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Pins => {
             let db = state.db.lock().unwrap();
-            let result = memory_ledger::list(&db, memory_ledger::account_memory_scope())?;
+            let result = memory_ledger::list(&db, memory_ledger::account_memory_scope(), None)?;
             emit_local_assistant(
                 core,
                 &session_id,
@@ -7221,15 +7293,22 @@ fn prepare_input(
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Unpin { selector } => {
+            let mut changed_scope = None;
             let text = if selector.trim().is_empty() {
                 "Usage: /unpin <id>. `/pins` lists ids.".to_string()
             } else {
                 let db = state.db.lock().unwrap();
                 match memory_ledger::forget_by_selector(&db, &selector) {
-                    Ok(record) => memory_ledger::format_forgotten(&record),
+                    Ok(record) => {
+                        changed_scope = Some(record.scope_key.clone());
+                        memory_ledger::format_forgotten(&record)
+                    }
                     Err(error) => error.to_string(),
                 }
             };
+            if let Some(scope_key) = changed_scope {
+                core.events.publish(CoreEvent::MemoryChanged { scope_key });
+            }
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }

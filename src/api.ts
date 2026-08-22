@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -49,6 +49,7 @@ const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) =
 const unit = (result: Promise<null>): Promise<void> => result.then(() => undefined);
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
+const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
 let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
@@ -156,6 +157,8 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
 ];
 const mockMemoryRecords: MemoryRecord[] = [];
+let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };
+let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
     sessionId: "session-1", entries: demoEntries, head: { sessionId: "session-1", activeEntryId: "entry-raw", nativeProviderSessionId: "mock-thread-1", restorationMode: "hot", resumeEligibility: "native", latestCheckpointEntryId: "entry-2", updatedAt: now }, leaves: [demoEntries[4], demoEntries[demoEntries.length - 1]],
@@ -216,6 +219,7 @@ function mockForest(sessionId: string): SessionForestSnapshot {
 }
 function snapshot() { return structuredClone(mockState); }
 function emitState() { stateListeners.forEach(listener => listener()); }
+function emitMemoryChanged(scopeKey: string) { memoryListeners.forEach(listener => listener({ scopeKey })); }
 function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent> = {}) {
   const event = agentEvent(nextEventId++, sessionId, kind, fields);
   event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence)) + 1;
@@ -938,18 +942,105 @@ export const bridgeApi = {
       updatedAt: now,
     };
     mockMemoryRecords.unshift(record);
+    emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
-  listMemoryRecords: async (scopeKey: string): Promise<ListMemoryRecordsResult> => {
-    if (isTauri()) return call("memory/list_memory_records", { scopeKey });
+  listMemoryRecords: async (scopeKey: string, status?: string): Promise<ListMemoryRecordsResult> => {
+    if (isTauri()) return call("memory/list_memory_records", { scopeKey, ...(status ? { status } : {}) });
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    const wanted = status ?? "active";
+    if (wanted !== "active" && wanted !== "proposed") throw new Error(`Memory list can show active or proposed records, not '${wanted}'.`);
     return {
       scopeKey: trimmed,
       records: mockMemoryRecords
-        .filter(record => record.scopeKey === trimmed && record.status === "active")
+        .filter(record => record.scopeKey === trimmed && record.status === wanted)
         .slice(0, 50)
         .map(record => structuredClone(record)),
+    };
+  },
+  supersedeMemoryRecord: async (recordId: string, body: string, kind?: string | null): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/supersede_memory_record", { recordId, body, ...(kind ? { kind } : {}) });
+    const old = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
+    if (!old) throw new Error("Only an active memory record can be superseded.");
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("A memory pin needs some text. Empty bodies are not stored.");
+    const now = new Date().toISOString();
+    old.status = "superseded";
+    old.updatedAt = now;
+    const record: MemoryRecord = {
+      id: crypto.randomUUID(),
+      scopeKey: old.scopeKey,
+      kind: kind?.trim() || old.kind,
+      body: trimmed,
+      provenance: "user_explicit",
+      status: "active",
+      sourceSessionId: old.sourceSessionId,
+      supersedes: old.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockMemoryRecords.unshift(record);
+    emitMemoryChanged(record.scopeKey);
+    return structuredClone(record);
+  },
+  approveMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/approve_memory_record", { recordId });
+    const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "proposed");
+    if (!record) throw new Error("Only a proposed memory record can be approved.");
+    record.status = "active";
+    record.updatedAt = new Date().toISOString();
+    emitMemoryChanged(record.scopeKey);
+    return structuredClone(record);
+  },
+  rejectMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
+    if (isTauri()) return call("memory/reject_memory_record", { recordId });
+    const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "proposed");
+    if (!record) throw new Error("Only a proposed memory record can be rejected.");
+    record.status = "rejected";
+    record.updatedAt = new Date().toISOString();
+    emitMemoryChanged(record.scopeKey);
+    return structuredClone(record);
+  },
+  getExtractionSettings: async (): Promise<MemoryExtractionSettings> => {
+    if (isTauri()) return call("memory/get_extraction_settings");
+    return structuredClone(mockExtractionSettings);
+  },
+  updateExtractionSettings: async (mode: string, harness?: string | null, model?: string | null): Promise<MemoryExtractionSettings> => {
+    if (isTauri()) {
+      return call("memory/update_extraction_settings", {
+        mode,
+        ...(harness ? { harness } : {}),
+        ...(model ? { model } : {}),
+      });
+    }
+    if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it. Use remember or propose.");
+    if (mode !== "remember" && mode !== "propose") throw new Error(`Unknown extraction mode '${mode}'. Use remember or propose.`);
+    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
+    return structuredClone(mockExtractionSettings);
+  },
+  getMemoryInjection: async (): Promise<MemoryInjectionSettings> => {
+    if (isTauri()) return call("memory/get_memory_injection");
+    return { scopeKey: "account:local", enabled: mockMemoryInjection };
+  },
+  setMemoryInjection: async (enabled: boolean): Promise<MemoryInjectionSettings> => {
+    if (isTauri()) return call("memory/set_memory_injection", { enabled });
+    mockMemoryInjection = enabled;
+    return { scopeKey: "account:local", enabled };
+  },
+  getPacketAudit: async (sessionId: string): Promise<MemoryPacketAudit> => {
+    if (isTauri()) return call("memory/get_packet_audit", { sessionId });
+    return { sessionId, selected: [], tokenEstimate: 0 };
+  },
+  getMemoryCapabilities: async (): Promise<MemoryCapabilities> => {
+    if (isTauri()) return call("memory/get_memory_capabilities");
+    return {
+      ledger: { exists: true, scopeKey: "account:local", maxBodyChars: 4000, kinds: ["preference", "fact", "decision", "constraint"] },
+      providerNative: [
+        { harness: "claude", command: "memory", description: "Edit CLAUDE.md memory files" },
+        { harness: "codex", command: "memories", description: "Configure memory use and generation" },
+      ],
     };
   },
   deleteMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
@@ -958,6 +1049,7 @@ export const bridgeApi = {
     if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
     record.status = "deleted";
     record.updatedAt = new Date().toISOString();
+    emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
   addProject: async (path: string): Promise<BridgeState> => {
@@ -1102,6 +1194,11 @@ export const bridgeApi = {
   onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe("learning-job-changed", handler);
     return () => undefined;
+  },
+  onMemoryChanged: async (handler: (payload: MemoryChangedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<MemoryChangedPayload>("memory-changed", handler);
+    memoryListeners.add(handler);
+    return () => memoryListeners.delete(handler);
   },
 };
 

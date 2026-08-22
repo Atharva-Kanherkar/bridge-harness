@@ -233,6 +233,69 @@
       "resultSchema": "memory-record.json"
     },
     {
+      "command": "get_memory_capabilities",
+      "domain": "memory",
+      "method": "memory/get_memory_capabilities",
+      "paramsSchema": null,
+      "resultSchema": "memory-capabilities.json"
+    },
+    {
+      "command": "supersede_memory_record",
+      "domain": "memory",
+      "method": "memory/supersede_memory_record",
+      "paramsSchema": "supersede-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "approve_memory_record",
+      "domain": "memory",
+      "method": "memory/approve_memory_record",
+      "paramsSchema": "approve-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "reject_memory_record",
+      "domain": "memory",
+      "method": "memory/reject_memory_record",
+      "paramsSchema": "reject-memory-record-params.json",
+      "resultSchema": "memory-record.json"
+    },
+    {
+      "command": "get_extraction_settings",
+      "domain": "memory",
+      "method": "memory/get_extraction_settings",
+      "paramsSchema": null,
+      "resultSchema": "memory-extraction-settings.json"
+    },
+    {
+      "command": "update_extraction_settings",
+      "domain": "memory",
+      "method": "memory/update_extraction_settings",
+      "paramsSchema": "update-extraction-settings-params.json",
+      "resultSchema": "memory-extraction-settings.json"
+    },
+    {
+      "command": "get_memory_injection",
+      "domain": "memory",
+      "method": "memory/get_memory_injection",
+      "paramsSchema": null,
+      "resultSchema": "memory-injection-settings.json"
+    },
+    {
+      "command": "set_memory_injection",
+      "domain": "memory",
+      "method": "memory/set_memory_injection",
+      "paramsSchema": "set-memory-injection-params.json",
+      "resultSchema": "memory-injection-settings.json"
+    },
+    {
+      "command": "get_packet_audit",
+      "domain": "memory",
+      "method": "memory/get_packet_audit",
+      "paramsSchema": "get-packet-audit-params.json",
+      "resultSchema": "memory-packet-audit.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

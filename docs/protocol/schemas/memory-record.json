@@ -5,6 +5,15 @@
     "body": {
       "type": "string"
     },
+    "confidenceBps": {
+      "description": "Written only by producers that can mean it (the extractor). An explicit save keeps it NULL, and surfaces render unknown — never a fake number.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "createdAt": {
       "type": "string"
     },
@@ -17,6 +26,12 @@
     "provenance": {
       "type": "string"
     },
+    "rationale": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "scopeKey": {
       "type": "string"
     },
@@ -28,6 +43,13 @@
     },
     "status": {
       "type": "string"
+    },
+    "supersedes": {
+      "description": "Set when this record replaced an earlier one through supersede.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "updatedAt": {
       "type": "string"

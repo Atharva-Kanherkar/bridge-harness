@@ -1325,6 +1325,7 @@ mod tests {
             vec!["init", "-q"],
             vec!["config", "user.email", "bridge-test@example.invalid"],
             vec!["config", "user.name", "Bridge Test"],
+            vec!["config", "commit.gpgsign", "false"],
         ] {
             assert!(std::process::Command::new("git")
                 .args(&args)

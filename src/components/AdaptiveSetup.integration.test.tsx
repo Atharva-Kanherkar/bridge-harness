@@ -142,6 +142,29 @@ describe("adaptive setup journeys", () => {
     expect(container.textContent).not.toContain("Active policy v3");
   });
 
+  it("an emptied pass floor cannot commit zero on the way to a number", async () => {
+    const update = vi.spyOn(bridgeApi, "updateRouterPreferences");
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const field = container.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await flush();
+    });
+    expect(field.value, "blurring an empty field restores the saved floor").toBe("65");
+    await act(async () => {
+      button(container, "Save").click();
+      await flush();
+    });
+    const committed = update.mock.calls.at(-1);
+    expect(committed?.[1]?.minimumPassBps).toBe(6500);
+  });
+
   it("does not rewrite the learning schedule when save has no schedule edits", async () => {
     const update = vi.spyOn(bridgeApi, "updateLearningSchedule");
     await act(async () => {

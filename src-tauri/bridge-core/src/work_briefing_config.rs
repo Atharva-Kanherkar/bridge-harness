@@ -173,7 +173,10 @@ fn effort_str(effort: wire::Effort) -> &'static str {
 /// merely sorted last would still be one keystroke from being opened, resumed, or
 /// sent a turn.
 pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
-    matches!(kind, Some(BRIEFING_SESSION_KIND) | Some(SUGGESTION_SESSION_KIND))
+    matches!(
+        kind,
+        Some(BRIEFING_SESSION_KIND) | Some(SUGGESTION_SESSION_KIND)
+    ) || kind == Some(crate::memory_extraction::EXTRACTION_SESSION_KIND)
 }
 
 #[cfg(test)]

@@ -971,6 +971,10 @@ mod tests {
             &task,
             &["config", "user.email", "bridge-test@example.invalid"],
         );
+        git_cmd(
+            &task,
+            &["config", "commit.gpgsign", "false"],
+        );
         git_cmd(&task, &["config", "user.name", "Bridge Test"]);
         std::fs::write(task.join("base.txt"), "base\n").unwrap();
         git_cmd(&task, &["add", "."]);

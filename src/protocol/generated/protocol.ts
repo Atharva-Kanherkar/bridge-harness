@@ -40,6 +40,15 @@ export type BridgeMethod =
   | "memory/save_memory_record"
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
+  | "memory/get_memory_capabilities"
+  | "memory/supersede_memory_record"
+  | "memory/approve_memory_record"
+  | "memory/reject_memory_record"
+  | "memory/get_extraction_settings"
+  | "memory/update_extraction_settings"
+  | "memory/get_memory_injection"
+  | "memory/set_memory_injection"
+  | "memory/get_packet_audit"
   | "approvals/resolve_approval"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -155,6 +164,15 @@ export const BRIDGE_METHODS = [
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
+  { method: "memory/get_memory_capabilities", domain: "memory", command: "get_memory_capabilities" },
+  { method: "memory/supersede_memory_record", domain: "memory", command: "supersede_memory_record" },
+  { method: "memory/approve_memory_record", domain: "memory", command: "approve_memory_record" },
+  { method: "memory/reject_memory_record", domain: "memory", command: "reject_memory_record" },
+  { method: "memory/get_extraction_settings", domain: "memory", command: "get_extraction_settings" },
+  { method: "memory/update_extraction_settings", domain: "memory", command: "update_extraction_settings" },
+  { method: "memory/get_memory_injection", domain: "memory", command: "get_memory_injection" },
+  { method: "memory/set_memory_injection", domain: "memory", command: "set_memory_injection" },
+  { method: "memory/get_packet_audit", domain: "memory", command: "get_packet_audit" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -243,6 +261,7 @@ export type BridgeNotification =
   | "adapters-changed"
   | "managed-agent-changed"
   | "learning-job-changed"
+  | "memory-changed"
   | "session-output"
   | "account-usage"
   | "stream-lagged";
@@ -253,6 +272,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "adapters-changed", delivery: "transient" },
   { notification: "managed-agent-changed", delivery: "transient" },
   { notification: "learning-job-changed", delivery: "transient" },
+  { notification: "memory-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
@@ -320,6 +340,15 @@ export interface BridgeMethodParams {
   "memory/save_memory_record": SaveMemoryRecordParams;
   "memory/list_memory_records": ListMemoryRecordsParams;
   "memory/delete_memory_record": DeleteMemoryRecordParams;
+  "memory/get_memory_capabilities": undefined;
+  "memory/supersede_memory_record": SupersedeMemoryRecordParams;
+  "memory/approve_memory_record": ApproveMemoryRecordParams;
+  "memory/reject_memory_record": RejectMemoryRecordParams;
+  "memory/get_extraction_settings": undefined;
+  "memory/update_extraction_settings": UpdateExtractionSettingsParams;
+  "memory/get_memory_injection": undefined;
+  "memory/set_memory_injection": SetMemoryInjectionParams;
+  "memory/get_packet_audit": GetPacketAuditParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -437,6 +466,15 @@ export interface BridgeMethodResults {
   "memory/save_memory_record": MemoryRecord;
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
+  "memory/get_memory_capabilities": MemoryCapabilities;
+  "memory/supersede_memory_record": MemoryRecord;
+  "memory/approve_memory_record": MemoryRecord;
+  "memory/reject_memory_record": MemoryRecord;
+  "memory/get_extraction_settings": MemoryExtractionSettings;
+  "memory/update_extraction_settings": MemoryExtractionSettings;
+  "memory/get_memory_injection": MemoryInjectionSettings;
+  "memory/set_memory_injection": MemoryInjectionSettings;
+  "memory/get_packet_audit": MemoryPacketAudit;
   "approvals/resolve_approval": UnitResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -714,15 +752,41 @@ export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "u
 
 export type MarketplaceProvider = "codex" | "claude";
 
+export interface MemoryExtractionRun {
+  detail?: string | null;
+  observedTokens: number;
+  proposalCount: number;
+  spendMicrousd: number;
+  status: string;
+  updatedAt: string;
+}
+
+export interface MemoryLedgerCapability {
+  exists: boolean;
+  kinds: string[];
+  maxBodyChars: number;
+  scopeKey: string;
+}
+
+export interface MemoryPacketItem {
+  body: string;
+  kind: string;
+  reason: string;
+  recordId: string;
+}
+
 export interface MemoryRecord {
   body: string;
+  confidenceBps?: number | null;
   createdAt: string;
   id: string;
   kind: string;
   provenance: string;
+  rationale?: string | null;
   scopeKey: string;
   sourceSessionId?: string | null;
   status: string;
+  supersedes?: string | null;
   updatedAt: string;
 }
 
@@ -770,6 +834,12 @@ export interface Project {
 export interface ProtocolVersion {
   major: number;
   minor: number;
+}
+
+export interface ProviderMemoryCommand {
+  command: string;
+  description: string;
+  harness: string;
 }
 
 export interface QueuedWorkerRequest {
@@ -1480,6 +1550,7 @@ export interface SaveMemoryRecordParams {
 
 export interface ListMemoryRecordsParams {
   scopeKey: string;
+  status?: string | null;
 }
 
 export interface ListMemoryRecordsResult {
@@ -1489,6 +1560,59 @@ export interface ListMemoryRecordsResult {
 
 export interface DeleteMemoryRecordParams {
   recordId: string;
+}
+
+export interface MemoryCapabilities {
+  ledger: MemoryLedgerCapability;
+  providerNative: ProviderMemoryCommand[];
+}
+
+export interface SupersedeMemoryRecordParams {
+  body: string;
+  kind?: string | null;
+  recordId: string;
+}
+
+export interface ApproveMemoryRecordParams {
+  recordId: string;
+}
+
+export interface RejectMemoryRecordParams {
+  recordId: string;
+}
+
+export interface MemoryExtractionSettings {
+  harness?: string | null;
+  lastRun?: MemoryExtractionRun | null;
+  mode: string;
+  model?: string | null;
+  scopeKey: string;
+}
+
+export interface UpdateExtractionSettingsParams {
+  harness?: string | null;
+  mode: string;
+  model?: string | null;
+}
+
+export interface MemoryInjectionSettings {
+  enabled: boolean;
+  scopeKey: string;
+}
+
+export interface SetMemoryInjectionParams {
+  enabled: boolean;
+}
+
+export interface GetPacketAuditParams {
+  sessionId: string;
+}
+
+export interface MemoryPacketAudit {
+  createdAt?: string | null;
+  selected: MemoryPacketItem[];
+  sessionId: string;
+  tokenEstimate: number;
 }
 
 export interface ResolveApprovalParams {

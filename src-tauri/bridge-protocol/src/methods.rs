@@ -76,6 +76,15 @@ methods![
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),
     (DeleteMemoryRecord, "memory", "delete_memory_record"),
+    (GetMemoryCapabilities, "memory", "get_memory_capabilities"),
+    (SupersedeMemoryRecord, "memory", "supersede_memory_record"),
+    (ApproveMemoryRecord, "memory", "approve_memory_record"),
+    (RejectMemoryRecord, "memory", "reject_memory_record"),
+    (GetExtractionSettings, "memory", "get_extraction_settings"),
+    (UpdateExtractionSettings, "memory", "update_extraction_settings"),
+    (GetMemoryInjection, "memory", "get_memory_injection"),
+    (SetMemoryInjection, "memory", "set_memory_injection"),
+    (GetPacketAudit, "memory", "get_packet_audit"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     // terminal

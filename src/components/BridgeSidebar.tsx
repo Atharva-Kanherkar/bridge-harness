@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, PanelLeft, Plus, Search, Settings2, X } from "lucide-react";
+import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, PanelLeft, Pin, Plus, Search, Settings2, X } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
@@ -187,6 +187,8 @@ export type BridgeSidebarProps = {
   onOpenWorkBoard: () => void;
   onOpenProjects: () => void;
   onOpenMarketplace: () => void;
+  /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
+  onOpenMemory: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
 };
@@ -206,6 +208,7 @@ export function BridgeSidebar({
   onOpenWorkBoard,
   onOpenProjects,
   onOpenMarketplace,
+  onOpenMemory,
   onOpenSettings,
   onOpenSession,
 }: BridgeSidebarProps) {
@@ -577,6 +580,19 @@ export function BridgeSidebar({
           >
             <Package size={14} strokeWidth={1.6} aria-hidden="true" />
             {!collapsed && "Marketplace"}
+          </button>
+          <button
+            type="button"
+            onClick={onOpenMemory}
+            title={collapsed ? "Memory" : undefined}
+            className={cn(
+              "mt-0.5 flex shrink-0 items-center rounded-md transition-colors",
+              collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
+              "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <Pin size={14} strokeWidth={1.6} aria-hidden="true" />
+            {!collapsed && "Memory"}
           </button>
           <button
             type="button"

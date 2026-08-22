@@ -5,6 +5,13 @@
   "properties": {
     "scopeKey": {
       "type": "string"
+    },
+    "status": {
+      "description": "`active` (default) or `proposed`. Nothing else lists.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
