@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 34;
+const LATEST_SCHEMA_VERSION: i64 = 37;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -259,6 +259,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             32 => migration_32_memory_lifecycle(&transaction)?,
             33 => migration_33_memory_extraction(&transaction)?,
             34 => migration_34_memory_packet(&transaction)?,
+            35 => migration_35_family_only_preferences(&transaction)?,
+            36 => migration_36_routing_catalogs(&transaction)?,
+            37 => migration_37_learning_tunables(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -938,6 +941,53 @@ fn migration_33_memory_extraction(transaction: &Transaction<'_>) -> Result<(), B
 
 fn migration_34_memory_packet(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_packet::install(transaction)
+}
+
+fn migration_37_learning_tunables(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS learning_tunables (
+            workspace_id TEXT PRIMARY KEY,
+            body TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
+fn migration_36_routing_catalogs(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS routing_catalogs (
+            hash TEXT PRIMARY KEY,
+            snapshot TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
+    )?;
+    add_column_if_missing(transaction, "router_decisions", "catalog_hash", "TEXT")?;
+    Ok(())
+}
+
+fn migration_35_family_only_preferences(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    let rows: Vec<(i64, String)> = {
+        let mut statement = transaction.prepare("SELECT version, weights FROM routing_policies")?;
+        let mapped = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    };
+    for (version, weights) in rows {
+        let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&weights) else {
+            continue;
+        };
+        if crate::routing_policy::strip_fingerprint_preferences(&mut parsed) {
+            transaction.execute(
+                "UPDATE routing_policies SET weights=?2 WHERE version=?1",
+                rusqlite::params![version, parsed.to_string()],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn migration_1_current_schema(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -3056,6 +3106,8 @@ mod tests {
             "memory_record_fts",
             "memory_retrieval_audits",
             "memory_injection_settings",
+            "routing_catalogs",
+            "learning_tunables",
         ] {
             assert!(
                 db.query_row(

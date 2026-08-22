@@ -13,7 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MIN_EVIDENCE_SAMPLES: i64 = 5;
 const MAX_REPLAY_EVIDENCE_ROWS: i64 = 5_000;
 const MIN_GROUP_SAMPLES: i64 = 2;
-const MIN_CONFIDENCE_BPS: i64 = 6_500;
+/// The learning gate is keyed to the named unknown-acceptance bucket rather
+/// than a free-floating floor: an outcome whose acceptance is unknown must
+/// not pass, whatever number encodes it.
+const MIN_CONFIDENCE_BPS: i64 = crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS + 1;
 const MIN_REPLAY_COVERAGE_BPS: i64 = 8_000;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +74,7 @@ pub(crate) struct EvidenceRow {
     intervention: bool,
     confidence_bps: Option<i64>,
     decision: RouterDecision,
+    recorded_at: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -86,6 +90,7 @@ struct Aggregate {
     interventions: i64,
     confidence_reported: i64,
     confidence_total: i64,
+    confidence_minimum: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -167,6 +172,10 @@ impl Aggregate {
         if let Some(confidence) = row.confidence_bps {
             self.confidence_reported += 1;
             self.confidence_total += confidence;
+            self.confidence_minimum = Some(match self.confidence_minimum {
+                Some(current) => current.min(confidence),
+                None => confidence,
+            });
         }
     }
 
@@ -187,11 +196,19 @@ impl Aggregate {
         (self.confidence_reported > 0).then(|| self.confidence_total / self.confidence_reported)
     }
 
+    /// The weakest row in the group. Learning eligibility asks whether every
+    /// outcome cleared the bar, not whether they averaged over it — a mean
+    /// lets a test-backed row carry an unknown-acceptance one into training.
+    fn weakest_confidence_bps(&self) -> Option<i64> {
+        self.confidence_minimum
+    }
+
     fn eligible_for_learning(&self) -> bool {
         self.samples >= MIN_GROUP_SAMPLES
             && self.known_outcomes == self.samples
+            && self.confidence_reported == self.samples
             && self
-                .confidence_bps()
+                .weakest_confidence_bps()
                 .is_some_and(|value| value >= MIN_CONFIDENCE_BPS)
     }
 
@@ -221,7 +238,7 @@ pub(crate) fn load_evidence(
                 (SELECT e.score_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),
                 o.cost_microusd,o.runtime_ms,o.retry_count,o.human_intervention,
                 COALESCE((SELECT e.confidence_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),o.confidence_bps),
-                d.decision
+                d.decision,o.recorded_at
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
          WHERE d.workspace_id=?1 AND o.rowid<=?2
          ORDER BY o.rowid DESC
@@ -258,12 +275,55 @@ pub(crate) fn load_evidence(
             intervention: row.get(12)?,
             confidence_bps: row.get(13)?,
             decision,
+            recorded_at: row.get(15)?,
         })
         },
     )?;
     let mut evidence = rows.collect::<Result<Vec<_>, _>>().map_err(BridgeError::from)?;
     evidence.reverse();
+    // The same recency rule as the online histories, beside the row cap: rows
+    // older than the evidence window before the newest row are not evidence.
+    // A row whose timestamp does not parse stays, like legacy history.
+    let anchor = evidence
+        .iter()
+        .filter_map(|row| {
+            chrono::DateTime::parse_from_rfc3339(&row.recorded_at)
+                .ok()
+                .map(|value| value.with_timezone(&chrono::Utc))
+        })
+        .max();
+    if let Some(anchor) = anchor {
+        let window_days = crate::learning_router::tunables(db, workspace_id).evidence_window_days;
+        evidence.retain(|row| match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
+            Err(_) => true,
+            Ok(recorded) => {
+                // Fractional days, like the online decay: integer days would
+                // keep a row the prediction has already dropped, so the same
+                // outcome would be training evidence and not history.
+                let age_days = (anchor - recorded.with_timezone(&chrono::Utc)).num_seconds() as f64
+                    / 86_400.0;
+                age_days <= window_days as f64
+            }
+        });
+    }
     Ok(evidence)
+}
+
+/// A fingerprint key is a 64-hex SHA-256; a family key never is. Used by the
+/// migration that retires dead per-fingerprint preferences from stored
+/// policy weights, and by nothing else — new policies never publish one.
+pub(crate) fn strip_fingerprint_preferences(weights: &mut serde_json::Value) -> bool {
+    let Some(preferred) = weights
+        .get_mut("preferredCandidates")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return false;
+    };
+    let before = preferred.len();
+    preferred.retain(|key, _| {
+        !(key.len() == 64 && key.chars().all(|character| character.is_ascii_hexdigit()))
+    });
+    preferred.len() != before
 }
 
 fn aggregate_key(row: &EvidenceRow) -> String {
@@ -271,10 +331,6 @@ fn aggregate_key(row: &EvidenceRow) -> String {
         "{}|{}|{}|{}",
         row.fingerprint, row.profile_key, row.candidate, row.effort
     )
-}
-
-fn learning_context_key(row: &EvidenceRow) -> String {
-    format!("{}|{}|{}", row.fingerprint, row.profile_key, row.effort)
 }
 
 fn rank_key(candidate: &str, aggregate: &Aggregate) -> (i64, i64, i64, i64, String) {
@@ -319,63 +375,20 @@ pub fn build_candidate(
         held_out.push(training.pop().expect("evidence is non-empty"));
     }
 
+    // Fingerprints are effectively unique per task, so a per-fingerprint
+    // preference can never match a future request — publishing them only
+    // accumulated dead keys on every promotion. Only role families generalize,
+    // so only role families are published. The fingerprint itself stays for
+    // canary bucketing and the held-out split.
     let mut aggregate_by_exact = BTreeMap::<String, Aggregate>::new();
-    let mut candidates_by_context = BTreeMap::<String, BTreeSet<String>>::new();
-    let mut rows_by_context = BTreeMap::<String, Vec<&EvidenceRow>>::new();
     for row in &training {
         aggregate_by_exact
             .entry(aggregate_key(row))
             .or_default()
             .add(row);
-        candidates_by_context
-            .entry(learning_context_key(row))
-            .or_default()
-            .insert(row.candidate.clone());
-        rows_by_context
-            .entry(learning_context_key(row))
-            .or_default()
-            .push(row);
     }
-
-    let mut context_preferred = BTreeMap::<String, String>::new();
     let mut evidence_groups = 0_i64;
-    for (context, candidates) in &candidates_by_context {
-        if candidates.len() < 2 {
-            continue;
-        }
-        let best = candidates
-            .iter()
-            .filter_map(|candidate| {
-                let key = format!("{}|{}", context, candidate);
-                let aggregate = aggregate_by_exact.get(&key)?;
-                aggregate
-                    .eligible_for_learning()
-                    .then(|| (candidate, aggregate))
-            })
-            .min_by_key(|(candidate, aggregate)| rank_key(candidate, aggregate));
-        if let Some((candidate, _)) = best {
-            context_preferred.insert(context.clone(), candidate.clone());
-            evidence_groups += 1;
-        }
-    }
-
-    // The runtime policy keys by stable task fingerprint. Keep profile/model/effort
-    // aggregation exact, and publish a fingerprint preference only when every
-    // eligible profile context for that fingerprint agrees on the same candidate.
     let mut preferred = BTreeMap::<String, String>::new();
-    let mut preferences_by_fingerprint = BTreeMap::<String, BTreeSet<String>>::new();
-    for (context, candidate) in &context_preferred {
-        let fingerprint = rows_by_context[context][0].fingerprint.clone();
-        preferences_by_fingerprint
-            .entry(fingerprint)
-            .or_default()
-            .insert(candidate.clone());
-    }
-    for (fingerprint, candidates) in preferences_by_fingerprint {
-        if candidates.len() == 1 {
-            preferred.insert(fingerprint, candidates.into_iter().next().unwrap());
-        }
-    }
 
     let mut family_contexts = BTreeMap::<String, Vec<&EvidenceRow>>::new();
     for row in &training {
@@ -561,4 +574,88 @@ pub fn build_candidate(
         replay,
         evidence_groups,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aggregate_with_confidence(confidence: i64) -> Aggregate {
+        let mut aggregate = Aggregate::default();
+        aggregate.samples = 2;
+        aggregate.known_outcomes = 2;
+        aggregate.successes = 2;
+        aggregate.confidence_reported = 2;
+        aggregate.confidence_total = confidence * 2;
+        aggregate.confidence_minimum = Some(confidence);
+        aggregate
+    }
+
+    #[test]
+    fn unknown_acceptance_does_not_pass_the_learning_gate() {
+        assert!(
+            !aggregate_with_confidence(crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS)
+                .eligible_for_learning(),
+            "unknown acceptance is unknown, not a passing grade"
+        );
+        assert!(
+            aggregate_with_confidence(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS)
+                .eligible_for_learning()
+        );
+    }
+
+    #[test]
+    fn one_unknown_acceptance_row_is_not_averaged_away() {
+        // The mean of a test-backed row and an unknown-acceptance one clears
+        // the floor while half the evidence is still unknown. Eligibility asks
+        // about the weakest row, not the average.
+        let mut mixed = Aggregate::default();
+        mixed.samples = 2;
+        mixed.known_outcomes = 2;
+        mixed.successes = 2;
+        mixed.confidence_reported = 2;
+        for value in [
+            crate::learning_router::CONFIDENCE_TEST_BACKED_BPS,
+            crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS,
+        ] {
+            mixed.confidence_total += value;
+            mixed.confidence_minimum =
+                Some(mixed.confidence_minimum.map_or(value, |current: i64| current.min(value)));
+        }
+        assert!(
+            mixed.confidence_bps().unwrap() >= crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS + 1,
+            "the average clears the floor"
+        );
+        assert!(!mixed.eligible_for_learning(), "the weakest row does not");
+    }
+
+    #[test]
+    fn a_row_without_confidence_cannot_train() {
+        let mut partial = Aggregate::default();
+        partial.samples = 2;
+        partial.known_outcomes = 2;
+        partial.successes = 2;
+        partial.confidence_reported = 1;
+        partial.confidence_total = crate::learning_router::CONFIDENCE_TEST_BACKED_BPS;
+        partial.confidence_minimum = Some(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS);
+        assert!(!partial.eligible_for_learning(), "silence is not confidence");
+    }
+
+    #[test]
+    fn stored_fingerprint_preferences_are_stripped_and_families_survive() {
+        let fingerprint = "a".repeat(64);
+        let mut weights = serde_json::json!({
+            "preferredCandidates": {
+                fingerprint.clone(): "codex:gpt",
+                "implementation": "claude:sonnet",
+                "verification": "codex:gpt"
+            },
+            "other": true
+        });
+        assert!(strip_fingerprint_preferences(&mut weights));
+        let preferred = weights["preferredCandidates"].as_object().unwrap();
+        assert!(!preferred.contains_key(&fingerprint));
+        assert_eq!(preferred.len(), 2);
+        assert!(!strip_fingerprint_preferences(&mut weights), "idempotent");
+    }
 }

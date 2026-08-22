@@ -24,6 +24,120 @@ pub const ROUTER_SCHEMA_VERSION: u32 = 2;
 pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
 pub const LEGACY_GLOBAL_SCOPE: &str = "legacy:global";
 const PRIOR_WEIGHT: i64 = 4;
+
+/// The load-bearing learning constants, named in one place with their
+/// defaults, and readable per workspace from a `learning_tunables` row. A
+/// field outside its documented range falls back to the default — nonsense
+/// is never load-bearing. The confidence floor is deliberately absent: it is
+/// keyed to the named unknown-acceptance bucket, not a number to tune.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LearningTunables {
+    /// Completed shadow outcomes required before autonomous routing. 1..=1000.
+    pub min_shadow_outcomes_for_autonomy: i64,
+    /// Bayesian prior weight in predictions. 1..=100. Zero is not "no prior":
+    /// with no history it leaves nothing to divide by.
+    pub prior_weight: i64,
+    /// Exponential decay half-life for outcome history, in days. 1..=365.
+    pub decay_half_life_days: f64,
+    /// Rows older than this before the newest evidence are not evidence. 7..=730.
+    pub evidence_window_days: i64,
+    /// Canary traffic share, in buckets of 100. 1..=50.
+    pub canary_share_buckets: i64,
+}
+
+impl Default for LearningTunables {
+    fn default() -> Self {
+        Self {
+            min_shadow_outcomes_for_autonomy: MIN_SHADOW_OUTCOMES_FOR_AUTONOMY,
+            prior_weight: PRIOR_WEIGHT,
+            decay_half_life_days: DECAY_HALF_LIFE_DAYS,
+            evidence_window_days: EVIDENCE_WINDOW_DAYS,
+            canary_share_buckets: 20,
+        }
+    }
+}
+
+pub fn tunables(db: &Connection, workspace_id: &str) -> LearningTunables {
+    let defaults = LearningTunables::default();
+    let body: Option<String> = db
+        .query_row(
+            "SELECT body FROM learning_tunables WHERE workspace_id=?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some(body) = body else { return defaults };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return defaults;
+    };
+    fn in_range_i64(value: Option<&serde_json::Value>, low: i64, high: i64, fallback: i64) -> i64 {
+        value
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| (low..=high).contains(value))
+            .unwrap_or(fallback)
+    }
+    let half_life = parsed
+        .get("decayHalfLifeDays")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| (1.0..=365.0).contains(value))
+        .unwrap_or(defaults.decay_half_life_days);
+    LearningTunables {
+        min_shadow_outcomes_for_autonomy: in_range_i64(
+            parsed.get("minShadowOutcomesForAutonomy"),
+            1,
+            1_000,
+            defaults.min_shadow_outcomes_for_autonomy,
+        ),
+        prior_weight: in_range_i64(parsed.get("priorWeight"), 1, 100, defaults.prior_weight),
+        decay_half_life_days: half_life,
+        evidence_window_days: in_range_i64(
+            parsed.get("evidenceWindowDays"),
+            7,
+            730,
+            defaults.evidence_window_days,
+        ),
+        canary_share_buckets: in_range_i64(
+            parsed.get("canaryShareBuckets"),
+            1,
+            50,
+            defaults.canary_share_buckets,
+        ),
+    }
+}
+/// Decay is anchored to the newest outcome, not the wall clock: an idle
+/// workspace keeps its history, while inside an active one fresh evidence
+/// outweighs stale volume. Providers change models in place; a candidate that
+/// was great in March is not evidence about August.
+/// Outcome confidence is three deterministic buckets, not a score. Only the
+/// test-backed bucket is knowledge; unknown acceptance is named as unknown so
+/// no gate can quietly treat it as known. The bounded evaluator, when it
+/// exists, is the only thing allowed to mint a real number between these.
+pub const CONFIDENCE_TEST_BACKED_BPS: i64 = 9_500;
+pub const CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS: i64 = 7_000;
+pub const CONFIDENCE_NO_SIGNAL_BPS: i64 = 4_000;
+pub const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+pub const EVIDENCE_WINDOW_DAYS: i64 = 120;
+
+pub(crate) fn decay_weight(
+    recorded_at: &str,
+    anchor: chrono::DateTime<chrono::Utc>,
+    half_life_days: f64,
+    window_days: i64,
+) -> Option<f64> {
+    let recorded = chrono::DateTime::parse_from_rfc3339(recorded_at)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let age_days = (anchor - recorded).num_seconds() as f64 / 86_400.0;
+    if age_days <= 0.0 {
+        return Some(1.0);
+    }
+    if age_days > window_days as f64 {
+        return None;
+    }
+    Some(0.5_f64.powf(age_days / half_life_days))
+}
 /// Sessions that can still report *current* quota/context. Ended, ready, and
 /// idle rows are stale snapshots: missing capacity is unknown, which stays
 /// eligible rather than permanently excluding the harness. This is the same
@@ -229,7 +343,7 @@ pub struct RouterDecision {
     pub profile_purpose: Option<String>,
     #[serde(default = "default_policy_version")]
     pub policy_version: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub catalog_snapshot: serde_json::Value,
     pub mode: RouterMode,
     pub manual_override: bool,
@@ -306,7 +420,11 @@ fn active_policy(
     else {
         return Ok((0, BTreeMap::new()));
     };
-    if status == "canary" && canary_bucket(fingerprint) >= 20 {
+    let canary_share = match workspace_id_from_scope(scope.as_str()) {
+        Ok(workspace_id) => tunables(db, workspace_id).canary_share_buckets as u8,
+        Err(_) => 20,
+    };
+    if status == "canary" && canary_bucket(fingerprint) >= canary_share {
         if let Some(predecessor) = predecessor {
             (version, weights) = db.query_row(
                 "SELECT version,weights FROM routing_policies WHERE version=?1 AND learning_scope=?2",
@@ -349,6 +467,7 @@ pub struct EvaluationInput {
     pub remaining_capability_units: i64,
     pub budget_preference: Option<String>,
     pub latency_preference: Option<String>,
+    pub prior_weight: i64,
 }
 
 fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
@@ -359,16 +478,22 @@ fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
     }
 }
 
-fn predict(candidate: &RouteCandidate, history: &HistoricalOutcome) -> CandidatePrediction {
+fn predict(
+    candidate: &RouteCandidate,
+    history: &HistoricalOutcome,
+    prior_weight: i64,
+) -> CandidatePrediction {
     let (prior_pass, prior_latency) = tier_prior(candidate.tier);
-    let denominator = PRIOR_WEIGHT + history.samples;
+    // Never zero. The tunable range already refuses a zero prior, and routing
+    // is not the place to discover that a future caller disagreed.
+    let denominator = (prior_weight + history.samples).max(1);
     let pass_probability_bps =
-        ((i64::from(prior_pass) * PRIOR_WEIGHT + history.successes * 10_000) / denominator) as u16;
-    let latency_ms = (prior_latency * PRIOR_WEIGHT + history.runtime_ms_total) / denominator;
+        ((i64::from(prior_pass) * prior_weight + history.successes * 10_000) / denominator) as u16;
+    let latency_ms = (prior_latency * prior_weight + history.runtime_ms_total) / denominator;
     let prior_cost = candidate.capability_units * 1_000;
     let normalized_quota_cost =
-        (prior_cost * PRIOR_WEIGHT + history.normalized_cost_total) / denominator;
-    let retry_risk_bps = (((10_000 - i64::from(prior_pass)) * PRIOR_WEIGHT
+        (prior_cost * prior_weight + history.normalized_cost_total) / denominator;
+    let retry_risk_bps = (((10_000 - i64::from(prior_pass)) * prior_weight
         + history.retries * 10_000)
         / denominator) as u16;
     CandidatePrediction {
@@ -466,6 +591,7 @@ pub fn evaluate(input: EvaluationInput) -> Vec<CandidateEvaluation> {
                     .histories
                     .get(&candidate.key())
                     .unwrap_or(&HistoricalOutcome::default()),
+                input.prior_weight,
             );
             if prediction.pass_probability_bps < input.preferences.minimum_pass_bps {
                 exclusions.insert(CandidateExclusion::BelowQualityFloor);
@@ -645,6 +771,7 @@ pub fn route(
     let availability = harness_capacity(db, &workspace_id)?;
     let candidates = build_candidates(descriptors, &profiled_request, &availability);
     let histories = load_histories(db, &workspace_id, policy::role_name(request.role))?;
+    let workspace_tunables = tunables(db, &workspace_id);
     let required_capabilities = vec!["tools".into(), "commands".into()];
     let mut evaluations = evaluate(EvaluationInput {
         candidates,
@@ -658,6 +785,7 @@ pub fn route(
         latency_preference: resolved_profile
             .as_ref()
             .and_then(|profile| profile.latency_preference.clone()),
+        prior_weight: workspace_tunables.prior_weight,
     });
     let implementer_family: Option<String> = if request.role == WorkerRole::Verification {
         db.query_row(
@@ -691,13 +819,35 @@ pub fn route(
         .map(|profile| format!("{}:{}", profile.provider, profile.model))
         .filter(|key| candidate_for_key(&evaluations, key).is_some());
     let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
+    // Only role families are published as preferences, so only role families
+    // are consulted here. The fingerprint recurs in exactly one situation — a
+    // retry of the same task — and that is where escalation belongs: after a
+    // recorded failure, prefer sideways before spending a tier.
     let policy_preference = preferred_candidates
-        .get(&fingerprint)
-        .or_else(|| preferred_candidates.get(policy::role_name(request.role)))
+        .get(policy::role_name(request.role))
         .filter(|key| {
             candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
         })
         .cloned();
+    // The *latest* outcome for this task, not the latest failure: a later
+    // success means the task is no longer failing, and steering away from a
+    // candidate that has since worked would outlive the reason for it.
+    let failed_candidate: Option<String> = db
+        .query_row(
+            "SELECT o.candidate, o.succeeded
+             FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+             WHERE d.workspace_id=?1 AND d.task_fingerprint=?2
+             ORDER BY o.rowid DESC LIMIT 1",
+            params![workspace_id, fingerprint],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()?
+        .and_then(|(candidate, succeeded)| (!succeeded).then_some(candidate));
+    let retry_escalation = failed_candidate
+        .as_deref()
+        .and_then(|key| candidate_for_key(&evaluations, key))
+        .and_then(|failed| next_escalation(&failed.candidate, &evaluations))
+        .map(|candidate| candidate.key());
     let recommendation = if profile_locked {
         baseline
             .as_ref()
@@ -706,7 +856,7 @@ pub fn route(
             })
             .cloned()
     } else {
-        policy_preference.or_else(|| {
+        retry_escalation.or(policy_preference).or_else(|| {
             evaluations
                 .iter()
                 .find(|candidate| candidate.eligible())
@@ -954,9 +1104,10 @@ fn ensure_autonomous_ready(db: &Connection, workspace_id: &str) -> Result<(), Br
         params![workspace_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if outcomes < MIN_SHADOW_OUTCOMES_FOR_AUTONOMY {
+    let required = tunables(db, workspace_id).min_shadow_outcomes_for_autonomy;
+    if outcomes < required {
         return Err(BridgeError::Invalid(format!(
-            "autonomous routing requires at least {MIN_SHADOW_OUTCOMES_FOR_AUTONOMY} completed shadow outcomes; found {outcomes}"
+            "autonomous routing requires at least {required} completed shadow outcomes; found {outcomes}"
         )));
     }
     if manual * 20 >= outcomes {
@@ -978,9 +1129,24 @@ fn normalized_list(values: &[String]) -> Vec<String> {
 }
 
 fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), BridgeError> {
+    // The catalog is the fastest-growing bytes in an active workspace, and it
+    // was stored twice per decision: once in its own column and once embedded
+    // in the decision blob. It now lives once per distinct catalog, keyed by
+    // hash; decision rows carry the hash, and the blob omits the snapshot.
+    let catalog_body = decision.catalog_snapshot.to_string();
+    let catalog_hash = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(catalog_body.as_bytes()))
+    };
     db.execute(
-        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+        "INSERT OR IGNORE INTO routing_catalogs(hash,snapshot,created_at) VALUES(?1,?2,?3)",
+        params![catalog_hash, catalog_body, decision.created_at],
+    )?;
+    let mut stored = decision.clone();
+    stored.catalog_snapshot = serde_json::Value::Null;
+    db.execute(
+        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,catalog_hash,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         params![
             decision.id,
             decision.workspace_id,
@@ -993,7 +1159,7 @@ fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), Br
             decision.profile_version,
             decision.profile_purpose,
             decision.policy_version,
-            decision.catalog_snapshot.to_string(),
+            catalog_hash,
             decision.explanation,
             decision.actual_provider,
             decision.actual_model,
@@ -1003,7 +1169,7 @@ fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), Br
             decision.baseline_candidate,
             decision.recommended_candidate,
             decision.executed_candidate,
-            serde_json::to_string(decision).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            serde_json::to_string(&stored).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             decision.created_at,
         ],
     )?;
@@ -1149,14 +1315,14 @@ pub fn record_worker_outcome(
         "unknown"
     };
     let confidence_bps = if has_failed_test || has_passed_test {
-        9_500
+        CONFIDENCE_TEST_BACKED_BPS
     } else if matches!(
         result.status,
         WorkerResultStatus::Completed | WorkerResultStatus::Failed
     ) {
-        7_000
+        CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS
     } else {
-        4_000
+        CONFIDENCE_NO_SIGNAL_BPS
     };
     let evidence_entry_ids = db
         .query_row(
@@ -1231,28 +1397,102 @@ fn load_histories(
     task_family: &str,
 ) -> Result<BTreeMap<String, HistoricalOutcome>, BridgeError> {
     let mut statement = db.prepare(
-        "SELECT o.candidate,COUNT(*),SUM(CASE WHEN o.succeeded THEN 1 ELSE 0 END),
-                COALESCE(SUM(o.runtime_ms),0),COALESCE(SUM(o.normalized_cost),0),
-                SUM(CASE WHEN o.retry_count>0 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN o.human_intervention THEN 1 ELSE 0 END)
+        "SELECT o.candidate,o.succeeded,COALESCE(o.runtime_ms,0),COALESCE(o.normalized_cost,0),
+                o.retry_count,o.human_intervention,o.recorded_at
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-         WHERE d.workspace_id=?1 AND d.task_family=?2 GROUP BY o.candidate",
+         WHERE d.workspace_id=?1 AND d.task_family=?2",
     )?;
-    let rows = statement.query_map(params![workspace_id, task_family], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            HistoricalOutcome {
-                samples: row.get(1)?,
-                successes: row.get(2)?,
-                runtime_ms_total: row.get(3)?,
-                normalized_cost_total: row.get(4)?,
-                retries: row.get(5)?,
-                human_interventions: row.get(6)?,
+    struct OutcomeRow {
+        candidate: String,
+        succeeded: bool,
+        runtime_ms: i64,
+        normalized_cost: i64,
+        retried: bool,
+        human_intervention: bool,
+        recorded_at: String,
+    }
+    let rows: Vec<OutcomeRow> = statement
+        .query_map(params![workspace_id, task_family], |row| {
+            Ok(OutcomeRow {
+                candidate: row.get(0)?,
+                succeeded: row.get(1)?,
+                runtime_ms: row.get(2)?,
+                normalized_cost: row.get(3)?,
+                retried: row.get::<_, i64>(4)? > 0,
+                human_intervention: row.get(5)?,
+                recorded_at: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Anchor on the newest parseable timestamp. A row whose timestamp does
+    // not parse counts at full weight — legacy evidence degrades to the old
+    // undecayed behavior instead of vanishing.
+    let anchor = rows
+        .iter()
+        .filter_map(|row| {
+            chrono::DateTime::parse_from_rfc3339(&row.recorded_at)
+                .ok()
+                .map(|value| value.with_timezone(&chrono::Utc))
+        })
+        .max();
+    #[derive(Default)]
+    struct Weighted {
+        samples: f64,
+        successes: f64,
+        runtime_ms_total: f64,
+        normalized_cost_total: f64,
+        retries: f64,
+        human_interventions: f64,
+    }
+    let workspace_tunables = tunables(db, workspace_id);
+    let mut weighted = BTreeMap::<String, Weighted>::new();
+    for row in rows {
+        let weight = match anchor {
+            None => 1.0,
+            Some(anchor) => match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
+                Err(_) => 1.0,
+                Ok(_) => match decay_weight(
+                    &row.recorded_at,
+                    anchor,
+                    workspace_tunables.decay_half_life_days,
+                    workspace_tunables.evidence_window_days,
+                ) {
+                    Some(weight) => weight,
+                    None => continue,
+                },
             },
-        ))
-    })?;
-    rows.collect::<Result<BTreeMap<_, _>, _>>()
-        .map_err(BridgeError::from)
+        };
+        let entry = weighted.entry(row.candidate).or_default();
+        entry.samples += weight;
+        if row.succeeded {
+            entry.successes += weight;
+        }
+        entry.runtime_ms_total += weight * row.runtime_ms as f64;
+        entry.normalized_cost_total += weight * row.normalized_cost as f64;
+        if row.retried {
+            entry.retries += weight;
+        }
+        if row.human_intervention {
+            entry.human_interventions += weight;
+        }
+    }
+    Ok(weighted
+        .into_iter()
+        .filter(|(_, value)| value.samples.round() as i64 > 0)
+        .map(|(candidate, value)| {
+            (
+                candidate,
+                HistoricalOutcome {
+                    samples: value.samples.round() as i64,
+                    successes: value.successes.round() as i64,
+                    runtime_ms_total: value.runtime_ms_total.round() as i64,
+                    normalized_cost_total: value.normalized_cost_total.round() as i64,
+                    retries: value.retries.round() as i64,
+                    human_interventions: value.human_interventions.round() as i64,
+                },
+            )
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1321,12 +1561,26 @@ pub fn benchmark(tasks: &[BenchmarkTask]) -> BenchmarkReport {
 }
 
 pub fn next_escalation(
-    current: CapabilityTier,
+    failed: &RouteCandidate,
     evaluations: &[CandidateEvaluation],
 ) -> Option<RouteCandidate> {
+    // A harness-specific failure is cheapest to test sideways: same tier,
+    // different family, before any tier is spent. Only then up-tier; still
+    // deterministic, still terminal after the strongest tier.
+    let lateral = evaluations
+        .iter()
+        .filter(|item| {
+            item.eligible()
+                && tier_rank(item.candidate.tier) == tier_rank(failed.tier)
+                && !item.candidate.harness.eq_ignore_ascii_case(&failed.harness)
+        })
+        .min_by_key(|item| item.expected_cost_score);
+    if let Some(item) = lateral {
+        return Some(item.candidate.clone());
+    }
     evaluations
         .iter()
-        .filter(|item| item.eligible() && tier_rank(item.candidate.tier) > tier_rank(current))
+        .filter(|item| item.eligible() && tier_rank(item.candidate.tier) > tier_rank(failed.tier))
         .min_by_key(|item| (tier_rank(item.candidate.tier), item.expected_cost_score))
         .map(|item| item.candidate.clone())
 }
@@ -1374,17 +1628,28 @@ mod tests {
     }
 
     fn evaluated(preferences: RouterPreferences) -> Vec<CandidateEvaluation> {
-        evaluate(EvaluationInput {
-            candidates: vec![
+        evaluated_with(
+            vec![
                 candidate("codex", "fast", CapabilityTier::Fast, 2),
                 candidate("claude", "standard", CapabilityTier::Standard, 4),
             ],
+            preferences,
+        )
+    }
+
+    fn evaluated_with(
+        candidates: Vec<RouteCandidate>,
+        preferences: RouterPreferences,
+    ) -> Vec<CandidateEvaluation> {
+        evaluate(EvaluationInput {
+            candidates,
             preferences,
             histories: BTreeMap::new(),
             required_capabilities: vec!["tools".into()],
             remaining_capability_units: 24,
             budget_preference: None,
             latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
         })
     }
 
@@ -1483,6 +1748,7 @@ mod tests {
             remaining_capability_units: 24,
             budget_preference: Some("quality".into()),
             latency_preference: Some("patient".into()),
+            prior_weight: PRIOR_WEIGHT,
         });
         assert!(result.iter().all(CandidateEvaluation::eligible));
         assert_eq!(result[0].candidate.key(), "claude:standard");
@@ -1512,6 +1778,7 @@ mod tests {
             remaining_capability_units: 1,
             budget_preference: None,
             latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
         });
         assert_eq!(result[0].exclusions.len(), 12);
         assert!(!result[0].eligible());
@@ -1528,7 +1795,7 @@ mod tests {
             retries: 0,
             human_interventions: 0,
         };
-        let learned = predict(&route, &history);
+        let learned = predict(&route, &history, PRIOR_WEIGHT);
         assert!(learned.pass_probability_bps > 6_500);
         assert!(learned.pass_probability_bps < 10_000);
         assert!(learned.latency_ms < 10_000);
@@ -1564,9 +1831,44 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).unwrap();
         assert_eq!(evidence.0, 0);
-        assert!(evidence.1 > 2);
+        assert_eq!(evidence.1, 0, "the snapshot no longer rides every decision row");
         assert_eq!(evidence.2.len(), 64);
         assert!(!evidence.3.is_empty());
+        let (catalog_hash, blob): (String, String) = db
+            .query_row(
+                "SELECT catalog_hash,decision FROM router_decisions LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(catalog_hash.len(), 64);
+        assert!(
+            !blob.contains("catalogSnapshot"),
+            "the blob stopped embedding the catalog a second time"
+        );
+        let catalogs: i64 = db
+            .query_row("SELECT COUNT(*) FROM routing_catalogs WHERE hash=?1", params![catalog_hash], |row| row.get(0))
+            .unwrap();
+        assert_eq!(catalogs, 1, "the catalog lives once, keyed by its hash");
+    }
+
+    #[test]
+    fn decision_rows_store_a_catalog_hash_not_blobs() {
+        let db = routing_db();
+        route(&db, "parent", "turn-a", &request(), &descriptors()).unwrap();
+        route(&db, "parent", "turn-b", &request(), &descriptors()).unwrap();
+        let catalogs: i64 = db
+            .query_row("SELECT COUNT(*) FROM routing_catalogs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(catalogs, 1, "two decisions over one catalog store it once");
+        let bytes: i64 = db
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(catalog_snapshot)),0) FROM router_decisions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bytes, 0);
     }
 
     #[test]
@@ -1818,9 +2120,109 @@ mod tests {
         assert!(evaluated(preferences).iter().all(|item| !item.eligible()));
 
         let result = evaluated(RouterPreferences::default());
-        let escalation = next_escalation(CapabilityTier::Fast, &result).unwrap();
-        assert_eq!(escalation.tier, CapabilityTier::Standard);
-        assert!(next_escalation(CapabilityTier::Strong, &result).is_none());
+        let mut strong_failed = result[0].candidate.clone();
+        strong_failed.tier = CapabilityTier::Strong;
+        assert!(
+            next_escalation(&strong_failed, &result).is_none(),
+            "terminal after the strongest tier, sideways included"
+        );
+    }
+
+    #[test]
+    fn same_tier_family_switch_is_tried_before_tier_up() {
+        let result = evaluated_with(
+            vec![
+                candidate("codex", "codex-standard", CapabilityTier::Standard, 4),
+                candidate("claude", "claude-standard", CapabilityTier::Standard, 4),
+                candidate("codex", "codex-strong", CapabilityTier::Strong, 8),
+            ],
+            RouterPreferences::default(),
+        );
+        let failed = result
+            .iter()
+            .find(|item| {
+                item.candidate.harness == "codex" && item.candidate.tier == CapabilityTier::Standard
+            })
+            .unwrap()
+            .candidate
+            .clone();
+        let next = next_escalation(&failed, &result).unwrap();
+        assert_eq!(next.harness, "claude", "the cheapest fix for a harness-specific failure");
+        assert_eq!(
+            tier_rank(next.tier),
+            tier_rank(failed.tier),
+            "no tier is spent for a family switch"
+        );
+    }
+
+    #[test]
+    fn a_later_success_clears_the_sideways_steer() {
+        let db = routing_db();
+        let record_outcome = |turn: &str, child: &str, succeeded: bool| {
+            let routed = route(&db, "parent", turn, &request(), &descriptors()).unwrap();
+            let key = routed.decision.executed_candidate.clone().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![child],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,?3,?4,?5,100,1000,0,0,?6,?7,'2026-08-01T00:00:00Z')",
+                params![
+                    routed.decision.id,
+                    child,
+                    key,
+                    succeeded,
+                    if succeeded { "completed" } else { "failed" },
+                    if succeeded { "success" } else { "failure" },
+                    if succeeded { "accepted" } else { "rejected" },
+                ],
+            )
+            .unwrap();
+            key
+        };
+        let failed_key = record_outcome("turn-1", "child-1", false);
+        let after_failure = route(&db, "parent", "turn-2", &request(), &descriptors()).unwrap();
+        assert_ne!(after_failure.decision.recommended_candidate, Some(failed_key.clone()));
+        record_outcome("turn-3", "child-2", true);
+        let after_success = route(&db, "parent", "turn-4", &request(), &descriptors()).unwrap();
+        assert_eq!(
+            after_success.decision.recommended_candidate,
+            Some(failed_key),
+            "the task is no longer failing, so the steer expires with it"
+        );
+    }
+
+    #[test]
+    fn a_retried_task_is_recommended_sideways_after_its_failure() {
+        let db = routing_db();
+        let routed = route(&db, "parent", "turn-1", &request(), &descriptors()).unwrap();
+        let failed_key = routed.decision.executed_candidate.clone().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+             VALUES('child-retry','w','codex','Worker','failed','reported','parent')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+             VALUES(?1,'child-retry',?2,0,'failed',100,1000,0,0,'failure','rejected','2026-08-01T00:00:00Z')",
+            params![routed.decision.id, failed_key],
+        )
+        .unwrap();
+        let retried = route(&db, "parent", "turn-2", &request(), &descriptors()).unwrap();
+        let recommended = retried.decision.recommended_candidate.clone().unwrap();
+        assert_ne!(recommended, failed_key, "the failed candidate is not re-recommended");
+        assert!(
+            recommended.starts_with("claude:"),
+            "sideways before up: got {recommended}"
+        );
+        assert_eq!(
+            retried.decision.executed_candidate, retried.decision.baseline_candidate,
+            "shadow mode records the recommendation without acting on it"
+        );
     }
 
     #[test]
@@ -1923,6 +2325,7 @@ mod tests {
             remaining_capability_units: 24,
             budget_preference: None,
             latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
         });
         let claude = evaluated
             .iter()
@@ -2000,6 +2403,140 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("without a workspace"), "{error}");
+    }
+
+    #[test]
+    fn a_zero_prior_weight_is_refused_and_prediction_never_divides_by_zero() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', '{\"priorWeight\":0}', 'now')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            tunables(&db, "w").prior_weight,
+            LearningTunables::default().prior_weight,
+            "zero is out of range and falls back"
+        );
+        // And the arithmetic answers rather than panicking even if a caller
+        // supplies zero directly with no history to divide by.
+        let result = evaluated_with(
+            vec![candidate("codex", "codex-standard", CapabilityTier::Standard, 4)],
+            RouterPreferences::default(),
+        );
+        let prediction = predict(&result[0].candidate, &HistoricalOutcome::default(), 0);
+        assert_eq!(prediction.pass_probability_bps, 0, "no prior and no evidence is not a crash");
+    }
+
+    #[test]
+    fn tunables_hold_their_defaults_and_clamp_nonsense() {
+        let db = routing_db();
+        assert_eq!(tunables(&db, "w"), LearningTunables::default(), "no row means defaults");
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', ?1, 'now')",
+            params![r#"{"minShadowOutcomesForAutonomy":5,"priorWeight":9000,"decayHalfLifeDays":7.0,"evidenceWindowDays":30,"canaryShareBuckets":95}"#],
+        )
+        .unwrap();
+        let tuned = tunables(&db, "w");
+        assert_eq!(tuned.min_shadow_outcomes_for_autonomy, 5, "in range applies");
+        assert_eq!(tuned.decay_half_life_days, 7.0);
+        assert_eq!(tuned.evidence_window_days, 30);
+        assert_eq!(
+            tuned.prior_weight,
+            LearningTunables::default().prior_weight,
+            "out of range falls back — nonsense is never load-bearing"
+        );
+        assert_eq!(tuned.canary_share_buckets, LearningTunables::default().canary_share_buckets);
+    }
+
+    #[test]
+    fn a_tuned_evidence_window_narrows_the_history() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', '{\"evidenceWindowDays\":30}', 'now')",
+            [],
+        )
+        .unwrap();
+        let insert = |suffix: &str, recorded_at: &str| {
+            let decision = format!("decision-window-{suffix}");
+            db.execute(
+                "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+                 VALUES(?1,'w','parent',?2,'trace','implementation','fp',1,'implementer','codex','codex-standard','medium','shadow',0,'codex:codex-standard','codex:codex-standard','codex:codex-standard','{}',?3)",
+                params![decision, format!("turn-window-{suffix}"), recorded_at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![format!("child-window-{suffix}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,'codex:codex-standard',1,'completed',100,1000,0,0,'success','accepted',?3)",
+                params![decision, format!("child-window-{suffix}"), recorded_at],
+            )
+            .unwrap();
+        };
+        insert("fresh", "2026-08-01T00:00:00Z");
+        insert("sixty", "2026-06-02T00:00:00Z");
+        let history = &load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"];
+        assert_eq!(history.samples, 1, "a 30-day window drops the 60-day row");
+    }
+
+    #[test]
+    fn stale_history_decays_out_of_the_prediction() {
+        let db = routing_db();
+        let insert = |suffix: &str, succeeded: bool, recorded_at: &str| {
+            let decision = format!("decision-{suffix}");
+            db.execute(
+                "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+                 VALUES(?1,'w','parent',?2,'trace','implementation','fp',1,'implementer','codex','codex-standard','medium','shadow',0,'codex:codex-standard','codex:codex-standard','codex:codex-standard','{}',?3)",
+                params![decision, format!("turn-{suffix}"), recorded_at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![format!("child-{suffix}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,'codex:codex-standard',?3,'completed',100,1000,0,0,?4,?5,?6)",
+                params![
+                    decision,
+                    format!("child-{suffix}"),
+                    succeeded,
+                    if succeeded { "success" } else { "failure" },
+                    if succeeded { "accepted" } else { "rejected" },
+                    recorded_at,
+                ],
+            )
+            .unwrap();
+        };
+        for index in 0..8 {
+            insert(&format!("stale-{index}"), false, "2026-06-02T00:00:00Z");
+        }
+        for index in 0..5 {
+            insert(&format!("ancient-{index}"), false, "2026-01-01T00:00:00Z");
+        }
+        for index in 0..3 {
+            insert(&format!("fresh-{index}"), true, "2026-08-01T00:00:00Z");
+        }
+        let history = &load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"];
+        // 8 failures at 60 days weigh 0.25 each; 5 at 212 days are outside the
+        // window entirely; 3 fresh successes weigh 1.0. Raw counting would say
+        // 3 passes in 16 samples — decayed, fresh evidence carries the day.
+        assert_eq!(history.successes, 3);
+        assert_eq!(history.samples, 5, "8*0.25 + 3, ancient rows gone");
+        assert!(
+            history.successes * 2 > history.samples,
+            "the weighted pass rate flips above one half"
+        );
     }
 
     #[test]

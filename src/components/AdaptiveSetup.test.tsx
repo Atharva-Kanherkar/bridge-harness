@@ -112,6 +112,15 @@ describe("adaptive setup surfaces", () => {
     expect(renderToStaticMarkup(<LearningRunSummary learning={noTarget} />)).not.toContain("Roll back");
   });
 
+  it("a workspace with no runs yet says so instead of a lone button", () => {
+    const state = learningState();
+    const html = renderToStaticMarkup(
+      <LearningRunSummary learning={{ ...state, latestRun: null }} />
+    );
+    expect(html).toContain("No learning runs yet");
+    expect(html).toContain("conservative priors");
+  });
+
   it("labels each evaluator execution state truthfully", () => {
     expect(evaluatorExecutionLabel("not_run")).toBe("not_run — no executor");
     expect(evaluatorExecutionLabel("deferred")).toBe("not_run — no executor");
