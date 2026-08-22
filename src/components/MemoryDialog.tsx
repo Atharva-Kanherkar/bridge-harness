@@ -9,12 +9,22 @@ const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 export const MAX_MEMORY_BODY_CHARS = 4000;
 
 /**
+ * How long a body is *to the ledger*: trimmed, counted in code points. A
+ * JavaScript `.length` counts UTF-16 units, so an emoji would score two and a
+ * trailing newline would score at all — and the surface would refuse bodies
+ * the server accepts. Mirrors `require_body` in memory_ledger.
+ */
+export function bodyLength(text: string): number {
+  return [...text.trim()].length;
+}
+
+/**
  * What "Remember this" does with a message: at or under the cap it saves
  * directly; over it the dialog opens pre-filled for the user to trim. Never a
  * clip, never a truncated write.
  */
 export function rememberAction(text: string): "save" | "open-dialog" {
-  return text.length > MAX_MEMORY_BODY_CHARS ? "open-dialog" : "save";
+  return bodyLength(text) > MAX_MEMORY_BODY_CHARS ? "open-dialog" : "save";
 }
 
 /**
@@ -93,7 +103,11 @@ export function MemoryDialog({
         setSettings(extraction);
         setProfileHarness(current => current || extraction.harness || "");
         setProfileModel(current => current || extraction.model || "");
-      }).catch(error => { if (active) onError(String(error)); });
+      }).catch(error => {
+        // The generation gate covers the failure path too: a slow read that
+        // errors after a newer one rendered must not toast over it.
+        if (active && generation === readGeneration.current) onError(String(error));
+      });
     };
     load();
     bridgeApi.getMemoryCapabilities().then(value => { if (active) setCapabilities(value); })
@@ -117,7 +131,8 @@ export function MemoryDialog({
   if (!open) return null;
 
   const trimmed = body.trim();
-  const overLimit = body.length > MAX_MEMORY_BODY_CHARS;
+  const bodyChars = bodyLength(body);
+  const overLimit = bodyChars > MAX_MEMORY_BODY_CHARS;
   const visible = (records ?? []).filter(record => !filter || record.kind === filter);
   const queueCount = proposed?.length ?? 0;
 
@@ -189,7 +204,7 @@ export function MemoryDialog({
             <select className={`${fieldClass} h-9 w-36`} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
               {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
-            <span className={`text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{body.length} / {MAX_MEMORY_BODY_CHARS}</span>
+            <span className={`text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
             {editingId && (
               <button
                 type="button"

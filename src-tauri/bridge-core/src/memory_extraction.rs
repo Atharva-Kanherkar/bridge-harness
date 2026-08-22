@@ -122,6 +122,20 @@ pub fn update_settings(
             "Propose mode needs a pinned harness and model to run on.".into(),
         ));
     }
+    // An extraction run is tool-free, and tool-free is enforced by the same
+    // briefing authority the briefing runner uses. A harness that cannot hold
+    // it would refuse at provider start, once per finished turn, forever — so
+    // it is refused here instead, while the user is looking at the setting.
+    if mode == MODE_PROPOSE {
+        if let Some(harness) = harness {
+            if let Err(unsupported) = crate::briefing_policy::adapter_may_brief(harness) {
+                return Err(BridgeError::Invalid(format!(
+                    "{harness} cannot run a tool-free extraction: {}",
+                    unsupported.reason()
+                )));
+            }
+        }
+    }
     db.execute(
         "INSERT INTO memory_extraction_settings(scope_key, mode, harness, model, updated_at)
          VALUES(?1,?2,?3,?4,?5)
@@ -301,11 +315,16 @@ pub struct ExtractionRunSummary {
     pub updated_at: String,
 }
 
+/// The newest **settled** run. A queued or running row carries zeroes it has
+/// not earned yet, and showing those would erase the last real spend the
+/// moment a turn finishes — the surface would report $0.0000 for work that
+/// cost something.
 pub fn last_run(db: &Connection, scope_key: &str) -> Result<Option<ExtractionRunSummary>, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     db.query_row(
         "SELECT status, proposal_count, observed_tokens, spend_microusd, detail, updated_at
-         FROM memory_extraction_runs WHERE scope_key=?1
+         FROM memory_extraction_runs
+         WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
          ORDER BY created_at DESC LIMIT 1",
         params![scope_key],
         |row| {
@@ -551,7 +570,9 @@ mod tests {
     }
 
     fn propose_mode(db: &Connection) {
-        update_settings(db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("codex"), Some("gpt-5.6-luna"))
+        // Claude is the harness that can hold briefing authority, so it is the
+        // one a propose-mode fixture may pin.
+        update_settings(db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), Some("sonnet"))
             .unwrap();
     }
 
@@ -576,7 +597,7 @@ mod tests {
     #[test]
     fn auto_apply_does_not_exist_yet() {
         let (_dir, db) = extraction_db();
-        let error = update_settings(&db, ACCOUNT_MEMORY_SCOPE, "auto_apply", Some("codex"), Some("m"))
+        let error = update_settings(&db, ACCOUNT_MEMORY_SCOPE, "auto_apply", Some("claude"), Some("m"))
             .unwrap_err();
         assert!(error.to_string().contains("replay bench"));
         assert_eq!(settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap().mode, MODE_REMEMBER);
@@ -586,7 +607,7 @@ mod tests {
     fn propose_mode_needs_a_pinned_profile() {
         let (_dir, db) = extraction_db();
         assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None).is_err());
-        assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("codex"), Some("m")).is_ok());
+        assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), Some("m")).is_ok());
     }
 
     #[test]
@@ -709,7 +730,7 @@ mod tests {
         let now = Utc::now();
         let claimed = claim_due(&db, now).unwrap().unwrap();
         assert_eq!(claimed.session_id, "s1");
-        assert_eq!(claimed.harness, "codex");
+        assert_eq!(claimed.harness, "claude");
         assert!(claim_due(&db, now).unwrap().is_none(), "the lease excludes a second worker");
         assert!(heartbeat(&db, &claimed.run_id, &claimed.lease_owner, now).unwrap());
         assert!(settle(
@@ -722,6 +743,48 @@ mod tests {
         assert_eq!(last.spend_microusd, 1_700, "spend is observed, never hardcoded zero");
         assert_eq!(last.proposal_count, 2);
         assert!(settle(&db, &claimed.run_id, &claimed.lease_owner, "completed", None, None, None, None, 0, 0, 0).unwrap() == false, "a settled run stays settled");
+    }
+
+    #[test]
+    fn a_harness_that_cannot_run_tool_free_is_refused_at_the_setting() {
+        let (_dir, db) = extraction_db();
+        // Codex and OpenCode adapters refuse to start when a briefing policy is
+        // present, so pinning one would fail every run after every turn.
+        for harness in ["codex", "opencode"] {
+            let error =
+                update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some(harness), Some("m"))
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("tool-free"), "{harness}: {error}");
+        }
+        assert_eq!(
+            settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap().mode,
+            MODE_REMEMBER,
+            "a refused profile leaves extraction off"
+        );
+        assert!(
+            update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), Some("m"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_queued_run_does_not_erase_the_last_observed_spend() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat(&db, "s1", "chat");
+        assert!(enqueue_after_turn(&db, "s1").unwrap());
+        let claimed = claim_due(&db, Utc::now()).unwrap().unwrap();
+        settle(
+            &db, &claimed.run_id, &claimed.lease_owner, "completed", None,
+            Some("claude"), Some("m"), Some("digest"), 420, 1_700, 2,
+        )
+        .unwrap();
+        insert_chat(&db, "s2", "chat");
+        assert!(enqueue_after_turn(&db, "s2").unwrap());
+        let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
+        assert_eq!(last.status, "completed", "a queued row is not a report");
+        assert_eq!(last.spend_microusd, 1_700);
     }
 
     #[test]
