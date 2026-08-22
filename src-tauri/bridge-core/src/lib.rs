@@ -55,6 +55,7 @@ pub mod process_ledger;
 pub mod prompt_authority;
 pub mod prompt_compiler;
 pub mod prompt_sections;
+pub mod prompt_studio;
 pub mod prompts;
 /// Test-only: asserts core DTOs and their bridge-protocol mirrors agree.
 #[cfg(test)]
