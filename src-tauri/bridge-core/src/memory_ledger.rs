@@ -20,6 +20,9 @@ const KIND_DECISION: &str = "decision";
 const KIND_CONSTRAINT: &str = "constraint";
 const PROVENANCE_USER_EXPLICIT: &str = "user_explicit";
 const STATUS_ACTIVE: &str = "active";
+const STATUS_PROPOSED: &str = "proposed";
+const STATUS_REJECTED: &str = "rejected";
+const STATUS_SUPERSEDED: &str = "superseded";
 const STATUS_DELETED: &str = "deleted";
 
 pub fn account_memory_scope() -> &'static str {
@@ -44,6 +47,48 @@ pub(crate) fn install_ledger(transaction: &Transaction<'_>) -> Result<(), Bridge
         -- task_knowledge never had a production reader (only a round-trip unit
         -- test). Dropping it does not SELECT/INSERT those rows into memory_records.
         DROP TABLE IF EXISTS task_knowledge;",
+    )?;
+    Ok(())
+}
+
+/// Schema 32: the lifecycle extraction and packets cannot land without.
+/// Chain columns for supersession, and an FTS index over active bodies that
+/// every removal path (tombstone, reject, supersede) purges by trigger.
+pub(crate) fn install_lifecycle(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::store::add_column_if_missing(transaction, "memory_records", "supersedes", "TEXT")?;
+    crate::store::add_column_if_missing(transaction, "memory_records", "superseded_by", "TEXT")?;
+    transaction.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memory_record_fts USING fts5(
+            record_id UNINDEXED,
+            scope_key UNINDEXED,
+            body,
+            tokenize = 'unicode61 remove_diacritics 2'
+        );
+        DROP TRIGGER IF EXISTS memory_records_ai_fts;
+        DROP TRIGGER IF EXISTS memory_records_ad_fts;
+        DROP TRIGGER IF EXISTS memory_records_au_fts;
+        CREATE TRIGGER memory_records_ai_fts AFTER INSERT ON memory_records
+        WHEN NEW.status = 'active'
+        BEGIN
+          INSERT INTO memory_record_fts(record_id, scope_key, body)
+          VALUES (NEW.id, NEW.scope_key, NEW.body);
+        END;
+        CREATE TRIGGER memory_records_ad_fts AFTER DELETE ON memory_records
+        BEGIN
+          DELETE FROM memory_record_fts WHERE record_id = OLD.id;
+        END;
+        CREATE TRIGGER memory_records_au_fts AFTER UPDATE OF status, body, scope_key
+        ON memory_records
+        BEGIN
+          DELETE FROM memory_record_fts WHERE record_id = OLD.id;
+          INSERT INTO memory_record_fts(record_id, scope_key, body)
+          SELECT NEW.id, NEW.scope_key, NEW.body
+          WHERE NEW.status = 'active';
+        END;
+        INSERT INTO memory_record_fts(record_id, scope_key, body)
+        SELECT id, scope_key, body FROM memory_records
+        WHERE status = 'active'
+          AND id NOT IN (SELECT record_id FROM memory_record_fts);",
     )?;
     Ok(())
 }
@@ -242,6 +287,135 @@ fn load(db: &Connection, record_id: &str) -> Result<Option<MemoryRecord>, Bridge
     .map_err(BridgeError::from)
 }
 
+/// `proposed -> active`. The only path to active a proposal has.
+pub fn approve(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeError> {
+    transition(db, record_id, STATUS_PROPOSED, STATUS_ACTIVE, "approve")
+}
+
+/// `proposed -> rejected`. Terminal short of a fresh proposal.
+pub fn reject(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeError> {
+    transition(db, record_id, STATUS_PROPOSED, STATUS_REJECTED, "reject")
+}
+
+fn transition(
+    db: &Connection,
+    record_id: &str,
+    from: &str,
+    to: &str,
+    verb: &str,
+) -> Result<MemoryRecord, BridgeError> {
+    let record_id = record_id.trim();
+    if record_id.is_empty() {
+        return Err(BridgeError::Invalid(format!(
+            "Memory {verb} needs a record id."
+        )));
+    }
+    let updated_at = Utc::now().to_rfc3339();
+    let changed = db.execute(
+        "UPDATE memory_records SET status=?1, updated_at=?2 WHERE id=?3 AND status=?4",
+        params![to, updated_at, record_id, from],
+    )?;
+    if changed == 0 {
+        return Err(BridgeError::Invalid(format!(
+            "Only a {from} memory record can be {to}; '{record_id}' is not one."
+        )));
+    }
+    load(db, record_id)?.ok_or_else(|| {
+        BridgeError::Invalid(format!("Memory record '{record_id}' does not exist."))
+    })
+}
+
+/// Edit. A new active record carries `supersedes`; the old row is stamped
+/// `superseded` with `superseded_by` — never an UPDATE of a body in place.
+/// Both rows stay readable history; only the new one lists and indexes.
+pub fn supersede(
+    db: &Connection,
+    record_id: &str,
+    body: &str,
+    kind: Option<&str>,
+) -> Result<MemoryRecord, BridgeError> {
+    let old = load(db, record_id.trim())?.ok_or_else(|| {
+        BridgeError::Invalid(format!("Memory record '{record_id}' does not exist."))
+    })?;
+    if old.status != STATUS_ACTIVE {
+        return Err(BridgeError::Invalid(
+            "Only an active memory record can be superseded.".into(),
+        ));
+    }
+    let body = require_body(body)?;
+    let kind = match kind {
+        None => old.kind.clone(),
+        Some(raw) => parse_kind(Some(raw))?.to_string(),
+    };
+    let now = Utc::now().to_rfc3339();
+    let transaction = db.unchecked_transaction()?;
+    let replacement_id = Uuid::new_v4().to_string();
+    transaction.execute(
+        "INSERT INTO memory_records(
+            id, scope_key, kind, body, provenance, status, source_session_id,
+            created_at, updated_at, supersedes
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            replacement_id,
+            old.scope_key,
+            kind,
+            body,
+            PROVENANCE_USER_EXPLICIT,
+            STATUS_ACTIVE,
+            old.source_session_id,
+            now,
+            now,
+            old.id,
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE memory_records SET status=?1, superseded_by=?2, updated_at=?3 WHERE id=?4",
+        params![STATUS_SUPERSEDED, replacement_id, now, old.id],
+    )?;
+    transaction.commit()?;
+    load(db, &replacement_id)?.ok_or_else(|| {
+        BridgeError::Invalid("The superseding record was not written.".into())
+    })
+}
+
+/// FTS over active pins in one scope. Same guarded query shape as session
+/// recall: phrase-quoted tokens, scope bound in SQL, bounded limit.
+pub fn search(
+    db: &Connection,
+    scope_key: &str,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let scope_key = parse_scope_key(scope_key)?;
+    let match_query = crate::session_recall::fts_match_query(query)
+        .map_err(|_| BridgeError::Invalid("Memory search needs a word to look for.".into()))?;
+    let limit = match limit {
+        None => 20,
+        Some(0) | Some(51..) => {
+            return Err(BridgeError::Invalid(format!(
+                "Memory search limit must be between 1 and {MAX_MEMORY_LIST_LIMIT}."
+            )))
+        }
+        Some(value) => value as i64,
+    };
+    let mut statement = db.prepare(
+        "SELECT m.id, m.scope_key, m.kind, m.body, m.provenance, m.status,
+                m.source_session_id, m.created_at, m.updated_at
+         FROM memory_record_fts f
+         JOIN memory_records m ON m.id = f.record_id
+         WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3
+         ORDER BY rank, m.updated_at DESC
+         LIMIT ?4",
+    )?;
+    let records = statement
+        .query_map(
+            params![scope_key, match_query, STATUS_ACTIVE, limit],
+            map_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
 /// Slash `/unpin` may pass a unique prefix of an active `account:local` id.
 pub fn forget_by_selector(db: &Connection, selector: &str) -> Result<MemoryRecord, BridgeError> {
     let selector = selector.trim();
@@ -333,6 +507,139 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = store::open(&dir.path().join("bridge.db")).unwrap();
         (dir, db)
+    }
+
+    fn insert_proposed(db: &Connection, id: &str, body: &str) {
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
+             VALUES(?1, ?2, 'preference', ?3, 'model_proposal', 'proposed', 'now', 'now')",
+            params![id, ACCOUNT_MEMORY_SCOPE, body],
+        )
+        .unwrap();
+    }
+
+    fn chain_columns(db: &Connection, id: &str) -> (Option<String>, Option<String>) {
+        db.query_row(
+            "SELECT supersedes, superseded_by FROM memory_records WHERE id=?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn proposed_reaches_active_only_through_approve() {
+        let (_dir, db) = ledger_db();
+        insert_proposed(&db, "p1", "Proposed convention");
+        assert!(list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records.is_empty());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None)
+            .unwrap()
+            .is_empty());
+        let approved = approve(&db, "p1").unwrap();
+        assert_eq!(approved.status, "active");
+        assert_eq!(list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records.len(), 1);
+        assert_eq!(
+            search(&db, ACCOUNT_MEMORY_SCOPE, "convention", None)
+                .unwrap()
+                .len(),
+            1,
+            "approval is what makes a proposal searchable"
+        );
+        assert!(approve(&db, "p1").is_err(), "approve is not repeatable");
+    }
+
+    #[test]
+    fn rejected_is_terminal_and_never_indexed() {
+        let (_dir, db) = ledger_db();
+        insert_proposed(&db, "p2", "Rejected idea");
+        let rejected = reject(&db, "p2").unwrap();
+        assert_eq!(rejected.status, "rejected");
+        assert!(approve(&db, "p2").is_err(), "rejected is terminal");
+        assert!(reject(&db, "p2").is_err());
+        assert!(list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records.is_empty());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "idea", None)
+            .unwrap()
+            .is_empty());
+        assert!(load(&db, "p2").unwrap().is_some(), "history stays readable");
+    }
+
+    #[test]
+    fn active_records_cannot_be_approved_or_rejected() {
+        let (_dir, db) = ledger_db();
+        let saved = save(&db, "Already active", None, None).unwrap();
+        assert!(approve(&db, &saved.id).is_err());
+        assert!(reject(&db, &saved.id).is_err());
+    }
+
+    #[test]
+    fn supersede_retires_the_old_row_into_walkable_history() {
+        let (_dir, db) = ledger_db();
+        let original = save(&db, "Prefers yarn", None, None).unwrap();
+        let replacement = supersede(&db, &original.id, "Prefers bun", None).unwrap();
+        assert_ne!(replacement.id, original.id, "edit is never an in-place UPDATE");
+        assert_eq!(replacement.status, "active");
+        assert_eq!(replacement.kind, original.kind, "kind is inherited unless given");
+        let (sup, sup_by) = chain_columns(&db, &replacement.id);
+        assert_eq!(sup.as_deref(), Some(original.id.as_str()));
+        assert_eq!(sup_by, None);
+        let (old_sup, old_sup_by) = chain_columns(&db, &original.id);
+        assert_eq!(old_sup, None);
+        assert_eq!(old_sup_by.as_deref(), Some(replacement.id.as_str()));
+        let old = load(&db, &original.id).unwrap().unwrap();
+        assert_eq!(old.status, "superseded");
+        assert_eq!(old.body, "Prefers yarn", "history keeps the original body");
+        let listed = list(&db, ACCOUNT_MEMORY_SCOPE).unwrap().records;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, replacement.id);
+    }
+
+    #[test]
+    fn only_active_records_supersede() {
+        let (_dir, db) = ledger_db();
+        let saved = save(&db, "Short lived", None, None).unwrap();
+        forget(&db, &saved.id).unwrap();
+        assert!(supersede(&db, &saved.id, "Replacement", None).is_err());
+        insert_proposed(&db, "p3", "Still proposed");
+        assert!(supersede(&db, "p3", "Replacement", None).is_err());
+    }
+
+    #[test]
+    fn every_removal_path_purges_the_search_index() {
+        let (_dir, db) = ledger_db();
+        let kept = save(&db, "Keep tabs config", None, None).unwrap();
+        let dropped = save(&db, "Forget zsh detail", None, None).unwrap();
+        supersede(&db, &kept.id, "Keep spaces config", None).unwrap();
+        forget(&db, &dropped.id).unwrap();
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "tabs", None).unwrap().is_empty());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "zsh", None).unwrap().is_empty());
+        assert_eq!(
+            search(&db, ACCOUNT_MEMORY_SCOPE, "spaces", None).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn fts_operators_cannot_widen_memory_search() {
+        let (_dir, db) = ledger_db();
+        save(&db, "Account pin about deploys", None, None).unwrap();
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
+             VALUES('w1', 'workspace:other', 'fact', 'Workspace deploys secret detail', 'user_explicit', 'active', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        let scoped = search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", None).unwrap();
+        assert_eq!(scoped.len(), 1, "the other scope's match stays invisible");
+        assert_eq!(scoped[0].scope_key, ACCOUNT_MEMORY_SCOPE);
+        assert!(
+            search(&db, ACCOUNT_MEMORY_SCOPE, "deploys OR secret", None)
+                .unwrap()
+                .is_empty(),
+            "OR is a stripped word, not an operator that widens the query"
+        );
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "\"", None).is_err());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(0)).is_err());
+        assert!(search(&db, ACCOUNT_MEMORY_SCOPE, "deploys", Some(51)).is_err());
     }
 
     #[test]
