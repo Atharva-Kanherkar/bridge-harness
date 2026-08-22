@@ -174,13 +174,14 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
         source_session_id: row.get(6)?,
         confidence_bps: row.get::<_, Option<i64>>(7)?.map(|value| value as u32),
         rationale: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        supersedes: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
 const RECORD_COLUMNS: &str = "id, scope_key, kind, body, provenance, status, source_session_id, \
-     confidence_bps, rationale, created_at, updated_at";
+     confidence_bps, rationale, supersedes, created_at, updated_at";
 
 fn session_exists(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
     let found: Option<i64> = db
@@ -227,6 +228,7 @@ pub fn save(
         source_session_id,
         confidence_bps: None,
         rationale: None,
+        supersedes: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -481,7 +483,7 @@ pub fn search(
     let mut statement = db.prepare(
         "SELECT m.id, m.scope_key, m.kind, m.body, m.provenance, m.status,
                 m.source_session_id, m.confidence_bps, m.rationale,
-                m.created_at, m.updated_at
+                m.supersedes, m.created_at, m.updated_at
          FROM memory_record_fts f
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3

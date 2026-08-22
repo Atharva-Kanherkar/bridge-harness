@@ -44,6 +44,13 @@
     "status": {
       "type": "string"
     },
+    "supersedes": {
+      "description": "Set when this record replaced an earlier one through supersede.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "updatedAt": {
       "type": "string"
     }

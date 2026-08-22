@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Pin, X } from "lucide-react";
+import { Check, Pencil, Pin, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
 import type { AdapterDescriptor, MemoryCapabilities, MemoryExtractionSettings, MemoryRecord } from "../types";
@@ -54,6 +54,9 @@ export function MemoryDialog({
   const [filter, setFilter] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [kind, setKind] = useState<string>("preference");
+  // Edit is supersession: the row's body moves here, and saving writes a
+  // superseding record — never save-then-forget, never an in-place update.
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [profileHarness, setProfileHarness] = useState("");
   const [profileModel, setProfileModel] = useState("");
   const [busy, setBusy] = useState(false);
@@ -74,6 +77,7 @@ export function MemoryDialog({
     setFilter(null);
     setBody("");
     setKind("preference");
+    setEditingId(null);
     setProfileHarness("");
     setProfileModel("");
   }, [open]);
@@ -139,9 +143,24 @@ export function MemoryDialog({
     finally { setBusy(false); }
   };
   const save = () => act(async () => {
-    await bridgeApi.saveMemoryRecord(body, kind, undefined);
+    if (editingId) {
+      await bridgeApi.supersedeMemoryRecord(editingId, body, kind);
+      setEditingId(null);
+    } else {
+      await bridgeApi.saveMemoryRecord(body, kind, undefined);
+    }
     setBody("");
   });
+  const beginEdit = (record: MemoryRecord) => {
+    setEditingId(record.id);
+    setBody(record.body);
+    setKind(record.kind);
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setBody("");
+    setKind("preference");
+  };
   const setMode = (mode: string) => act(async () => {
     const next = mode === "propose"
       ? await bridgeApi.updateExtractionSettings("propose", profileHarness, profileModel)
@@ -186,12 +205,20 @@ export function MemoryDialog({
               {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
             <span className={`text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
+            {editingId && (
+              <button
+                type="button"
+                className="ml-auto h-9 rounded-xl border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                disabled={busy}
+                onClick={cancelEdit}
+              >Cancel</button>
+            )}
             <button
               type="button"
-              className="ml-auto h-9 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45"
+              className={`h-9 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45 ${editingId ? "" : "ml-auto"}`}
               disabled={busy || !trimmed || overLimit}
               onClick={() => void save()}
-            >Save pin</button>
+            >{editingId ? "Save edit" : "Save pin"}</button>
           </div>
           {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
         </div>
@@ -211,8 +238,21 @@ export function MemoryDialog({
             <li key={record.id} className="u-glass-soft flex items-start gap-3 rounded-2xl px-3.5 py-3">
               <div className="min-w-0 flex-1">
                 <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground"><span className="font-medium">{record.kind}</span> · {new Date(record.createdAt).toLocaleDateString()}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  <span className="font-medium">{record.kind}</span> · {new Date(record.createdAt).toLocaleDateString()}
+                  {record.provenance === "model_proposal" && <> · suggested</>}
+                  {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
+                  {record.supersedes && <> · replaced an earlier pin</>}
+                </p>
               </div>
+              <button
+                type="button"
+                className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="Edit"
+                title="Edit"
+                disabled={busy}
+                onClick={() => beginEdit(record)}
+              ><Pencil size={14} aria-hidden="true" /></button>
               <button
                 type="button"
                 className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

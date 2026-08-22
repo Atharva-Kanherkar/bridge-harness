@@ -40,6 +40,7 @@ export type BridgeMethod =
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
   | "memory/get_memory_capabilities"
+  | "memory/supersede_memory_record"
   | "memory/approve_memory_record"
   | "memory/reject_memory_record"
   | "memory/get_extraction_settings"
@@ -153,6 +154,7 @@ export const BRIDGE_METHODS = [
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
   { method: "memory/get_memory_capabilities", domain: "memory", command: "get_memory_capabilities" },
+  { method: "memory/supersede_memory_record", domain: "memory", command: "supersede_memory_record" },
   { method: "memory/approve_memory_record", domain: "memory", command: "approve_memory_record" },
   { method: "memory/reject_memory_record", domain: "memory", command: "reject_memory_record" },
   { method: "memory/get_extraction_settings", domain: "memory", command: "get_extraction_settings" },
@@ -318,6 +320,7 @@ export interface BridgeMethodParams {
   "memory/list_memory_records": ListMemoryRecordsParams;
   "memory/delete_memory_record": DeleteMemoryRecordParams;
   "memory/get_memory_capabilities": undefined;
+  "memory/supersede_memory_record": SupersedeMemoryRecordParams;
   "memory/approve_memory_record": ApproveMemoryRecordParams;
   "memory/reject_memory_record": RejectMemoryRecordParams;
   "memory/get_extraction_settings": undefined;
@@ -433,6 +436,7 @@ export interface BridgeMethodResults {
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
   "memory/get_memory_capabilities": MemoryCapabilities;
+  "memory/supersede_memory_record": MemoryRecord;
   "memory/approve_memory_record": MemoryRecord;
   "memory/reject_memory_record": MemoryRecord;
   "memory/get_extraction_settings": MemoryExtractionSettings;
@@ -731,6 +735,7 @@ export interface MemoryRecord {
   scopeKey: string;
   sourceSessionId?: string | null;
   status: string;
+  supersedes?: string | null;
   updatedAt: string;
 }
 
@@ -1482,6 +1487,12 @@ export interface DeleteMemoryRecordParams {
 export interface MemoryCapabilities {
   ledger: MemoryLedgerCapability;
   providerNative: ProviderMemoryCommand[];
+}
+
+export interface SupersedeMemoryRecordParams {
+  body: string;
+  kind?: string | null;
+  recordId: string;
 }
 
 export interface ApproveMemoryRecordParams {

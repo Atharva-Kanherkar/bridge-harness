@@ -418,6 +418,22 @@ pub fn delete_memory_record(
     Ok(record)
 }
 
+pub fn supersede_memory_record(
+    core: &Arc<BridgeCore>,
+    record_id: &str,
+    body: &str,
+    kind: Option<&str>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let record = {
+        let db = core.db.lock().unwrap();
+        memory_ledger::supersede(&db, record_id, body, kind)?
+    };
+    core.events.publish(CoreEvent::MemoryChanged {
+        scope_key: record.scope_key.clone(),
+    });
+    Ok(record)
+}
+
 pub fn approve_memory_record(
     core: &Arc<BridgeCore>,
     record_id: &str,
@@ -2116,6 +2132,40 @@ mod tests {
         // A refused save changes nothing, so it owes no hint.
         assert!(super::save_memory_record(&core, "   ", None, None).is_err());
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn lifecycle_transitions_publish_the_scope_hint() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let mut events = core.events.subscribe();
+        let saved = super::save_memory_record(&core, "Prefers tabs", None, None).unwrap();
+        events.try_recv().unwrap();
+        super::supersede_memory_record(&core, &saved.id, "Prefers spaces", None).unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { ref scope_key } if scope_key == "account:local"
+        ));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
+                 VALUES('p1','account:local','fact','One','model_proposal','proposed','now','now'),
+                        ('p2','account:local','fact','Two','model_proposal','proposed','now','now')",
+                [],
+            )
+            .unwrap();
+        }
+        super::approve_memory_record(&core, "p1").unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { .. }
+        ));
+        super::reject_memory_record(&core, "p2").unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::MemoryChanged { .. }
+        ));
     }
 
     #[test]

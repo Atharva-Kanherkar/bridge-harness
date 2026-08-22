@@ -175,6 +175,7 @@ typed_methods![
     (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),
     (DeleteMemoryRecord, DeleteMemoryRecordParams, MemoryRecord),
     (GetMemoryCapabilities, _, MemoryCapabilities),
+    (SupersedeMemoryRecord, SupersedeMemoryRecordParams, MemoryRecord),
     (ApproveMemoryRecord, ApproveMemoryRecordParams, MemoryRecord),
     (RejectMemoryRecord, RejectMemoryRecordParams, MemoryRecord),
     (GetExtractionSettings, _, MemoryExtractionSettings),

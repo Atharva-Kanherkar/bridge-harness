@@ -979,6 +979,20 @@ async fn get_memory_capabilities(
 }
 
 #[tauri::command]
+async fn supersede_memory_record(
+    record_id: String,
+    body: String,
+    kind: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Supersede memory record", move || {
+        api::supersede_memory_record(&core, &record_id, &body, kind.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn approve_memory_record(
     record_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -1429,6 +1443,7 @@ pub fn run() {
             list_memory_records,
             delete_memory_record,
             get_memory_capabilities,
+            supersede_memory_record,
             approve_memory_record,
             reject_memory_record,
             get_extraction_settings,

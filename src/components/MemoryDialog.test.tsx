@@ -78,6 +78,17 @@ beforeEach(() => {
     extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(extractionSettings);
   });
+  vi.spyOn(bridgeApi, "supersedeMemoryRecord").mockImplementation(async (recordId, newBody, newKind) => {
+    const old = store.find(item => item.id === recordId && item.status === "active")!;
+    old.status = "superseded";
+    const replacement: MemoryRecord = {
+      ...record(`r-edit-${store.length}`, newBody, newKind ?? old.kind),
+      supersedes: old.id,
+    };
+    store = [replacement, ...store];
+    memoryHandler?.({ scopeKey: "account:local" });
+    return replacement;
+  });
   vi.spyOn(bridgeApi, "approveMemoryRecord").mockImplementation(async recordId => {
     const found = store.find(item => item.id === recordId && item.status === "proposed")!;
     found.status = "active";
@@ -242,6 +253,50 @@ describe("MemoryDialog", () => {
     mount();
     await flush();
     expect(textarea().value).toBe("");
+  });
+});
+
+describe("MemoryDialog edit", () => {
+  it("edit supersedes: the composer prefills and save writes a replacement, never a new pin", async () => {
+    mount();
+    await flush();
+    click([...document.querySelectorAll('[aria-label="Edit"]')][0]);
+    expect(textarea().value).toBe("Prefers tabs over spaces");
+    expect(buttonByText("Save edit")).toBeDefined();
+    setBody("Prefers spaces after all");
+    click(buttonByText("Save edit"));
+    await flush();
+    expect(bridgeApi.supersedeMemoryRecord).toHaveBeenCalledWith("r-tabs", "Prefers spaces after all", "preference");
+    expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Prefers spaces after all");
+    expect(container.textContent).not.toContain("Prefers tabs over spaces");
+    expect(container.textContent).toContain("replaced an earlier pin");
+  });
+
+  it("cancelling an edit restores the plain composer and writes nothing", async () => {
+    mount();
+    await flush();
+    click([...document.querySelectorAll('[aria-label="Edit"]')][0]);
+    click(buttonByText("Cancel"));
+    expect(textarea().value).toBe("");
+    expect(buttonByText("Save pin")).toBeDefined();
+    expect(bridgeApi.supersedeMemoryRecord).not.toHaveBeenCalled();
+    expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
+  });
+
+  it("an approved suggestion is chipped as suggested; explicit pins are not", async () => {
+    store.push({
+      ...record("r-approved", "Ships behind a flag", "decision"),
+      provenance: "model_proposal",
+      confidenceBps: 7600,
+    });
+    mount();
+    await flush();
+    expect(container.textContent).toContain("suggested");
+    expect(container.textContent).toContain("76% confident");
+    const explicitRow = [...container.querySelectorAll("li")].find(item => item.textContent?.includes("Works in IST"))!;
+    expect(explicitRow.textContent).not.toContain("suggested");
+    expect(explicitRow.textContent).not.toContain("% confident");
   });
 });
 

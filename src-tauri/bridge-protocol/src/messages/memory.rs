@@ -53,6 +53,9 @@ pub struct MemoryRecord {
     pub confidence_bps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
+    /// Set when this record replaced an earlier one through supersede.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -62,6 +65,17 @@ pub struct MemoryRecord {
 pub struct ListMemoryRecordsResult {
     pub scope_key: String,
     pub records: Vec<MemoryRecord>,
+}
+
+/// Edit is supersession: a new record replaces the old, which stays history.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupersedeMemoryRecordParams {
+    pub record_id: String,
+    pub body: String,
+    /// Inherited from the superseded record when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
