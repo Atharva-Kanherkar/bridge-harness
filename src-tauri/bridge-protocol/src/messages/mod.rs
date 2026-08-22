@@ -180,6 +180,9 @@ typed_methods![
     (RejectMemoryRecord, RejectMemoryRecordParams, MemoryRecord),
     (GetExtractionSettings, _, MemoryExtractionSettings),
     (UpdateExtractionSettings, UpdateExtractionSettingsParams, MemoryExtractionSettings),
+    (GetMemoryInjection, _, MemoryInjectionSettings),
+    (SetMemoryInjection, SetMemoryInjectionParams, MemoryInjectionSettings),
+    (GetPacketAudit, GetPacketAuditParams, MemoryPacketAudit),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
@@ -431,6 +434,7 @@ mod tests {
             MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,
+            MethodName::GetMemoryInjection,
             MethodName::GetConfigState,
             MethodName::MarketplaceCatalog,
             MethodName::TakeoverBrowser,

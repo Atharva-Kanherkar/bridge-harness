@@ -63,6 +63,7 @@ fn compile_orchestrator_prompt(
     configured_prompt: &str,
     credential_context: &str,
     checkpoint_context: Option<&str>,
+    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
         .stable_section("bridge_role", orchestrator::briefing())
@@ -72,17 +73,33 @@ fn compile_orchestrator_prompt(
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
     }
+    if let Some(packet) = memory_packet {
+        compiler = compiler.variable_section("memory_packet", packet);
+    }
     compiler.compile()
 }
 
 fn compile_session_prompt(
     configured_prompt: &str,
     credential_context: &str,
+    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
-    prompt_compiler::PromptCompiler::new("session")
+    let mut compiler = prompt_compiler::PromptCompiler::new("session")
         .project_rule("configured_project_rules", configured_prompt)
-        .variable_section("session_capabilities", credential_context)
-        .compile()
+        .variable_section("session_capabilities", credential_context);
+    if let Some(packet) = memory_packet {
+        compiler = compiler.variable_section("memory_packet", packet);
+    }
+    compiler.compile()
+}
+
+/// The packet at its compile boundary: best-effort, because memory must never
+/// keep a session from starting. Skipped-on-error is consistent — no packet
+/// injected, no audit claiming one.
+fn compiled_memory_packet(state: &Arc<BridgeCore>, session_id: &str) -> Option<String> {
+    crate::memory_packet::for_compile(&state.db.lock().unwrap(), session_id)
+        .ok()
+        .flatten()
 }
 
 fn compile_worker_prompt(
@@ -93,6 +110,7 @@ fn compile_worker_prompt(
     configured_prompt: &str,
     credential_context: &str,
     checkpoint_context: Option<&str>,
+    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler =
         prompt_compiler::PromptCompiler::new(format!("worker:{}", directive.role.as_str()))
@@ -108,6 +126,9 @@ fn compile_worker_prompt(
             .variable_section("session_capabilities", credential_context);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
+    }
+    if let Some(packet) = memory_packet {
+        compiler = compiler.variable_section("memory_packet", packet);
     }
     compiler.compile()
 }
@@ -298,9 +319,12 @@ pub fn start_session(
     let configured_prompt =
         agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
     let credential_context = state.credential_broker.instructions(&session_id);
-    let orchestrator_prompt =
-        compile_orchestrator_prompt(&configured_prompt, &credential_context, None)?;
-    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
+    // Compiled without the packet first, on purpose. The packet is a variable
+    // section and cannot move `prefix_hash`, so the hot-compatibility check
+    // below does not need it — and building it here would write a retrieval
+    // audit for a packet a hot process is never sent.
+    let hot_check_prompt =
+        compile_orchestrator_prompt(&configured_prompt, &credential_context, None, None)?;
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let current_model: Option<String> = state
@@ -320,8 +344,8 @@ pub fn start_session(
         )?
         .is_some_and(|previous| {
             previous.harness == adapter_id
-                && previous.prefix_hash == orchestrator_prompt.metadata.prefix_hash
-                && previous.schema_version == i64::from(orchestrator_prompt.metadata.schema_version)
+                && previous.prefix_hash == hot_check_prompt.metadata.prefix_hash
+                && previous.schema_version == i64::from(hot_check_prompt.metadata.schema_version)
         });
         if current_model.as_deref() == chosen_model.as_deref() && hot_prompt_compatible {
             let db = state.db.lock().unwrap();
@@ -346,7 +370,7 @@ pub fn start_session(
                 "orchestration",
                 RestorationMode::Hot,
                 "not_applicable",
-                &orchestrator_prompt,
+                &hot_check_prompt,
             )?;
             return store::state(&db);
         }
@@ -359,6 +383,18 @@ pub fn start_session(
             adapters::ShutdownReason::Replaced,
         )?;
     }
+
+    // Past the hot return: this call is really going to start a process, so the
+    // packet is built now and every audit it writes names a prompt that is
+    // actually delivered.
+    let memory_packet = compiled_memory_packet(state, &session_id);
+    let orchestrator_prompt = compile_orchestrator_prompt(
+        &configured_prompt,
+        &credential_context,
+        None,
+        memory_packet.as_deref(),
+    )?;
+    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
@@ -385,8 +421,13 @@ pub fn start_session(
     let checkpoint_instructions = checkpoint_context
         .as_deref()
         .map(|context| {
-            compile_orchestrator_prompt(&configured_prompt, &credential_context, Some(context))
-                .map(|prompt| prompt.instructions().to_owned())
+            compile_orchestrator_prompt(
+                &configured_prompt,
+                &credential_context,
+                Some(context),
+                memory_packet.as_deref(),
+            )
+            .map(|prompt| prompt.instructions().to_owned())
         })
         .transpose()?;
     let (mut started, restoration_mode, resume_eligibility) = match plan {
@@ -737,10 +778,16 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     } else {
         agent_config::session_prompt(&state.db.lock().unwrap(), adapter_id)
     };
+    let memory_packet = compiled_memory_packet(state, &session_id);
     let compiled_prompt = if is_orchestrator {
-        compile_orchestrator_prompt(&configured_prompt, &proxy_instructions, None)?
+        compile_orchestrator_prompt(
+            &configured_prompt,
+            &proxy_instructions,
+            None,
+            memory_packet.as_deref(),
+        )?
     } else {
-        compile_session_prompt(&configured_prompt, &proxy_instructions)?
+        compile_session_prompt(&configured_prompt, &proxy_instructions, memory_packet.as_deref())?
     };
     let runtime_instructions = compiled_prompt.instructions().to_owned();
     let configured_effort = configured_harness
@@ -2475,6 +2522,7 @@ pub fn launch_worker_outcome(
     let credential_context = state
         .credential_broker
         .instructions(&reservation.session_id);
+    let memory_packet = compiled_memory_packet(&state, &reservation.session_id);
     let compiled_prompt = match compile_worker_prompt(
         directive,
         reservation.depth,
@@ -2483,6 +2531,7 @@ pub fn launch_worker_outcome(
         &configured_prompt,
         &credential_context,
         None,
+        memory_packet.as_deref(),
     ) {
         Ok(prompt) => prompt,
         Err(error) => {
@@ -2821,6 +2870,7 @@ pub fn launch_worker_outcome(
     // `sessions.harness` holds and what `handoff::assess` compares against.
     let dispatch_id = launch_plan.adapter_id.clone();
 
+    let memory_packet = compiled_memory_packet(&state, &reservation.session_id);
     let compile_restored_prompt = |checkpoint: Option<String>| {
         let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
         compile_worker_prompt(
@@ -2831,6 +2881,7 @@ pub fn launch_worker_outcome(
             &configured_prompt,
             &credential_context,
             Some(&restoration_context),
+            memory_packet.as_deref(),
         )
         .map(|prompt| prompt.instructions().to_owned())
     };

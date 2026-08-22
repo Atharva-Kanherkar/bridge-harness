@@ -45,6 +45,9 @@ export type BridgeMethod =
   | "memory/reject_memory_record"
   | "memory/get_extraction_settings"
   | "memory/update_extraction_settings"
+  | "memory/get_memory_injection"
+  | "memory/set_memory_injection"
+  | "memory/get_packet_audit"
   | "approvals/resolve_approval"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -159,6 +162,9 @@ export const BRIDGE_METHODS = [
   { method: "memory/reject_memory_record", domain: "memory", command: "reject_memory_record" },
   { method: "memory/get_extraction_settings", domain: "memory", command: "get_extraction_settings" },
   { method: "memory/update_extraction_settings", domain: "memory", command: "update_extraction_settings" },
+  { method: "memory/get_memory_injection", domain: "memory", command: "get_memory_injection" },
+  { method: "memory/set_memory_injection", domain: "memory", command: "set_memory_injection" },
+  { method: "memory/get_packet_audit", domain: "memory", command: "get_packet_audit" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -325,6 +331,9 @@ export interface BridgeMethodParams {
   "memory/reject_memory_record": RejectMemoryRecordParams;
   "memory/get_extraction_settings": undefined;
   "memory/update_extraction_settings": UpdateExtractionSettingsParams;
+  "memory/get_memory_injection": undefined;
+  "memory/set_memory_injection": SetMemoryInjectionParams;
+  "memory/get_packet_audit": GetPacketAuditParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -441,6 +450,9 @@ export interface BridgeMethodResults {
   "memory/reject_memory_record": MemoryRecord;
   "memory/get_extraction_settings": MemoryExtractionSettings;
   "memory/update_extraction_settings": MemoryExtractionSettings;
+  "memory/get_memory_injection": MemoryInjectionSettings;
+  "memory/set_memory_injection": MemoryInjectionSettings;
+  "memory/get_packet_audit": MemoryPacketAudit;
   "approvals/resolve_approval": UnitResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -722,6 +734,13 @@ export interface MemoryLedgerCapability {
   kinds: string[];
   maxBodyChars: number;
   scopeKey: string;
+}
+
+export interface MemoryPacketItem {
+  body: string;
+  kind: string;
+  reason: string;
+  recordId: string;
 }
 
 export interface MemoryRecord {
@@ -1515,6 +1534,26 @@ export interface UpdateExtractionSettingsParams {
   harness?: string | null;
   mode: string;
   model?: string | null;
+}
+
+export interface MemoryInjectionSettings {
+  enabled: boolean;
+  scopeKey: string;
+}
+
+export interface SetMemoryInjectionParams {
+  enabled: boolean;
+}
+
+export interface GetPacketAuditParams {
+  sessionId: string;
+}
+
+export interface MemoryPacketAudit {
+  createdAt?: string | null;
+  selected: MemoryPacketItem[];
+  sessionId: string;
+  tokenEstimate: number;
 }
 
 export interface ResolveApprovalParams {

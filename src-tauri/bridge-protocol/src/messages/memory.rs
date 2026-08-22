@@ -129,6 +129,46 @@ pub struct MemoryExtractionSettings {
     pub last_run: Option<MemoryExtractionRun>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryInjectionSettings {
+    pub scope_key: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetMemoryInjectionParams {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetPacketAuditParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryPacketItem {
+    pub record_id: String,
+    pub body: String,
+    pub kind: String,
+    pub reason: String,
+}
+
+/// The newest retrieval audit for a session. An empty selection means the
+/// session started without a packet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryPacketAudit {
+    pub session_id: String,
+    pub selected: Vec<MemoryPacketItem>,
+    pub token_estimate: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
 /// What memory exists, so surfaces can be honest about what they do not own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

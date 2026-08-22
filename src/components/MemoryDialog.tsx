@@ -51,6 +51,7 @@ export function MemoryDialog({
   const [proposed, setProposed] = useState<MemoryRecord[]>();
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
+  const [injection, setInjection] = useState<boolean>();
   const [filter, setFilter] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [kind, setKind] = useState<string>("preference");
@@ -74,6 +75,7 @@ export function MemoryDialog({
     setProposed(undefined);
     setSettings(undefined);
     setCapabilities(undefined);
+    setInjection(undefined);
     setFilter(null);
     setBody("");
     setKind("preference");
@@ -96,11 +98,13 @@ export function MemoryDialog({
         bridgeApi.listMemoryRecords("account:local"),
         bridgeApi.listMemoryRecords("account:local", "proposed"),
         bridgeApi.getExtractionSettings(),
-      ]).then(([activeList, proposedList, extraction]) => {
+        bridgeApi.getMemoryInjection(),
+      ]).then(([activeList, proposedList, extraction, injectionSettings]) => {
         if (!active || generation !== readGeneration.current) return;
         setRecords(activeList.records);
         setProposed(proposedList.records);
         setSettings(extraction);
+        setInjection(injectionSettings.enabled);
         setProfileHarness(current => current || extraction.harness || "");
         setProfileModel(current => current || extraction.model || "");
       }).catch(error => {
@@ -222,6 +226,22 @@ export function MemoryDialog({
           </div>
           {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
         </div>
+        <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={injection ?? true}
+            disabled={busy || injection === undefined}
+            aria-label="Use pins in new chats"
+            onChange={event => {
+              const next = event.target.checked;
+              void act(async () => {
+                const applied = await bridgeApi.setMemoryInjection(next);
+                setInjection(applied.enabled);
+              });
+            }}
+          />
+          Use pins in new chats — sessions start with your pins in context, cited by id.
+        </label>
         <div className="flex flex-wrap items-center gap-1.5">
           {KINDS.map(item => (
             <button

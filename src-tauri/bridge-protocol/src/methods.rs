@@ -81,6 +81,9 @@ methods![
     (RejectMemoryRecord, "memory", "reject_memory_record"),
     (GetExtractionSettings, "memory", "get_extraction_settings"),
     (UpdateExtractionSettings, "memory", "update_extraction_settings"),
+    (GetMemoryInjection, "memory", "get_memory_injection"),
+    (SetMemoryInjection, "memory", "set_memory_injection"),
+    (GetPacketAudit, "memory", "get_packet_audit"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     // terminal

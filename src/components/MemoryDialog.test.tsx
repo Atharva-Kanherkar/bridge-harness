@@ -300,6 +300,25 @@ describe("MemoryDialog edit", () => {
   });
 });
 
+describe("MemoryDialog injection toggle", () => {
+  it("reads the flag from the api and writes the change through it", async () => {
+    let enabled = true;
+    vi.spyOn(bridgeApi, "getMemoryInjection").mockImplementation(async () => ({ scopeKey: "account:local", enabled }));
+    vi.spyOn(bridgeApi, "setMemoryInjection").mockImplementation(async next => {
+      enabled = next;
+      return { scopeKey: "account:local", enabled };
+    });
+    mount();
+    await flush();
+    const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use pins in new chats"]')!;
+    expect(toggle.checked).toBe(true);
+    act(() => { toggle.click(); });
+    await flush();
+    expect(bridgeApi.setMemoryInjection).toHaveBeenCalledWith(false);
+    expect(toggle.checked).toBe(false);
+  });
+});
+
 describe("MemoryDialog review queue", () => {
   it("lists proposals with confidence and rationale, and pins carry no fake confidence", async () => {
     mount();

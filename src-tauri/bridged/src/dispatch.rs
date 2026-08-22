@@ -180,6 +180,15 @@ pub fn dispatch(
             reply(api::reject_memory_record(core, &p.record_id))
         }
         MethodName::GetExtractionSettings => reply(api::get_extraction_settings(core)),
+        MethodName::GetMemoryInjection => reply(api::get_memory_injection(core)),
+        MethodName::SetMemoryInjection => {
+            let p: wire::SetMemoryInjectionParams = decode(method, params)?;
+            reply(api::set_memory_injection(core, p.enabled))
+        }
+        MethodName::GetPacketAudit => {
+            let p: wire::GetPacketAuditParams = decode(method, params)?;
+            reply(api::get_packet_audit(core, &p.session_id))
+        }
         MethodName::UpdateExtractionSettings => {
             let p: wire::UpdateExtractionSettingsParams = decode(method, params)?;
             reply(api::update_extraction_settings(
