@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { BRIEFING_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView } from "./sidebarChats";
+import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -263,9 +263,10 @@ describe("hidden sessions", () => {
   const chat = (id: string, kind: string | null = null): Session =>
     ({ id, workspaceId: null, harness: "codex", label: id, title: id, status: "idle", kind } as unknown as Session);
 
-  it("hides a briefing run and nothing else", () => {
+  it("hides every run Bridge does for itself, and nothing else", () => {
     expect(isHiddenSession(chat("a", BRIEFING_SESSION_KIND))).toBe(true);
-    for (const kind of [null, "orchestrator", "chat", "worker"]) {
+    expect(isHiddenSession(chat("x", EXTRACTION_SESSION_KIND))).toBe(true);
+    for (const kind of [null, "orchestrator", "chat", "worker", "direct"]) {
       expect(isHiddenSession(chat("b", kind))).toBe(false);
     }
   });

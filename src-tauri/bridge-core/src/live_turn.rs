@@ -319,14 +319,12 @@ pub fn start_session(
     let configured_prompt =
         agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
     let credential_context = state.credential_broker.instructions(&session_id);
-    let memory_packet = compiled_memory_packet(state, &session_id);
-    let orchestrator_prompt = compile_orchestrator_prompt(
-        &configured_prompt,
-        &credential_context,
-        None,
-        memory_packet.as_deref(),
-    )?;
-    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
+    // Compiled without the packet first, on purpose. The packet is a variable
+    // section and cannot move `prefix_hash`, so the hot-compatibility check
+    // below does not need it — and building it here would write a retrieval
+    // audit for a packet a hot process is never sent.
+    let hot_check_prompt =
+        compile_orchestrator_prompt(&configured_prompt, &credential_context, None, None)?;
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let current_model: Option<String> = state
@@ -346,8 +344,8 @@ pub fn start_session(
         )?
         .is_some_and(|previous| {
             previous.harness == adapter_id
-                && previous.prefix_hash == orchestrator_prompt.metadata.prefix_hash
-                && previous.schema_version == i64::from(orchestrator_prompt.metadata.schema_version)
+                && previous.prefix_hash == hot_check_prompt.metadata.prefix_hash
+                && previous.schema_version == i64::from(hot_check_prompt.metadata.schema_version)
         });
         if current_model.as_deref() == chosen_model.as_deref() && hot_prompt_compatible {
             let db = state.db.lock().unwrap();
@@ -372,7 +370,7 @@ pub fn start_session(
                 "orchestration",
                 RestorationMode::Hot,
                 "not_applicable",
-                &orchestrator_prompt,
+                &hot_check_prompt,
             )?;
             return store::state(&db);
         }
@@ -385,6 +383,18 @@ pub fn start_session(
             adapters::ShutdownReason::Replaced,
         )?;
     }
+
+    // Past the hot return: this call is really going to start a process, so the
+    // packet is built now and every audit it writes names a prompt that is
+    // actually delivered.
+    let memory_packet = compiled_memory_packet(state, &session_id);
+    let orchestrator_prompt = compile_orchestrator_prompt(
+        &configured_prompt,
+        &credential_context,
+        None,
+        memory_packet.as_deref(),
+    )?;
+    let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
     // delegation protocol so it can spawn workers itself.
