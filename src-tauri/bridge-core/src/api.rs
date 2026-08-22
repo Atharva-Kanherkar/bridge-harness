@@ -777,6 +777,21 @@ pub fn resolve_approval(
             "This is a question, not an approval — type an answer in the composer instead of accepting or declining".into(),
         ));
     }
+    // Shared with `live_turn::answer_pending_question` under the same
+    // session-scoped label: a typed answer racing this card's Decline (or two
+    // decliners racing each other) must not both find the request unresolved
+    // and both call the adapter with contradictory replies. Held until this
+    // function returns; released on every path, including an early `?`.
+    let _claim = if is_question {
+        Some(
+            core.claim_session_lifecycle(session_id, "question resolution")
+                .map_err(|_| {
+                    BridgeError::Invalid("This question is already being answered".into())
+                })?,
+        )
+    } else {
+        None
+    };
     let is_worker = store::worker_runtime(&db, session_id)?.is_some();
     if is_worker {
         session_supervisor::SessionSupervisor::transition(

@@ -22,6 +22,44 @@ the turn.
    leaves `false`; a typed reply while a question is open is queued for a
    turn boundary the open question is itself blocking.
 
+## Review round 1 — four blocking findings
+
+The first version of this fix answered a pending question by copying the
+composer text straight to the adapter and into history, outside every other
+input path's boundary, with no protection against two resolvers racing the
+same request, no restriction to the one-question case OpenCode's `answers`
+shape actually supports, and no way to stop retrying a request id once it
+could no longer succeed. Each is now closed:
+
+1. **Secret interception bypassed.** The answer skipped `prepare_input`
+   entirely (correctly — an answer is literal text, not a slash command) but
+   that also skipped secret interception and the credential broker, the one
+   boundary every other input path crosses. `answer_pending_question` now
+   calls `secret_interception::intercept` and `credential_broker.register`
+   itself before the text reaches the adapter call or durable history.
+2. **Check-then-act race.** Reading "is a question pending" and writing its
+   resolution were unguarded separate steps; a second submission, or this
+   path racing a card's Decline through `resolve_approval`, could both see it
+   unresolved and both call the adapter. Both paths now hold
+   `BridgeCore::claim_session_lifecycle(session_id, "question resolution")`
+   across their whole critical section, released by `Drop` on every return.
+3. **Multi-question fan-out.** A single composer string was copied into every
+   positional slot of OpenCode's `answers` array, so distinct questions in one
+   request got the same unintended answer. `answer_pending_question` now only
+   intercepts a request with exactly one question; anything else falls
+   through to ordinary routing.
+4. **Orphaned rows outlive the process that can answer them.** An unresolved
+   question survived adapter death or session stop, so a resumed session (a
+   fresh process, an unrelated request-id namespace) retried the same dead
+   request id and failed the same way forever. Now: a failed delivery voids
+   the stale request and falls through instead of erroring (the text still
+   reaches the session as an ordinary message); `stop_session` and the
+   provider-error path void any request still open when the session goes
+   away; and `question.replied`/`question.rejected` normalize to
+   `question.settled` so a question answered through any other channel — a
+   decline, a different client on the same OpenCode session — still resolves
+   Bridge's own record instead of leaving it stuck open.
+
 ## Functional Behavior
 
 - `question.asked` normalizes to `approval.requested` with
@@ -48,17 +86,29 @@ the turn.
 ## Unit Tests
 
 - `agent.rs`: `question.asked` → `approval.requested`, `requestMethod`,
-  `requestId`, `questions`, title/text all populated; unknown providers still
-  fall through to `provider.unknown` (`preserves_unknown_provider_event`
-  keeps passing).
+  `requestId`, `questions`, title/text all populated; `question.replied` /
+  `question.rejected` → `question.settled` carrying the settling `requestId`;
+  unknown providers still fall through to `provider.unknown`
+  (`preserves_unknown_provider_event` keeps passing).
 - `live_turn.rs`: a session with a pending `opencode.question` approval
   answers it on `submit_input` (steered disposition, adapter's
   `answer_question` called with the right request id and answer shape, no
   queue row created, approval resolved, session back to `working`); a session
   with no pending question still queues/steers/starts exactly as before.
-- `api.rs` (or `live_turn.rs` resolve-approval tests, wherever the existing
-  suite lives): `accept` against a question-marked approval is rejected with
-  a clear error; `decline` maps to the reject endpoint.
+- `live_turn.rs` (review round 1): a pasted credential in a question answer is
+  intercepted before it reaches the adapter or durable history; a second
+  resolver is refused while the claim is held; a two-question request falls
+  through to ordinary routing instead of answering both the same way; a
+  failed delivery voids the stale request and lets the text fall through
+  instead of erroring, and a following submission is not stuck retrying the
+  same dead id; `void_orphaned_questions` resolves a pending row directly; a
+  `question.settled` echo from the provider unblocks a waiting session even
+  when this process never itself answered it.
+- `api.rs` / `live_turn.rs` resolve-approval tests: `accept` against a
+  question-marked approval is rejected with a clear error; `decline` maps to
+  the reject endpoint; a card decision against a question another path is
+  already resolving is refused (the claim is shared across both entry
+  points).
 
 ## Integration / Smoke
 
@@ -76,5 +126,7 @@ posting `{"answers": [...]}`).
 ## Local checkpoint
 
 `cargo test -p bridge-core agent::` and `cargo test -p bridge-core
-live_turn::` targeted runs, plus a full `cargo test -p bridge-core` before
-opening the PR.
+live_turn::` targeted runs, plus a full `cargo test -p bridge-core` (1311
+passed, 0 failed, up from 1303 before review round 1) and `cargo clippy -p
+bridge-core --lib --no-deps` (53 pre-existing warnings, none in a touched
+file) before pushing.
