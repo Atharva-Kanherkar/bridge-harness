@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "vite",
+    "dev:app": "sh scripts/dev-latest.sh",
     "build": "tsc -b && vite build",
     "prepare:browser-host": "sh scripts/prepare-browser-host.sh release",
     "prepare:browser-host:dev": "sh scripts/prepare-browser-host.sh debug",
