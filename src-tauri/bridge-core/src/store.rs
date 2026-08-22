@@ -2927,8 +2927,12 @@ pub(crate) fn session_event_in_transaction(
         || final_kind == "turn.completed"
         || final_kind == "usage.updated"
         || final_kind == "plan.updated"
+        || final_kind == "question.settled"
     {
         // Do not store transient or internal events in the immutable forest.
+        // `question.settled` is a control signal telling `live_turn.rs` to
+        // resolve an existing `approval.requested` row; it is not itself a
+        // durable conversation item.
         return Ok(AgentEvent {
             id: 0,
             session_id: session_id.into(),

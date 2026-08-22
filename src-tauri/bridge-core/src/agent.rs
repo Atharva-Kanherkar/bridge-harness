@@ -210,6 +210,26 @@ pub fn normalize_opencode_message_with_state(
             event.data["questions"] = questions;
             vec![event]
         }
+        // Whoever settled the question — Bridge's own reply, a decline, or a
+        // completely different client on the same OpenCode session — this is
+        // OpenCode's own record that the request is gone. `live_turn.rs`
+        // resolves the matching `approval.requested` by `requestId` so a row
+        // this process never itself answered still stops blocking the
+        // session (#282: an unresolved row survives to target a stale id
+        // forever otherwise).
+        "question.replied" | "question.rejected" => {
+            let mut event = with_data("question.settled", &properties, properties.clone());
+            event.status = Some(
+                if event_type == "question.replied" {
+                    "answered"
+                } else {
+                    "rejected"
+                }
+                .into(),
+            );
+            event.data["requestId"] = properties.get("requestID").cloned().unwrap_or(Value::Null);
+            vec![event]
+        }
         "session.error" => {
             let mut event = with_data("error", &properties, properties.clone());
             event.status = Some("failed".into());
@@ -1196,5 +1216,37 @@ mod tests {
                 .ends_with("requestApproval"),
             "a question must never satisfy the bypass-policy auto-grant check"
         );
+    }
+
+    /// A question can be settled by something other than this Bridge process
+    /// answering it — a decline, or a different client on the same OpenCode
+    /// session. Whatever settled it, `question.replied`/`question.rejected`
+    /// must carry the provider's `requestID` so `live_turn.rs` can find and
+    /// resolve the matching pending row instead of leaving it stuck open.
+    #[test]
+    fn normalizes_question_replied_and_rejected_with_the_settling_requestid() {
+        let mut state = OpenCodeStreamState::default();
+        let replied = normalize_opencode_message_with_state(
+            &json!({
+                "type": "question.replied",
+                "properties": {"sessionID": "ses_1", "requestID": "req_1", "answers": [["Rebase"]]},
+            }),
+            &mut state,
+        );
+        assert_eq!(replied.len(), 1);
+        assert_eq!(replied[0].kind, "question.settled");
+        assert_eq!(replied[0].status.as_deref(), Some("answered"));
+        assert_eq!(replied[0].data["requestId"], "req_1");
+
+        let rejected = normalize_opencode_message_with_state(
+            &json!({
+                "type": "question.rejected",
+                "properties": {"sessionID": "ses_1", "requestID": "req_2"},
+            }),
+            &mut state,
+        );
+        assert_eq!(rejected[0].kind, "question.settled");
+        assert_eq!(rejected[0].status.as_deref(), Some("rejected"));
+        assert_eq!(rejected[0].data["requestId"], "req_2");
     }
 }
