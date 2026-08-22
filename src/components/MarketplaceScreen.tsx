@@ -304,7 +304,7 @@ export function MarketplaceScreen() {
   // they have one.
   const [resource, setResource] = useState<Resource>("agents");
   return <div className="flex h-full min-h-0 flex-col">
-    <nav className="flex h-14 shrink-0 items-center justify-center border-b border-border px-3" aria-label="Marketplace sections" data-tauri-drag-region>
+    <nav className="flex h-14 shrink-0 items-center justify-center border-b border-border px-3" aria-label="Marketplace sections" data-tauri-drag-region="deep">
       <div className="u-segmented">
         {RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}
       </div>

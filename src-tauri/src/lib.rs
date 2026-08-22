@@ -1300,10 +1300,8 @@ fn select_host(
     app: &tauri::App,
     host: &std::sync::OnceLock<HostMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Start quiet: the traffic lights come back while the pointer is in their
-    // corner, which the frontend reports.
     if let Some(window) = app.get_webview_window("main") {
-        window_chrome::set_traffic_lights_visible(window.as_ref().window().clone(), false);
+        window_chrome::position_traffic_lights(&window.as_ref().window());
     }
     let data = app.path().app_data_dir()?;
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
@@ -1581,12 +1579,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| select_host(app, &setup_slot))
-        .invoke_handler(move |invoke| {
-            // Local window chrome first: it is not a protocol method, so the
-            // daemon router would reject it as unknown.
-            if window_chrome::owns(invoke.message.command()) {
-                return window_chrome::handle_invoke(invoke);
+        .on_window_event(|window, event| {
+            // macOS rebuilds the titlebar on these and forgets the button
+            // placement; putting it back here keeps the corner stable.
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::Focused(_)
+                    | tauri::WindowEvent::ThemeChanged(_)
+            ) {
+                window_chrome::position_traffic_lights(window);
             }
+        })
+        .invoke_handler(move |invoke| {
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {
                     daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)

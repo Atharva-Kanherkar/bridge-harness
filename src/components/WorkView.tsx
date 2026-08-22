@@ -427,7 +427,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
 
   return (
     <section aria-label="Work" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-start gap-3 px-5 pb-3 pt-5">
+      <header className="flex items-start gap-3 px-5 pb-3 pt-5" data-tauri-drag-region="deep">
         <div className="min-w-0">
           <h2 className="text-[17px] font-semibold tracking-tight">Needs you</h2>
           <p aria-live="polite" className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
