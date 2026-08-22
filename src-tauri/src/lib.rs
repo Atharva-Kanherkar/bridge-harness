@@ -966,6 +966,17 @@ async fn delete_memory_record(
     .await
 }
 
+#[tauri::command]
+async fn get_memory_capabilities(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryCapabilities, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory capabilities", move || {
+        api::get_memory_capabilities(&core)
+    })
+    .await
+}
+
 /// Replay durable session events after a cursor — the recovery half of the
 /// notify-then-replay event contract.
 #[tauri::command]
@@ -1366,6 +1377,7 @@ pub fn run() {
             save_memory_record,
             list_memory_records,
             delete_memory_record,
+            get_memory_capabilities,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,
@@ -1546,6 +1558,7 @@ mod tests {
         run_git(&["init", "-q"]);
         run_git(&["config", "user.email", "bridge-test@example.invalid"]);
         run_git(&["config", "user.name", "Bridge Test"]);
+        run_git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.join("README.md"), "base\n").unwrap();
         run_git(&["add", "."]);
         run_git(&["commit", "-m", "fixture", "-q"]);
@@ -2356,6 +2369,7 @@ mod tests {
         git(&["init", "--quiet"]);
         git(&["config", "user.email", "bridge@example.invalid"]);
         git(&["config", "user.name", "Bridge Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repository.join("tracked.txt"), "first\n").unwrap();
         git(&["add", "tracked.txt"]);
         git(&["commit", "--quiet", "-m", "initial"]);

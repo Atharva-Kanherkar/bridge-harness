@@ -25,9 +25,10 @@ import { PatchView } from "./components/DiffView";
 import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
+import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { formatElapsed, harnessLabel, tierRuntimeLabel } from "./utils";
+import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -114,7 +115,10 @@ export function App() {
   // diffs, and — now that both tabs can edit — unsaved text.
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(["agent"]));
   useEffect(() => { setVisitedTabs(previous => previous.has(activeTab) ? previous : new Set(previous).add(activeTab)); }, [activeTab]);
-  const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | null>(null);
+  const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | "memory" | null>(null);
+  // A too-long "Remember this" lands here so the dialog opens pre-filled for
+  // trimming; it is never saved on the user's behalf.
+  const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
@@ -714,6 +718,13 @@ export function App() {
     try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
     catch (e) { setError(errorMessage(e)); }
   }, [reload, session?.id]);
+  // "Remember this" on an assistant message. Over the cap the dialog opens with
+  // the full text for the user to trim — never a clip, never a truncated save.
+  const rememberMessage = useCallback(async (text: string) => {
+    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); setModal("memory"); return; }
+    try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
+    catch (e) { setError(errorMessage(e)); }
+  }, [session?.id]);
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
@@ -835,6 +846,7 @@ export function App() {
       onOpenWorkBoard={openWorkBoard}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
+      onOpenMemory={() => setModal("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
     />}
@@ -927,6 +939,7 @@ export function App() {
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
                   highlightEntryId={highlightEntryId}
+                  onRemember={rememberMessage}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
@@ -970,7 +983,7 @@ export function App() {
                       {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                         <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
                         <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
-                        <span className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{harnessLabel(command.harness)}</span>
+                        <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{slashOwnershipBadge(command.harness)}</span>
                       </button>)}
                     </div>
                   </div>}
@@ -1059,6 +1072,7 @@ export function App() {
       onClose={() => void newWorkspaceSession(false)}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
+    <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} onClose={() => { setModal(null); setMemoryDraft(null); }} onError={setError} />
   </div>;
 }
 

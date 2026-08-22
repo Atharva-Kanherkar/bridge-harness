@@ -174,6 +174,7 @@ typed_methods![
     (SaveMemoryRecord, SaveMemoryRecordParams, MemoryRecord),
     (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),
     (DeleteMemoryRecord, DeleteMemoryRecordParams, MemoryRecord),
+    (GetMemoryCapabilities, _, MemoryCapabilities),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
@@ -423,6 +424,7 @@ mod tests {
             MethodName::GetState,
             MethodName::RefreshAccountUsage,
             MethodName::ListSlashCommands,
+            MethodName::GetMemoryCapabilities,
             MethodName::GetConfigState,
             MethodName::MarketplaceCatalog,
             MethodName::TakeoverBrowser,

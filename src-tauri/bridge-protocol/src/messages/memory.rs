@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub const ACCOUNT_MEMORY_SCOPE: &str = "account:local";
 pub const MAX_MEMORY_BODY_CHARS: usize = 4000;
 pub const MAX_MEMORY_LIST_LIMIT: u32 = 50;
+/// The kind vocabulary, in the order surfaces present it.
+pub const MEMORY_KINDS: [&str; 4] = ["preference", "fact", "decision", "constraint"];
 
 /// Explicit pin. Scope is always written as `account:local` by the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -51,6 +53,35 @@ pub struct MemoryRecord {
 pub struct ListMemoryRecordsResult {
     pub scope_key: String,
     pub records: Vec<MemoryRecord>,
+}
+
+/// What memory exists, so surfaces can be honest about what they do not own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryCapabilities {
+    pub ledger: MemoryLedgerCapability,
+    /// Provider-owned memory commands currently reachable through the slash
+    /// catalog. An unavailable adapter contributes nothing.
+    pub provider_native: Vec<ProviderMemoryCommand>,
+}
+
+/// The Bridge half: the local ledger's contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryLedgerCapability {
+    pub exists: bool,
+    pub scope_key: String,
+    pub max_body_chars: u32,
+    pub kinds: Vec<String>,
+}
+
+/// A provider-owned memory command in the catalog. It stays on that provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderMemoryCommand {
+    pub harness: String,
+    pub command: String,
+    pub description: String,
 }
 
 #[cfg(test)]

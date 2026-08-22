@@ -70,6 +70,11 @@ notifications![
     // operations complete before their method returns.
     (ManagedAgentChanged, "managed-agent-changed", Transient),
     (LearningJobChanged, "learning-job-changed", Transient),
+    // Explicit memory pins changed. A refetch hint like the ones above: the
+    // payload names the affected scope only, and the records themselves come
+    // from `memory/list_memory_records`. Never the record — a pin the client
+    // rebuilt from a notification would outlive the tombstone that removed it.
+    (MemoryChanged, "memory-changed", Transient),
     // Explicitly transient streams: worthless once stale, never replayed.
     (SessionOutput, "session-output", Transient),
     (AccountUsage, "account-usage", Transient),
@@ -126,6 +131,7 @@ mod tests {
             NotificationName::StateChanged,
             NotificationName::AdaptersChanged,
             NotificationName::LearningJobChanged,
+            NotificationName::MemoryChanged,
             NotificationName::SessionOutput,
             NotificationName::AccountUsage,
             NotificationName::StreamLagged,

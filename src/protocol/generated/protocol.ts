@@ -39,6 +39,7 @@ export type BridgeMethod =
   | "memory/save_memory_record"
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
+  | "memory/get_memory_capabilities"
   | "approvals/resolve_approval"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -147,6 +148,7 @@ export const BRIDGE_METHODS = [
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
+  { method: "memory/get_memory_capabilities", domain: "memory", command: "get_memory_capabilities" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -229,6 +231,7 @@ export type BridgeNotification =
   | "adapters-changed"
   | "managed-agent-changed"
   | "learning-job-changed"
+  | "memory-changed"
   | "session-output"
   | "account-usage"
   | "stream-lagged";
@@ -239,6 +242,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "adapters-changed", delivery: "transient" },
   { notification: "managed-agent-changed", delivery: "transient" },
   { notification: "learning-job-changed", delivery: "transient" },
+  { notification: "memory-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
@@ -305,6 +309,7 @@ export interface BridgeMethodParams {
   "memory/save_memory_record": SaveMemoryRecordParams;
   "memory/list_memory_records": ListMemoryRecordsParams;
   "memory/delete_memory_record": DeleteMemoryRecordParams;
+  "memory/get_memory_capabilities": undefined;
   "approvals/resolve_approval": ResolveApprovalParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -415,6 +420,7 @@ export interface BridgeMethodResults {
   "memory/save_memory_record": MemoryRecord;
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
+  "memory/get_memory_capabilities": MemoryCapabilities;
   "approvals/resolve_approval": UnitResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -682,6 +688,13 @@ export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "u
 
 export type MarketplaceProvider = "codex" | "claude";
 
+export interface MemoryLedgerCapability {
+  exists: boolean;
+  kinds: string[];
+  maxBodyChars: number;
+  scopeKey: string;
+}
+
 export interface MemoryRecord {
   body: string;
   createdAt: string;
@@ -733,6 +746,12 @@ export interface Project {
 export interface ProtocolVersion {
   major: number;
   minor: number;
+}
+
+export interface ProviderMemoryCommand {
+  command: string;
+  description: string;
+  harness: string;
 }
 
 export interface QueuedWorkerRequest {
@@ -1430,6 +1449,11 @@ export interface ListMemoryRecordsResult {
 
 export interface DeleteMemoryRecordParams {
   recordId: string;
+}
+
+export interface MemoryCapabilities {
+  ledger: MemoryLedgerCapability;
+  providerNative: ProviderMemoryCommand[];
 }
 
 export interface ResolveApprovalParams {

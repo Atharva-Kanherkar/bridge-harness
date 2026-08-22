@@ -43,6 +43,7 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   onOpenWorkBoard: () => {},
   onOpenProjects: noop,
   onOpenMarketplace: noop,
+  onOpenMemory: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
   ...overrides,
@@ -280,5 +281,9 @@ describe("BridgeSidebar without the worker panel", () => {
     const html = render({ chats: [session("a", { status: "working" })] });
     expect(html).not.toContain("Live workers");
     expect(html).not.toMatch(/workers?: /);
+  });
+  it("offers Memory in the footer rail with no workspace at all", () => {
+    // Account memory is not workspace memory; a plain chat reaches it too.
+    expect(render({ workspaces: [] })).toContain("Memory");
   });
 });

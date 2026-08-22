@@ -5536,6 +5536,9 @@ fn prepare_input(
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Pin { body } => {
+            // The slash writes the same ledger the dialog reads, so it owes the
+            // same hint. A refused save publishes nothing.
+            let mut changed_scope = None;
             let text = if body.trim().is_empty() {
                 "Usage: /pin <text>. Saves an about-me pin on this machine (`account:local`). Not this chat, not the helper picker."
                     .to_string()
@@ -5544,10 +5547,16 @@ fn prepare_input(
             } else {
                 let db = state.db.lock().unwrap();
                 match memory_ledger::save(&db, &body, None, Some(&session_id)) {
-                    Ok(record) => memory_ledger::format_saved(&record),
+                    Ok(record) => {
+                        changed_scope = Some(record.scope_key.clone());
+                        memory_ledger::format_saved(&record)
+                    }
                     Err(error) => error.to_string(),
                 }
             };
+            if let Some(scope_key) = changed_scope {
+                core.events.publish(CoreEvent::MemoryChanged { scope_key });
+            }
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
@@ -5563,15 +5572,22 @@ fn prepare_input(
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Unpin { selector } => {
+            let mut changed_scope = None;
             let text = if selector.trim().is_empty() {
                 "Usage: /unpin <id>. `/pins` lists ids.".to_string()
             } else {
                 let db = state.db.lock().unwrap();
                 match memory_ledger::forget_by_selector(&db, &selector) {
-                    Ok(record) => memory_ledger::format_forgotten(&record),
+                    Ok(record) => {
+                        changed_scope = Some(record.scope_key.clone());
+                        memory_ledger::format_forgotten(&record)
+                    }
                     Err(error) => error.to_string(),
                 }
             };
+            if let Some(scope_key) = changed_scope {
+                core.events.publish(CoreEvent::MemoryChanged { scope_key });
+            }
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }

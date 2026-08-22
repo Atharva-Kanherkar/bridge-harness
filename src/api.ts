@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -46,6 +46,7 @@ const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) =
 const unit = (result: Promise<null>): Promise<void> => result.then(() => undefined);
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
+const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
 let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
@@ -212,6 +213,7 @@ function mockForest(sessionId: string): SessionForestSnapshot {
 }
 function snapshot() { return structuredClone(mockState); }
 function emitState() { stateListeners.forEach(listener => listener()); }
+function emitMemoryChanged(scopeKey: string) { memoryListeners.forEach(listener => listener({ scopeKey })); }
 function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent> = {}) {
   const event = agentEvent(nextEventId++, sessionId, kind, fields);
   event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence)) + 1;
@@ -865,6 +867,7 @@ export const bridgeApi = {
       updatedAt: now,
     };
     mockMemoryRecords.unshift(record);
+    emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
   listMemoryRecords: async (scopeKey: string): Promise<ListMemoryRecordsResult> => {
@@ -879,12 +882,23 @@ export const bridgeApi = {
         .map(record => structuredClone(record)),
     };
   },
+  getMemoryCapabilities: async (): Promise<MemoryCapabilities> => {
+    if (isTauri()) return call("memory/get_memory_capabilities");
+    return {
+      ledger: { exists: true, scopeKey: "account:local", maxBodyChars: 4000, kinds: ["preference", "fact", "decision", "constraint"] },
+      providerNative: [
+        { harness: "claude", command: "memory", description: "Edit CLAUDE.md memory files" },
+        { harness: "codex", command: "memories", description: "Configure memory use and generation" },
+      ],
+    };
+  },
   deleteMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
     if (isTauri()) return call("memory/delete_memory_record", { recordId });
     const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
     if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
     record.status = "deleted";
     record.updatedAt = new Date().toISOString();
+    emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
   addProject: async (path: string): Promise<BridgeState> => {
@@ -1029,6 +1043,11 @@ export const bridgeApi = {
   onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe("learning-job-changed", handler);
     return () => undefined;
+  },
+  onMemoryChanged: async (handler: (payload: MemoryChangedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<MemoryChangedPayload>("memory-changed", handler);
+    memoryListeners.add(handler);
+    return () => memoryListeners.delete(handler);
   },
 };
 

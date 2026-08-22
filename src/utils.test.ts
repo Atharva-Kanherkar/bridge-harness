@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { canTransition, formatElapsed, harnessLabel, safeSlug, tierRuntimeLabel } from "./utils";
+import { canTransition, formatElapsed, harnessLabel, safeSlug, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
+
+describe("slashOwnershipBadge", () => {
+  it("marks only the bridge catalog as local", () => {
+    expect(slashOwnershipBadge("bridge")).toBe("this Mac");
+    expect(slashOwnershipBadge("claude")).toBe("Claude");
+    expect(slashOwnershipBadge("codex")).toBe("Codex");
+  });
+  it("treats a harness it has never heard of as provider-owned, not local", () => {
+    expect(slashOwnershipBadge("futureagent")).toBe("Futureagent");
+  });
+});
 
 describe("safeSlug", () => {
   it("normalizes unsafe branch text", () => expect(safeSlug(" Add OAuth / callbacks! ")).toBe("add-oauth-callbacks"));

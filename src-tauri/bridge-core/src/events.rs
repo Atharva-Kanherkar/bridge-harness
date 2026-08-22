@@ -41,6 +41,10 @@ pub enum CoreEvent {
     Agent(AgentEvent),
     /// Refetch hint carrying the changed learning run/state payload.
     LearningJobChanged(Value),
+    /// Refetch hint: explicit memory pins changed in this scope. The payload
+    /// names the scope only, because a client that rebuilt a record from a
+    /// notification would keep showing a pin the tombstone already removed.
+    MemoryChanged { scope_key: String },
     /// Transient terminal bytes; worthless once stale, never replayed.
     SessionOutput { session_id: String, data: String },
     /// Transient provider usage tick for the ambient meter.
@@ -64,6 +68,7 @@ impl CoreEvent {
             CoreEvent::AdaptersChanged => NotificationName::AdaptersChanged,
             CoreEvent::Agent(_) => NotificationName::AgentEvent,
             CoreEvent::LearningJobChanged(_) => NotificationName::LearningJobChanged,
+            CoreEvent::MemoryChanged { .. } => NotificationName::MemoryChanged,
             CoreEvent::SessionOutput { .. } => NotificationName::SessionOutput,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
@@ -76,6 +81,11 @@ impl CoreEvent {
             CoreEvent::StateChanged | CoreEvent::AdaptersChanged => Value::Null,
             CoreEvent::Agent(event) => serde_json::to_value(event).expect("agent event serializes"),
             CoreEvent::LearningJobChanged(payload) => payload.clone(),
+            // The scope only. Rebuilding a record from the hint would leave a
+            // pin on screen that its tombstone already removed.
+            CoreEvent::MemoryChanged { scope_key } => serde_json::json!({
+                "scopeKey": scope_key,
+            }),
             CoreEvent::SessionOutput { session_id, data } => serde_json::json!({
                 "sessionId": session_id,
                 "data": data,
@@ -115,6 +125,9 @@ struct ReconciliationState {
     /// flag because the hint names its agent, and ordered so replay is
     /// deterministic.
     managed_agents_changed: std::collections::BTreeSet<String>,
+    /// Which memory scopes changed while a subscriber was lagging. Same shape
+    /// as the agent set above, for the same reason: the hint names its scope.
+    memory_scopes_changed: std::collections::BTreeSet<String>,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -156,6 +169,11 @@ impl EventReceiver {
         for agent_id in &state.managed_agents_changed {
             events.push(CoreEvent::ManagedAgentChanged {
                 agent_id: agent_id.clone(),
+            });
+        }
+        for scope_key in &state.memory_scopes_changed {
+            events.push(CoreEvent::MemoryChanged {
+                scope_key: scope_key.clone(),
             });
         }
         events
@@ -215,6 +233,9 @@ impl EventBus {
                 CoreEvent::ManagedAgentChanged { agent_id } => {
                     state.managed_agents_changed.insert(agent_id.clone());
                 }
+                CoreEvent::MemoryChanged { scope_key } => {
+                    state.memory_scopes_changed.insert(scope_key.clone());
+                }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::AccountUsage { .. } => {}
@@ -254,6 +275,9 @@ mod tests {
             CoreEvent::AdaptersChanged,
             CoreEvent::Agent(agent_event(1)),
             CoreEvent::LearningJobChanged(serde_json::json!({"id":"run"})),
+            CoreEvent::MemoryChanged {
+                scope_key: "account:local".into(),
+            },
             CoreEvent::SessionOutput {
                 session_id: "s".into(),
                 data: "$ ls".into(),
@@ -316,6 +340,14 @@ mod tests {
         );
         let agent = CoreEvent::Agent(agent_event(7));
         assert_eq!(agent.payload()["sequence"], serde_json::json!(7));
+        let memory = CoreEvent::MemoryChanged {
+            scope_key: "account:local".into(),
+        };
+        assert_eq!(
+            memory.payload(),
+            serde_json::json!({"scopeKey":"account:local"}),
+            "the hint names the scope and carries no record"
+        );
     }
 
     #[test]
@@ -380,6 +412,9 @@ mod tests {
         bus.publish(CoreEvent::LearningJobChanged(
             serde_json::json!({"id":"latest"}),
         ));
+        bus.publish(CoreEvent::MemoryChanged {
+            scope_key: "account:local".into(),
+        });
         for index in 0..=EVENT_BUS_CAPACITY {
             bus.publish(CoreEvent::SessionOutput {
                 session_id: "s".into(),
@@ -400,6 +435,10 @@ mod tests {
         assert!(recovered.iter().any(|event| matches!(
             event,
             CoreEvent::LearningJobChanged(payload) if payload["id"] == "latest"
+        )));
+        assert!(recovered.iter().any(|event| matches!(
+            event,
+            CoreEvent::MemoryChanged { scope_key } if scope_key == "account:local"
         )));
     }
 }

@@ -1070,6 +1070,10 @@ mod tests {
             &repo,
             &["config", "user.email", "bridge-test@example.invalid"],
         );
+        git(
+            &repo,
+            &["config", "commit.gpgsign", "false"],
+        );
         git(&repo, &["config", "user.name", "Bridge Test"]);
         std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
         git(&repo, &["add", "."]);
@@ -1346,6 +1350,10 @@ mod tests {
             &seed,
             &["config", "user.email", "bridge-test@example.invalid"],
         );
+        git(
+            &seed,
+            &["config", "commit.gpgsign", "false"],
+        );
         git(&seed, &["config", "user.name", "Bridge Test"]);
         std::fs::write(seed.join("shared.txt"), "base\n").unwrap();
         git(&seed, &["add", "."]);
@@ -1372,6 +1380,10 @@ mod tests {
         git(
             &clone,
             &["config", "user.email", "bridge-test@example.invalid"],
+        );
+        git(
+            &clone,
+            &["config", "commit.gpgsign", "false"],
         );
         git(&clone, &["config", "user.name", "Bridge Test"]);
         (fixture, clone, seed)
@@ -1445,6 +1457,10 @@ mod tests {
         git(
             &repo,
             &["config", "user.email", "bridge-test@example.invalid"],
+        );
+        git(
+            &repo,
+            &["config", "commit.gpgsign", "false"],
         );
         git(&repo, &["config", "user.name", "Bridge Test"]);
         std::fs::write(repo.join("only.txt"), "solo\n").unwrap();

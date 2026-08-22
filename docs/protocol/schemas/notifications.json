@@ -23,6 +23,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "memory-changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "session-output"
     },
     {
