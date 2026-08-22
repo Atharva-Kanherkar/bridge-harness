@@ -342,7 +342,15 @@ pub fn reconcile_with_derived_evidence(
         ));
     }
     let claims_changes = !result.files_changed.is_empty();
-    if result.status == WorkerResultStatus::Completed && claims_changes && evidence.is_empty() {
+    // A handoff makes the same claim a `completed` result does, and its change
+    // set is what decides whether a completion gate opens over it, so an
+    // unsupported claim has to be recorded here too.
+    if matches!(
+        result.status,
+        WorkerResultStatus::Completed | WorkerResultStatus::NeedsDelegation
+    ) && claims_changes
+        && evidence.is_empty()
+    {
         mismatches.push(format!(
             "reported {} changed file(s) but {} shows no commit past {} and a clean tree",
             result.files_changed.len(),
@@ -380,10 +388,11 @@ pub fn reconcile_with_derived_evidence(
     let mut reconciled = result.clone();
     // The completion plan is built from `filesChanged`, so it must be the
     // repository's list, not the worker's. A worker cannot suppress a required
-    // build or test by omitting a path.
-    if !derived.is_empty() {
-        reconciled.files_changed = derived.clone();
-    }
+    // build or test by omitting a path — nor invent one by naming a file it never
+    // touched, which is why the empty list replaces a claim too. Skipping the
+    // assignment when Git found nothing left the worker's prose standing as the
+    // change set, and a change set is what opens a gate.
+    reconciled.files_changed = derived.clone();
     // Empty or out-of-scope evidence behind a `completed` claim is not a warning
     // to pass along; it is a failed claim.
     let fatal = mismatches
@@ -798,9 +807,37 @@ fn settle(db: &Connection, session_id: &str, state: &str, detail: &str) -> Resul
     Ok(())
 }
 
+/// Every other live session running inside this checkout.
+///
+/// A verifier is bound to the implementation worker's worktree at launch, in its
+/// own `worker_runtime` row — a different session, with no binding of its own on
+/// that path. `worker_is_reusable` asks only about the worker that *wrote* there,
+/// so adoption (and the terminal-worktree maintenance pass) could remove the
+/// directory a reserved or running verifier was about to read.
+fn live_borrowers(
+    db: &Connection,
+    binding_row: &WorkerRepositoryBinding,
+) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT r.session_id FROM worker_runtime r
+         LEFT JOIN sessions s ON s.id=r.session_id
+         WHERE r.worktree_path=?1 AND r.session_id<>?2
+           AND (COALESCE(s.status,'') IN ('starting','working','resuming','checkpointing','waiting','warm','restored')
+                OR r.lifecycle_state IN ('starting','working','resuming','checkpointing','waiting','warm','restored'))
+         ORDER BY r.session_id",
+    )?;
+    let rows = statement.query_map(
+        params![binding_row.worktree_path, binding_row.session_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(BridgeError::from)
+}
+
 /// Remove a child worktree whose state is terminal. A dirty worktree is left in
 /// place: `safe_remove_worker_worktree` refuses it, and silently discarding
-/// uncommitted work would be worse than leaking a directory.
+/// uncommitted work would be worse than leaking a directory. So is a worktree
+/// another live worker is running in — see [`live_borrowers`].
 fn release_worktree(
     db: &Connection,
     binding_row: &WorkerRepositoryBinding,
@@ -811,6 +848,20 @@ fn release_worktree(
     }
     let worker = Path::new(&binding_row.worktree_path);
     if !worker.exists() {
+        return Ok(());
+    }
+    let borrowers = live_borrowers(db, binding_row)?;
+    if !borrowers.is_empty() {
+        let _ = store::event(
+            db,
+            "worktree",
+            "worker.worktree_retained",
+            &binding_row.session_id,
+            &format!(
+                "cannot remove worker worktree while {} is still running in it",
+                borrowers.join(", ")
+            ),
+        );
         return Ok(());
     }
     match git::safe_remove_worker_worktree(
@@ -1319,6 +1370,59 @@ mod tests {
         assert!(adopt(&fixture.db, "child").is_ok());
     }
 
+    /// A verifier runs in the implementation worker's checkout, in its own
+    /// session, with no binding of its own on that path. Asking only whether the
+    /// worker that *wrote* there is still reusable let adoption remove the
+    /// directory the verifier was about to read.
+    #[test]
+    fn a_worktree_another_live_worker_runs_in_is_retained() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.txt"), "worker\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker change"]);
+        record_evidence(&fixture.db, "child", &recorded_evidence(&fixture, &worker)).unwrap();
+        // A verifier bound to the implementation worker's checkout, reserved and
+        // about to start.
+        fixture.db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES('verifier','w','codex','Verification','starting','reported','parent',1)", []).unwrap();
+        fixture.db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,worktree_path,updated_at) VALUES('verifier','parent','starting','verification','key','pending',0,?1,'now')", params![worker.to_string_lossy()]).unwrap();
+
+        adopt(&fixture.db, "child").unwrap();
+        assert!(
+            worker.exists(),
+            "the verifier's checkout must survive the adoption of the work it is verifying"
+        );
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 0);
+        assert!(fixture
+            .db
+            .query_row(
+                "SELECT body FROM events WHERE kind='worker.worktree_retained' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .contains("verifier"));
+
+        // Once verification is terminal, the worktree is collected.
+        fixture
+            .db
+            .execute(
+                "UPDATE sessions SET status='stopped' WHERE id='verifier'",
+                [],
+            )
+            .unwrap();
+        fixture
+            .db
+            .execute(
+                "UPDATE worker_runtime SET lifecycle_state='completed' WHERE session_id='verifier'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 1);
+        assert!(!worker.exists());
+    }
+
     /// A warm worker is idle, not finished: it can be resumed into this exact
     /// checkout, so settling must not delete it out from under a later resume.
     #[test]
@@ -1554,6 +1658,44 @@ mod tests {
         assert_eq!(evidence.commits.len(), 1);
         assert_eq!(evidence.branch.as_deref(), Some("bridge/worker-child"));
         assert!(evidence.diffstat().contains("1 file(s) changed"));
+    }
+
+    /// A handoff makes the same claim a `completed` result does, and its change
+    /// set decides whether a completion gate opens over it. The derived list used
+    /// to replace the claim only when Git found something, so a fabricated
+    /// `filesChanged` survived a clean tree and could open a gate over nothing.
+    #[test]
+    fn a_fabricated_change_set_cannot_open_a_gate() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        lease(&fixture, "[\"src/**\"]");
+        assert!(worker.exists());
+
+        let mut handoff = completed(&["src/router.rs", "src/router.test.ts"]);
+        handoff.status = WorkerResultStatus::NeedsDelegation;
+        handoff.suggested_task = Some("verify the router change".into());
+        handoff.suggested_role = Some(crate::delegation::WorkerRole::Verification);
+        let reconciled = reconcile_result_with_repository(&fixture.db, "child", &handoff);
+
+        assert!(
+            reconciled.result.files_changed.is_empty(),
+            "the repository shows nothing, so the change set is empty: {:?}",
+            reconciled.result.files_changed
+        );
+        assert!(reconciled
+            .mismatches
+            .iter()
+            .any(|mismatch| mismatch.contains("shows no commit past")));
+        // The status survives: downgrading a handoff would discard the follow-up
+        // it asked for, and with an empty change set it can no longer open a gate.
+        assert_eq!(
+            reconciled.result.status,
+            WorkerResultStatus::NeedsDelegation
+        );
+        assert_eq!(
+            reconciled.result.suggested_task.as_deref(),
+            Some("verify the router change")
+        );
     }
 
     #[test]

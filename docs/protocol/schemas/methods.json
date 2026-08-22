@@ -93,6 +93,13 @@
       "resultSchema": "session-forest-snapshot.json"
     },
     {
+      "command": "get_session_forest_digest",
+      "domain": "sessions",
+      "method": "sessions/get_session_forest_digest",
+      "paramsSchema": "get-session-forest-digest-params.json",
+      "resultSchema": "session-forest-digest-result.json"
+    },
+    {
       "command": "replay_session_events",
       "domain": "sessions",
       "method": "sessions/replay_session_events",
@@ -450,6 +457,27 @@
       "resultDeferred": "bridge_core::model_profiles::ModelSetupState"
     },
     {
+      "command": "get_suggestion_settings",
+      "domain": "models",
+      "method": "models/get_suggestion_settings",
+      "paramsSchema": null,
+      "resultSchema": "suggestion-settings-snapshot.json"
+    },
+    {
+      "command": "save_suggestion_settings",
+      "domain": "models",
+      "method": "models/save_suggestion_settings",
+      "paramsSchema": "save-suggestion-settings-params.json",
+      "resultSchema": "suggestion-settings-snapshot.json"
+    },
+    {
+      "command": "suggest_completion",
+      "domain": "models",
+      "method": "models/suggest_completion",
+      "paramsSchema": "suggest-completion-params.json",
+      "resultSchema": "suggest-completion-result.json"
+    },
+    {
       "command": "get_config_state",
       "domain": "config",
       "method": "config/get_config_state",
@@ -517,6 +545,13 @@
       "domain": "config",
       "method": "config/reset_all_config",
       "paramsSchema": null,
+      "resultSchema": "config-state.json"
+    },
+    {
+      "command": "save_permission_policy",
+      "domain": "config",
+      "method": "config/save_permission_policy",
+      "paramsSchema": "save-permission-policy-params.json",
       "resultSchema": "config-state.json"
     },
     {
@@ -805,11 +840,25 @@
       "method": "skills/execute_skill_change",
       "paramsSchema": "execute-skill-change-params.json",
       "resultDeferred": "Vec<bridge_core::skill_marketplace::SkillActionResult>"
+    },
+    {
+      "command": "automation_catalog",
+      "domain": "automations",
+      "method": "automations/automation_catalog",
+      "paramsSchema": null,
+      "resultDeferred": "bridge_core::automations::AutomationCatalog"
+    },
+    {
+      "command": "execute_automation_action",
+      "domain": "automations",
+      "method": "automations/execute_automation_action",
+      "paramsSchema": "execute-automation-action-params.json",
+      "resultDeferred": "bridge_core::automations::AutomationActionResult"
     }
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 0
+    "minor": 3
   },
   "reserved": {
     "cancel": "$/cancel",

@@ -15,11 +15,12 @@ use crate::model::{
     AdapterDescriptor, AgentEvent, BridgeState, CapabilityTier, Harness, SessionForestSnapshot,
 };
 use crate::{
-    adapters, agent, agent_config, agent_integration, binary, browser_bridge, completion, git,
-    learning_job, learning_router, live_turn, marketplace, memory_ledger, model_profiles, opencode_adapter,
-    secret_interception, session_recall, session_supervisor, sessions, skill_marketplace, slash, store,
-    verification_pipeline, verified_catalog, work, work_actions, work_observation, work_reconcile,
-    work_task_state, worker_adoption,
+    adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
+    completion, git, learning_job, learning_router, live_turn, marketplace, memory_ledger,
+    model_profiles, opencode_adapter, secret_interception, session_recall, session_supervisor,
+    sessions, skill_marketplace, slash, store,
+    suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
+    work_observation, work_reconcile, work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
 use bridge_protocol::messages as wire;
@@ -44,11 +45,15 @@ pub struct Health {
     pub database: String,
     pub telemetry_database: String,
     pub snapshot_directory: String,
+    pub snapshot_count: u64,
+    pub snapshot_total_bytes: u64,
     pub adapters: Vec<AdapterDescriptor>,
 }
 
 pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
     let adapters = core.adapter_registry.descriptors();
+    let (snapshot_count, snapshot_total_bytes) =
+        crate::store::history_snapshot_stats(&core.snapshot_dir);
     let opencode_available = adapters
         .iter()
         .find(|adapter| adapter.id == "opencode")
@@ -65,6 +70,8 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
         database: core.database_path.to_string_lossy().into(),
         telemetry_database: core.telemetry_database_path.to_string_lossy().into(),
         snapshot_directory: core.snapshot_dir.to_string_lossy().into(),
+        snapshot_count,
+        snapshot_total_bytes,
         adapters,
     })
 }
@@ -237,6 +244,23 @@ pub fn archive_workspace(
 
 // --- sessions ----------------------------------------------------------------
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForestDigest {
+    pub digest: String,
+}
+
+/// The cheap half of forest polling: an opaque token that changes whenever
+/// `get_session_forest` would return different store-derived content.
+pub fn get_session_forest_digest(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<ForestDigest, BridgeError> {
+    Ok(ForestDigest {
+        digest: core.session_forest_digest(session_id)?,
+    })
+}
+
 pub fn get_session_forest(
     core: &Arc<BridgeCore>,
     session_id: &str,
@@ -258,8 +282,9 @@ pub fn replay_session_events(
     session_id: &str,
     after_sequence: i64,
     limit: Option<u32>,
+    tail: Option<bool>,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
-    core.replay_session_events(session_id, after_sequence, limit)
+    core.replay_session_events(session_id, after_sequence, limit, tail)
 }
 
 pub fn activate_session_entry(
@@ -714,6 +739,28 @@ pub fn resolve_approval(
         }
         core.events.publish(CoreEvent::StateChanged);
         return Ok(());
+    }
+    // One answer per request. The approval event is published to every client
+    // before anything resolves it, so a human click and the permission policy can
+    // both reach here for the same request id — and two `respond` calls for one
+    // request is a contradictory answer to the provider plus two resolutions in
+    // the transcript. Multi-window clients could already race this; the policy
+    // just made the window routine.
+    let already_resolved: bool = db
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM session_entries
+                 WHERE session_id=?1 AND kind='approval.resolved'
+                   AND json_extract(payload,'$.data.requestEventId')=?2
+             )",
+            params![session_id, event_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if already_resolved {
+        return Err(BridgeError::Invalid(
+            "This approval has already been answered".into(),
+        ));
     }
     let request_id = detail("requestId")
         .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
@@ -1772,6 +1819,53 @@ pub fn reset_model_profiles(
     )
 }
 
+// --- inline composer suggestions ---------------------------------------------------
+
+/// The composer typeahead's stored configuration.
+pub fn get_suggestion_settings(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::SuggestionSettingsSnapshot, BridgeError> {
+    suggestion_engine::read_settings(&core.db.lock().unwrap())
+}
+
+/// Persist the typeahead's configuration. Validation lives in Rust —
+/// `suggestion_engine::validate_settings` plus the model-catalog check below,
+/// which needs the adapter registry the store-only module cannot reach. Same
+/// shape as `write_work_settings`.
+pub fn save_suggestion_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveSuggestionSettingsParams,
+) -> Result<wire::SuggestionSettingsSnapshot, BridgeError> {
+    let descriptors = core.adapter_registry.descriptors();
+    if let Some(descriptor) = descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == params.settings.provider)
+    {
+        // An empty catalog is a runtime-discovered one; only a non-empty
+        // catalog can refuse a model by name.
+        if !descriptor.models.is_empty()
+            && !descriptor.models.iter().any(|model| model.id == params.settings.model)
+        {
+            return Err(BridgeError::Invalid(format!(
+                "{} is not a model {} offers",
+                params.settings.model, descriptor.label
+            )));
+        }
+    }
+    suggestion_engine::write_settings(&core.db.lock().unwrap(), &params.settings)
+}
+
+/// Ask the typeahead engine to continue the composer's current draft. Refuses
+/// outright when suggestions are turned off — the caller (the UI's debounce)
+/// is expected not to call this at all in that case, but the refusal is the
+/// authority, not the UI's own gating.
+pub fn suggest_completion(
+    core: &Arc<BridgeCore>,
+    params: &wire::SuggestCompletionParams,
+) -> Result<wire::SuggestCompletionResult, BridgeError> {
+    suggestion_engine::suggest_completion(core, &params.text)
+}
+
 // --- configuration ----------------------------------------------------------------
 
 fn opencode_directory(directory: Option<String>) -> Result<String, BridgeError> {
@@ -1873,8 +1967,24 @@ pub fn set_default_agent(
     agent_config::set_default(&core.db.lock().unwrap(), id)
 }
 
+/// Persist the permission policy and hand back the whole config snapshot, the
+/// same shape every other config mutation returns.
+pub fn save_permission_policy(
+    core: &Arc<BridgeCore>,
+    policy: agent_config::PermissionPolicy,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let next = agent_config::save_permission_policy(&core.db.lock().unwrap(), policy)?;
+    // The badge in the app chrome renders from state, so a flip has to push.
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(next)
+}
+
 pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_all(&core.db.lock().unwrap())?;
+    // Reset deletes every configuration row, the permission policy among them, so
+    // the chrome badge has to hear about it or it keeps advertising a bypass that
+    // is no longer in effect.
+    core.events.publish(CoreEvent::StateChanged);
     let directory = opencode_directory(None)?;
     let _ = core
         .adapter_registry
@@ -2143,6 +2253,25 @@ pub fn execute_skill_change(
     )?;
     core.events.publish(CoreEvent::StateChanged);
     Ok(results)
+}
+
+// --- automations ---------------------------------------------------------------
+
+pub fn automation_catalog(
+    _core: &Arc<BridgeCore>,
+) -> Result<automations::AutomationCatalog, BridgeError> {
+    Ok(automations::catalog(&user_home()))
+}
+
+pub fn execute_automation_action(
+    core: &Arc<BridgeCore>,
+    provider: automations::AutomationProvider,
+    automation_id: &str,
+    action: automations::AutomationAction,
+) -> Result<automations::AutomationActionResult, BridgeError> {
+    let result = automations::execute(&user_home(), provider, automation_id, action)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(result)
 }
 
 #[cfg(test)]

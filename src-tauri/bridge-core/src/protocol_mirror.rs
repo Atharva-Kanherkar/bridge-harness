@@ -20,8 +20,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use bridge_protocol::messages as wire;
 
 use crate::{
-    agent_config, browser_bridge, completion, delegation, learning_job, learning_router,
-    marketplace, model, model_profiles, skill_marketplace,
+    agent_config, automations, browser_bridge, completion, delegation, learning_job,
+    learning_router, marketplace, model, model_profiles, skill_marketplace, suggestion_engine,
 };
 
 /// Assert a core DTO and its protocol mirror describe the same document.
@@ -146,11 +146,39 @@ fn mirror_skill_provider(provider: skill_marketplace::SkillProvider) -> wire::Sk
     }
 }
 
+fn mirror_suggestion_fallback_reason(
+    reason: suggestion_engine::FallbackReason,
+) -> wire::SuggestionFallbackReason {
+    match reason {
+        suggestion_engine::FallbackReason::UnknownModel => wire::SuggestionFallbackReason::UnknownModel,
+        suggestion_engine::FallbackReason::Unauthorized => wire::SuggestionFallbackReason::Unauthorized,
+        suggestion_engine::FallbackReason::RateLimited => wire::SuggestionFallbackReason::RateLimited,
+    }
+}
+
 fn mirror_skill_action(action: skill_marketplace::SkillAction) -> wire::SkillAction {
     match action {
         skill_marketplace::SkillAction::Install => wire::SkillAction::Install,
         skill_marketplace::SkillAction::Rollback => wire::SkillAction::Rollback,
         skill_marketplace::SkillAction::Uninstall => wire::SkillAction::Uninstall,
+    }
+}
+
+fn mirror_automation_provider(
+    provider: automations::AutomationProvider,
+) -> wire::AutomationProvider {
+    match provider {
+        automations::AutomationProvider::Claude => wire::AutomationProvider::Claude,
+        automations::AutomationProvider::Codex => wire::AutomationProvider::Codex,
+        automations::AutomationProvider::OpenCode => wire::AutomationProvider::OpenCode,
+    }
+}
+
+fn mirror_automation_action(action: automations::AutomationAction) -> wire::AutomationAction {
+    match action {
+        automations::AutomationAction::Pause => wire::AutomationAction::Pause,
+        automations::AutomationAction::Resume => wire::AutomationAction::Resume,
+        automations::AutomationAction::Delete => wire::AutomationAction::Delete,
     }
 }
 
@@ -369,6 +397,17 @@ fn routing_and_profile_enums_share_their_wire_values() {
 }
 
 #[test]
+fn suggestion_fallback_reasons_share_their_wire_values() {
+    for reason in [
+        suggestion_engine::FallbackReason::UnknownModel,
+        suggestion_engine::FallbackReason::Unauthorized,
+        suggestion_engine::FallbackReason::RateLimited,
+    ] {
+        assert_same_wire_value(&reason, &mirror_suggestion_fallback_reason(reason));
+    }
+}
+
+#[test]
 fn learning_trigger_kinds_share_their_wire_values() {
     for kind in [
         learning_job::LearningTriggerKind::Manual,
@@ -440,6 +479,20 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
         skill_marketplace::SkillAction::Uninstall,
     ] {
         assert_same_wire_value(&action, &mirror_skill_action(action));
+    }
+    for provider in [
+        automations::AutomationProvider::Claude,
+        automations::AutomationProvider::Codex,
+        automations::AutomationProvider::OpenCode,
+    ] {
+        assert_same_wire_value(&provider, &mirror_automation_provider(provider));
+    }
+    for action in [
+        automations::AutomationAction::Pause,
+        automations::AutomationAction::Resume,
+        automations::AutomationAction::Delete,
+    ] {
+        assert_same_wire_value(&action, &mirror_automation_action(action));
     }
 }
 
@@ -853,6 +906,9 @@ fn the_session_forest_snapshot_mirrors_core() {
             worktree_branch: Some("bridge/w".into()),
             last_result: Some(serde_json::json!({"ok": true})),
             last_activity_at: Some("now".into()),
+            waiting_since: Some("now".into()),
+            waiting_reason: Some("approval_requested".into()),
+            progress_summary: Some("Running: cargo test".into()),
             updated_at: "now".into(),
         }],
         worker_queue: vec![model::QueuedWorkerRequest {
@@ -956,6 +1012,8 @@ fn result_payloads_mirror_core() {
         database: "/data/bridge.db".into(),
         telemetry_database: "/data/bridge-telemetry.db".into(),
         snapshot_directory: "/data/history-snapshots".into(),
+        snapshot_count: 9,
+        snapshot_total_bytes: 4_096,
         adapters: vec![model::AdapterDescriptor {
             // Deliberately a partial declaration so the mirror proves the wire
             // shape carries the exact list rather than a defaulted one.
@@ -977,6 +1035,9 @@ fn result_payloads_mirror_core() {
             }],
             default_model: Some("gpt-5".into()),
         }],
+    });
+    assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
+        digest: "v1:42:2026-08-20T00:00:00Z".into(),
     });
     assert_mirrors::<wire::SanitizedTurn>(&crate::secret_interception::SanitizedTurn {
         text: "use {{bridge:secret:ref-1}}".into(),
@@ -1037,6 +1098,10 @@ fn result_payloads_mirror_core() {
             updated_at: "now".into(),
         }],
         default_agent_id: "reviewer".into(),
+        permission_policy: agent_config::PermissionPolicy {
+            bypass_all: true,
+            updated_at: "now".into(),
+        },
     });
     assert_mirrors::<wire::BrowserRouteDecision>(&browser_bridge::route_browser(
         browser_bridge::BrowserRouteRequest {

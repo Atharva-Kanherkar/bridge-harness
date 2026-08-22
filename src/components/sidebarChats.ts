@@ -28,15 +28,20 @@ export const BRIEFING_SESSION_KIND = "briefing";
 /** Mirrors `bridge_core::memory_extraction::EXTRACTION_SESSION_KIND`. */
 export const EXTRACTION_SESSION_KIND = "extraction";
 
+/** The session kind the composer typeahead's hidden warm session uses. Mirrors
+ * `bridge_core::suggestion_engine::SUGGESTION_SESSION_KIND`. */
+export const SUGGESTION_SESSION_KIND = "suggestion";
+
 /** Is this a session Bridge runs for itself, that a human should never meet in a list?
  *
- * A predicate rather than an ordering rule: a briefing session that merely sorted last
- * would still be one keystroke from being opened, resumed, or sent a turn. Its
+ * A predicate rather than an ordering rule: a run that merely sorted last would
+ * still be one keystroke from being opened, resumed, or sent a turn. Its
  * transcript exists to be inspected after a run, not joined during one. */
-/** Session kinds Bridge runs for itself. A human never sees one in a list —
- * a hidden run that merely sorted last would still be one keystroke from being
- * opened, resumed, or sent a turn. */
-const HIDDEN_SESSION_KINDS = [BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND];
+const HIDDEN_SESSION_KINDS = [
+  BRIEFING_SESSION_KIND,
+  SUGGESTION_SESSION_KIND,
+  EXTRACTION_SESSION_KIND,
+];
 
 export function isHiddenSession(chat: Pick<Session, "kind">): boolean {
   return !!chat.kind && HIDDEN_SESSION_KINDS.includes(chat.kind);

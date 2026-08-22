@@ -5,7 +5,7 @@ the user's pinned harness and model â€” never selected by the learning router â€
 produces proposed records for the review queue. The queue ships in this slice
 because its first content ships in this slice.
 
-## Schema 33
+## Schema 35
 
 - `memory_records` gains nullable `confidence_bps` and `rationale`, arriving
   with their first honest producer. Explicit saves keep them NULL and render

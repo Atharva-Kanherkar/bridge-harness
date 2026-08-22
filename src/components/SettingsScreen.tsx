@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Check, ChevronRight, Code2, LoaderCircle, Monitor, Moon, Plus, RotateCcw, Save, Settings2, Shield, Sparkles, Sun, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronRight, Code2, LoaderCircle, Lock, Monitor, Moon, Plus, RotateCcw, Save, Settings2, Shield, ShieldOff, Sparkles, Sun, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
-import type { AdapterDescriptor, AgentDefinition, AgentRole, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, ReasoningEffort } from "../types";
+import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
 import { WorkSettingsSection } from "./WorkSettingsSection";
+import { SuggestionSettingsCard } from "./SuggestionSettingsCard";
+import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { cn } from "@/lib/utils";
 
-type Section = "agents" | "harnesses" | "models" | "work" | "appearance";
+export type Section = "agents" | "harnesses" | "models" | "permissions" | "work" | "appearance";
 
 const roles: { id: AgentRole; label: string }[] = [
   { id: "orchestrator", label: "Orchestrator" }, { id: "research", label: "Research" },
@@ -50,6 +52,92 @@ function AppearanceSection() {
   </div>;
 }
 
+/// The two gates that outlive the bypass switch.
+///
+/// Named in the UI, not only in a doc comment, because the issue makes the copy
+/// part of the contract: a switch that claims to silence everything and then
+/// still prompts has to say up front where and why. Both are authorization
+/// rather than convenience — a worker writing outside its lease, and an outward
+/// effect like sending or purchasing.
+const SURVIVING_GATES = [
+  {
+    title: "Worker write scope",
+    copy: "A worker still needs your authorization for the paths it may write. Bypass covers convenience, not authorization.",
+  },
+  {
+    title: "Browser outward effects",
+    copy: "Send, submit, purchase, publish, and credential steps in the browser still ask, every time.",
+  },
+];
+
+export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
+  policy: PermissionPolicy;
+  autoApprovals: BridgeEvent[];
+  busy: boolean;
+  onChange: (next: PermissionPolicy) => void;
+}) {
+  const on = policy.bypassAll;
+  return <div className="mx-auto max-w-2xl">
+    <div className="mb-5">
+      <h2 className="font-display text-lg font-semibold">Permissions</h2>
+      <p className="mt-1 text-xs text-muted-foreground">How much Bridge asks before an agent acts.</p>
+    </div>
+
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={busy}
+      onClick={() => onChange({ ...policy, bypassAll: !on })}
+      // The ON state is carried by the border, the icon, and the pill — not by a
+      // background swap. Tinting the card put `text-muted-foreground` body copy
+      // on a lighter surface and the explanation went unreadable in dark mode,
+      // which is the one state where the copy matters most.
+      className={cn(
+        "flex w-full items-start gap-3.5 rounded-2xl border p-4 text-left transition-colors hover:bg-accent disabled:opacity-50",
+        on ? "border-warning/40" : "border-border",
+      )}
+    >
+      <span className={cn("mt-0.5 shrink-0", on ? "text-warning" : "text-muted-foreground")}>
+        {on ? <ShieldOff size={16} /> : <Shield size={16} />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-medium text-foreground">Bypass all approvals</span>
+        <span className="mt-1 block text-[11.5px] leading-relaxed text-muted-foreground">
+          Every agent — orchestrator, workers, and direct chats — has its approvals accepted automatically. No prompt appears anywhere.
+        </span>
+      </span>
+      <span className={cn(
+        "mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold tracking-[0.07em]",
+        on ? "bg-warning/15 text-warning" : "border border-border text-muted-foreground",
+      )}>{on ? "ON" : "OFF"}</span>
+    </button>
+
+    <div className="mt-3 rounded-2xl border border-border p-4">
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-foreground"><Lock size={12} aria-hidden="true" /> These keep asking either way</p>
+      <ul className="mt-2.5 grid gap-2.5">
+        {SURVIVING_GATES.map(gate => <li key={gate.title}>
+          <b className="block text-[12px] font-medium text-foreground">{gate.title}</b>
+          <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">{gate.copy}</span>
+        </li>)}
+      </ul>
+    </div>
+
+    <div className="mt-5">
+      <h3 className="text-[12px] font-medium text-foreground">Recent auto-approvals</h3>
+      <p className="mt-1 text-[11px] text-muted-foreground">Every automatic decision is recorded, so a bypassed approval is auditable rather than invisible.</p>
+      {autoApprovals.length === 0
+        ? <p className="mt-3 rounded-xl border border-border px-3 py-2.5 font-mono text-[10.5px] text-muted-foreground/70">Nothing has been auto-approved yet.</p>
+        : <ul className="mt-3 grid gap-1.5">
+            {autoApprovals.map(event => <li key={event.id} className="flex items-baseline gap-2.5 rounded-xl border border-border px-3 py-2">
+              <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-foreground/85">{event.body}</span>
+              <time className="shrink-0 font-mono text-[9.5px] text-muted-foreground/70">{new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+            </li>)}
+          </ul>}
+    </div>
+  </div>;
+}
+
 function newAgent(): AgentDefinition {
   return { id: "", name: "New agent", description: "", role: "orchestrator", harness: "bridge", model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: false, createdAt: "", updatedAt: "" };
 }
@@ -60,8 +148,8 @@ function SectionButton({ active, icon, label, onClick }: { active: boolean; icon
   </button>;
 }
 
-export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adapters: AdapterDescriptor[]; onModelSetupChange: (setup: ModelSetupState) => void; onError: (message: string) => void }) {
-  const [section, setSection] = useState<Section>("agents");
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
+  const [section, setSection] = useState<Section>(initialSection);
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);
@@ -85,6 +173,16 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
     }).catch(error => onError(String(error))).finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [onError]);
+
+  /// Render from what was stored, not from what was clicked. The switch is a
+  /// security control, so the UI must never show it on because a request was
+  /// sent — only because the host confirmed it.
+  async function savePolicy(policy: PermissionPolicy) {
+    setBusy(true);
+    try { setConfig(await bridgeApi.savePermissionPolicy(policy)); }
+    catch (error) { onError(String(error)); }
+    finally { setBusy(false); }
+  }
 
   useEffect(() => {
     // Fetch on mount (not only in the Harnesses section): the Agents section
@@ -210,6 +308,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
         <SectionButton active={section === "agents"} icon={<Bot size={15} />} label="Agents" onClick={() => setSection("agents")} />
         <SectionButton active={section === "harnesses"} icon={<Code2 size={15} />} label="Harnesses" onClick={() => setSection("harnesses")} />
         <SectionButton active={section === "models"} icon={<Settings2 size={15} />} label="Role models" onClick={() => setSection("models")} />
+        <SectionButton active={section === "permissions"} icon={<Shield size={15} />} label="Permissions" onClick={() => setSection("permissions")} />
         <SectionButton active={section === "work"} icon={<Sparkles size={15} />} label="Work" onClick={() => setSection("work")} />
         <SectionButton active={section === "appearance"} icon={<Sun size={15} />} label="Appearance" onClick={() => setSection("appearance")} />
         <div className="mt-4 rounded-2xl border border-border/70 bg-foreground/[0.025] p-3"><Shield size={14} className="text-success"/><p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Prompts change behavior, never permissions. Existing running sessions keep their current configuration until restarted.</p></div>
@@ -228,6 +327,12 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
             <div className="mt-5 flex flex-wrap items-center gap-2"><button type="button" disabled={busy || !agentDraft.name.trim()} onClick={() => void saveAgent()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>{agentDraft.id ? "Save agent" : "Create agent"}</button>{agentDraft.id && agentDraft.role === "orchestrator" && !agentDraft.isDefault && <button type="button" disabled={busy || !agentDraft.enabled} onClick={() => void makeDefault()} className="h-9 rounded-xl border border-border px-3 text-xs text-foreground hover:bg-foreground/[0.05] disabled:opacity-40">Make default orchestrator</button>}{agentDraft.id && <button type="button" disabled={busy} onClick={() => void removeAgent()} className="ml-auto inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-destructive hover:bg-destructive/10"><Trash2 size={13}/>{agentDraft.isBuiltIn ? "Reset agent" : "Delete agent"}</button>}</div>
           </section>}
         </div>}
+        {section === "permissions" && config && <PermissionsSection
+          policy={config.permissionPolicy}
+          autoApprovals={autoApprovals}
+          busy={busy}
+          onChange={policy => void savePolicy(policy)}
+        />}
         {section === "appearance" && <AppearanceSection />}
         {section === "work" && <WorkSettingsSection onError={onError} />}
         {section === "harnesses" && config && <div className="mx-auto max-w-4xl">
@@ -250,7 +355,7 @@ export function SettingsScreen({ adapters, onModelSetupChange, onError }: { adap
             </section>;
           })}</div>
         </div>}
-        {section === "models" && modelSetup && <div className="mx-auto max-w-5xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Role model profiles</h2><p className="mt-1 text-xs text-muted-foreground">Provider, model, effort, fallback, learning, cost, and latency for every Bridge role. Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/></div>}
+        {section === "models" && modelSetup && <div className="mx-auto max-w-5xl"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Role model profiles</h2><p className="mt-1 text-xs text-muted-foreground">Provider, model, effort, fallback, learning, cost, and latency for every Bridge role. Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/><SuggestionSettingsCard adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError}/></div>}
       </div>
     </div>
   </div>;

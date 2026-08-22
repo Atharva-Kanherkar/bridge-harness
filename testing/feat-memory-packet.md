@@ -5,7 +5,7 @@ disclosable. Delivery is the frozen snapshot: the packet is a variable suffix
 compiled at session start, restore, and worker spawn, for every harness alike.
 One product, one audit writer. Mid-session pins apply from the next session.
 
-## Schema 34
+## Schema 36
 
 - `memory_retrieval_audits` lands beside its writer: one row per built packet
   with recipient session, objective hash, candidate count, selected ids,

@@ -21,6 +21,7 @@
 
 mod agents;
 mod approvals;
+mod automations;
 mod browser;
 mod common;
 mod completion;
@@ -42,6 +43,7 @@ mod workspaces;
 
 pub use agents::*;
 pub use approvals::*;
+pub use automations::*;
 pub use browser::*;
 pub use common::*;
 pub use completion::*;
@@ -154,6 +156,7 @@ typed_methods![
     (WorkspaceChanges, WorkspaceChangesParams, WorkspaceChangesResult),
     // sessions
     (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
+    (GetSessionForestDigest, GetSessionForestDigestParams, SessionForestDigestResult),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),
@@ -214,6 +217,10 @@ typed_methods![
     (RecommendedModelProfiles, _, RecommendedModelProfilesResult),
     (SaveModelProfiles, SaveModelProfilesParams, _),
     (ResetModelProfiles, _, _),
+    // inline composer suggestions
+    (GetSuggestionSettings, _, SuggestionSettingsSnapshot),
+    (SaveSuggestionSettings, SaveSuggestionSettingsParams, SuggestionSettingsSnapshot),
+    (SuggestCompletion, SuggestCompletionParams, SuggestCompletionResult),
     // configuration
     (GetConfigState, _, ConfigState),
     (SaveHarnessConfig, SaveHarnessConfigParams, ConfigState),
@@ -224,6 +231,7 @@ typed_methods![
     (SaveAgentConfig, SaveAgentConfigParams, ConfigState),
     (DeleteAgentConfig, DeleteAgentConfigParams, ConfigState),
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
+    (SavePermissionPolicy, SavePermissionPolicyParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
     // adaptive learning
     (GetLearningState, GetLearningStateParams, _),
@@ -272,6 +280,9 @@ typed_methods![
     (SkillSuggestions, SkillSuggestionsParams, _),
     (PreviewSkillChange, PreviewSkillChangeParams, _),
     (ExecuteSkillChange, ExecuteSkillChangeParams, _),
+    // automations
+    (AutomationCatalog, _, _),
+    (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
 ];
 
 /// The documented exceptions to result typing: every method whose result is
@@ -301,6 +312,8 @@ pub const DEFERRED_RESULTS: &[(MethodName, &str)] = &[
     (MethodName::SkillSuggestions, "Vec<bridge_core::skill_marketplace::CapabilitySuggestion>"),
     (MethodName::PreviewSkillChange, "bridge_core::skill_marketplace::SkillPreview"),
     (MethodName::ExecuteSkillChange, "Vec<bridge_core::skill_marketplace::SkillActionResult>"),
+    (MethodName::AutomationCatalog, "bridge_core::automations::AutomationCatalog"),
+    (MethodName::ExecuteAutomationAction, "bridge_core::automations::AutomationActionResult"),
 ];
 
 impl TypedMethod {

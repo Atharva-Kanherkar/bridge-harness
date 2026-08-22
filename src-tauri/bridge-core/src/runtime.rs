@@ -8,7 +8,8 @@ use crate::events::{CoreEvent, EventBus};
 use crate::{
     adapters, agent_config, agent_integration, backend_binding, binary, browser_bridge,
     credential_broker, delegation, model::AdapterDescriptor, session_supervisor, skill_marketplace,
-    store, verified_catalog, worker_guard, worker_sandbox, BridgeError,
+    store, suggestion_engine::SuggestionEngine, verified_catalog, worker_guard, worker_sandbox,
+    BridgeError,
 };
 use portable_pty::{Child, MasterPty};
 use std::{
@@ -35,6 +36,7 @@ pub struct BridgeCore {
     pub telemetry_db: Mutex<rusqlite::Connection>,
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    pub reader_launches: Mutex<HashMap<String, Arc<Mutex<bool>>>>,
     pub adapter_registry: Arc<adapters::AdapterRegistry>,
     /// Which backend serves each agent. The registry executes; this decides
     /// what may execute, and what a session recorded last time.
@@ -82,6 +84,11 @@ pub struct BridgeCore {
     /// runtimes map — is what keeps a concurrent start from racing a
     /// teardown/commit window and orphaning a live adapter.
     pub lifecycle_claims: Mutex<HashMap<String, &'static str>>,
+    /// The composer typeahead's warm hidden session and fallback cooldowns.
+    /// See `suggestion_engine` for why this lives on `BridgeCore` rather than
+    /// being started fresh per request: process-start latency on every
+    /// keystroke pause would make the feature unusable.
+    pub suggestion_engine: SuggestionEngine,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -142,6 +149,13 @@ pub struct DelegationState {
     /// `bridge-delegate` request, so a persistently malformed orchestrator turn
     /// cannot drive an unbounded correction loop.
     pub invalid_request_corrections: HashMap<String, u32>,
+    /// A peek is emitted before the provider's separate turn-completed frame;
+    /// hold it until that boundary so its reply starts a clean turn.
+    pub pending_worker_peeks: HashMap<String, delegation::PeekRequest>,
+    /// A steer is held for the same reason a peek is: it arrives on the
+    /// assistant frame, and delivering it before the parent's turn completes
+    /// would race the reply into a turn that is still running.
+    pub pending_worker_steers: HashMap<String, delegation::SteerRequest>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.
@@ -169,6 +183,20 @@ impl BridgeCore {
     /// The aggregate application snapshot the frontend renders.
     pub fn state_snapshot(&self) -> Result<crate::model::BridgeState, BridgeError> {
         store::state(&self.db.lock().unwrap())
+    }
+
+    /// Flip the reader-launch gate for `session_id` so its reader thread stops
+    /// processing new lines. Idempotent and safe to call from teardown paths.
+    pub fn deactivate_reader_launch(&self, session_id: &str) {
+        if let Some(gate) = self
+            .reader_launches
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+        {
+            *gate.lock().unwrap() = false;
+        }
     }
 
     /// Claim exclusive lifecycle access to a session for the duration of the
@@ -205,6 +233,7 @@ impl BridgeCore {
             ),
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
+            reader_launches: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
             backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             catalog: Arc::new(
@@ -230,6 +259,7 @@ impl BridgeCore {
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events: EventBus::new(),
             lifecycle_claims: Mutex::new(HashMap::new()),
+            suggestion_engine: SuggestionEngine::new(),
         }
     }
 
@@ -248,12 +278,25 @@ impl BridgeCore {
         let connection = store::open(&db_path)?;
         let telemetry_connection = store::open_telemetry(&telemetry_db_path)?;
         session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)?;
+        // Children beyond the per-session claims — discovery and control
+        // servers above all — are reaped from the durable launch ledger, and
+        // pre-ledger opencode orphans by the one-time sweep. Both fail closed
+        // and neither may abort boot: a stuck foreign process is not this
+        // instance's failure.
+        let ledger_root = config.data_dir.join("process-ledger");
+        crate::process_ledger::register_ledger_root(&ledger_root);
+        let _ = crate::process_ledger::recover_in_dir(&connection, &ledger_root);
+        let _ = crate::process_ledger::sweep_legacy_opencode_orphans(&connection);
         session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)?;
         // Adoption state must survive restart: a pending row whose worktree is
         // gone would otherwise block its parent forever.
         crate::worker_adoption::recover(&connection)?;
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)?;
-        let _ = store::export_history_snapshot(&connection, &snapshot_dir);
+        let _ = store::export_history_snapshot_if_stale(
+            &connection,
+            &snapshot_dir,
+            crate::live_turn::HISTORY_SNAPSHOT_INTERVAL,
+        );
         let opencode_config = agent_config::state(&connection)?
             .harnesses
             .into_iter()
@@ -295,6 +338,7 @@ impl BridgeCore {
             telemetry_db: Mutex::new(telemetry_connection),
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
+            reader_launches: Mutex::new(HashMap::new()),
             adapter_registry,
             backend_resolver: Arc::new(backend_resolver),
             catalog: Arc::new(loaded.catalog),
@@ -314,6 +358,7 @@ impl BridgeCore {
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events,
             lifecycle_claims: Mutex::new(HashMap::new()),
+            suggestion_engine: SuggestionEngine::new(),
         })
     }
 }
@@ -458,6 +503,68 @@ mod tests {
             events: None,
         });
         assert!(result.is_err());
+    }
+
+    /// The boot wiring for the launch ledger: a record whose supervisor is
+    /// dead is reaped during `BridgeCore::boot`, exactly as an interrupted
+    /// discovery or SIGKILLed daemon leaves it.
+    #[cfg(unix)]
+    #[test]
+    fn boot_reaps_ledgered_children_of_dead_supervisors() {
+        // Boot re-registers the process-wide managed root; hold the shared
+        // lock so tests that count walks under that root are not perturbed.
+        let _managed_root_guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        {
+            let db = crate::store::open(&data_dir.join("bridge.db")).unwrap();
+            seed_fast_failing_opencode(&db, data_dir);
+        }
+        let ledger_root = data_dir.join("process-ledger");
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        crate::adapters::configure_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let guard = crate::process_ledger::record_launch_in_dir(
+            &ledger_root,
+            "opencode.control",
+            "boot test",
+            child.id(),
+        );
+        std::mem::forget(guard);
+        let record_path = std::fs::read_dir(&ledger_root)
+            .unwrap()
+            .flatten()
+            .next()
+            .unwrap()
+            .path();
+        let mut record: crate::process_ledger::LaunchRecord =
+            serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+        record.supervisor_pid = u32::MAX - 1;
+        record.supervisor_identity = "a supervisor that no longer exists".into();
+        std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let core = BridgeCore::boot(BootConfig {
+            data_dir: data_dir.to_path_buf(),
+            browser_extension_path: data_dir.join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "boot must terminate the abandoned child");
+        assert!(!record_path.exists(), "the handled record is cleared");
+        let db = core.db.lock().unwrap();
+        let killed: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='process.orphan_killed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(killed, 1, "recovery evidence is durable");
     }
 
     #[cfg(unix)]

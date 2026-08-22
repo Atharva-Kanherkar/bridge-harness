@@ -5,7 +5,7 @@ supersession, and a search index. No column ships without a producer in the
 same slice; the parked #214 fields (TTL, confidence, sensitivity, consent,
 retention, path scopes, audits) stay parked until something writes them.
 
-## Schema 32
+## Schema 34
 
 - `memory_records` gains `supersedes` and `superseded_by`, both nullable ids.
 - `memory_record_fts` (FTS5, unicode61) indexes active record bodies, kept in

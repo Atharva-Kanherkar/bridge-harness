@@ -77,7 +77,7 @@ static DETECTORS: LazyLock<Vec<Detector>> = LazyLock::new(|| {
         ),
         Detector::new(
             "credential_assignment",
-            r#"(?x)\b(?:[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9._~+/=-]{12,2048})["']?"#,
+            r#"(?x)\b(?:(?:[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)|(?:[a-z0-9_]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|credential))|(?:[a-z0-9_]+(?:token|secret)))\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9._~+/=-]{12,2048})["']?"#,
         ),
     ]
 });
@@ -224,14 +224,32 @@ mod tests {
     fn intercepts_bearer_and_assignment_values_without_removing_context() {
         let bearer = "abcdefghijklmnop123456";
         let assigned = "0123456789abcdefghijklmnop";
-        let input = format!("Authorization: Bearer {bearer}\nGITHUB_TOKEN={assigned}");
+        let lowercase = "fedcba9876543210fedcba9876543210";
+        let input = format!(
+            "Authorization: Bearer {bearer}\nGITHUB_TOKEN={assigned}\napi_key={lowercase}"
+        );
         let sanitized = sanitize(&input);
         assert!(sanitized
             .text
             .starts_with("Authorization: Bearer [secret:sec_"));
         assert!(sanitized.text.contains("GITHUB_TOKEN=[secret:sec_"));
+        assert!(sanitized.text.contains("api_key=[secret:sec_"));
         assert!(!sanitized.text.contains(bearer));
         assert!(!sanitized.text.contains(assigned));
+        assert!(!sanitized.text.contains(lowercase));
+        assert_eq!(sanitized.interceptions.len(), 3);
+    }
+
+    #[test]
+    fn intercepts_lowercase_compound_credential_assignments() {
+        let github_token = "ghp_abcdefghijklmnopqrstuvwxyz";
+        let db_password = "super_secret_db_password_12345";
+        let input = format!("github_token={github_token}\ndb_password={db_password}");
+        let sanitized = sanitize(&input);
+        assert!(sanitized.text.contains("github_token=[secret:sec_"));
+        assert!(sanitized.text.contains("db_password=[secret:sec_"));
+        assert!(!sanitized.text.contains(github_token));
+        assert!(!sanitized.text.contains(db_password));
         assert_eq!(sanitized.interceptions.len(), 2);
     }
 

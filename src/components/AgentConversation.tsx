@@ -1,14 +1,17 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
-import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding } from "../types";
+import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
 import { Markdown } from "./Markdown";
-import { harnessLabel } from "../utils";
+import { formatElapsed, harnessLabel } from "../utils";
+import { cn } from "@/lib/utils";
+import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
+import type { WorkerTone } from "./workerStatus";
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
@@ -265,7 +268,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, onResolve, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -274,7 +277,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     for (const live of nextLiveItems) {
       if (!durableIds.has(live.eventId)) items.push(live);
     }
-    return items.filter(item => item.type !== "raw");
+    // Folded after the merge, not inside either projection: mid-run the spawn is
+    // already durable while the result is still only live.
+    return foldWorkerDelegations(items.filter(item => item.type !== "raw"));
   }, [activeLeafId, events, forestEntries]);
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
 
@@ -303,7 +308,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             data-entry-id={entry.item.entryId}
             className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
           >
-            <ItemView item={entry.item} onResolve={onResolve} onOpenSession={onOpenSession} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
+            <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
           </div>)}
       {optimistic.map((text, index) => <div key={`pending-${index}`} className={BUBBLE}>{text}</div>)}
       {working && !streaming && <div className="chat-message-enter flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
@@ -415,7 +420,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, onResolve, onOpenSession, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") return <div className={BUBBLE}>{item.text}</div>;
     // No bubble, no card: the agent writes straight onto the canvas.
@@ -436,7 +441,7 @@ function ItemView({ item, onResolve, onOpenSession, onRefreshBase, onRetryWorker
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
-  if (item.type === "delegation") return <DelegationRow item={item} onOpenSession={onOpenSession} onRetryWorker={onRetryWorker}/>;
+  if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") {
@@ -597,17 +602,29 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item, onOpenSession, onRetryWorker }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
+function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRetryWorker }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
+  // Every hook before the first early return: an item's facet changes under it
+  // (a spawn becomes a result when the envelope lands), so the hook count must
+  // not depend on which branch renders.
+  const [open, setOpen] = useState(false);
+  const facet = delegationFacet(item);
+  const childSessionId = delegationChildSessionId(item);
+  // The row the user watches while a worker runs. Everything needed to draw it
+  // lives outside the event — the runtime record and the live stream — so a
+  // conversation rendered without that context falls through to the quiet row.
+  const panel = facet === "spawn" || facet === "result"
+    ? childSessionId && workers ? workerPanelModel(childSessionId, workers.sessions, workers.runtimes, workers.events) : null
+    : null;
+  if (facet === "steered") return <SteerChip item={item} onOpenSession={onOpenSession}/>;
   // A background worker's own approval card renders on the worker's conversation,
   // which is normally not the selected one. This mirrored row is what makes the
   // block visible where the user is actually working.
-  if ("childBlocked" in item.data) {
+  if (facet === "blocked") {
     const blocked = item.data.childBlocked === true;
     const paths = Array.isArray(item.data.ownedPaths) ? item.data.ownedPaths.map(String) : [];
     // The child session id travels on the event, so the mirror can hand the user
     // straight to the worker's conversation where the real approval lives —
     // otherwise the block is a dead end and the card is effectively lost.
-    const childSessionId = typeof item.data.childSessionId === "string" ? item.data.childSessionId : undefined;
     if (!blocked) {
       return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-muted-foreground text-[12.5px]">
         <Check size={13} className="shrink-0" aria-hidden="true" />
@@ -629,8 +646,7 @@ function DelegationRow({ item, onOpenSession, onRetryWorker }: { item: Conversat
         : <p className="mt-1 text-muted-foreground/70">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
     </div>;
   }
-  const isRejected = "willRetry" in item.data;
-  if (isRejected) {
+  if (facet === "rejected") {
     const reason = String(item.data.reason ?? item.text ?? "");
     const willRetry = item.data.willRetry === true;
     const launchFailed = item.data.launchFailed === true;
@@ -640,10 +656,9 @@ function DelegationRow({ item, onOpenSession, onRetryWorker }: { item: Conversat
       <p className="mt-1 text-muted-foreground/70">{launchFailed ? (item.data.orchestratorNotified === true ? "The orchestrator was notified and will not wait for this worker." : "The orchestrator could not be notified; retry after fixing the launch failure.") : willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
     </div>;
   }
-  const isResult = "delivered" in item.data;
+  const isResult = facet === "result";
   const model = String(item.data.modelLabel ?? item.data.model ?? "");
   const effort = item.data.effort ? String(item.data.effort) : "";
-  const [open, setOpen] = useState(false);
   // Bridge no longer spends a hidden turn retrying a cause it cannot show has
   // changed, so a terminal failure has to arrive with its real reason and the
   // action the user would otherwise have had no way to take.
@@ -663,6 +678,17 @@ function DelegationRow({ item, onOpenSession, onRetryWorker }: { item: Conversat
       onRetryWorker={onRetryWorker}
     />;
   }
+  if (panel && childSessionId) {
+    return <WorkerPanel
+      model={panel}
+      objective={item.text}
+      modelLabel={model}
+      effort={effort}
+      now={now}
+      onOpenSession={onOpenSession}
+      onExpandWorker={onExpandWorker}
+    />;
+  }
   return <div className="my-3 min-w-0">
     <button className="w-full min-w-0 flex items-center gap-[9px] min-h-[30px] px-2 py-1 -ml-2 rounded-md text-left text-muted-foreground text-[12.5px] hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
       {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
@@ -671,6 +697,126 @@ function DelegationRow({ item, onOpenSession, onRetryWorker }: { item: Conversat
       {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
     </button>
     {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-[15px] border-l border-border text-muted-foreground text-[12.5px] leading-relaxed"><Markdown text={item.text}/></div>}
+  </div>;
+}
+
+/// The sessions, runtime rows, and live event stream a worker panel reads.
+///
+/// Passed as one object because all three are the same fact from three angles —
+/// who the worker is, what the host knows about it, and what it just did — and
+/// a panel is useless with any of them missing.
+export interface WorkerPanelSource {
+  sessions: Session[];
+  runtimes: WorkerRuntimeRecord[];
+  /** The *global* live stream, not this session's slice: the worker's frames
+   *  arrive under the worker's own session id. */
+  events: AgentEvent[];
+}
+
+const PANEL_TONE_TEXT: Record<WorkerTone, string> = {
+  working: "text-success",
+  waiting: "text-warning",
+  attention: "text-warning",
+  warm: "text-info",
+  done: "text-muted-foreground",
+  failed: "text-destructive",
+  stalled: "text-destructive",
+  idle: "text-muted-foreground",
+};
+
+/// A clock that only ticks while there is something to count.
+///
+/// A finished panel showing a frozen elapsed time is correct; re-rendering it
+/// every second forever is not, and a transcript can hold many of these.
+function useLiveClock(active: boolean, override?: number): number {
+  const [tick, setTick] = useState(Date.now);
+  useEffect(() => {
+    if (override !== undefined || !active) return;
+    const timer = window.setInterval(() => setTick(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active, override]);
+  return override ?? tick;
+}
+
+/// One worker, live, inside the conversation that delegated it.
+///
+/// The gap this closes: the user sat in the orchestrator chat watching a static
+/// "Delegating to a worker…" line while the actual work happened somewhere they
+/// were not looking. Same card carries the run and the outcome, so a worker is
+/// one place in the transcript rather than two.
+function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession, onExpandWorker }: {
+  model: WorkerPanelModel;
+  objective?: string;
+  modelLabel?: string;
+  effort?: string;
+  now?: number;
+  onOpenSession?: (sessionId: string) => void;
+  onExpandWorker?: (sessionId: string) => void;
+}) {
+  const live = !model.reported;
+  const clock = useLiveClock(live, now);
+  // A finished worker reports how long it took, not how long ago it started.
+  const elapsedAt = !live && model.endedAt ? Date.parse(model.endedAt) : clock;
+  const name = model.session.title || model.session.label;
+  const tests = model.result?.tests ?? [];
+  const failedTests = tests.filter(test => test.status === "failed").length;
+  return <section className="my-3 min-w-0 overflow-hidden rounded-xl border border-border bg-card" aria-label={`Worker ${name}`}>
+    <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2.5">
+      {live
+        ? <PulseDot size={7}/>
+        : <CornerDownRight size={13} className="shrink-0 text-muted-foreground" aria-hidden="true"/>}
+      <b className="min-w-0 truncate text-[12.5px] font-medium text-foreground">{name}</b>
+      <span className={cn("shrink-0 text-[8.5px] font-semibold tracking-[0.07em]", PANEL_TONE_TEXT[model.status.tone])}>{model.status.label}</span>
+      <span className="flex-1"/>
+      {modelLabel && <em className="hidden flex-none rounded border border-border px-1.5 py-0.5 font-mono text-[10px] not-italic text-muted-foreground/70 sm:inline">{modelLabel}{effort ? ` · ${effort}` : ""}</em>}
+      {model.retryCount > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[9px] text-muted-foreground"><RotateCcw size={9} aria-hidden="true"/>retry {model.retryCount}</span>}
+      <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatElapsed(model.startedAt, elapsedAt)}</span>
+    </header>
+
+    {objective && <p className="px-3.5 pb-2 text-[12px] leading-relaxed text-muted-foreground">{objective}</p>}
+
+    {(model.progressSummary || model.waitingReason) && <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-border px-3.5 py-2 text-[10.5px]">
+      {model.progressSummary && <span className="min-w-0 truncate font-mono text-foreground/80">{model.progressSummary}</span>}
+      {model.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[9px] font-medium text-warning">waiting: {model.waitingReason.replaceAll("_", " ")}{model.waitingSince ? ` · ${formatElapsed(model.waitingSince, clock)}` : ""}</span>}
+    </div>}
+
+    {live && model.feed.length > 0 && <ol className="m-0 list-none border-t border-border px-3.5 py-2 space-y-0.5">
+      {model.feed.map((line, index) => <li key={line.id} className={cn("truncate font-mono text-[10.5px] leading-[1.6]", index === model.feed.length - 1 ? "text-muted-foreground" : "text-muted-foreground/60")}>{line.text}</li>)}
+    </ol>}
+
+    {model.result && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3.5 py-2 text-[10.5px] text-muted-foreground">
+      {model.result.filesChanged.length > 0 && <span className="inline-flex items-center gap-1"><FileText size={11} aria-hidden="true"/>{model.result.filesChanged.length} file{model.result.filesChanged.length === 1 ? "" : "s"}</span>}
+      {tests.length > 0 && <span className={cn("inline-flex items-center gap-1", failedTests ? "text-destructive" : "text-success")}>{failedTests ? <X size={11} aria-hidden="true"/> : <Check size={11} aria-hidden="true"/>}{failedTests ? `${failedTests} of ${tests.length} failing` : `${tests.length} test${tests.length === 1 ? "" : "s"} passing`}</span>}
+      {model.result.summary && <span className="min-w-0 flex-1 truncate">{model.result.summary}</span>}
+    </div>}
+
+    {(onExpandWorker || onOpenSession) && <footer className="flex flex-wrap items-center gap-2 border-t border-border px-3.5 py-2">
+      {onExpandWorker && <button type="button" onClick={() => onExpandWorker(model.session.id)} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] transition-colors hover:bg-accent"><Maximize2 size={11} aria-hidden="true"/> Expand</button>}
+      {onOpenSession && <button type="button" onClick={() => onOpenSession(model.session.id)} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] transition-colors hover:bg-accent"><CornerDownRight size={11} aria-hidden="true"/> Open session</button>}
+    </footer>}
+  </section>;
+}
+
+/// Someone redirected a running worker. A quiet line, because the intervention
+/// matters but is not a decision the reader has to make — and because the user
+/// who typed it already knows; this is here so the *other* surfaces agree.
+function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSession?: (sessionId: string) => void }) {
+  const childSessionId = delegationChildSessionId(item);
+  // Two separate facts. Whether the guidance reached the worker is the one the
+  // person who typed it cares about; whether the orchestrator was told is a
+  // quieter footnote. Reading one flag for both made a landed steer read as
+  // failed whenever the parent's runtime happened to be down.
+  const undelivered = item.data.steerDelivered === false;
+  const queued = item.data.landed === "next_turn_boundary";
+  const unnotified = item.data.orchestratorNotified === false;
+  return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-[12.5px] text-muted-foreground">
+    <Navigation size={12} className={cn("shrink-0", undelivered && "text-warning")} aria-hidden="true"/>
+    <span className="min-w-0 flex-1 truncate">{item.title || "Worker steered"}{item.text && <span className="text-muted-foreground/70"> — {item.text}</span>}</span>
+    {undelivered
+      ? <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-warning">NOT DELIVERED</span>
+      : queued && <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-muted-foreground/70">AT NEXT STEP</span>}
+    {!undelivered && unnotified && <span className="shrink-0 text-[9px] tracking-[0.06em] text-muted-foreground/70">ORCHESTRATOR NOT TOLD</span>}
+    {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10.5px] transition-colors hover:bg-accent">Open</button>}
   </div>;
 }
 

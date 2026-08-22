@@ -77,6 +77,66 @@ pub const fn route(turn_active: bool, adapter_supports_steering: bool) -> InputR
     }
 }
 
+/// Why a worker would not take what a human typed.
+///
+/// A worker is not a chat, but it is also not deaf. Only three states make user
+/// input meaningless or actively harmful; in every other state the worker routes
+/// through the same table as any other session. Each variant names itself so the
+/// person typing learns why their words went nowhere instead of reading one
+/// blanket refusal about the worker pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerSteerRefusal {
+    /// The typed result is already reported. Nothing said now can change it, and
+    /// pretending otherwise would leave the user believing they redirected work
+    /// that had already been handed to the orchestrator.
+    AlreadyReported,
+    /// Bridge's own checkpoint turn owns the provider. User text landing inside
+    /// it would be folded into the checkpoint summary rather than the objective.
+    Checkpointing,
+    /// No live provider process. A worker is launched by the policy-controlled
+    /// pool, never resumed as a side effect of somebody sending a message.
+    NotRunning,
+}
+
+impl WorkerSteerRefusal {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::AlreadyReported => {
+                "This worker already reported its typed result, so guidance cannot reach it. Ask the orchestrator to delegate a follow-up."
+            }
+            Self::Checkpointing => {
+                "This worker is checkpointing its context. Steer it once the checkpoint finishes."
+            }
+            Self::NotRunning => {
+                "This worker is not running. Workers are started by the worker pool, not by a message."
+            }
+        }
+    }
+}
+
+/// Whether a worker can take user guidance at all, decided from durable state
+/// and adapter liveness alone.
+///
+/// Separate from [`route`] on purpose: this answers "may these words reach this
+/// worker", and `route` answers "how". Keeping them apart is what stops a
+/// worker-specific routing table from growing beside the general one.
+pub fn worker_steer_gate(
+    result_status: &str,
+    lifecycle_state: &str,
+    has_live_runtime: bool,
+) -> Result<(), WorkerSteerRefusal> {
+    if result_status == "reported" {
+        return Err(WorkerSteerRefusal::AlreadyReported);
+    }
+    if lifecycle_state == "checkpointing" {
+        return Err(WorkerSteerRefusal::Checkpointing);
+    }
+    if !has_live_runtime {
+        return Err(WorkerSteerRefusal::NotRunning);
+    }
+    Ok(())
+}
+
 /// Session-control commands rewrite the session itself — they drop the provider
 /// process, start a checkpoint turn, or reset history. None of that is safe to
 /// do underneath a running turn, so they need an idle session.
@@ -308,6 +368,42 @@ mod tests {
             route(false, false).disposition(),
             InputDisposition::StartedNewTurn
         );
+    }
+
+    #[test]
+    fn worker_steer_gate_refuses_a_reported_worker_and_a_dead_one() {
+        assert_eq!(
+            worker_steer_gate("reported", "working", true),
+            Err(WorkerSteerRefusal::AlreadyReported),
+            "a reported result is final; guidance cannot rewrite it"
+        );
+        assert_eq!(
+            worker_steer_gate("pending", "checkpointing", true),
+            Err(WorkerSteerRefusal::Checkpointing)
+        );
+        assert_eq!(
+            worker_steer_gate("pending", "working", false),
+            Err(WorkerSteerRefusal::NotRunning),
+            "a send must never be the thing that launches a worker"
+        );
+        // The reported check outranks liveness: a worker whose process is gone
+        // *and* whose result is in should say the useful thing.
+        assert_eq!(
+            worker_steer_gate("reported", "completed", false),
+            Err(WorkerSteerRefusal::AlreadyReported)
+        );
+        assert_eq!(worker_steer_gate("pending", "working", true), Ok(()));
+        assert_eq!(worker_steer_gate("pending", "waiting", true), Ok(()));
+    }
+
+    #[test]
+    fn worker_steer_uses_the_same_route_table_as_any_other_session() {
+        // Once the gate says yes there is no worker-specific routing: the same
+        // three answers, chosen the same way.
+        assert!(worker_steer_gate("pending", "working", true).is_ok());
+        assert_eq!(route(true, true), InputRoute::Steer);
+        assert_eq!(route(true, false), InputRoute::Queue);
+        assert_eq!(route(false, true), InputRoute::NewTurn);
     }
 
     #[test]

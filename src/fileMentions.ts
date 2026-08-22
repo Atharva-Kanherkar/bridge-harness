@@ -20,3 +20,16 @@ export function formatFileMention(path: string): string {
 export function applyFileMention(text: string, path: string): string {
   return text.replace(ACTIVE_MENTION, (_match, lead: string) => `${lead}${formatFileMention(path)} `);
 }
+
+/**
+ * Append a mention for a file the user picked outright.
+ *
+ * Distinct from `applyFileMention`, which replaces the `@token` being typed.
+ * Nothing is being replaced here — the user chose a file from a dialog, so the
+ * reference is added to whatever they had written, and their draft is left
+ * intact.
+ */
+export function appendFileMention(text: string, path: string): string {
+  const separator = text.length === 0 || /\s$/.test(text) ? "" : " ";
+  return `${text}${separator}${formatFileMention(path)} `;
+}

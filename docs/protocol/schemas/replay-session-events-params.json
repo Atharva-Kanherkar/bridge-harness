@@ -20,6 +20,13 @@
     },
     "sessionId": {
       "type": "string"
+    },
+    "tail": {
+      "description": "Return the newest `limit` durable events, still ordered oldest to newest. Intended for bounded activity surfaces, not cursor recovery.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
   "required": [

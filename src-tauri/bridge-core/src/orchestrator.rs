@@ -61,7 +61,15 @@ Every field is validated before any worker starts. Emit them exactly; do not inv
 So expect an approval card the first time you delegate a write on a fresh request. That is normal. When Bridge sends `bridge-worker-launch-awaiting-approval`, the worker has **not** failed and may still start: stop this turn, do not re-delegate that objective, and do not emit new work for it. Bridge resumes you with the child session id once the user decides. If the user asks how to avoid the card, tell them they can write `Write scope: <paths>` in their message to authorize a scope up front. If they decline, narrow the paths or delegate `readOnly` instead of retrying the same scope.
 
 ## Typed worker results
-Workers return typed `bridge-worker-result` envelopes. Review the structured summary, changed files, tests, findings, decisions, and follow-up suggestion. Relay a concise synthesis to the user. Never request, expose, or forward a raw worker transcript. If a result is `needs_delegation`, decide the follow-up yourself and issue a new sibling request.
+Workers return typed `bridge-worker-result` envelopes. Review the structured summary, changed files, tests, findings, decisions, and follow-up suggestion. Relay a concise synthesis to the user. If a result is `needs_delegation`, decide the follow-up yourself and issue a new sibling request.
+
+## Mid-run visibility
+You can see what workers are doing before they report. Bridge attaches a `fleet` digest to its routing notices, and you can ask on demand: emit one fenced `bridge-peek` block (`{}` for all workers, or `{"sessionId":"…"}` for one) and stop; Bridge replies with a `bridge-worker-activity` digest of each worker's runtime state and recent tool calls and messages. When the user asks about progress, peek and answer from the digest instead of guessing or waiting. The digest is host-built and bounded; never request, expose, or forward a raw worker transcript, and never message a worker for status.
+
+## Mid-run correction
+When a peek shows a worker going the wrong way, redirect it instead of waiting for a wrong result: emit one fenced `bridge-steer` block `{"sessionId":"<your live child>","message":"<short correction>"}` and stop. Steer to constrain, correct, or narrow — never to ask for status, which is `bridge-peek`. Bridge refuses a target that is not your own live worker, and a steer never replaces the worker's typed result.
+
+The user can steer your workers too. When Bridge sends `bridge-worker-steered-by-user`, a human amended that worker's objective: treat the guidance as authoritative, do not contradict it, and do not re-delegate the same objective to undo it.
 
 An implementation result can open a durable completion gate. When routing metadata includes a completion state of `verifying` or `changes_requested`, continue sequentially: request the next required `verification` worker, name its exact `checkId` in the objective, copy pending command checks into `verification`, include the implementation evidence ID, and wait for its structured result before claiming completion. Bridge runs the verifier in the implementation worktree, selects a different harness family, and rejects same-family passing evidence. A `waived` result is human-approved risk, never equivalent to `verified`.
 
@@ -82,42 +90,7 @@ mod tests {
     #[test]
     fn briefing_uses_provider_neutral_typed_routing_vocabulary() {
         let text = briefing();
-        for value in [
-            "research",
-            "implementation",
-            "verification",
-            "planning",
-            "documentation",
-            "fast",
-            "standard",
-            "strong",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "bridge-delegate",
-            "bridge-worker-result",
-            "needs_delegation",
-            "flat topology",
-            "trivial one-shot local actions",
-            "raw worker transcript",
-            "readOnly",
-            "isolated",
-            "shared",
-            "full",
-            "research-result",
-            "implementation-result",
-            "there is no `none`",
-            "structured MCP/API",
-            "attached authenticated tab",
-            "local headless browser",
-            "optional remote browser",
-            "screenshot-first computer use",
-            "automated_test",
-            "untrusted evidence",
-            "```mermaid",
-            "sandboxed iframe",
-        ] {
+        for value in crate::prompts::REQUIRED_MARKERS {
             assert!(text.contains(value), "briefing is missing {value:?}");
         }
         let lower = text.to_ascii_lowercase();

@@ -66,13 +66,15 @@ async function type(field: HTMLTextAreaElement, text: string) {
 }
 
 describe("the composer's + control inside the app", () => {
-  it("opens the workspace dialog and leaves the draft alone", async () => {
+  it("opens the workspace dialog from the welcome surface and leaves the draft alone", async () => {
     const composer = composerField();
     expect(composer, "the app mounted with a composer").not.toBeNull();
 
     await type(composer!, "keep this draft");
     expect(composerField()!.value).toBe("keep this draft");
 
+    // The welcome surface has no conversation and no folder, so there is nothing
+    // to attach to; here the control keeps the structural action its label names.
     const plus = container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]');
     expect(plus, "the + control is present").not.toBeNull();
     await act(async () => plus!.click());

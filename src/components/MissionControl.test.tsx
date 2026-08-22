@@ -35,6 +35,9 @@ const runtime = (sessionId: string, overrides: Partial<WorkerRuntimeRecord> = {}
   worktreeBranch: null,
   lastResult: null,
   lastActivityAt: "2026-07-29T10:04:55Z",
+  waitingSince: null,
+  waitingReason: null,
+  progressSummary: null,
   updatedAt: "2026-07-29T10:04:55Z",
   ...overrides,
 });

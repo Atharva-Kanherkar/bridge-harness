@@ -15,6 +15,7 @@ use bridge_protocol::messages as wire;
 use serde::{Deserialize, Serialize};
 
 use crate::briefing_policy::{certify_briefing, BriefingUnsupported};
+use crate::suggestion_engine::SUGGESTION_SESSION_KIND;
 
 /// The session kind a briefing run happens under.
 ///
@@ -168,11 +169,14 @@ fn effort_str(effort: wire::Effort) -> &'static str {
 
 /// Is this session one a human should ever see in a list?
 ///
-/// A predicate rather than an ordering rule: a briefing session that merely sorted last
-/// would still be one keystroke from being opened, resumed, or sent a turn.
+/// A predicate rather than an ordering rule: a briefing or suggestion session that
+/// merely sorted last would still be one keystroke from being opened, resumed, or
+/// sent a turn.
 pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
-    kind == Some(BRIEFING_SESSION_KIND)
-        || kind == Some(crate::memory_extraction::EXTRACTION_SESSION_KIND)
+    matches!(
+        kind,
+        Some(BRIEFING_SESSION_KIND) | Some(SUGGESTION_SESSION_KIND)
+    ) || kind == Some(crate::memory_extraction::EXTRACTION_SESSION_KIND)
 }
 
 #[cfg(test)]
@@ -329,17 +333,19 @@ mod tests {
     }
 
     #[test]
-    fn a_briefing_session_kind_is_hidden_and_nothing_else_is() {
+    fn hidden_session_kinds_cover_briefing_and_suggestion_and_nothing_else() {
         assert!(is_hidden_session_kind(Some(BRIEFING_SESSION_KIND)));
+        assert!(is_hidden_session_kind(Some(SUGGESTION_SESSION_KIND)));
         for visible in [None, Some("orchestrator"), Some("chat"), Some("worker"), Some("")] {
             assert!(!is_hidden_session_kind(visible), "{visible:?} is a session a human may see");
         }
     }
 
     #[test]
-    fn the_hidden_kind_is_one_string_shared_with_the_frontend() {
-        // The frontend filters on the same literal. Keeping it a constant here is what
+    fn the_hidden_kinds_are_the_strings_shared_with_the_frontend() {
+        // The frontend filters on the same literals. Keeping them constants here is what
         // makes the two halves the same rule rather than two rules that agree today.
         assert_eq!(BRIEFING_SESSION_KIND, "briefing");
+        assert_eq!(SUGGESTION_SESSION_KIND, "suggestion");
     }
 }

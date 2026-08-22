@@ -1,16 +1,18 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
+import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { watchTrafficLights } from "./trafficLights";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { needsYouCount } from "./components/workFacts";
@@ -18,6 +20,9 @@ import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { MissionControl } from "./components/MissionControl";
+import { BypassBadge } from "./components/BypassBadge";
+import type { Section as SettingsSection } from "./components/SettingsScreen";
+import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { BrowserSurface } from "./components/BrowserSurface";
@@ -30,6 +35,7 @@ import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
+import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
@@ -37,7 +43,7 @@ import { useThemePreference } from "./theme";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
-import { forestSnapshotKey, mergeForestSnapshot } from "./forest";
+import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { startSerialPoll } from "./polling";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -111,6 +117,10 @@ export function App() {
   // drops the sidebar and the session header so the active tab gets the whole
   // window. The tab strip stays, because it is also the way back out.
   const [fullscreen, setFullscreen] = useState(false);
+  /// The worker whose full activity feed is open over the chat. Owned here, not
+  /// in the conversation, because the overlay covers the whole session pane and
+  /// has to survive the transcript re-rendering underneath it.
+  const [expandedWorkerId, setExpandedWorkerId] = useState<string>();
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
@@ -129,8 +139,11 @@ export function App() {
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
+  const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -143,6 +156,16 @@ export function App() {
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
+  // The composer's inline typeahead. Loaded once and kept fresh by Settings'
+  // own save path (`onSuggestionSettingsChange`) — off by default, so no
+  // request fires until the user opts in.
+  const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
+  const suggestionGeneration = useRef(0);
+  // Shown once per fallback episode, not on every debounce firing while the
+  // configured model stays in cooldown.
+  const [fallbackNotice, setFallbackNotice] = useState<string>();
+  const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
@@ -152,7 +175,13 @@ export function App() {
   const agentEventTimerRef = useRef<number | undefined>(undefined);
   const browserSessionRef = useRef<string>();
 
-  const reload = useCallback(async () => { setState(await bridgeApi.state()); }, []);
+  const reload = useCallback(async () => {
+    setState(await bridgeApi.state());
+    // Re-read with the state it was published alongside: `save_permission_policy`
+    // publishes StateChanged precisely so the badge repaints, and another window
+    // flipping the switch has to reach this one too.
+    setPermissionPolicy((await bridgeApi.configState()).permissionPolicy);
+  }, []);
   useEffect(() => {
     void Promise.all([reload(), bridgeApi.modelSetup()])
       .then(([, setup]) => { setModelSetup(setup); })
@@ -231,12 +260,45 @@ export function App() {
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
-  // A focused worker is watchable and its approvals are resolvable, but the
-  // backend rejects worker turns, so it gets no composer.
+  // A focused worker is watchable, its approvals are resolvable, and it can be
+  // steered — the composer says "steer", not "message", because the worker still
+  // answers to the objective its orchestrator gave it.
   const isWorkerView = !!session?.parentSessionId;
+  const workerRuntime = useMemo(
+    () => forest?.workerRuntimes.find(runtime => runtime.sessionId === session?.id),
+    [forest?.workerRuntimes, session?.id],
+  );
+  // The three durable facts the backend gate reads, mirrored so the composer is
+  // not offered for a steer that is going to be refused.
+  const workerSteerable = isWorkerView
+    && workerRuntime?.resultStatus !== "reported"
+    && workerRuntime?.lifecycleState !== "checkpointing"
+    && liveStatuses.includes(session?.status ?? "stopped");
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
+  // A worker panel reads the worker's own session row, its runtime record, and
+  // its slice of the *global* live stream — the parent's slice would show none
+  // of the child's frames.
+  const workerPanelSource = useMemo(
+    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents }),
+    [agentEvents, forest?.workerRuntimes, state.sessions],
+  );
+  const expandedWorker = useMemo(
+    () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
+    [expandedWorkerId, state.sessions],
+  );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  // Read from config rather than held in component state: the badge has to agree
+  // with what the host stored, including after another window changed it.
+  const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>();
+  // Which settings section to open on. The badge is the one entry point that has
+  // an opinion: sending someone hunting through Agents for the switch they just
+  // clicked "click to change" on is the wrong end of the promise.
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("agents");
+  const autoApprovals = useMemo(
+    () => state.events.filter(event => event.kind === "approval.auto_allowed"),
+    [state.events],
+  );
   // What the submit affordance does while this session is working. Read from the
   // harness's advertised capabilities: a provider that cannot take input
   // mid-turn gets its follow-up queued, and the button says Queue, not Steer.
@@ -297,6 +359,23 @@ export function App() {
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
+  // $harness shortcut: a bare `$token` at the start of the composer with
+  // nothing typed after it yet offers the available harnesses to complete to.
+  const harnessShortcutQueryValue = harnessShortcutQuery(composer);
+  const harnessShortcutMatches = useMemo(() => {
+    if (harnessShortcutQueryValue == null) return [];
+    const query = harnessShortcutQueryValue.toLowerCase();
+    return adapters
+      .filter(adapter => adapter.available && adapter.id.toLowerCase().includes(query))
+      .sort((a, b) => {
+        const aPrefix = Number(a.id.toLowerCase().startsWith(query));
+        const bPrefix = Number(b.id.toLowerCase().startsWith(query));
+        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
+        return a.id.localeCompare(b.id);
+      });
+  }, [harnessShortcutQueryValue, adapters]);
+  const harnessShortcutOpen = harnessShortcutQueryValue != null && harnessShortcutMatches.length > 0 && !harnessShortcutDismissed;
+  const harnessShortcutListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const query = composer.trim();
@@ -306,6 +385,42 @@ export function App() {
     const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
     return () => { active = false; window.clearTimeout(timer); };
   }, [composer, session]);
+
+  // The inline typeahead's own settings — loaded once; Settings' save path
+  // keeps this fresh via `onSuggestionSettingsChange`.
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
+
+  // A new configured model/provider earns its own one-time fallback notice.
+  useEffect(() => { fallbackNoticeShownRef.current = false; }, [suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // Debounced draft completion: 400ms after the last keystroke, with a
+  // generation counter so a stale response from an earlier draft can never
+  // overwrite a newer one — the same latest-wins discipline `readWorkBoard`
+  // uses. No request fires with the toggle off, no session, or an empty draft.
+  useEffect(() => scheduleSuggestion({
+    text: composer,
+    enabled: !!suggestionSettings?.settings.enabled && !!session,
+    request: bridgeApi.suggestCompletion,
+    onResult: setDraftSuggestion,
+    generation: suggestionGeneration,
+  }), [composer, session, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  // The fallback chip: shown once per episode, not re-shown on every debounce
+  // firing while the configured model stays in its cooldown window.
+  useEffect(() => {
+    if (!draftSuggestion?.usedFallback || fallbackNoticeShownRef.current) return;
+    fallbackNoticeShownRef.current = true;
+    const reason = draftSuggestion.fallbackReason?.replace(/_/g, " ");
+    setFallbackNotice(`Suggestions switched to a fallback model${reason ? ` (${reason})` : ""} while yours is unavailable.`);
+    const timer = window.setTimeout(() => setFallbackNotice(undefined), 6000);
+    return () => window.clearTimeout(timer);
+  }, [draftSuggestion]);
+
+  const acceptSuggestion = useCallback(() => {
+    if (!draftSuggestion?.suggestion) return;
+    setComposer(current => current + draftSuggestion.suggestion);
+    setDraftSuggestion(undefined);
+  }, [draftSuggestion]);
 
   useEffect(() => {
     if (!slashOpen) return;
@@ -319,6 +434,19 @@ export function App() {
     const active = root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`);
     active?.scrollIntoView({ block: "nearest" });
   }, [slashOpen, slashIndex]);
+
+  useEffect(() => {
+    if (!harnessShortcutOpen) return;
+    setHarnessShortcutIndex(index => Math.min(index, Math.max(0, harnessShortcutMatches.length - 1)));
+  }, [harnessShortcutOpen, harnessShortcutMatches.length]);
+
+  useEffect(() => {
+    if (!harnessShortcutOpen) return;
+    const root = harnessShortcutListRef.current;
+    if (!root) return;
+    const active = root.querySelector<HTMLElement>(`[data-harness-shortcut-index="${harnessShortcutIndex}"]`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [harnessShortcutOpen, harnessShortcutIndex]);
 
   // Load the connected workspace's file list for @mention autocomplete.
   useEffect(() => {
@@ -350,17 +478,28 @@ export function App() {
     setPendingAdoptions([]);
     if (!session?.id) return;
     let active = true;
+    let pollsSinceFullFetch = 0;
     const refresh = async () => {
+      // The digest is tens of bytes; the snapshot is the entire history. Only
+      // fetch the snapshot when the digest moves, with a periodic forced
+      // fetch as the safety net for state the store cannot see (repository
+      // divergence above all).
+      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
+      const force = pollsSinceFullFetch >= 9 || digest === undefined;
+      if (!active) return;
+      if (!force && digest === forestKeyRef.current) {
+        pollsSinceFullFetch += 1;
+        return;
+      }
       const [value, adoptions] = await Promise.all([
         bridgeApi.sessionForest(session.id).catch(() => undefined),
         bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
       ]);
       if (!active) return;
+      pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
-      const key = forestSnapshotKey(value);
-      if (key === forestKeyRef.current) return;
-      forestKeyRef.current = key;
+      forestKeyRef.current = digest ?? "";
       setForest(current => mergeForestSnapshot(current, value));
     };
     const stop = startSerialPoll(refresh, 3000);
@@ -410,7 +549,7 @@ export function App() {
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
-  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); }
+  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); setExpandedWorkerId(undefined); }
 
   // Reading the board is the whole of what opening Work does: one call, no session
   // selected, no model, no git, no network.
@@ -480,21 +619,14 @@ export function App() {
   }, [readWorkBoard]);
 
   const openWorkTaskEvidence = useCallback(async (task: WorkTask): Promise<void> => {
-    const reserved = task.evidenceTarget?.kind === "externalLink"
-      ? window.open("about:blank", "_blank")
-      : null;
-    if (reserved) reserved.opener = null;
     try {
       const target = await bridgeApi.workTaskOpenEvidence(task.id);
       if (target.kind === "session") {
-        reserved?.close();
         openSession(target.sessionId);
         return;
       }
-      if (reserved) reserved.location.replace(target.url);
-      else window.open(target.url, "_blank", "noopener,noreferrer");
+      await openExternalUrl(target.url);
     } catch (error) {
-      reserved?.close();
       setError(errorMessage(error));
     }
   }, []);
@@ -570,16 +702,18 @@ export function App() {
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
-  async function openNewChat(initialMessage?: string) {
+  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor) {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
     setView("workspace");
     const currentAdapter = session?.kind === "direct"
       ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
       : undefined;
     const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
     const harness = (preferred?.id as Harness) ?? "codex";
-    const model = currentAdapter
+    const model = harnessOverride
+      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
+      : currentAdapter
       ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
       : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
     const draft = initialMessage?.trim() ?? "";
@@ -595,6 +729,30 @@ export function App() {
       setError(errorMessage(e));
     }
     finally { setBusy(false); }
+  }
+
+  // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
+  // session is open and starts a fresh direct chat pinned to that harness,
+  // handing it the rest of the text as its first message. Returns whether
+  // the text was a shortcut at all, so the caller knows whether to fall back
+  // to its own normal send path.
+  async function openHarnessShortcut(text: string): Promise<boolean> {
+    const shortcut = parseHarnessShortcut(text);
+    if (!shortcut) return false;
+    const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
+    if (!adapter) return false;
+    if (!adapter.available) {
+      setError(`${adapter.label} isn't available${adapter.unavailableReason ? ` — ${adapter.unavailableReason}` : ""}.`);
+      return true;
+    }
+    await openNewChat(shortcut.rest, adapter);
+    return true;
+  }
+  // Entry point for the Welcome screen's own composer, which has no session
+  // to skip past — a `$harness` prefix there is the only branch either way.
+  async function startChatOrShortcut(text?: string) {
+    if (text && await openHarnessShortcut(text)) return;
+    await openNewChat(text);
   }
 
   // The new-chat dialog asks the two questions once; this routes its answer.
@@ -675,10 +833,13 @@ export function App() {
   }
   // Send a message. The agent starts lazily on the first message, like a normal
   // chat app — there is no explicit "start" step. Slash commands belonging to
-  // another provider auto-switch the direct-chat harness first.
+  // another provider auto-switch the direct-chat harness first. A `$harness`
+  // prefix skips this session entirely — see `openHarnessShortcut`.
   async function sendPrompt(forcedText?: string) {
     const submittedText = (forcedText ?? composer).trim();
-    if (!session || !submittedText) return;
+    if (!submittedText) return;
+    if (await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+    if (!session) return;
     const key = crypto.randomUUID();
     let target = session;
     let retryText = submittedText;
@@ -748,6 +909,17 @@ export function App() {
     try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
     catch (e) { setError(errorMessage(e)); }
   }, [session?.id]);
+
+  /// Send guidance into a running worker.
+  ///
+  /// The same `submitInput` every other session uses: the backend decides
+  /// between steering the live turn and queueing for the next boundary, and it
+  /// is what tells the orchestrator a human redirected its worker. Deliberately
+  /// not `startChat` first — a worker with no process is refused, because
+  /// launching one is the worker pool's decision.
+  const steerWorker = useCallback(async (childSessionId: string, text: string) => {
+    await bridgeApi.submitInput(childSessionId, text);
+  }, []);
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
@@ -767,7 +939,8 @@ export function App() {
       bridgeApi.sessionForest(session.id),
       bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
     ]);
-    forestKeyRef.current = forestSnapshotKey(next);
+    // Out-of-band fetch: reset the digest so the next poll reconciles.
+    forestKeyRef.current = "";
     setForest(next);
     setPendingAdoptions(adoptions);
   }, [session]);
@@ -788,12 +961,43 @@ export function App() {
     setSlashIndex(0);
     setSlashDismissed(true);
   }
+  // The `+` control: the system file dialog, so any file on the machine can be
+  // attached to any chat — including one with no folder connected. The chosen
+  // paths become `@path` mentions, which the backend reads as bounded,
+  // secret-sanitized, untrusted context at submit time. The draft is never
+  // touched, only added to.
+  async function attachFile() {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      // No system dialog outside the desktop shell; fall back to the workspace
+      // picker `@` drives rather than doing nothing.
+      setMentionDismissed(false);
+      setMentionIndex(0);
+      setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
+      composerRef.current?.focus();
+      return;
+    }
+    try {
+      const picked = await open({ multiple: true, title: "Attach files" });
+      if (picked == null) return;
+      const paths = (Array.isArray(picked) ? picked : [picked]).filter(path => typeof path === "string");
+      if (paths.length === 0) return;
+      setComposer(current => paths.reduce(appendFileMention, current));
+    } catch (e) { setError(errorMessage(e)); }
+    finally { composerRef.current?.focus(); }
+  }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
   function applyFileMention(path: string) {
     setComposer(current => insertFileMention(current, path));
     setMentionIndex(0);
     setMentionDismissed(true);
+  }
+  // Complete the `$token` being typed to `$id `, ready for the message that
+  // follows — picking one doesn't send anything by itself.
+  function applyHarnessShortcut(adapter: import("./types").AdapterDescriptor) {
+    setComposer(`$${adapter.id} `);
+    setHarnessShortcutIndex(0);
+    setHarnessShortcutDismissed(true);
   }
   function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return;
@@ -802,6 +1006,12 @@ export function App() {
       if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
       if (e.key === "Escape") { e.preventDefault(); setMentionDismissed(true); return; }
       if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyFileMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
+    }
+    if (harnessShortcutOpen) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setHarnessShortcutIndex(index => Math.min(index + 1, harnessShortcutMatches.length - 1)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setHarnessShortcutIndex(index => Math.max(index - 1, 0)); return; }
+      if (e.key === "Escape") { e.preventDefault(); setHarnessShortcutDismissed(true); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyHarnessShortcut(harnessShortcutMatches[Math.min(harnessShortcutIndex, harnessShortcutMatches.length - 1)]); return; }
     }
     if (slashOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
@@ -834,6 +1044,7 @@ export function App() {
   return <div className="relative flex h-[100dvh] overflow-hidden bg-background text-foreground">
 
     {!fullscreen && <div className="fixed right-2 top-1.5 z-40 flex items-center gap-1.5 sm:right-5 sm:top-5">
+      <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
       {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
       <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
     </div>}
@@ -895,13 +1106,16 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} onModelSetupChange={setModelSetup} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
+        fullscreen={fullscreen}
+        onToggleFullscreen={() => setFullscreen(value => !value)}
         onFocusSession={openSession}
+        onSteer={steerWorker}
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
@@ -928,6 +1142,20 @@ export function App() {
           busy={busy}
         />
         <section className="flex-1 min-h-0 overflow-hidden flex relative">
+          {/* The chat's own panel, expanded. Rendered over the session pane
+              rather than navigating away, because the reason to look at a
+              worker's full feed is usually to decide something in the
+              conversation you are still in. */}
+          {expandedWorker && <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
+            <WorkerDetail
+              session={expandedWorker}
+              runtime={forest?.workerRuntimes.find(runtime => runtime.sessionId === expandedWorker.id)}
+              liveEvents={agentEvents}
+              onClose={() => setExpandedWorkerId(undefined)}
+              onFocusSession={openSession}
+              onSteer={steerWorker}
+            />
+          </div>}
           <div className="flex-1 min-w-0 flex flex-col relative">
             {(activeTab === "agent" || !hasRepo) && <>
               {recallOpen && (
@@ -946,6 +1174,8 @@ export function App() {
                 <AgentConversation
                   session={session}
                   onOpenSession={openSession}
+                  workers={workerPanelSource}
+                  onExpandWorker={setExpandedWorkerId}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
@@ -971,7 +1201,7 @@ export function App() {
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
                 <MemoryUsedChip audit={packetAudit} open={memoryDisclosureOpen} onToggle={() => setMemoryDisclosureOpen(current => !current)} />
-                {queuedFollowUpCount > 0 && !isWorkerView && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
                     <span>{`${queuedFollowUpCount} follow-up${queuedFollowUpCount === 1 ? "" : "s"} queued — sent when this step finishes`}</span>
@@ -984,8 +1214,19 @@ export function App() {
                     <em className="not-italic font-mono text-[11px]"><b className="text-success">+{workspace.additions}</b> <b className="text-destructive">−{workspace.deletions}</b></em>
                   </div>
                 </div>}
-                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6"><div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-3 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. Watch it or resolve its approvals here — it takes direction from its orchestrator, so you can&apos;t message it directly.</span></div></div> : <div className="relative mx-auto max-w-2xl">
-                  {!slashOpen && !mentionOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                {fallbackNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
+                    <span>{fallbackNotice}</span>
+                  </div>
+                </div>}
+                {/* A worker gets a steering composer, not the chat composer: what
+                    you type amends the objective its orchestrator gave it, and
+                    the orchestrator is told so it does not fight the change. */}
+                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6">
+                  <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
+                </div> : <div className="relative mx-auto max-w-2xl">
+                  {!slashOpen && !mentionOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Reference a file</span>
@@ -1011,24 +1252,37 @@ export function App() {
                       </button>)}
                     </div>
                   </div>}
+                  {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                      <span>Talk to a harness directly</span>
+                      <span className="normal-case tracking-normal text-muted-foreground/50">{harnessShortcutMatches.length}</span>
+                    </div>
+                    <div ref={harnessShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
+                      {harnessShortcutMatches.map((adapter, index) => <button key={adapter.id} type="button" data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === harnessShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                        <span className="font-mono text-[12px] text-foreground whitespace-nowrap">${adapter.id}</span>
+                        <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">Starts a new {adapter.label} chat with what follows</span>
+                      </button>)}
+                    </div>
+                  </div>}
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); }}
+                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     autocomplete={mentionOpen ? {
                       controls: "file-mention-listbox",
                       activeDescendant: `file-mention-option-${mentionIndex}`,
                     } : undefined}
+                    suggestion={draftSuggestion?.suggestion}
+                    onAcceptSuggestion={acceptSuggestion}
                     placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
                     disabled={!session}
                     working={!!session?.activeTurnId}
                     activeAction={activeAction}
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
-                    // What the control's own label says: open the workspace
-                    // dialog. It must never erase the draft the user is holding.
-                    onPlusClick={() => { setTitle(""); setModal("workspace"); }}
+                    inputRef={composerRef}
+                    onPlusClick={() => void attachFile()}
                     trailing={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
@@ -1050,7 +1304,7 @@ export function App() {
         modelSetup={modelSetup}
         canStartChat={adaptersReady}
         busy={busy}
-        onStartChat={text => void openNewChat(text)}
+        onStartChat={text => void startChatOrShortcut(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
     </main>
@@ -1365,6 +1619,9 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
       disabled={busy || !canStartChat}
+      // There is no conversation or folder here yet, so there is nothing to
+      // attach to. This surface keeps the structural action — and says so.
+      plusLabel="New workspace"
       onPlusClick={onNewWorkspace}
       trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
     />

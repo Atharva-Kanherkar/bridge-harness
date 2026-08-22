@@ -60,12 +60,32 @@ pub struct AgentDefinition {
     pub updated_at: String,
 }
 
+/// How much Bridge asks before an agent acts.
+///
+/// One switch in this slice. Fields added later (auto-allow workers, inherited
+/// grants, command allowlists) must be `#[serde(default)]` so a policy written by
+/// an older build still reads — the stored payload is durable and outlives the
+/// binary that wrote it.
+/// The derived default is the safe one and that is load-bearing: `bypass_all`
+/// defaults to `false`, so a fresh install asks and an unreadable stored payload
+/// falls back to asking rather than to granting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PermissionPolicy {
+    /// Auto-accept every provider approval, for every agent. The two structural
+    /// gates — worker write scope and browser outward effects — are unaffected;
+    /// they are authorization, not convenience.
+    pub bypass_all: bool,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigState {
     pub harnesses: Vec<HarnessConfig>,
     pub agents: Vec<AgentDefinition>,
     pub default_agent_id: String,
+    pub permission_policy: PermissionPolicy,
 }
 
 fn empty_object() -> Value {
@@ -324,7 +344,34 @@ pub fn state(db: &Connection) -> Result<ConfigState, BridgeError> {
         harnesses,
         agents,
         default_agent_id: selected,
+        permission_policy: permission_policy(db)?,
     })
+}
+
+/// The stored policy, or the asking default.
+///
+/// Read on every provider approval, so it is a single primary-key lookup on
+/// `configuration_entries` and nothing more.
+pub fn permission_policy(db: &Connection) -> Result<PermissionPolicy, BridgeError> {
+    Ok(stored::<PermissionPolicy>(db, "permission_policy", "global")?.unwrap_or_default())
+}
+
+pub fn save_permission_policy(
+    db: &Connection,
+    mut policy: PermissionPolicy,
+) -> Result<ConfigState, BridgeError> {
+    // Stamped host-side: the client does not get to claim when a policy changed,
+    // and the settings page renders what was actually stored.
+    policy.updated_at = Utc::now().to_rfc3339();
+    // One transaction covering the write *and* the response it is reported by.
+    // Committing first and then failing to build the snapshot told the UI the
+    // save had failed while `bypass_all` was already durable and live — for a
+    // security control that asymmetry runs the wrong way, so it fails closed.
+    let transaction = db.unchecked_transaction()?;
+    upsert(&transaction, "permission_policy", "global", &policy)?;
+    let next = state(&transaction)?;
+    transaction.commit()?;
+    Ok(next)
 }
 
 pub fn save_harness(
@@ -397,7 +444,10 @@ pub fn set_default(db: &Connection, id: &str) -> Result<ConfigState, BridgeError
 }
 
 pub fn reset_all(db: &Connection) -> Result<ConfigState, BridgeError> {
-    db.execute("DELETE FROM configuration_entries", [])?;
+    let transaction = db.unchecked_transaction()?;
+    crate::prompt_sections::append_reset_all_revisions(&transaction)?;
+    transaction.execute("DELETE FROM configuration_entries", [])?;
+    transaction.commit()?;
     state(db)
 }
 
@@ -486,6 +536,113 @@ pub fn session_prompt(db: &Connection, harness: &str) -> String {
 mod tests {
     use super::*;
     use crate::store;
+
+    /// A fresh install asks. This is the assertion that keeps a shipping default
+    /// from silently granting every agent everything.
+    #[test]
+    fn permission_policy_defaults_to_asking() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        assert_eq!(permission_policy(&db).unwrap(), PermissionPolicy::default());
+        assert!(!permission_policy(&db).unwrap().bypass_all);
+        assert!(!state(&db).unwrap().permission_policy.bypass_all);
+    }
+
+    #[test]
+    fn permission_policy_round_trips_through_the_config_store() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let saved = save_permission_policy(
+            &db,
+            PermissionPolicy {
+                bypass_all: true,
+                // Claimed by the client and ignored: the host stamps it.
+                updated_at: "whenever-i-say".into(),
+            },
+        )
+        .unwrap();
+
+        assert!(saved.permission_policy.bypass_all);
+        assert_ne!(saved.permission_policy.updated_at, "whenever-i-say");
+        assert!(!saved.permission_policy.updated_at.is_empty());
+        // Re-read from durable state, not from the returned value.
+        assert!(permission_policy(&db).unwrap().bypass_all);
+        assert!(state(&db).unwrap().permission_policy.bypass_all);
+
+        save_permission_policy(&db, PermissionPolicy::default()).unwrap();
+        assert!(!permission_policy(&db).unwrap().bypass_all);
+    }
+
+    /// The write and the response it is reported by are one transaction. A save
+    /// that reports failure must not have left the policy on — for a security
+    /// control the failure has to land closed.
+    #[test]
+    fn a_policy_save_that_cannot_report_does_not_take_effect() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        // Break the read half of the save: `state()` reads stored agents, so an
+        // unparseable agent row makes the response construction fail.
+        upsert(&db, "agent", "bridge-orchestrator", &json!("not-an-agent")).unwrap();
+
+        let outcome = save_permission_policy(
+            &db,
+            PermissionPolicy {
+                bypass_all: true,
+                updated_at: String::new(),
+            },
+        );
+
+        assert!(outcome.is_err(), "the save could not be reported");
+        let stored: Option<String> = db
+            .query_row(
+                "SELECT payload FROM configuration_entries WHERE kind='permission_policy'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(
+            stored.is_none(),
+            "a failed save must not leave bypass durably on: {stored:?}"
+        );
+    }
+
+    #[test]
+    fn saving_a_policy_leaves_the_rest_of_config_state_alone() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let before = state(&db).unwrap();
+
+        let after = save_permission_policy(
+            &db,
+            PermissionPolicy {
+                bypass_all: true,
+                updated_at: String::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(after.harnesses, before.harnesses);
+        assert_eq!(after.agents, before.agents);
+        assert_eq!(after.default_agent_id, before.default_agent_id);
+    }
+
+    /// Slice 3 adds fields to this policy. A payload written by today's build has
+    /// to keep reading then, and one written by a newer build has to keep reading
+    /// on an older one — hence `default` on the container, not just the fields.
+    #[test]
+    fn a_policy_payload_survives_fields_it_does_not_know() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        upsert(
+            &db,
+            "permission_policy",
+            "global",
+            &json!({"bypassAll": true, "autoAllowWorkers": true, "updatedAt": "now"}),
+        )
+        .unwrap();
+
+        let policy = permission_policy(&db).unwrap();
+        assert!(
+            policy.bypass_all,
+            "an unknown future field must not discard the whole policy"
+        );
+    }
 
     #[test]
     fn custom_agents_round_trip_and_can_be_deleted() {

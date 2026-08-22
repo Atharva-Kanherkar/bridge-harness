@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Bot, Check, Clock3, CornerDownRight, GitBranch, LayoutGrid, LoaderCircle, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Bot, Check, Clock3, CornerDownRight, GitBranch, LayoutGrid, LoaderCircle, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import { cn } from "@/lib/utils";
 import { formatElapsed, harnessLabel } from "../utils";
+import { WorkerDetail } from "./WorkerDetail";
 import { isBroken, isRunning, isWaiting, workerStatus, type WorkerTone } from "./workerStatus";
+import { workerFeedLines } from "./workerPanel";
+
+// A tile is bigger than a chat-embedded panel, so it affords one more line.
+const TILE_FEED_LINES = 4;
 
 // Mission Control renders every live agent at once as its own window, instead of
 // the single-session view. It reuses the sidebar's tone vocabulary so a tile and
@@ -50,22 +55,6 @@ function TileIcon({ tone }: { tone: WorkerTone }) {
   if (tone === "done") return <Check size={13} className="text-muted-foreground" aria-hidden="true" />;
   if (tone === "waiting" || tone === "attention") return <Clock3 size={13} className="text-warning" aria-hidden="true" />;
   return <span className={cn("h-2 w-2 rounded-full", toneDot[tone])} />;
-}
-
-// The last few legible things this agent said or did, newest last. Deltas and
-// bare lifecycle events carry no text, so filtering on text keeps the ticker to
-// what a human can actually read.
-function recentLines(events: AgentEvent[], sessionId: string): { id: number; text: string }[] {
-  const out: { id: number; text: string }[] = [];
-  for (const event of events) {
-    if (event.sessionId !== sessionId) continue;
-    const text = (event.text ?? "").trim() || (event.title ?? "").trim();
-    if (!text) continue;
-    const last = out[out.length - 1];
-    if (last && last.text === text) { last.id = event.id; continue; }
-    out.push({ id: event.id, text });
-  }
-  return out.slice(-4);
 }
 
 // Workers get the lifecycle/result-driven resolver. A top-level session's own
@@ -148,8 +137,12 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
       {needsYou && (
         <div className="mx-3.5 mt-2 flex shrink-0 items-center gap-1.5 rounded-r-md border-l-2 border-l-warning bg-accent px-2 py-1 text-[10px] font-medium text-foreground">
           <AlertTriangle size={11} className="shrink-0 text-warning" aria-hidden="true" />
-          <span className="truncate">Needs your approval — click to open</span>
+          <span className="truncate">{runtime?.waitingReason ? `Waiting: ${runtime.waitingReason.replaceAll("_", " ")} — click to open` : "Needs your approval — click to open"}</span>
         </div>
+      )}
+
+      {runtime?.progressSummary && !needsYou && (
+        <p className="mx-3.5 mt-2 shrink-0 truncate font-mono text-[10px] font-medium text-foreground/85">{runtime.progressSummary}</p>
       )}
 
       <div className="relative mt-2 min-h-0 flex-1 overflow-hidden px-3.5 pb-3">
@@ -182,7 +175,10 @@ export function MissionControl({
   events,
   activeSessionId,
   now,
+  fullscreen,
+  onToggleFullscreen,
   onFocusSession,
+  onSteer,
 }: {
   sessions: Session[];
   runtimes: WorkerRuntimeRecord[];
@@ -190,8 +186,13 @@ export function MissionControl({
   events: AgentEvent[];
   activeSessionId?: string;
   now?: number;
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
   onFocusSession: (sessionId: string) => void;
+  /** Send guidance into one worker, from the tile you noticed it on. */
+  onSteer?: (sessionId: string, text: string) => Promise<void>;
 }) {
+  const [detailSessionId, setDetailSessionId] = useState<string>();
   const [liveNow, setLiveNow] = useState(Date.now);
   useEffect(() => {
     if (now !== undefined) return;
@@ -218,7 +219,7 @@ export function MissionControl({
       const activity = reasons
         .filter(reason => reason.entityId === session.id)
         .sort((a, b) => b.id - a.id)[0]?.body;
-      list.push({ session, runtime, tone: status.tone, label: status.label, detail: status.detail, lines: recentLines(events, session.id), activity });
+      list.push({ session, runtime, tone: status.tone, label: status.label, detail: status.detail, lines: workerFeedLines(events, session.id, TILE_FEED_LINES), activity });
     }
     list.sort((a, b) => {
       const priority = tonePriority[a.tone] - tonePriority[b.tone];
@@ -231,9 +232,35 @@ export function MissionControl({
   const running = agents.filter(agent => isRunning(agent.tone)).length;
   const waiting = agents.filter(agent => isWaiting(agent.tone)).length;
   const broken = agents.filter(agent => isBroken(agent.tone)).length;
+  const detailSession = detailSessionId
+    ? sessions.find(session => session.id === detailSessionId && !!session.parentSessionId)
+    : undefined;
+  const detailRuntime = detailSession
+    ? runtimes.find(runtime => runtime.sessionId === detailSession.id)
+    : undefined;
+  const closeDetail = useCallback(() => setDetailSessionId(undefined), []);
+
+  if (detailSession) {
+    return (
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <WorkerDetail
+          key={detailSession.id}
+          session={detailSession}
+          runtime={detailRuntime}
+          liveEvents={events}
+          now={effectiveNow}
+          fullscreen={fullscreen}
+          onToggleFullscreen={onToggleFullscreen}
+          onClose={closeDetail}
+          onFocusSession={onFocusSession}
+          onSteer={detailSession.parentSessionId ? onSteer : undefined}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col animate-page-mount">
+    <div className="relative flex min-h-0 flex-1 flex-col animate-page-mount">
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
         <LayoutGrid size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         <h1 className="m-0 font-display text-sm font-semibold tracking-tight text-foreground">Mission Control</h1>
@@ -243,6 +270,11 @@ export function MissionControl({
           {waiting > 0 && <span className="text-warning">{waiting} need you</span>}
           {broken > 0 && <span className="text-destructive">{broken} failed</span>}
         </span>
+        {onToggleFullscreen && (
+          <button type="button" onClick={onToggleFullscreen} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}>
+            {fullscreen ? <Minimize2 size={13} aria-hidden="true"/> : <Maximize2 size={13} aria-hidden="true"/>}
+          </button>
+        )}
       </div>
       {agents.length ? (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
@@ -253,7 +285,10 @@ export function MissionControl({
                 agent={agent}
                 active={agent.session.id === activeSessionId}
                 now={effectiveNow}
-                onFocus={() => onFocusSession(agent.session.id)}
+                onFocus={() => {
+                  if (agent.session.parentSessionId) setDetailSessionId(agent.session.id);
+                  else onFocusSession(agent.session.id);
+                }}
               />
             ))}
           </div>
