@@ -1462,6 +1462,7 @@ pub fn run() {
         ]);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(move |app| select_host(app, &setup_slot))
         .invoke_handler(move |invoke| {
             // Local window chrome first: it is not a protocol method, so the
