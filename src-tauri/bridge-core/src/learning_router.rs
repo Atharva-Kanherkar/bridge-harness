@@ -34,7 +34,8 @@ const PRIOR_WEIGHT: i64 = 4;
 pub struct LearningTunables {
     /// Completed shadow outcomes required before autonomous routing. 1..=1000.
     pub min_shadow_outcomes_for_autonomy: i64,
-    /// Bayesian prior weight in predictions. 0..=100.
+    /// Bayesian prior weight in predictions. 1..=100. Zero is not "no prior":
+    /// with no history it leaves nothing to divide by.
     pub prior_weight: i64,
     /// Exponential decay half-life for outcome history, in days. 1..=365.
     pub decay_half_life_days: f64,
@@ -89,7 +90,7 @@ pub fn tunables(db: &Connection, workspace_id: &str) -> LearningTunables {
             1_000,
             defaults.min_shadow_outcomes_for_autonomy,
         ),
-        prior_weight: in_range_i64(parsed.get("priorWeight"), 0, 100, defaults.prior_weight),
+        prior_weight: in_range_i64(parsed.get("priorWeight"), 1, 100, defaults.prior_weight),
         decay_half_life_days: half_life,
         evidence_window_days: in_range_i64(
             parsed.get("evidenceWindowDays"),
@@ -483,7 +484,9 @@ fn predict(
     prior_weight: i64,
 ) -> CandidatePrediction {
     let (prior_pass, prior_latency) = tier_prior(candidate.tier);
-    let denominator = prior_weight + history.samples;
+    // Never zero. The tunable range already refuses a zero prior, and routing
+    // is not the place to discover that a future caller disagreed.
+    let denominator = (prior_weight + history.samples).max(1);
     let pass_probability_bps =
         ((i64::from(prior_pass) * prior_weight + history.successes * 10_000) / denominator) as u16;
     let latency_ms = (prior_latency * prior_weight + history.runtime_ms_total) / denominator;
@@ -826,15 +829,20 @@ pub fn route(
             candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
         })
         .cloned();
+    // The *latest* outcome for this task, not the latest failure: a later
+    // success means the task is no longer failing, and steering away from a
+    // candidate that has since worked would outlive the reason for it.
     let failed_candidate: Option<String> = db
         .query_row(
-            "SELECT o.candidate FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
-             WHERE d.workspace_id=?1 AND d.task_fingerprint=?2 AND o.succeeded=0
+            "SELECT o.candidate, o.succeeded
+             FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+             WHERE d.workspace_id=?1 AND d.task_fingerprint=?2
              ORDER BY o.rowid DESC LIMIT 1",
             params![workspace_id, fingerprint],
-            |row| row.get(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
         )
-        .optional()?;
+        .optional()?
+        .and_then(|(candidate, succeeded)| (!succeeded).then_some(candidate));
     let retry_escalation = failed_candidate
         .as_deref()
         .and_then(|key| candidate_for_key(&evaluations, key))
@@ -2148,6 +2156,46 @@ mod tests {
     }
 
     #[test]
+    fn a_later_success_clears_the_sideways_steer() {
+        let db = routing_db();
+        let record_outcome = |turn: &str, child: &str, succeeded: bool| {
+            let routed = route(&db, "parent", turn, &request(), &descriptors()).unwrap();
+            let key = routed.decision.executed_candidate.clone().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![child],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,?3,?4,?5,100,1000,0,0,?6,?7,'2026-08-01T00:00:00Z')",
+                params![
+                    routed.decision.id,
+                    child,
+                    key,
+                    succeeded,
+                    if succeeded { "completed" } else { "failed" },
+                    if succeeded { "success" } else { "failure" },
+                    if succeeded { "accepted" } else { "rejected" },
+                ],
+            )
+            .unwrap();
+            key
+        };
+        let failed_key = record_outcome("turn-1", "child-1", false);
+        let after_failure = route(&db, "parent", "turn-2", &request(), &descriptors()).unwrap();
+        assert_ne!(after_failure.decision.recommended_candidate, Some(failed_key.clone()));
+        record_outcome("turn-3", "child-2", true);
+        let after_success = route(&db, "parent", "turn-4", &request(), &descriptors()).unwrap();
+        assert_eq!(
+            after_success.decision.recommended_candidate,
+            Some(failed_key),
+            "the task is no longer failing, so the steer expires with it"
+        );
+    }
+
+    #[test]
     fn a_retried_task_is_recommended_sideways_after_its_failure() {
         let db = routing_db();
         let routed = route(&db, "parent", "turn-1", &request(), &descriptors()).unwrap();
@@ -2355,6 +2403,30 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("without a workspace"), "{error}");
+    }
+
+    #[test]
+    fn a_zero_prior_weight_is_refused_and_prediction_never_divides_by_zero() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', '{\"priorWeight\":0}', 'now')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            tunables(&db, "w").prior_weight,
+            LearningTunables::default().prior_weight,
+            "zero is out of range and falls back"
+        );
+        // And the arithmetic answers rather than panicking even if a caller
+        // supplies zero directly with no history to divide by.
+        let result = evaluated_with(
+            vec![candidate("codex", "codex-standard", CapabilityTier::Standard, 4)],
+            RouterPreferences::default(),
+        );
+        let prediction = predict(&result[0].candidate, &HistoricalOutcome::default(), 0);
+        assert_eq!(prediction.pass_probability_bps, 0, "no prior and no evidence is not a crash");
     }
 
     #[test]

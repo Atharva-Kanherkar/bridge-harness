@@ -90,6 +90,7 @@ struct Aggregate {
     interventions: i64,
     confidence_reported: i64,
     confidence_total: i64,
+    confidence_minimum: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -171,6 +172,10 @@ impl Aggregate {
         if let Some(confidence) = row.confidence_bps {
             self.confidence_reported += 1;
             self.confidence_total += confidence;
+            self.confidence_minimum = Some(match self.confidence_minimum {
+                Some(current) => current.min(confidence),
+                None => confidence,
+            });
         }
     }
 
@@ -191,11 +196,19 @@ impl Aggregate {
         (self.confidence_reported > 0).then(|| self.confidence_total / self.confidence_reported)
     }
 
+    /// The weakest row in the group. Learning eligibility asks whether every
+    /// outcome cleared the bar, not whether they averaged over it — a mean
+    /// lets a test-backed row carry an unknown-acceptance one into training.
+    fn weakest_confidence_bps(&self) -> Option<i64> {
+        self.confidence_minimum
+    }
+
     fn eligible_for_learning(&self) -> bool {
         self.samples >= MIN_GROUP_SAMPLES
             && self.known_outcomes == self.samples
+            && self.confidence_reported == self.samples
             && self
-                .confidence_bps()
+                .weakest_confidence_bps()
                 .is_some_and(|value| value >= MIN_CONFIDENCE_BPS)
     }
 
@@ -284,9 +297,12 @@ pub(crate) fn load_evidence(
         evidence.retain(|row| match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
             Err(_) => true,
             Ok(recorded) => {
-                let age_days =
-                    (anchor - recorded.with_timezone(&chrono::Utc)).num_seconds() / 86_400;
-                age_days <= window_days
+                // Fractional days, like the online decay: integer days would
+                // keep a row the prediction has already dropped, so the same
+                // outcome would be training evidence and not history.
+                let age_days = (anchor - recorded.with_timezone(&chrono::Utc)).num_seconds() as f64
+                    / 86_400.0;
+                age_days <= window_days as f64
             }
         });
     }
@@ -571,6 +587,7 @@ mod tests {
         aggregate.successes = 2;
         aggregate.confidence_reported = 2;
         aggregate.confidence_total = confidence * 2;
+        aggregate.confidence_minimum = Some(confidence);
         aggregate
     }
 
@@ -585,6 +602,43 @@ mod tests {
             aggregate_with_confidence(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS)
                 .eligible_for_learning()
         );
+    }
+
+    #[test]
+    fn one_unknown_acceptance_row_is_not_averaged_away() {
+        // The mean of a test-backed row and an unknown-acceptance one clears
+        // the floor while half the evidence is still unknown. Eligibility asks
+        // about the weakest row, not the average.
+        let mut mixed = Aggregate::default();
+        mixed.samples = 2;
+        mixed.known_outcomes = 2;
+        mixed.successes = 2;
+        mixed.confidence_reported = 2;
+        for value in [
+            crate::learning_router::CONFIDENCE_TEST_BACKED_BPS,
+            crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS,
+        ] {
+            mixed.confidence_total += value;
+            mixed.confidence_minimum =
+                Some(mixed.confidence_minimum.map_or(value, |current: i64| current.min(value)));
+        }
+        assert!(
+            mixed.confidence_bps().unwrap() >= crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS + 1,
+            "the average clears the floor"
+        );
+        assert!(!mixed.eligible_for_learning(), "the weakest row does not");
+    }
+
+    #[test]
+    fn a_row_without_confidence_cannot_train() {
+        let mut partial = Aggregate::default();
+        partial.samples = 2;
+        partial.known_outcomes = 2;
+        partial.successes = 2;
+        partial.confidence_reported = 1;
+        partial.confidence_total = crate::learning_router::CONFIDENCE_TEST_BACKED_BPS;
+        partial.confidence_minimum = Some(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS);
+        assert!(!partial.eligible_for_learning(), "silence is not confidence");
     }
 
     #[test]
