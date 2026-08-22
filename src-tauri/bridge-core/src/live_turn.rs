@@ -8953,6 +8953,8 @@ mod submit_input_tests {
         responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
         /// Question answers, as `(requestId, answers)`.
         answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
+        /// Question rejections, as `requestId`.
+        rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         refuse: Arc<AtomicBool>,
     }
 
@@ -8960,6 +8962,7 @@ mod submit_input_tests {
         pub(super) sent: Arc<Mutex<Vec<String>>>,
         pub(super) responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
         pub(super) answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
+        pub(super) rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) refuse: Arc<AtomicBool>,
     }
 
@@ -8968,12 +8971,14 @@ mod submit_input_tests {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let responded = Arc::new(Mutex::new(Vec::new()));
             let answered = Arc::new(Mutex::new(Vec::new()));
+            let rejected = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 steering,
                 sent: sent.clone(),
                 responded: responded.clone(),
                 answered: answered.clone(),
+                rejected: rejected.clone(),
                 refuse: refuse.clone(),
             };
             (
@@ -8982,6 +8987,7 @@ mod submit_input_tests {
                     sent,
                     responded,
                     answered,
+                    rejected,
                     refuse,
                 },
             )
@@ -9030,6 +9036,13 @@ mod submit_input_tests {
                 return Err(BridgeError::Adapter("provider pipe is closed".into()));
             }
             self.answered.lock().unwrap().push((request_id, answers));
+            Ok(())
+        }
+        fn reject_question(&self, request_id: serde_json::Value) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.rejected.lock().unwrap().push(request_id);
             Ok(())
         }
         fn stop(&mut self, _: adapters::ShutdownReason) {}
@@ -10545,6 +10558,61 @@ mod permission_policy_tests {
             handles.responded.lock().unwrap().len(),
             1,
             "the provider heard exactly one answer, not two contradictory ones"
+        );
+    }
+
+    /// A question is answered with text over its own reply channel, never
+    /// with an accept/decline decision — a decision-only card has nothing to
+    /// answer a question with, and `respond` posts the wrong shape to the
+    /// wrong endpoint for one (#282). `accept` must be refused outright;
+    /// `decline` is the one decision this card can still mean (dismiss it),
+    /// and it must reach `reject_question`, not `respond`.
+    #[test]
+    fn resolve_approval_refuses_to_accept_a_question_and_declines_it_on_its_own_channel() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+        let question = agent::NormalizedEvent {
+            kind: "approval.requested".into(),
+            item_id: Some("call_1".into()),
+            role: None,
+            status: Some("pending".into()),
+            title: Some("Stale workspace".into()),
+            text: Some("How do you want to proceed?".into()),
+            data: serde_json::json!({
+                "requestId": "req_1",
+                "requestMethod": agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                "questions": [{"question": "How do you want to proceed?"}],
+            }),
+        };
+        let event_id = {
+            let db = core.db.lock().unwrap();
+            store::session_event(
+                &db,
+                "chat",
+                &question,
+                &serde_json::json!({"adapter":"opencode"}),
+            )
+            .unwrap()
+            .sequence
+        };
+
+        let accepted = crate::api::resolve_approval(&core, "chat", event_id, "accept");
+        assert!(
+            accepted.is_err(),
+            "there is no text to answer a question with from a bare accept decision"
+        );
+        assert!(handles.responded.lock().unwrap().is_empty());
+        assert!(handles.rejected.lock().unwrap().is_empty());
+
+        crate::api::resolve_approval(&core, "chat", event_id, "decline").unwrap();
+        assert_eq!(
+            handles.rejected.lock().unwrap().as_slice(),
+            &[serde_json::json!("req_1")],
+            "decline must reach the question's own reject endpoint"
+        );
+        assert!(
+            handles.responded.lock().unwrap().is_empty(),
+            "a question must never be answered on the permission-reply channel"
         );
     }
 
