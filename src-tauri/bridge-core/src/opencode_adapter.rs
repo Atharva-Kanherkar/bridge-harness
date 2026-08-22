@@ -703,6 +703,30 @@ impl AdapterRuntime for OpenCodeRuntime {
             "resolve OpenCode permission",
         )
     }
+    fn answer_question(&self, request_id: Value, answers: Value) -> Result<(), BridgeError> {
+        let request_id = request_id
+            .as_str()
+            .ok_or_else(|| BridgeError::Invalid("OpenCode question id is invalid".into()))?;
+        validate_path_id("question id", request_id)?;
+        self.request(
+            reqwest::Method::POST,
+            &format!("/question/{request_id}/reply"),
+            Some(json!({"answers": answers})),
+            "answer OpenCode question",
+        )
+    }
+    fn reject_question(&self, request_id: Value) -> Result<(), BridgeError> {
+        let request_id = request_id
+            .as_str()
+            .ok_or_else(|| BridgeError::Invalid("OpenCode question id is invalid".into()))?;
+        validate_path_id("question id", request_id)?;
+        self.request(
+            reqwest::Method::POST,
+            &format!("/question/{request_id}/reject"),
+            None,
+            "reject OpenCode question",
+        )
+    }
     fn failure_context(&mut self) -> Option<String> {
         crate::adapters::process_failure_context(&mut self.child, &self.stderr_tail)
     }

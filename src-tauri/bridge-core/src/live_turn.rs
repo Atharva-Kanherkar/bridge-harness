@@ -2040,7 +2040,68 @@ fn handle_agent_value(
                         &event.data,
                     );
                 }
+                // OpenCode's own record that a question is gone — answered,
+                // declined, or settled by an entirely different client on the
+                // same session. Resolve the matching row by the provider's
+                // `requestId` inline against the lock already held here:
+                // `settle_question_resolution` locks `core.db` itself and
+                // would deadlock if called from inside this loop.
+                "question.settled" => {
+                    if let Some(request_id) = event
+                        .data
+                        .get("requestId")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        if let Some(target_event_id) = find_unresolved_approval_by_request_id(
+                            &db,
+                            session_id,
+                            agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                            request_id,
+                        ) {
+                            let decision = event.status.as_deref().unwrap_or("answered");
+                            let resolved = agent::NormalizedEvent {
+                                kind: "approval.resolved".into(),
+                                item_id: None,
+                                role: None,
+                                status: Some(decision.to_owned()),
+                                title: Some("Question settled".into()),
+                                text: None,
+                                data: serde_json::json!({"requestEventId": target_event_id, "decision": decision}),
+                            };
+                            let _ = store::session_event(
+                                &db,
+                                session_id,
+                                &resolved,
+                                &serde_json::json!({"adapter": adapter_id}),
+                            );
+                            if own_depth > 0 {
+                                let _ = session_supervisor::SessionSupervisor::transition(
+                                    &db,
+                                    session_id,
+                                    worker_lifecycle::WorkerLifecycleState::Working,
+                                    Some("approval_resolved"),
+                                );
+                            } else {
+                                let _ = db.execute(
+                                    "UPDATE sessions SET status='working' WHERE id=?1",
+                                    params![session_id],
+                                );
+                            }
+                            if let Some(workspace_id) = &workspace_id {
+                                let _ = db.execute(
+                                    "UPDATE workspaces SET status=CASE
+                                        WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status='waiting') THEN 'waiting'
+                                        WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status='working') THEN 'working'
+                                        ELSE 'ready' END
+                                     WHERE id=?1",
+                                    params![workspace_id],
+                                );
+                            }
+                        }
+                    }
+                }
                 "error" if event.status.as_deref() == Some("failed") => {
+                    void_orphaned_questions(&db, session_id, "provider_error");
                     if own_depth > 0 {
                         let lifecycle = store::worker_runtime(&db, session_id)
                             .ok()
@@ -7539,6 +7600,310 @@ fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), Bridg
     })
 }
 
+/// The most recent `approval.requested` entry of `request_method` still
+/// unresolved for `session_id`, as `(sequence, stored payload)` — or `None`
+/// once every request of that kind has a matching `approval.resolved`.
+///
+/// Mirrors the resolution shapes `resolve_approval` already reads
+/// (`requestEventId` nested under `data` or top-level); a question is always
+/// the adapter-approval shape; the policy-approval shape never carries a
+/// `requestMethod`, so it can never match here.
+fn latest_unresolved_approval(
+    db: &Connection,
+    session_id: &str,
+    request_method: &str,
+) -> Option<(i64, serde_json::Value)> {
+    let (sequence, payload): (i64, String) = db
+        .query_row(
+            "SELECT e.sequence, e.payload FROM session_entries e
+             WHERE e.session_id=?1 AND e.kind='approval.requested'
+               AND json_extract(e.payload,'$.data.requestMethod')=?2
+               AND NOT EXISTS (
+                   SELECT 1 FROM session_entries r
+                   WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
+                     AND COALESCE(json_extract(r.payload,'$.data.requestEventId'),
+                                  json_extract(r.payload,'$.requestEventId')) = e.sequence
+               )
+             ORDER BY e.sequence DESC LIMIT 1",
+            params![session_id, request_method],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()?;
+    serde_json::from_str(&payload)
+        .ok()
+        .map(|data| (sequence, data))
+}
+
+/// The event id of the unresolved `approval.requested` entry of
+/// `request_method` for `session_id` whose adapter `requestId` is exactly
+/// `request_id` — or `None` once it has a matching `approval.resolved`, or if
+/// no such request exists. Used to settle a specific request the *provider*
+/// named (a `question.settled` echo), as opposed to [`latest_unresolved_approval`],
+/// which finds whichever one is currently open for a fresh submission.
+fn find_unresolved_approval_by_request_id(
+    db: &Connection,
+    session_id: &str,
+    request_method: &str,
+    request_id: &str,
+) -> Option<i64> {
+    db.query_row(
+        "SELECT e.sequence FROM session_entries e
+         WHERE e.session_id=?1 AND e.kind='approval.requested'
+           AND json_extract(e.payload,'$.data.requestMethod')=?2
+           AND json_extract(e.payload,'$.data.requestId')=?3
+           AND NOT EXISTS (
+               SELECT 1 FROM session_entries r
+               WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
+                 AND COALESCE(json_extract(r.payload,'$.data.requestEventId'),
+                              json_extract(r.payload,'$.requestEventId')) = e.sequence
+           )
+         ORDER BY e.sequence DESC LIMIT 1",
+        params![session_id, request_method, request_id],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// Durable bookkeeping shared by every way a pending question stops being
+/// pending without a fresh `db` lock already held by the caller: insert the
+/// `approval.resolved` marker, unblock the session or worker, and — for a
+/// worker — tell the parent. Same shape `resolve_approval` writes for a
+/// card-driven resolution, so the transcript and worker lifecycle read
+/// identically no matter which path settled it.
+///
+/// Must only be called where `core.db` is not already locked by the caller —
+/// it locks internally, more than once. `handle_agent_value`'s dispatch loop
+/// already holds that lock for its whole pass, so its `question.settled` arm
+/// does the same three writes inline against its own `&db` instead of
+/// calling this and deadlocking on itself.
+fn settle_question_resolution(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    is_worker: bool,
+    decision: &str,
+) -> Result<(), BridgeError> {
+    if is_worker {
+        session_supervisor::SessionSupervisor::transition(
+            &core.db.lock().unwrap(),
+            session_id,
+            worker_lifecycle::WorkerLifecycleState::Working,
+            Some("approval_resolved"),
+        )?;
+    }
+    let db = core.db.lock().unwrap();
+    let adapter_id: String = db.query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let resolved = agent::NormalizedEvent {
+        kind: "approval.resolved".into(),
+        item_id: None,
+        role: None,
+        status: Some(decision.to_owned()),
+        title: Some("Question settled".into()),
+        text: None,
+        data: serde_json::json!({"requestEventId": event_id, "decision": decision}),
+    };
+    let event = store::session_event(
+        &db,
+        session_id,
+        &resolved,
+        &serde_json::json!({"adapter": adapter_id}),
+    )?;
+    if !is_worker {
+        db.execute(
+            "UPDATE sessions SET status='working' WHERE id=?1",
+            params![session_id],
+        )?;
+    }
+    db.execute(
+        "UPDATE workspaces SET status=CASE
+            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
+            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
+            ELSE 'ready' END
+         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
+        params![session_id],
+    )?;
+    drop(db);
+    core.events.publish(CoreEvent::Agent(event));
+    if is_worker {
+        notify_parent_child_left_waiting(core, session_id, decision);
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(())
+}
+
+/// Durably resolve every unanswered OpenCode question for `session_id`
+/// without answering it, tagged with why. Best-effort and silent on error —
+/// callers are teardown paths (session stop, provider error) that must not
+/// fail because a bookkeeping write did not land.
+///
+/// Called wherever a session's adapter goes away, so a later resume — which
+/// gets a fresh provider process and an unrelated request-id namespace —
+/// never finds a row a dead process left open and retries a request id that
+/// can never succeed again (#282: that retry is what leaves a session
+/// permanently unable to accept new input, repeating the same failure).
+fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
+    let Ok(mut statement) = db.prepare(
+        "SELECT e.sequence FROM session_entries e
+         WHERE e.session_id=?1 AND e.kind='approval.requested'
+           AND json_extract(e.payload,'$.data.requestMethod')=?2
+           AND NOT EXISTS (
+               SELECT 1 FROM session_entries r
+               WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
+                 AND COALESCE(json_extract(r.payload,'$.data.requestEventId'),
+                              json_extract(r.payload,'$.requestEventId')) = e.sequence
+           )",
+    ) else {
+        return;
+    };
+    let Ok(rows) = statement.query_map(
+        params![session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD],
+        |row| row.get::<_, i64>(0),
+    ) else {
+        return;
+    };
+    let Ok(pending) = rows.collect::<Result<Vec<i64>, _>>() else {
+        return;
+    };
+    drop(statement);
+    for event_id in pending {
+        let resolved = agent::NormalizedEvent {
+            kind: "approval.resolved".into(),
+            item_id: None,
+            role: None,
+            status: Some(reason.into()),
+            title: Some("Question settled".into()),
+            text: None,
+            data: serde_json::json!({"requestEventId": event_id, "decision": reason}),
+        };
+        let _ = store::session_event(
+            db,
+            session_id,
+            &resolved,
+            &serde_json::json!({"adapter": "opencode"}),
+        );
+    }
+}
+
+/// If `session_id` has exactly one open OpenCode question, deliver `text` as
+/// its answer and resolve it instead of running it through the ordinary
+/// new-turn/steer/queue table.
+///
+/// A pending question is what is blocking the turn from ever reaching a
+/// phase boundary, so the ordinary answer for a non-steering provider —
+/// durably queue for the next boundary — is exactly the deadlock in #282:
+/// the queue drains at a boundary the open question can never let the turn
+/// reach. Steering does not fit either; the answer belongs on the
+/// question's own reply channel; a running turn's provider never reads it
+/// out of a chat message.
+///
+/// A multi-question request is left alone (`Ok(None)`): OpenCode shapes a
+/// reply as one answer array per question asked, and a single typed message
+/// has no way to address several questions individually. Bridge has no
+/// per-question input yet, so it does not guess by repeating the same
+/// composer text into every slot.
+///
+/// Returns `Ok(None)` whenever nothing here should intercept the text, so
+/// the caller falls through to the ordinary routing table unchanged.
+fn answer_pending_question(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    text: &str,
+) -> Result<Option<wire::SubmitInputResult>, BridgeError> {
+    // Held for the whole critical section below, released by `Drop` on every
+    // return path including `?`. Without it, two callers can both read the
+    // same request as unresolved before either has written its resolution —
+    // a second submission racing this one, or this one racing a card's
+    // Decline through `resolve_approval` — and both would call the adapter,
+    // sending OpenCode two contradictory replies to one question.
+    let _claim = core
+        .claim_session_lifecycle(session_id, "question resolution")
+        .map_err(|_| BridgeError::Invalid("This question is already being answered".into()))?;
+    let db = core.db.lock().unwrap();
+    let Some((event_id, data)) =
+        latest_unresolved_approval(&db, session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD)
+    else {
+        return Ok(None);
+    };
+    let question_count = data
+        .pointer("/data/questions")
+        .and_then(serde_json::Value::as_array)
+        .map(|questions| questions.len().max(1))
+        .unwrap_or(1);
+    if question_count != 1 {
+        return Ok(None);
+    }
+    let request_id = data
+        .pointer("/data/requestId")
+        .cloned()
+        .ok_or_else(|| BridgeError::Invalid("Pending question has no adapter request id".into()))?;
+    // Sanitized before it reaches the provider or durable history — the same
+    // boundary every other input path crosses in `prepare_input`. This path
+    // skips `prepare_input` itself on purpose (an answer is literal text, not
+    // a slash command Bridge should interpret), but it must not skip this:
+    // skipping it is exactly how a pasted credential would leak into both the
+    // provider call below and the transcript.
+    let intercepted = secret_interception::intercept(text);
+    core.credential_broker
+        .register(session_id, intercepted.captured);
+    let sanitized = intercepted.sanitized.text;
+    let interceptions = intercepted.sanitized.interceptions;
+    let answers = serde_json::Value::Array(vec![serde_json::Value::Array(vec![
+        serde_json::Value::String(sanitized.clone()),
+    ])]);
+    let is_worker = store::worker_runtime(&db, session_id)?.is_some();
+    let adapter_id: String = db.query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    drop(db);
+    let adapters = core.adapters.lock().unwrap();
+    let runtime = adapters
+        .get(session_id)
+        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+    let delivered = runtime.answer_question(request_id, answers);
+    drop(adapters);
+    if delivered.is_err() {
+        // The request id could not be delivered to — most likely the adapter
+        // that raised it is gone and a fresh one (with an unrelated request
+        // namespace) has since taken its place, e.g. `resume_for_send`
+        // relaunching it earlier in this same call. Void it rather than
+        // leaving it unresolved: an unresolved row here is what makes every
+        // future submission retry the same dead id and fail the same way,
+        // forever. Fall through instead of erroring, so this text still
+        // reaches the session as an ordinary message.
+        settle_question_resolution(
+            core,
+            session_id,
+            event_id,
+            is_worker,
+            "voided_delivery_failed",
+        )?;
+        return Ok(None);
+    }
+    settle_question_resolution(core, session_id, event_id, is_worker, "answered")?;
+    let db = core.db.lock().unwrap();
+    if let Some(user_event) = persist_submitted_user_turn_with_delivery(
+        &db,
+        session_id,
+        &adapter_id,
+        &sanitized,
+        "answered_question",
+    )? {
+        core.events.publish(CoreEvent::Agent(user_event));
+    }
+    drop(db);
+    Ok(Some(wire::SubmitInputResult {
+        disposition: wire::InputDisposition::SteeredActiveTurn,
+        queued_input_id: None,
+        interceptions: mirror_interceptions(&interceptions),
+    }))
+}
+
 fn submit_input_internal(
     core: &Arc<BridgeCore>,
     session_id: String,
@@ -7571,6 +7936,14 @@ fn submit_input_internal(
         // already refused a worker with no live runtime, because launching one is
         // the pool's decision, not a side effect of typing.
         resume_for_send(core, &session_id)?;
+    }
+
+    // A pending OpenCode question is not "a turn in flight that can take more
+    // input" — it is the reason the turn cannot reach a boundary at all. Check
+    // before computing a route: answering it takes priority over whatever the
+    // ordinary table would have chosen.
+    if let Some(result) = answer_pending_question(core, &session_id, text.trim())? {
+        return Ok(result);
     }
 
     // The legacy `send_turn` entry point forces a new turn, which is the one
@@ -8043,6 +8416,7 @@ pub fn stop_session(
     session_id: String,
 ) -> Result<BridgeState, BridgeError> {
     let state = core;
+    void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         params![session_id],
@@ -8782,12 +9156,18 @@ mod submit_input_tests {
         /// swallowed: "the provider was told accept" is the whole assertion for
         /// an auto-approved request.
         responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
+        /// Question answers, as `(requestId, answers)`.
+        answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
+        /// Question rejections, as `requestId`.
+        rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         refuse: Arc<AtomicBool>,
     }
 
     pub(super) struct FakeHandles {
         pub(super) sent: Arc<Mutex<Vec<String>>>,
         pub(super) responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
+        pub(super) answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
+        pub(super) rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) refuse: Arc<AtomicBool>,
     }
 
@@ -8795,11 +9175,15 @@ mod submit_input_tests {
         pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let responded = Arc::new(Mutex::new(Vec::new()));
+            let answered = Arc::new(Mutex::new(Vec::new()));
+            let rejected = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 steering,
                 sent: sent.clone(),
                 responded: responded.clone(),
+                answered: answered.clone(),
+                rejected: rejected.clone(),
                 refuse: refuse.clone(),
             };
             (
@@ -8807,6 +9191,8 @@ mod submit_input_tests {
                 FakeHandles {
                     sent,
                     responded,
+                    answered,
+                    rejected,
                     refuse,
                 },
             )
@@ -8844,6 +9230,24 @@ mod submit_input_tests {
                 .lock()
                 .unwrap()
                 .push((request_id, decision.to_owned()));
+            Ok(())
+        }
+        fn answer_question(
+            &self,
+            request_id: serde_json::Value,
+            answers: serde_json::Value,
+        ) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.answered.lock().unwrap().push((request_id, answers));
+            Ok(())
+        }
+        fn reject_question(&self, request_id: serde_json::Value) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.rejected.lock().unwrap().push(request_id);
             Ok(())
         }
         fn stop(&mut self, _: adapters::ShutdownReason) {}
@@ -8896,6 +9300,270 @@ mod submit_input_tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    /// Persist an `opencode.question` `approval.requested` for "chat" with
+    /// `questions`, as `agent.rs`'s `question.asked` normalization would have
+    /// produced it, and return its event id.
+    fn persist_pending_question(core: &Arc<BridgeCore>, questions: serde_json::Value) -> i64 {
+        let approval = agent::NormalizedEvent {
+            kind: "approval.requested".into(),
+            item_id: Some("call_1".into()),
+            role: None,
+            status: Some("pending".into()),
+            title: Some("Stale workspace".into()),
+            text: Some("How do you want to proceed?".into()),
+            data: serde_json::json!({
+                "requestId": "req_1",
+                "requestMethod": agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                "questions": questions,
+            }),
+        };
+        let db = core.db.lock().unwrap();
+        store::session_event(
+            &db,
+            "chat",
+            &approval,
+            &serde_json::json!({"adapter":"opencode"}),
+        )
+        .unwrap()
+        .sequence
+    }
+
+    fn resolved_decision(core: &Arc<BridgeCore>) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(payload,'$.data.decision') FROM session_entries
+                 WHERE session_id='chat' AND kind='approval.resolved'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn one_question() -> serde_json::Value {
+        serde_json::json!([{"question": "How do you want to proceed?", "header": "Stale workspace", "options": []}])
+    }
+
+    /// #282 review: an answer to a pending question skipped `prepare_input`
+    /// entirely (correctly, for slash dispatch — a question answer is literal
+    /// text) but that also skipped secret interception and the credential
+    /// broker, the one boundary every other input path crosses. A pasted key
+    /// would have reached both the adapter call and durable history raw.
+    #[test]
+    fn a_pasted_secret_in_a_question_answer_is_intercepted_not_leaked() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='turn_1' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let handles = attach_handles(&core, false);
+        persist_pending_question(&core, one_question());
+        let secret = "sk-ant-abcdefghijklmnopqrstuvwx0123456789";
+
+        let outcome = submit_input(&core, "chat".into(), secret.into()).unwrap();
+
+        assert!(
+            !outcome.interceptions.is_empty(),
+            "the secret must be reported as intercepted, like every other route"
+        );
+        let sent = handles.answered.lock().unwrap()[0].1.to_string();
+        assert!(
+            !sent.contains(secret),
+            "the raw secret must never reach the adapter: {sent}"
+        );
+        let persisted: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(payload,'$.text') FROM session_entries
+                 WHERE session_id='chat' AND kind='user.message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !persisted.contains(secret),
+            "the raw secret must never land in durable history: {persisted}"
+        );
+    }
+
+    /// #282 review: reading "is a question pending" and writing its
+    /// resolution were two separate, unguarded steps. A second submission (or
+    /// this same answer racing a card's Decline through `resolve_approval`)
+    /// could read the request as unresolved before either writer had
+    /// finished, and both would call the adapter — two contradictory replies
+    /// to the same question.
+    #[test]
+    fn a_question_already_being_resolved_refuses_a_second_attempt() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='turn_1' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let handles = attach_handles(&core, false);
+        persist_pending_question(&core, one_question());
+
+        let _held = core.claim_session_lifecycle("chat", "test hold").unwrap();
+        let outcome = submit_input(&core, "chat".into(), "rebase".into());
+
+        assert!(
+            outcome.is_err(),
+            "a second resolver must not proceed while one is already in flight"
+        );
+        assert!(
+            handles.answered.lock().unwrap().is_empty(),
+            "the adapter must never be called twice for one question"
+        );
+    }
+
+    /// #282 review: a single composer string was copied into every
+    /// positional slot of a multi-question `answers` array, so distinct
+    /// questions received the same unintended answer. OpenCode models
+    /// multiple questions with one answer array per question; Bridge has no
+    /// per-question input yet, so it must not guess.
+    #[test]
+    fn a_multi_question_request_is_left_for_ordinary_routing() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='turn_1' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let handles = attach_handles(&core, false);
+        persist_pending_question(
+            &core,
+            serde_json::json!([
+                {"question": "Which branch?", "header": "H1", "options": []},
+                {"question": "Force push?", "header": "H2", "options": []},
+            ]),
+        );
+
+        let outcome = submit_input(&core, "chat".into(), "yes".into()).unwrap();
+
+        assert!(
+            handles.answered.lock().unwrap().is_empty(),
+            "a single message must not answer several distinct questions the same way"
+        );
+        assert_eq!(
+            outcome.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary
+        );
+    }
+
+    /// #282 review: a request id that can no longer be delivered to (most
+    /// often the adapter that raised it died and `resume_for_send` relaunched
+    /// a fresh one with an unrelated request namespace) stayed unresolved
+    /// forever, so every later submission retried the same dead id and failed
+    /// the same way — the session could never accept input again.
+    #[test]
+    fn a_failed_delivery_voids_the_stale_question_and_falls_through() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='turn_1' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let handles = attach_handles(&core, false);
+        persist_pending_question(&core, one_question());
+        handles.refuse.store(true, Ordering::SeqCst);
+
+        let outcome = submit_input(&core, "chat".into(), "rebase".into()).unwrap();
+
+        assert_eq!(
+            resolved_decision(&core),
+            "voided_delivery_failed",
+            "the stale request must be settled, not left open forever"
+        );
+        assert_eq!(
+            outcome.disposition,
+            wire::InputDisposition::QueuedForPhaseBoundary,
+            "the user's text must still be delivered, not lost with an error"
+        );
+        assert_eq!(
+            session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(),
+            1
+        );
+
+        let second = submit_input(&core, "chat".into(), "second message".into());
+        assert!(
+            second.is_ok(),
+            "the session must accept new input again once the stale question is voided, \
+             not retry the same dead request forever"
+        );
+    }
+
+    /// #282 review: an unresolved question row survived the session it
+    /// belonged to. `stop_session`'s teardown must settle it so a later
+    /// resume never finds a row from the dead process and retries its (now
+    /// meaningless) request id.
+    #[test]
+    fn void_orphaned_questions_resolves_pending_rows_so_a_resume_does_not_retarget_them() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        persist_pending_question(&core, one_question());
+
+        void_orphaned_questions(&core.db.lock().unwrap(), "chat", "session_stopped");
+
+        assert_eq!(resolved_decision(&core), "session_stopped");
+        assert!(
+            latest_unresolved_approval(
+                &core.db.lock().unwrap(),
+                "chat",
+                agent::OPENCODE_QUESTION_REQUEST_METHOD
+            )
+            .is_none(),
+            "nothing should read this request as still pending afterward"
+        );
+    }
+
+    /// #282 review: `question.replied`/`question.rejected` normalized to
+    /// `provider.unknown`, so a question settled through any channel other
+    /// than this exact `answer_pending_question` call — a decline, a
+    /// different client on the same OpenCode session — left Bridge's own
+    /// `approval.requested` row open forever even though OpenCode itself
+    /// considers the question closed.
+    #[test]
+    fn a_question_settled_by_the_provider_directly_unblocks_a_waiting_session() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='opencode' WHERE id='chat'", [])
+            .unwrap();
+        let _handles = attach_handles(&core, false);
+        persist_pending_question(&core, one_question());
+
+        let settled = serde_json::json!({
+            "id": "evt_2",
+            "type": "question.rejected",
+            "properties": {"sessionID": "ses_1", "requestID": "req_1"},
+        });
+        handle_agent_value(
+            &core,
+            "chat",
+            &Arc::new(Mutex::new(Some("turn-1".to_owned()))),
+            &settled,
+        );
+
+        assert_eq!(session_status(&core), "working");
+        assert_eq!(resolved_decision(&core), "rejected");
     }
 
     #[test]
@@ -8994,6 +9662,87 @@ mod submit_input_tests {
             )
             .unwrap();
         assert_eq!(delivered, 1);
+    }
+
+    /// #282: a provider that cannot steer would otherwise queue a typed
+    /// reply behind a phase boundary a still-open question can never reach —
+    /// a deadlock the user could only escape by interrupting the turn. The
+    /// typed text must answer the question directly instead.
+    #[test]
+    fn a_pending_question_is_answered_instead_of_queued_behind_itself() {
+        let (_fixture, core, _managed_root) = core_with_chat("waiting");
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='turn_1' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let handles = attach_handles(&core, false);
+
+        let approval = agent::NormalizedEvent {
+            kind: "approval.requested".into(),
+            item_id: Some("call_1".into()),
+            role: None,
+            status: Some("pending".into()),
+            title: Some("Stale workspace".into()),
+            text: Some("How do you want to proceed?".into()),
+            data: serde_json::json!({
+                "requestId": "req_1",
+                "requestMethod": agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                "questions": [{
+                    "question": "How do you want to proceed?",
+                    "header": "Stale workspace",
+                    "options": [],
+                }],
+            }),
+        };
+        {
+            let db = core.db.lock().unwrap();
+            store::session_event(
+                &db,
+                "chat",
+                &approval,
+                &serde_json::json!({"adapter":"opencode"}),
+            )
+            .unwrap();
+        }
+
+        let outcome = submit_input(&core, "chat".into(), "rebase onto main".into()).unwrap();
+
+        assert_eq!(
+            outcome.disposition,
+            wire::InputDisposition::SteeredActiveTurn
+        );
+        assert_eq!(outcome.queued_input_id, None);
+        assert!(
+            handles.sent.lock().unwrap().is_empty(),
+            "a question's answer must never go through the ordinary chat channel"
+        );
+        assert_eq!(
+            handles.answered.lock().unwrap().as_slice(),
+            &[(
+                serde_json::json!("req_1"),
+                serde_json::json!([["rebase onto main"]])
+            )]
+        );
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            session_input::pending_count(&db, "chat").unwrap(),
+            0,
+            "the answer must not be queued behind the question it is answering"
+        );
+        let resolved: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='approval.resolved'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 1);
+        drop(db);
+        assert_eq!(session_status(&core), "working");
     }
 
     #[test]
@@ -10279,6 +11028,110 @@ mod permission_policy_tests {
             1,
             "the provider heard exactly one answer, not two contradictory ones"
         );
+    }
+
+    /// A question is answered with text over its own reply channel, never
+    /// with an accept/decline decision — a decision-only card has nothing to
+    /// answer a question with, and `respond` posts the wrong shape to the
+    /// wrong endpoint for one (#282). `accept` must be refused outright;
+    /// `decline` is the one decision this card can still mean (dismiss it),
+    /// and it must reach `reject_question`, not `respond`.
+    #[test]
+    fn resolve_approval_refuses_to_accept_a_question_and_declines_it_on_its_own_channel() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+        let question = agent::NormalizedEvent {
+            kind: "approval.requested".into(),
+            item_id: Some("call_1".into()),
+            role: None,
+            status: Some("pending".into()),
+            title: Some("Stale workspace".into()),
+            text: Some("How do you want to proceed?".into()),
+            data: serde_json::json!({
+                "requestId": "req_1",
+                "requestMethod": agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                "questions": [{"question": "How do you want to proceed?"}],
+            }),
+        };
+        let event_id = {
+            let db = core.db.lock().unwrap();
+            store::session_event(
+                &db,
+                "chat",
+                &question,
+                &serde_json::json!({"adapter":"opencode"}),
+            )
+            .unwrap()
+            .sequence
+        };
+
+        let accepted = crate::api::resolve_approval(&core, "chat", event_id, "accept");
+        assert!(
+            accepted.is_err(),
+            "there is no text to answer a question with from a bare accept decision"
+        );
+        assert!(handles.responded.lock().unwrap().is_empty());
+        assert!(handles.rejected.lock().unwrap().is_empty());
+
+        crate::api::resolve_approval(&core, "chat", event_id, "decline").unwrap();
+        assert_eq!(
+            handles.rejected.lock().unwrap().as_slice(),
+            &[serde_json::json!("req_1")],
+            "decline must reach the question's own reject endpoint"
+        );
+        assert!(
+            handles.responded.lock().unwrap().is_empty(),
+            "a question must never be answered on the permission-reply channel"
+        );
+    }
+
+    /// #282 review: a typed answer through `submit_input` and a card's
+    /// Decline through this function both resolve a question, and both used
+    /// to read "still unresolved" before either had written a resolution — a
+    /// race that could send OpenCode two contradictory replies. The claim
+    /// they share is `BridgeCore::claim_session_lifecycle`, keyed by session,
+    /// so whichever path gets there first blocks the other outright rather
+    /// than letting both proceed.
+    #[test]
+    fn resolve_approval_refuses_a_question_another_path_is_already_resolving() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let handles = attach(&core, "chat");
+        let question = agent::NormalizedEvent {
+            kind: "approval.requested".into(),
+            item_id: Some("call_1".into()),
+            role: None,
+            status: Some("pending".into()),
+            title: Some("Stale workspace".into()),
+            text: Some("How do you want to proceed?".into()),
+            data: serde_json::json!({
+                "requestId": "req_1",
+                "requestMethod": agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                "questions": [{"question": "How do you want to proceed?"}],
+            }),
+        };
+        let event_id = {
+            let db = core.db.lock().unwrap();
+            store::session_event(
+                &db,
+                "chat",
+                &question,
+                &serde_json::json!({"adapter":"opencode"}),
+            )
+            .unwrap()
+            .sequence
+        };
+
+        // Simulates `answer_pending_question` mid-flight on the same session.
+        let _held = core
+            .claim_session_lifecycle("chat", "question resolution")
+            .unwrap();
+        let declined = crate::api::resolve_approval(&core, "chat", event_id, "decline");
+
+        assert!(
+            declined.is_err(),
+            "a card decision must not race an answer already in flight"
+        );
+        assert!(handles.rejected.lock().unwrap().is_empty());
     }
 
     /// The browser gate is a different channel with a different state machine.

@@ -56,6 +56,26 @@ pub trait AdapterRuntime: Send {
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
+    /// Answer a pending question this provider raised on its own channel —
+    /// distinct from `respond`, which grants or denies a permission decision.
+    /// `answers` is provider-shaped (OpenCode expects one array of chosen
+    /// values per question asked); callers that build it own that shape.
+    ///
+    /// The default errs: only a provider that actually raises question-shaped
+    /// requests overrides this, so routing a typed reply here for any other
+    /// provider fails loudly instead of silently doing nothing.
+    fn answer_question(&self, _request_id: Value, _answers: Value) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider does not raise question-shaped requests".into(),
+        ))
+    }
+    /// Reject a pending question this provider raised, as a dedicated channel
+    /// from `respond`'s permission decline. See `answer_question`.
+    fn reject_question(&self, _request_id: Value) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider does not raise question-shaped requests".into(),
+        ))
+    }
     /// Ask the provider to report current subscription rate-limit usage.
     /// The response arrives asynchronously on the session's event stream.
     /// Providers without an on-demand usage query keep the default no-op.

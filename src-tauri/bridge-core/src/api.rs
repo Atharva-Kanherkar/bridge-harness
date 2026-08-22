@@ -764,6 +764,34 @@ pub fn resolve_approval(
     }
     let request_id = detail("requestId")
         .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
+    // A question is answered with text/options over its own reply channel,
+    // never with an accept/decline decision — `respond` posts the wrong
+    // shape to the wrong endpoint for one (#282). The decision-only card
+    // this method serves has nothing to answer a question with, so only a
+    // decline (dismissing it) is meaningful here; an accept from this path
+    // would otherwise silently discard whatever the user actually typed.
+    let is_question = detail("requestMethod").as_ref().and_then(Value::as_str)
+        == Some(agent::OPENCODE_QUESTION_REQUEST_METHOD);
+    if is_question && !matches!(decision, "decline" | "cancel") {
+        return Err(BridgeError::Invalid(
+            "This is a question, not an approval — type an answer in the composer instead of accepting or declining".into(),
+        ));
+    }
+    // Shared with `live_turn::answer_pending_question` under the same
+    // session-scoped label: a typed answer racing this card's Decline (or two
+    // decliners racing each other) must not both find the request unresolved
+    // and both call the adapter with contradictory replies. Held until this
+    // function returns; released on every path, including an early `?`.
+    let _claim = if is_question {
+        Some(
+            core.claim_session_lifecycle(session_id, "question resolution")
+                .map_err(|_| {
+                    BridgeError::Invalid("This question is already being answered".into())
+                })?,
+        )
+    } else {
+        None
+    };
     let is_worker = store::worker_runtime(&db, session_id)?.is_some();
     if is_worker {
         session_supervisor::SessionSupervisor::transition(
@@ -778,7 +806,12 @@ pub fn resolve_approval(
     let runtime = adapters
         .get(session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    if let Err(error) = runtime.respond(request_id, decision) {
+    let response = if is_question {
+        runtime.reject_question(request_id)
+    } else {
+        runtime.respond(request_id, decision)
+    };
+    if let Err(error) = response {
         drop(adapters);
         if is_worker {
             let _ = session_supervisor::SessionSupervisor::transition(
