@@ -81,6 +81,8 @@ export type {
   ListMemoryRecordsResult,
   MemoryCapabilities,
   ProviderMemoryCommand,
+  MemoryExtractionSettings,
+  MemoryExtractionRun,
   UsageLedgerRow,
   VerifierCandidate,
   VerifierManifest,

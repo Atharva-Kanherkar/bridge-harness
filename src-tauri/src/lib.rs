@@ -945,11 +945,12 @@ async fn save_memory_record(
 #[tauri::command]
 async fn list_memory_records(
     scope_key: String,
+    status: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("List memory records", move || {
-        api::list_memory_records(&core, &scope_key)
+        api::list_memory_records(&core, &scope_key, status.as_deref())
     })
     .await
 }
@@ -973,6 +974,55 @@ async fn get_memory_capabilities(
     let core = state.inner().clone();
     blocking("Get memory capabilities", move || {
         api::get_memory_capabilities(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn approve_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Approve memory record", move || {
+        api::approve_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reject_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reject memory record", move || {
+        api::reject_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_extraction_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get extraction settings", move || {
+        api::get_extraction_settings(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_extraction_settings(
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Update extraction settings", move || {
+        api::update_extraction_settings(&core, &mode, harness.as_deref(), model.as_deref())
     })
     .await
 }
@@ -1268,6 +1318,7 @@ fn setup_embedded(
     work_observation::start_work_fact_maintenance(core.clone());
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
+    bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
@@ -1378,6 +1429,10 @@ pub fn run() {
             list_memory_records,
             delete_memory_record,
             get_memory_capabilities,
+            approve_memory_record,
+            reject_memory_record,
+            get_extraction_settings,
+            update_extraction_settings,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

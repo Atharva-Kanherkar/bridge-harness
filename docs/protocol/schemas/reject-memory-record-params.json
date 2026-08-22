@@ -3,20 +3,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
-    "scopeKey": {
+    "recordId": {
       "type": "string"
-    },
-    "status": {
-      "description": "`active` (default) or `proposed`. Nothing else lists.",
-      "type": [
-        "string",
-        "null"
-      ]
     }
   },
   "required": [
-    "scopeKey"
+    "recordId"
   ],
-  "title": "ListMemoryRecordsParams",
+  "title": "RejectMemoryRecordParams",
   "type": "object"
 }

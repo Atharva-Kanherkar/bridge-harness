@@ -175,6 +175,10 @@ typed_methods![
     (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),
     (DeleteMemoryRecord, DeleteMemoryRecordParams, MemoryRecord),
     (GetMemoryCapabilities, _, MemoryCapabilities),
+    (ApproveMemoryRecord, ApproveMemoryRecordParams, MemoryRecord),
+    (RejectMemoryRecord, RejectMemoryRecordParams, MemoryRecord),
+    (GetExtractionSettings, _, MemoryExtractionSettings),
+    (UpdateExtractionSettings, UpdateExtractionSettingsParams, MemoryExtractionSettings),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // terminal
@@ -425,6 +429,7 @@ mod tests {
             MethodName::RefreshAccountUsage,
             MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
+            MethodName::GetExtractionSettings,
             MethodName::GetConfigState,
             MethodName::MarketplaceCatalog,
             MethodName::TakeoverBrowser,

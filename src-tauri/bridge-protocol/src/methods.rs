@@ -76,6 +76,10 @@ methods![
     (ListMemoryRecords, "memory", "list_memory_records"),
     (DeleteMemoryRecord, "memory", "delete_memory_record"),
     (GetMemoryCapabilities, "memory", "get_memory_capabilities"),
+    (ApproveMemoryRecord, "memory", "approve_memory_record"),
+    (RejectMemoryRecord, "memory", "reject_memory_record"),
+    (GetExtractionSettings, "memory", "get_extraction_settings"),
+    (UpdateExtractionSettings, "memory", "update_extraction_settings"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
     // terminal
