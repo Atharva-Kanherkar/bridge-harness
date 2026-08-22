@@ -21,7 +21,7 @@ The server always writes `account:local`. The client cannot pass a scope on save
 
 ## What was dropped
 
-`task_knowledge` never had a production reader (only a round-trip unit test). Schema 29 drops that table **without copying rows**. A versioned data migration would have invented a contract for zero dependents.
+`task_knowledge` never had a production reader (only a round-trip unit test). Schema 31 drops that table **without copying rows**. A versioned data migration would have invented a contract for zero dependents.
 
 ## Not in this slice
 
