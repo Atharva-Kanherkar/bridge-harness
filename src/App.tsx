@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, PanelLeft, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
+import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
@@ -578,21 +579,14 @@ export function App() {
   }, [readWorkBoard]);
 
   const openWorkTaskEvidence = useCallback(async (task: WorkTask): Promise<void> => {
-    const reserved = task.evidenceTarget?.kind === "externalLink"
-      ? window.open("about:blank", "_blank")
-      : null;
-    if (reserved) reserved.opener = null;
     try {
       const target = await bridgeApi.workTaskOpenEvidence(task.id);
       if (target.kind === "session") {
-        reserved?.close();
         openSession(target.sessionId);
         return;
       }
-      if (reserved) reserved.location.replace(target.url);
-      else window.open(target.url, "_blank", "noopener,noreferrer");
+      await openExternalUrl(target.url);
     } catch (error) {
-      reserved?.close();
       setError(errorMessage(error));
     }
   }, []);
