@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { MemoryChangedPayload, MemoryRecord } from "../types";
-import { MemoryDialog, rememberAction } from "./MemoryDialog";
+import { bodyLength, MemoryDialog, rememberAction } from "./MemoryDialog";
 
 const record = (id: string, body: string, kind = "preference"): MemoryRecord => ({
   id,
@@ -127,6 +127,14 @@ describe("MemoryDialog", () => {
     expect(textarea().value).toBe("");
   });
 
+  it("accepts a body the ledger would accept, whatever JS length says", async () => {
+    mount();
+    await flush();
+    setBody("😀".repeat(2001));
+    expect(container.textContent).toContain("2001 / 4000");
+    expect(buttonByText("Save pin").disabled).toBe(false);
+  });
+
   it("refuses over the cap with a visible count instead of clipping", async () => {
     mount();
     await flush();
@@ -167,6 +175,24 @@ describe("MemoryDialog", () => {
     expect(container.textContent).not.toContain("Stale view");
   });
 
+  it("a slow failing read cannot toast over a newer one", async () => {
+    let failSlow!: (error: Error) => void;
+    const slow = new Promise<never>((_, reject) => { failSlow = reject; });
+    vi.spyOn(bridgeApi, "listMemoryRecords")
+      .mockImplementationOnce(() => slow)
+      .mockImplementation(async () => ({ scopeKey: "account:local", records: [record("r-fresh", "Fresh view")] }));
+    const onError = vi.fn();
+    mount({ onError });
+    await flush();
+    act(() => { memoryHandler?.({ scopeKey: "account:local" }); });
+    await flush();
+    expect(container.textContent).toContain("Fresh view");
+    failSlow(new Error("the stale read failed"));
+    await flush();
+    expect(onError).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Fresh view");
+  });
+
   it("opens pre-filled from an oversize remember and issues no save", async () => {
     mount({ initialBody: "y".repeat(4001) });
     await flush();
@@ -185,6 +211,17 @@ describe("MemoryDialog", () => {
     mount();
     await flush();
     expect(textarea().value).toBe("");
+  });
+});
+
+describe("bodyLength", () => {
+  it("measures what the ledger measures: trimmed, in code points", () => {
+    // The ledger trims and counts chars; JS .length counts UTF-16 units, so
+    // an emoji scored two and trailing whitespace scored at all.
+    expect(bodyLength("😀".repeat(2001))).toBe(2001);
+    expect(bodyLength(`${"x".repeat(4000)}   \n`)).toBe(4000);
+    expect(rememberAction("😀".repeat(2001))).toBe("save");
+    expect(rememberAction(`${"x".repeat(4000)}\n\n`)).toBe("save");
   });
 });
 
