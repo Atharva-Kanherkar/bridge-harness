@@ -49,6 +49,7 @@ pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
 pub mod process_ledger;
+pub mod prompt_authority;
 pub mod prompt_compiler;
 pub mod prompt_sections;
 pub mod prompts;
