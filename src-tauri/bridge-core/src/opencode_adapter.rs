@@ -1,6 +1,10 @@
 use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
     binary,
+    context_inventory::{
+        AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
+        ContextSegmentObservation,
+    },
     delegation::WriteMode,
     model::{CapabilityTier, ModelOption},
     BridgeError,
@@ -90,6 +94,7 @@ pub struct OpenCodeRuntime {
     model: Option<ModelRef>,
     variant: Option<String>,
     instructions: Option<String>,
+    context_inventory: Mutex<Vec<AdapterContextInventory>>,
     current_turn: Arc<Mutex<Option<String>>>,
     shutting_down: Arc<AtomicBool>,
     stopped: bool,
@@ -272,6 +277,13 @@ fn launch(
             model,
             variant,
             instructions: request.instructions.map(str::to_owned),
+            context_inventory: Mutex::new(opencode_context_inventory(
+                if resume_session_id.is_some() {
+                    ContextLifecyclePhase::Resume
+                } else {
+                    ContextLifecyclePhase::Start
+                },
+            )?),
             current_turn: Arc::new(Mutex::new(None)),
             shutting_down,
             stopped: false,
@@ -637,6 +649,9 @@ impl AdapterRuntime for OpenCodeRuntime {
     fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
         self.current_turn.clone()
     }
+    fn context_inventory(&self) -> Vec<AdapterContextInventory> {
+        self.context_inventory.lock().unwrap().clone()
+    }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.send_turn_with_context(text, "")
     }
@@ -645,33 +660,24 @@ impl AdapterRuntime for OpenCodeRuntime {
         text: &str,
         application_context: &str,
     ) -> Result<(), BridgeError> {
-        let mut body = json!({
-            "parts": [{"type":"text", "text": text}],
-        });
-        if let Some(model) = &self.model {
-            body["model"] = json!({"providerID": model.provider_id, "modelID": model.model_id});
-        }
-        if let Some(variant) = &self.variant {
-            body["variant"] = json!(variant);
-        }
-        let system = [
-            self.instructions.as_deref().unwrap_or_default(),
+        let body = prompt_body(
+            self.model.as_ref(),
+            self.variant.as_deref(),
+            self.instructions.as_deref(),
+            text,
             application_context,
-        ]
-        .into_iter()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-        if !system.is_empty() {
-            body["system"] = json!(system);
-        }
+        );
         self.request(
             reqwest::Method::POST,
             &format!("/session/{}/prompt_async", self.session_id),
             Some(body),
             "send OpenCode turn",
-        )
+        )?;
+        crate::context_inventory::record_runtime_inventory(
+            &self.context_inventory,
+            opencode_context_inventory(ContextLifecyclePhase::PerTurn)?,
+        );
+        Ok(())
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
         self.request(
@@ -733,6 +739,83 @@ impl AdapterRuntime for OpenCodeRuntime {
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
     }
+}
+
+fn prompt_body(
+    model: Option<&ModelRef>,
+    variant: Option<&str>,
+    instructions: Option<&str>,
+    text: &str,
+    application_context: &str,
+) -> Value {
+    let mut body = json!({
+        "parts": [{"type":"text", "text": text}],
+    });
+    if let Some(model) = model {
+        body["model"] = json!({"providerID": model.provider_id, "modelID": model.model_id});
+    }
+    if let Some(variant) = variant {
+        body["variant"] = json!(variant);
+    }
+    let system = [instructions.unwrap_or_default(), application_context]
+        .into_iter()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !system.is_empty() {
+        body["system"] = json!(system);
+    }
+    body
+}
+
+pub(crate) fn opencode_context_inventory(
+    lifecycle_phase: ContextLifecyclePhase,
+) -> Result<Vec<AdapterContextInventory>, BridgeError> {
+    let observations = || {
+        vec![
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::ProviderBaseInstructions,
+                match lifecycle_phase {
+                    ContextLifecyclePhase::Start => "OpenCode does not report provider base instructions when Bridge creates the session",
+                    ContextLifecyclePhase::Resume => "OpenCode does not report provider base instructions retained or recomputed for an adopted session",
+                    ContextLifecyclePhase::PerTurn => "The per-turn system value is Bridge-authored; OpenCode does not report additional provider base instructions presented to the turn",
+                },
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::ToolSchemas,
+                "OpenCode does not report provider-owned tool schemas presented to the selected model",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::McpDynamicTools,
+                "OpenCode does not report which MCP or dynamic tools are presented to this turn",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::SkillsPlugins,
+                "OpenCode does not report which skills or plugins contribute model context",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::AgentDefinitions,
+                "OpenCode does not report provider-owned agent definitions presented to the model",
+            ),
+        ]
+    };
+    let mut inventories = Vec::new();
+    if lifecycle_phase != ContextLifecyclePhase::PerTurn {
+        inventories.push(AdapterContextInventory::new(
+            "opencode",
+            ContextInventoryScope::Catalog,
+            lifecycle_phase,
+            observations(),
+        )?);
+    }
+    inventories.push(AdapterContextInventory::new(
+        "opencode",
+        ContextInventoryScope::TurnPresented,
+        lifecycle_phase,
+        observations(),
+    )?);
+    Ok(inventories)
 }
 
 impl Drop for OpenCodeRuntime {
@@ -1288,6 +1371,36 @@ impl BufRead for ChannelReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_inventory::ContextObservationProvenance;
+
+    #[test]
+    fn opencode_context_inventory_covers_start_resume_and_per_turn() {
+        let body = prompt_body(
+            None,
+            None,
+            Some("bridge instructions"),
+            "hello",
+            "application context",
+        );
+        assert_eq!(body["system"], "bridge instructions\n\napplication context");
+        for phase in [
+            ContextLifecyclePhase::Start,
+            ContextLifecyclePhase::Resume,
+            ContextLifecyclePhase::PerTurn,
+        ] {
+            let inventories = opencode_context_inventory(phase).unwrap();
+            assert!(inventories
+                .iter()
+                .any(|item| item.scope == ContextInventoryScope::TurnPresented));
+            assert!(inventories.iter().flat_map(|item| &item.observations).all(
+                |observation| matches!(
+                    observation.provenance,
+                    ContextObservationProvenance::Unavailable { ref reason }
+                        if !reason.is_empty()
+                )
+            ));
+        }
+    }
 
     fn catalog_fixture() -> OpenCodeCatalog {
         let providers = json!({

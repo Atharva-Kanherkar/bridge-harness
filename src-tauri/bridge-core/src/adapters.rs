@@ -28,6 +28,11 @@ pub trait AdapterRuntime: Send {
         None
     }
     fn current_turn(&self) -> Arc<Mutex<Option<String>>>;
+    /// Adapter-owned observations recorded at the provider injection points.
+    /// The inventory is deliberately separate from Bridge prompt accounting.
+    fn context_inventory(&self) -> Vec<crate::context_inventory::AdapterContextInventory> {
+        Vec::new()
+    }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
     /// Send a user turn with trusted, application-owned context that must not
     /// be folded into the visible user message. Providers that cannot attach

@@ -7,11 +7,12 @@
 
 use crate::{secret_interception, BridgeError};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Mutex};
 
 pub const MAX_CONTEXT_ITEMS: usize = 128;
 pub const MAX_CONTEXT_NAME_BYTES: usize = 160;
 pub const MAX_CONTEXT_SIZE_VALUE: u64 = 1_000_000_000;
+pub const MAX_RUNTIME_CONTEXT_INVENTORIES: usize = 130;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +72,14 @@ impl ContextObservedSize {
             tokens: tokens.map(|value| value.min(MAX_CONTEXT_SIZE_VALUE)),
             capped,
         }
+    }
+
+    fn rebound(&mut self) {
+        let bounded = Self::bounded(self.item_count, self.bytes, self.tokens);
+        self.item_count = bounded.item_count;
+        self.bytes = bounded.bytes;
+        self.tokens = bounded.tokens;
+        self.capped |= bounded.capped;
     }
 }
 
@@ -143,13 +152,20 @@ impl ContextSegmentObservation {
     }
 
     pub fn unavailable(segment_class: ContextSegmentClass, reason: impl Into<String>) -> Self {
+        Self::unavailable_with_names(segment_class, std::iter::empty::<&str>(), reason)
+    }
+
+    pub fn unavailable_with_names(
+        segment_class: ContextSegmentClass,
+        names: impl IntoIterator<Item = impl AsRef<str>>,
+        reason: impl Into<String>,
+    ) -> Self {
         let (reason, _) = bounded_text(&reason.into());
-        Self {
+        Self::observed(
             segment_class,
-            names: Vec::new(),
-            names_truncated: false,
-            provenance: ContextObservationProvenance::Unavailable { reason },
-        }
+            names,
+            ContextObservationProvenance::Unavailable { reason },
+        )
     }
 
     fn observed(
@@ -157,6 +173,36 @@ impl ContextSegmentObservation {
         names: impl IntoIterator<Item = impl AsRef<str>>,
         provenance: ContextObservationProvenance,
     ) -> Self {
+        let (bounded, names_truncated) = Self::observed_names(names);
+        let mut observation = Self {
+            segment_class,
+            names: bounded,
+            names_truncated,
+            provenance,
+        };
+        observation.normalize_for_storage();
+        observation
+    }
+
+    fn normalize_for_storage(&mut self) {
+        let original_names = std::mem::take(&mut self.names);
+        let rebuilt = Self::observed_names(original_names);
+        self.names = rebuilt.0;
+        self.names_truncated |= rebuilt.1;
+        match &mut self.provenance {
+            ContextObservationProvenance::Reported { size }
+            | ContextObservationProvenance::Measured { size } => size.rebound(),
+            ContextObservationProvenance::Estimated { size, method } => {
+                size.rebound();
+                *method = bounded_text(method).0;
+            }
+            ContextObservationProvenance::Unavailable { reason } => {
+                *reason = bounded_text(reason).0;
+            }
+        }
+    }
+
+    fn observed_names(names: impl IntoIterator<Item = impl AsRef<str>>) -> (Vec<String>, bool) {
         let mut names_truncated = false;
         let mut bounded = Vec::new();
         for name in names.into_iter().take(MAX_CONTEXT_ITEMS + 1) {
@@ -168,12 +214,7 @@ impl ContextSegmentObservation {
             names_truncated |= truncated;
             bounded.push(name);
         }
-        Self {
-            segment_class,
-            names: bounded,
-            names_truncated,
-            provenance,
-        }
+        (bounded, names_truncated)
     }
 
     fn validate(&self) -> Result<(), BridgeError> {
@@ -209,7 +250,7 @@ impl AdapterContextInventory {
         adapter_id: impl Into<String>,
         scope: ContextInventoryScope,
         lifecycle_phase: ContextLifecyclePhase,
-        observations: Vec<ContextSegmentObservation>,
+        mut observations: Vec<ContextSegmentObservation>,
     ) -> Result<Self, BridgeError> {
         let (adapter_id, _) = bounded_text(&adapter_id.into());
         if adapter_id.trim().is_empty() {
@@ -218,7 +259,8 @@ impl AdapterContextInventory {
             ));
         }
         let mut classes = HashSet::new();
-        for observation in &observations {
+        for observation in &mut observations {
+            observation.normalize_for_storage();
             observation.validate()?;
             if !classes.insert(observation.segment_class) {
                 return Err(BridgeError::Invalid(format!(
@@ -242,6 +284,44 @@ impl AdapterContextInventory {
             lifecycle_phase,
             observations,
         })
+    }
+}
+
+pub const CONTEXT_INVENTORY_ADAPTERS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// Static fail-closed contract used by registry conformance and by callers that
+/// need the lifecycle shape before a provider process exists.
+pub fn adapter_context_inventory_contract(
+    adapter_id: &str,
+    lifecycle_phase: ContextLifecyclePhase,
+) -> Result<Vec<AdapterContextInventory>, BridgeError> {
+    match adapter_id {
+        "claude" => crate::claude_adapter::claude_context_inventory(
+            lifecycle_phase,
+            &crate::marketplace::ClaudeSdkConfiguration::default(),
+        ),
+        "codex" => crate::codex_adapter::codex_context_inventory(lifecycle_phase),
+        "opencode" => crate::opencode_adapter::opencode_context_inventory(lifecycle_phase),
+        unknown => Err(BridgeError::Invalid(format!(
+            "Adapter {unknown} has no provider context inventory contract"
+        ))),
+    }
+}
+
+pub fn record_runtime_inventory(
+    target: &Mutex<Vec<AdapterContextInventory>>,
+    inventories: impl IntoIterator<Item = AdapterContextInventory>,
+) {
+    let mut target = target.lock().unwrap();
+    for inventory in inventories {
+        if target.len() >= MAX_RUNTIME_CONTEXT_INVENTORIES {
+            let removable = target
+                .iter()
+                .position(|existing| existing.lifecycle_phase == ContextLifecyclePhase::PerTurn)
+                .unwrap_or(0);
+            target.remove(removable);
+        }
+        target.push(inventory);
     }
 }
 
@@ -361,6 +441,39 @@ mod tests {
         assert_eq!(size.item_count, Some(MAX_CONTEXT_ITEMS as u64));
         assert_eq!(size.bytes, Some(MAX_CONTEXT_SIZE_VALUE));
         assert!(size.capped);
+
+        let direct = ContextSegmentObservation {
+            segment_class: ContextSegmentClass::SkillsPlugins,
+            names,
+            names_truncated: false,
+            provenance: ContextObservationProvenance::Reported {
+                size: ContextObservedSize {
+                    item_count: Some(u64::MAX),
+                    bytes: Some(u64::MAX),
+                    tokens: Some(u64::MAX),
+                    capped: false,
+                },
+            },
+        };
+        let inventory = AdapterContextInventory::new(
+            "claude",
+            ContextInventoryScope::Catalog,
+            ContextLifecyclePhase::Start,
+            complete(direct),
+        )
+        .unwrap();
+        let stored = inventory
+            .observations
+            .iter()
+            .find(|observation| observation.segment_class == ContextSegmentClass::SkillsPlugins)
+            .unwrap();
+        assert_eq!(stored.names.len(), MAX_CONTEXT_ITEMS);
+        assert!(stored.names.iter().all(|name| !name.contains(secret)));
+        let ContextObservationProvenance::Reported { size } = &stored.provenance else {
+            panic!("expected reported provenance")
+        };
+        assert_eq!(size.bytes, Some(MAX_CONTEXT_SIZE_VALUE));
+        assert!(size.capped);
     }
 
     #[test]
@@ -422,5 +535,90 @@ mod tests {
             ContextObservationProvenance::Unavailable { .. }
         )));
         assert_eq!(provider_total_tokens, 10_000);
+    }
+
+    #[test]
+    fn provider_tool_inventory_does_not_read_prompt_compiler_tool_schemas() {
+        let compiled = crate::prompt_compiler::PromptCompiler::new("direct")
+            .compile()
+            .unwrap();
+        assert!(compiled.stable_prefix.contains("\"toolSchemas\":{}"));
+        for adapter_id in CONTEXT_INVENTORY_ADAPTERS {
+            let inventories =
+                adapter_context_inventory_contract(adapter_id, ContextLifecyclePhase::PerTurn)
+                    .unwrap();
+            let tool_observation = inventories[0]
+                .observations
+                .iter()
+                .find(|observation| observation.segment_class == ContextSegmentClass::ToolSchemas)
+                .unwrap();
+            assert!(matches!(
+                tool_observation.provenance,
+                ContextObservationProvenance::Unavailable { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn every_registered_adapter_has_a_fail_closed_context_inventory_contract() {
+        let registry = crate::adapters::AdapterRegistry::built_in().unwrap();
+        let mut registered = registry
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+        registered.sort();
+        let mut contracted = CONTEXT_INVENTORY_ADAPTERS.map(str::to_owned).to_vec();
+        contracted.sort();
+        assert_eq!(registered, contracted);
+
+        for adapter_id in registered {
+            for phase in [
+                ContextLifecyclePhase::Start,
+                ContextLifecyclePhase::Resume,
+                ContextLifecyclePhase::PerTurn,
+            ] {
+                let inventories = adapter_context_inventory_contract(&adapter_id, phase).unwrap();
+                assert!(!inventories.is_empty(), "{adapter_id} {phase:?}");
+                assert!(inventories.iter().all(|inventory| {
+                    inventory.adapter_id == adapter_id
+                        && inventory.lifecycle_phase == phase
+                        && inventory.observations.len() == ContextSegmentClass::ALL.len()
+                }));
+                assert!(inventories
+                    .iter()
+                    .any(|inventory| inventory.scope == ContextInventoryScope::TurnPresented));
+                if phase != ContextLifecyclePhase::PerTurn {
+                    assert!(inventories
+                        .iter()
+                        .any(|inventory| inventory.scope == ContextInventoryScope::Catalog));
+                }
+            }
+        }
+        assert!(adapter_context_inventory_contract(
+            "new-adapter-without-contract",
+            ContextLifecyclePhase::Start,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn per_turn_runtime_inventory_is_bounded_without_dropping_startup_catalog() {
+        let startup =
+            adapter_context_inventory_contract("codex", ContextLifecyclePhase::Start).unwrap();
+        let target = Mutex::new(startup);
+        for _ in 0..MAX_RUNTIME_CONTEXT_INVENTORIES + 10 {
+            record_runtime_inventory(
+                &target,
+                adapter_context_inventory_contract("codex", ContextLifecyclePhase::PerTurn)
+                    .unwrap(),
+            );
+        }
+        let inventories = target.lock().unwrap();
+        assert_eq!(inventories.len(), MAX_RUNTIME_CONTEXT_INVENTORIES);
+        assert!(inventories.iter().any(|inventory| {
+            inventory.scope == ContextInventoryScope::Catalog
+                && inventory.lifecycle_phase == ContextLifecyclePhase::Start
+        }));
     }
 }
