@@ -96,6 +96,9 @@ type MockPromptRevision = PromptRevisionView;
 const mockPromptSections = new Map<string, { state: PromptSectionStatePayload; revisions: MockPromptRevision[] }>();
 let nextMockPromptRevisionId = 1;
 const MOCK_PROMPT_MAX_DEPTH = 1; // delegation::DEFAULT_MAX_DEPTH
+// prompt_studio::MAX_REVISIONS_IN_VIEW — the mock mirrors the native
+// bounded history window so views cannot grow without limit.
+const MOCK_PROMPT_MAX_REVISIONS_IN_VIEW = 50;
 const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
 
 const MOCK_PROMPT_DEFAULTS: Record<PromptTargetChoice, { id: string; text: string }[]> = {
@@ -148,7 +151,7 @@ function mockPromptStack(target: PromptTargetChoice, depth?: number): PromptStac
         bytes,
         tokenEstimate: Math.ceil(bytes / 4),
         lintWarnings: mockPromptLint(id, effectiveText),
-        revisions: structuredClone(record?.revisions ?? []),
+        revisions: (record?.revisions ?? []).slice(-MOCK_PROMPT_MAX_REVISIONS_IN_VIEW).map(revision => structuredClone(revision)),
       };
     }),
   };
