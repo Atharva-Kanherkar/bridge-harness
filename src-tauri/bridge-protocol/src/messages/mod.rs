@@ -233,7 +233,7 @@ typed_methods![
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
     (SavePermissionPolicy, SavePermissionPolicyParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
-    (GetPromptStack, GetPromptStackParams, GetPromptStackResult),
+    (GetPromptStack, GetPromptStackParams, PromptStackView),
     (SavePromptSection, SavePromptSectionParams, PromptSectionMutationResult),
     (ResetPromptSection, ResetPromptSectionParams, PromptSectionMutationResult),
     (RestorePromptRevision, RestorePromptRevisionParams, PromptSectionMutationResult),

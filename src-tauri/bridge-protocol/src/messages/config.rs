@@ -288,12 +288,6 @@ pub struct PromptStackView {
     pub sections: Vec<PromptSectionView>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GetPromptStackResult {
-    pub stack: PromptStackView,
-}
-
 /// What a mutation changed: the revision it appended plus the fresh stack for
 /// the target, so a client never mutates against a stale view. Mirrors
 /// `bridge_core::prompt_studio::PromptSectionMutation`.
@@ -627,13 +621,13 @@ mod tests {
                 }],
             }],
         };
-        let result = GetPromptStackResult { stack };
+        let result = stack;
         let wire = serde_json::to_value(&result).unwrap();
-        assert_eq!(wire["stack"]["target"], json!("orchestrator"));
-        assert_eq!(wire["stack"]["sections"][0]["state"]["state"], json!("overridden"));
-        assert_eq!(wire["stack"]["sections"][0]["tokenEstimate"], json!(2));
+        assert_eq!(wire["target"], json!("orchestrator"));
+        assert_eq!(wire["sections"][0]["state"]["state"], json!("overridden"));
+        assert_eq!(wire["sections"][0]["tokenEstimate"], json!(2));
         assert_eq!(
-            wire["stack"]["sections"][0]["revisions"][0]["restoredFromRevisionId"],
+            wire["sections"][0]["revisions"][0]["restoredFromRevisionId"],
             json!(null)
         );
         assert_eq!(round_trip(&result), result);
@@ -646,7 +640,7 @@ mod tests {
                 restored_from_revision_id: Some(2),
                 created_at: "2026-08-23T00:00:00Z".into(),
             },
-            stack: result.stack.clone(),
+            stack: result.clone(),
         };
         let wire = serde_json::to_value(&mutation).unwrap();
         assert_eq!(wire["revision"]["restoredFromRevisionId"], json!(2));

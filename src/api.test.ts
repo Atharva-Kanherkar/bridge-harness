@@ -88,6 +88,55 @@ describe("SQLite-shaped mock observability", () => {
     expect(compacted.entries.filter(entry => entry.kind === "compaction")).toHaveLength(2);
     expect(compacted.head?.latestCheckpointEntryId).toMatch(/^checkpoint-/);
   });
+
+  it("keeps prompt-studio mutations deterministic and previews honest in browser mode", async () => {
+    const target = "worker:research" as const;
+    const stack = await bridgeApi.promptStack(target);
+    expect(stack).toMatchObject({ target, depth: 0 });
+    expect(stack.sections.map(section => section.id)).toEqual(["worker_contract"]);
+    expect(stack.sections[0]).toMatchObject({ state: { state: "default" }, effectiveText: stack.sections[0].defaultText });
+
+    const saved = await bridgeApi.savePromptSection(target, "worker_contract", "Research only, no edits.");
+    expect(saved.revision.operation).toBe("override");
+    expect(saved.revision.state).toEqual({ state: "overridden", text: "Research only, no edits." });
+    expect(saved.stack.sections[0].effectiveText).toBe("Research only, no edits.");
+
+    // Re-saving appends; history is never rewritten.
+    const again = await bridgeApi.savePromptSection(target, "worker_contract", "Research only, no edits.");
+    expect(again.revision.id).toBeGreaterThan(saved.revision.id);
+
+    // Restoring a foreign revision is refused without side effects.
+    const before = (await bridgeApi.promptStack(target)).sections[0].revisions.length;
+    await expect(bridgeApi.restorePromptRevision(target, "bridge_role", saved.revision.id)).rejects.toThrow("does not belong");
+    expect((await bridgeApi.promptStack(target)).sections[0].revisions).toHaveLength(before);
+
+    const restored = await bridgeApi.restorePromptRevision(target, "worker_contract", saved.revision.id);
+    expect(restored.revision.operation).toBe("restore");
+    expect(restored.revision.restoredFromRevisionId).toBe(saved.revision.id);
+
+    const reset = await bridgeApi.resetPromptSection(target, "worker_contract");
+    expect(reset.revision.operation).toBe("reset");
+    expect(reset.stack.sections[0]).toMatchObject({ state: { state: "default" } });
+    expect(reset.stack.sections[0].revisions).toHaveLength(4);
+
+    const preview = await bridgeApi.previewCompiledPrompt(target);
+    expect(preview.stablePrefix).not.toContain("Research only");
+    expect(preview.stablePrefix.startsWith("<bridge-stable-prompt")).toBe(true);
+    expect(preview.variableSuffix).toBe('<bridge-variable-context>\n{"sections":[]}\n</bridge-variable-context>');
+    expect(preview.prefixBytes).toBe(preview.stablePrefix.length);
+    expect(preview.prefixTokenEstimate).toBe(Math.ceil(preview.prefixBytes / 4));
+    for (const layer of preview.providerLayers) {
+      expect(layer.layer).toBe("provider_base");
+      expect(layer.source).toBe("unavailable");
+      expect(layer.bytes).toBeNull();
+      expect(layer.detail!.length).toBeGreaterThan(0);
+    }
+    // An edited section changes the exact envelope bytes.
+    await bridgeApi.savePromptSection(target, "worker_contract", "Rewritten contract.");
+    const edited = await bridgeApi.previewCompiledPrompt(target);
+    expect(edited.stablePrefix).not.toBe(preview.stablePrefix);
+    expect(edited.stablePrefix).toContain("Rewritten contract.");
+  });
 });
 
 describe("the Work board", () => {

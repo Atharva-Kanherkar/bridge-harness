@@ -527,7 +527,7 @@ export interface BridgeMethodResults {
   "config/set_default_agent": ConfigState;
   "config/reset_all_config": ConfigState;
   "config/save_permission_policy": ConfigState;
-  "config/get_prompt_stack": GetPromptStackResult;
+  "config/get_prompt_stack": PromptStackView;
   "config/save_prompt_section": PromptSectionMutationResult;
   "config/reset_prompt_section": PromptSectionMutationResult;
   "config/restore_prompt_revision": PromptSectionMutationResult;
@@ -1866,10 +1866,6 @@ export interface SavePermissionPolicyParams {
 export interface GetPromptStackParams {
   depth?: number | null;
   target: PromptTargetChoice;
-}
-
-export interface GetPromptStackResult {
-  stack: PromptStackView;
 }
 
 export interface SavePromptSectionParams {

@@ -559,7 +559,7 @@
       "domain": "config",
       "method": "config/get_prompt_stack",
       "paramsSchema": "get-prompt-stack-params.json",
-      "resultSchema": "get-prompt-stack-result.json"
+      "resultSchema": "prompt-stack-view.json"
     },
     {
       "command": "save_prompt_section",

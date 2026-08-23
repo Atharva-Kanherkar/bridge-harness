@@ -13,7 +13,7 @@ use bridge_core::work_observation;
 use bridge_core::model::*;
 use bridge_core::{
     agent_config, automations, browser_bridge, marketplace, opencode_adapter,
-    prompt_studio, prompts, secret_interception, skill_marketplace, slash,
+    prompt_studio, secret_interception, skill_marketplace, slash,
 };
 use bridge_protocol::messages::PromptTargetChoice;
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};

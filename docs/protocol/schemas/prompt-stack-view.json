@@ -159,42 +159,31 @@
         "tokenEstimate"
       ],
       "type": "object"
-    },
-    "PromptStackView": {
-      "description": "The full studio view of one target's stack. Mirrors `bridge_core::prompt_studio::PromptStackView`.",
-      "properties": {
-        "depth": {
-          "description": "Worker topology depth the stack was resolved at.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "sections": {
-          "items": {
-            "$ref": "#/definitions/PromptSectionView"
-          },
-          "type": "array"
-        },
-        "target": {
-          "description": "Storage key of the target (`orchestrator`, `worker:<role>`, `direct_session`) — same vocabulary the params enum accepts.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "depth",
-        "sections",
-        "target"
-      ],
-      "type": "object"
     }
   },
+  "description": "The full studio view of one target's stack. Mirrors `bridge_core::prompt_studio::PromptStackView`.",
   "properties": {
-    "stack": {
-      "$ref": "#/definitions/PromptStackView"
+    "depth": {
+      "description": "Worker topology depth the stack was resolved at.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "sections": {
+      "items": {
+        "$ref": "#/definitions/PromptSectionView"
+      },
+      "type": "array"
+    },
+    "target": {
+      "description": "Storage key of the target (`orchestrator`, `worker:<role>`, `direct_session`) — same vocabulary the params enum accepts.",
+      "type": "string"
     }
   },
   "required": [
-    "stack"
+    "depth",
+    "sections",
+    "target"
   ],
-  "title": "GetPromptStackResult",
+  "title": "PromptStackView",
   "type": "object"
 }
