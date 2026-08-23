@@ -16,8 +16,10 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
-    completion, git, learning_job, learning_router, live_turn, marketplace, memory_ledger,
-    model_profiles, opencode_adapter, secret_interception, session_recall, session_supervisor,
+    completion, delegation, git, learning_job, learning_router, live_turn, marketplace,
+    memory_ledger,
+    model_profiles, opencode_adapter, prompt_studio, prompts, secret_interception,
+    session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
     suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
@@ -2023,6 +2025,108 @@ pub fn reset_all_config(core: &Arc<BridgeCore>) -> Result<agent_config::ConfigSt
         .adapter_registry
         .refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory);
     Ok(next)
+}
+
+// --- prompt studio ------------------------------------------------------------------
+
+/// A studio target choice is the same fact as a core prompt target: the wire
+/// enum's renames are the core storage keys, so this conversion is total.
+pub fn prompt_target(choice: wire::PromptTargetChoice) -> prompts::PromptTarget {
+    match choice {
+        wire::PromptTargetChoice::Orchestrator => prompts::PromptTarget::Orchestrator,
+        wire::PromptTargetChoice::WorkerResearch => {
+            prompts::PromptTarget::Worker(delegation::WorkerRole::Research)
+        }
+        wire::PromptTargetChoice::WorkerImplementation => {
+            prompts::PromptTarget::Worker(delegation::WorkerRole::Implementation)
+        }
+        wire::PromptTargetChoice::WorkerVerification => {
+            prompts::PromptTarget::Worker(delegation::WorkerRole::Verification)
+        }
+        wire::PromptTargetChoice::WorkerPlanning => {
+            prompts::PromptTarget::Worker(delegation::WorkerRole::Planning)
+        }
+        wire::PromptTargetChoice::WorkerDocumentation => {
+            prompts::PromptTarget::Worker(delegation::WorkerRole::Documentation)
+        }
+        wire::PromptTargetChoice::DirectSession => prompts::PromptTarget::DirectSession,
+    }
+}
+
+fn resolved_depth(depth: Option<i64>) -> Result<i64, BridgeError> {
+    Ok(depth.unwrap_or(0))
+}
+
+/// The full studio view of one target's prompt stack: states, defaults,
+/// effective text and sizes per section, lint warnings, and revision history.
+pub fn get_prompt_stack(
+    core: &Arc<BridgeCore>,
+    target: prompts::PromptTarget,
+    depth: Option<i64>,
+) -> Result<prompt_studio::PromptStackView, BridgeError> {
+    prompt_studio::stack(&core.db.lock().unwrap(), target, resolved_depth(depth)?)
+}
+
+pub fn save_prompt_section(
+    core: &Arc<BridgeCore>,
+    target: prompts::PromptTarget,
+    section_id: &str,
+    text: &str,
+    depth: Option<i64>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let mutation = prompt_studio::save_section(
+        &core.db.lock().unwrap(),
+        target,
+        section_id,
+        resolved_depth(depth)?,
+        text,
+    )?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(mutation)
+}
+
+pub fn reset_prompt_section(
+    core: &Arc<BridgeCore>,
+    target: prompts::PromptTarget,
+    section_id: &str,
+    depth: Option<i64>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let mutation = prompt_studio::reset_section(
+        &core.db.lock().unwrap(),
+        target,
+        section_id,
+        resolved_depth(depth)?,
+    )?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(mutation)
+}
+
+pub fn restore_prompt_revision(
+    core: &Arc<BridgeCore>,
+    target: prompts::PromptTarget,
+    section_id: &str,
+    revision_id: i64,
+    depth: Option<i64>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let mutation = prompt_studio::restore_revision(
+        &core.db.lock().unwrap(),
+        target,
+        section_id,
+        revision_id,
+        resolved_depth(depth)?,
+    )?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(mutation)
+}
+
+/// The exact Bridge-authored envelopes for one target plus honest
+/// provider-layer statuses. A pure read: nothing here mutates.
+pub fn preview_compiled_prompt(
+    core: &Arc<BridgeCore>,
+    target: prompts::PromptTarget,
+    depth: Option<i64>,
+) -> Result<prompt_studio::CompiledPromptPreview, BridgeError> {
+    prompt_studio::preview(&core.db.lock().unwrap(), target, resolved_depth(depth)?)
 }
 
 // --- adaptive learning --------------------------------------------------------------

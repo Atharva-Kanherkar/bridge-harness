@@ -21,7 +21,8 @@ use bridge_protocol::messages as wire;
 
 use crate::{
     agent_config, automations, browser_bridge, completion, delegation, learning_job,
-    learning_router, marketplace, model, model_profiles, skill_marketplace, suggestion_engine,
+    learning_router, marketplace, model, model_profiles, prompt_sections, prompt_studio,
+    skill_marketplace, suggestion_engine,
 };
 
 /// Assert a core DTO and its protocol mirror describe the same document.
@@ -1119,4 +1120,75 @@ fn result_payloads_mirror_core() {
     for skill in browser_bridge::bundled_skills() {
         assert_mirrors::<wire::BrowserSkill>(&skill);
     }
+    prompt_studio_payloads_mirror_core();
+}
+
+// --- Prompt Studio (#241) ----------------------------------------------------
+
+#[test]
+fn prompt_studio_payloads_mirror_core() {
+    let overridden = prompt_sections::PromptSectionState::Overridden { text: "Custom.".into() };
+    let revision_view = prompt_studio::PromptRevisionView {
+        id: 4,
+        operation: "override".into(),
+        state: overridden.clone(),
+        restored_from_revision_id: None,
+        created_at: "now".into(),
+    };
+    assert_mirrors::<wire::PromptRevisionView>(&revision_view);
+    assert_mirrors::<wire::PromptSectionStatePayload>(&overridden);
+    assert_mirrors::<wire::PromptSectionStatePayload>(
+        &prompt_sections::PromptSectionState::Deleted,
+    );
+    assert_mirrors::<wire::PromptLintWarningView>(&prompt_studio::PromptLintWarningView {
+        marker: "bridge-delegate".into(),
+        message: "Typed delegation may stop working.".into(),
+    });
+
+    let section_view = prompt_studio::PromptSectionView {
+        id: "bridge_role".into(),
+        state: overridden.clone(),
+        default_text: "Default role text.".into(),
+        effective_text: Some("Custom.".into()),
+        bytes: 7,
+        token_estimate: 2,
+        lint_warnings: vec![prompt_studio::PromptLintWarningView {
+            marker: "bridge-delegate".into(),
+            message: "Typed delegation may stop working.".into(),
+        }],
+        revisions: vec![revision_view.clone()],
+    };
+    assert_mirrors::<wire::PromptSectionView>(&section_view);
+
+    let stack_view = prompt_studio::PromptStackView {
+        target: "orchestrator".into(),
+        depth: 0,
+        sections: vec![section_view],
+    };
+    assert_mirrors::<wire::PromptStackView>(&stack_view);
+
+    assert_mirrors::<wire::PromptSectionMutationResult>(&prompt_studio::PromptSectionMutation {
+        revision: revision_view,
+        stack: stack_view.clone(),
+    });
+    assert_mirrors::<wire::CompiledPromptPreviewResult>(&prompt_studio::CompiledPromptPreview {
+        target: "orchestrator".into(),
+        depth: 0,
+        stack: stack_view,
+        stable_prefix: "<bridge-stable-prompt schema=\"1\">\n{}\n</bridge-stable-prompt>".into(),
+        variable_suffix: "<bridge-variable-context>\n{\"sections\":[]}\n</bridge-variable-context>"
+            .into(),
+        schema_version: 1,
+        prefix_id: "bridge-prompt-v1-abcdef0123456789".into(),
+        prefix_hash: "a".repeat(64),
+        prefix_bytes: 34,
+        prefix_token_estimate: 9,
+        provider_layers: vec![prompt_studio::PromptProviderLayerStatus {
+            layer: "provider_base".into(),
+            adapter: "claude".into(),
+            source: "unavailable".into(),
+            bytes: None,
+            detail: Some("the Claude Agent SDK compiles the preset internally".into()),
+        }],
+    });
 }

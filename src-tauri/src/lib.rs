@@ -13,8 +13,9 @@ use bridge_core::work_observation;
 use bridge_core::model::*;
 use bridge_core::{
     agent_config, automations, browser_bridge, marketplace, opencode_adapter,
-    secret_interception, skill_marketplace, slash,
+    prompt_studio, prompts, secret_interception, skill_marketplace, slash,
 };
+use bridge_protocol::messages::PromptTargetChoice;
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use std::{
     path::PathBuf,
@@ -657,6 +658,81 @@ async fn reset_all_config(
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let core = state.inner().clone();
     blocking("Configuration reset", move || api::reset_all_config(&core)).await
+}
+
+#[tauri::command]
+async fn get_prompt_stack(
+    target: PromptTargetChoice,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptStackView, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt stack read", move || {
+        api::get_prompt_stack(&core, target, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_prompt_section(
+    target: PromptTargetChoice,
+    section_id: String,
+    text: String,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt section save", move || {
+        api::save_prompt_section(&core, target, &section_id, &text, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reset_prompt_section(
+    target: PromptTargetChoice,
+    section_id: String,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt section reset", move || {
+        api::reset_prompt_section(&core, target, &section_id, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_prompt_revision(
+    target: PromptTargetChoice,
+    section_id: String,
+    revision_id: i64,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt revision restore", move || {
+        api::restore_prompt_revision(&core, target, &section_id, revision_id, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn preview_compiled_prompt(
+    target: PromptTargetChoice,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::CompiledPromptPreview, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Compiled prompt preview", move || {
+        api::preview_compiled_prompt(&core, target, depth)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1522,6 +1598,11 @@ pub fn run() {
             set_default_agent,
             reset_all_config,
             save_permission_policy,
+            get_prompt_stack,
+            save_prompt_section,
+            reset_prompt_section,
+            restore_prompt_revision,
+            preview_compiled_prompt,
             get_learning_state,
             run_learning,
             cancel_learning_run,
