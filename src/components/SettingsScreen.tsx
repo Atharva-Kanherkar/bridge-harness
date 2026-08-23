@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Check, ChevronRight, Code2, LoaderCircle, Lock, Monitor, Moon, Plus, RotateCcw, Save, Settings2, Shield, ShieldOff, Sparkles, Sun, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronRight, Code2, LoaderCircle, Lock, Monitor, Moon, Plus, RotateCcw, Save, ScrollText, Settings2, Shield, ShieldOff, Sparkles, Sun, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
 import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
+import { PromptStudio } from "./PromptStudio";
 import { WorkSettingsSection } from "./WorkSettingsSection";
 import { SuggestionSettingsCard } from "./SuggestionSettingsCard";
 import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
@@ -12,7 +13,7 @@ import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCo
 import { useThemePreference, type ThemePreference } from "../theme";
 import { cn } from "@/lib/utils";
 
-export type Section = "agents" | "harnesses" | "models" | "permissions" | "work" | "appearance";
+export type Section = "agents" | "harnesses" | "models" | "prompts" | "permissions" | "work" | "appearance";
 
 const roles: { id: AgentRole; label: string }[] = [
   { id: "orchestrator", label: "Orchestrator" }, { id: "research", label: "Research" },
@@ -308,6 +309,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         <SectionButton active={section === "agents"} icon={<Bot size={15} />} label="Agents" onClick={() => setSection("agents")} />
         <SectionButton active={section === "harnesses"} icon={<Code2 size={15} />} label="Harnesses" onClick={() => setSection("harnesses")} />
         <SectionButton active={section === "models"} icon={<Settings2 size={15} />} label="Role models" onClick={() => setSection("models")} />
+        <SectionButton active={section === "prompts"} icon={<ScrollText size={15} />} label="Prompts" onClick={() => setSection("prompts")} />
         <SectionButton active={section === "permissions"} icon={<Shield size={15} />} label="Permissions" onClick={() => setSection("permissions")} />
         <SectionButton active={section === "work"} icon={<Sparkles size={15} />} label="Work" onClick={() => setSection("work")} />
         <SectionButton active={section === "appearance"} icon={<Sun size={15} />} label="Appearance" onClick={() => setSection("appearance")} />
@@ -333,6 +335,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
           busy={busy}
           onChange={policy => void savePolicy(policy)}
         />}
+        {section === "prompts" && <div className="mx-auto h-[75vh] max-w-6xl"><PromptStudio /></div>}
         {section === "appearance" && <AppearanceSection />}
         {section === "work" && <WorkSettingsSection onError={onError} />}
         {section === "harnesses" && config && <div className="mx-auto max-w-4xl">
