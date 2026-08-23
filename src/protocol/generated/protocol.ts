@@ -86,6 +86,11 @@ export type BridgeMethod =
   | "config/set_default_agent"
   | "config/reset_all_config"
   | "config/save_permission_policy"
+  | "config/get_prompt_stack"
+  | "config/save_prompt_section"
+  | "config/reset_prompt_section"
+  | "config/restore_prompt_revision"
+  | "config/preview_compiled_prompt"
   | "learning/get_learning_state"
   | "learning/run_learning"
   | "learning/cancel_learning_run"
@@ -210,6 +215,11 @@ export const BRIDGE_METHODS = [
   { method: "config/set_default_agent", domain: "config", command: "set_default_agent" },
   { method: "config/reset_all_config", domain: "config", command: "reset_all_config" },
   { method: "config/save_permission_policy", domain: "config", command: "save_permission_policy" },
+  { method: "config/get_prompt_stack", domain: "config", command: "get_prompt_stack" },
+  { method: "config/save_prompt_section", domain: "config", command: "save_prompt_section" },
+  { method: "config/reset_prompt_section", domain: "config", command: "reset_prompt_section" },
+  { method: "config/restore_prompt_revision", domain: "config", command: "restore_prompt_revision" },
+  { method: "config/preview_compiled_prompt", domain: "config", command: "preview_compiled_prompt" },
   { method: "learning/get_learning_state", domain: "learning", command: "get_learning_state" },
   { method: "learning/run_learning", domain: "learning", command: "run_learning" },
   { method: "learning/cancel_learning_run", domain: "learning", command: "cancel_learning_run" },
@@ -386,6 +396,11 @@ export interface BridgeMethodParams {
   "config/set_default_agent": SetDefaultAgentParams;
   "config/save_permission_policy": SavePermissionPolicyParams;
   "config/reset_all_config": undefined;
+  "config/get_prompt_stack": GetPromptStackParams;
+  "config/save_prompt_section": SavePromptSectionParams;
+  "config/reset_prompt_section": ResetPromptSectionParams;
+  "config/restore_prompt_revision": RestorePromptRevisionParams;
+  "config/preview_compiled_prompt": PreviewCompiledPromptParams;
   "learning/get_learning_state": GetLearningStateParams;
   "learning/run_learning": RunLearningParams;
   "learning/cancel_learning_run": CancelLearningRunParams;
@@ -512,6 +527,11 @@ export interface BridgeMethodResults {
   "config/set_default_agent": ConfigState;
   "config/reset_all_config": ConfigState;
   "config/save_permission_policy": ConfigState;
+  "config/get_prompt_stack": GetPromptStackResult;
+  "config/save_prompt_section": PromptSectionMutationResult;
+  "config/reset_prompt_section": PromptSectionMutationResult;
+  "config/restore_prompt_revision": PromptSectionMutationResult;
+  "config/preview_compiled_prompt": CompiledPromptPreviewResult;
   "learning/get_learning_state": unknown;
   "learning/run_learning": unknown;
   "learning/cancel_learning_run": unknown;
@@ -830,6 +850,48 @@ export interface Project {
   name: string;
   path: string;
 }
+
+export interface PromptLintWarningView {
+  marker: string;
+  message: string;
+}
+
+export interface PromptProviderLayerStatus {
+  adapter: string;
+  bytes?: number | null;
+  detail?: string | null;
+  layer: string;
+  source: string;
+}
+
+export interface PromptRevisionView {
+  createdAt: string;
+  id: number;
+  operation: string;
+  restoredFromRevisionId?: number | null;
+  state: PromptSectionStatePayload;
+}
+
+export type PromptSectionStatePayload = { state: "default" } | { state: "overridden"; text: string } | { state: "deleted" };
+
+export interface PromptSectionView {
+  bytes: number;
+  defaultText: string;
+  effectiveText?: string | null;
+  id: string;
+  lintWarnings: PromptLintWarningView[];
+  revisions: PromptRevisionView[];
+  state: PromptSectionStatePayload;
+  tokenEstimate: number;
+}
+
+export interface PromptStackView {
+  depth: number;
+  sections: PromptSectionView[];
+  target: string;
+}
+
+export type PromptTargetChoice = "orchestrator" | "worker:research" | "worker:implementation" | "worker:verification" | "worker:planning" | "worker:documentation" | "direct_session";
 
 export interface ProtocolVersion {
   major: number;
@@ -1799,6 +1861,59 @@ export interface SetDefaultAgentParams {
 
 export interface SavePermissionPolicyParams {
   policy: PermissionPolicy;
+}
+
+export interface GetPromptStackParams {
+  depth?: number | null;
+  target: PromptTargetChoice;
+}
+
+export interface GetPromptStackResult {
+  stack: PromptStackView;
+}
+
+export interface SavePromptSectionParams {
+  depth?: number | null;
+  sectionId: string;
+  target: PromptTargetChoice;
+  text: string;
+}
+
+export interface PromptSectionMutationResult {
+  revision: PromptRevisionView;
+  stack: PromptStackView;
+}
+
+export interface ResetPromptSectionParams {
+  depth?: number | null;
+  sectionId: string;
+  target: PromptTargetChoice;
+}
+
+export interface RestorePromptRevisionParams {
+  depth?: number | null;
+  revisionId: number;
+  sectionId: string;
+  target: PromptTargetChoice;
+}
+
+export interface PreviewCompiledPromptParams {
+  depth?: number | null;
+  target: PromptTargetChoice;
+}
+
+export interface CompiledPromptPreviewResult {
+  depth: number;
+  prefixBytes: number;
+  prefixHash: string;
+  prefixId: string;
+  prefixTokenEstimate: number;
+  providerLayers: PromptProviderLayerStatus[];
+  schemaVersion: number;
+  stablePrefix: string;
+  stack: PromptStackView;
+  target: string;
+  variableSuffix: string;
 }
 
 export interface GetLearningStateParams {

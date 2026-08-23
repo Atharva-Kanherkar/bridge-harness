@@ -233,6 +233,11 @@ typed_methods![
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),
     (SavePermissionPolicy, SavePermissionPolicyParams, ConfigState),
     (ResetAllConfig, _, ConfigState),
+    (GetPromptStack, GetPromptStackParams, GetPromptStackResult),
+    (SavePromptSection, SavePromptSectionParams, PromptSectionMutationResult),
+    (ResetPromptSection, ResetPromptSectionParams, PromptSectionMutationResult),
+    (RestorePromptRevision, RestorePromptRevisionParams, PromptSectionMutationResult),
+    (PreviewCompiledPrompt, PreviewCompiledPromptParams, CompiledPromptPreviewResult),
     // adaptive learning
     (GetLearningState, GetLearningStateParams, _),
     (RunLearning, RunLearningParams, _),
