@@ -33,6 +33,17 @@ async function flush() {
   await new Promise(resolve => setTimeout(resolve, 0));
 }
 
+/** The preview panel reloads via a second, cascading effect (stack loads,
+ * then the preview fetch it triggers resolves via a real `crypto.subtle`
+ * digest) — polling is more robust here than guessing a fixed flush count. */
+async function waitFor(predicate: () => boolean, attempts = 20) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (predicate()) return;
+    await flush();
+  }
+  throw new Error("waitFor: condition never became true");
+}
+
 /** React listens for `input` via its own value tracker, so a bare
  *  `element.value = x` is invisible to it. */
 async function typeInto(element: HTMLTextAreaElement, value: string) {
@@ -63,6 +74,20 @@ function optionText(container: HTMLElement, id: string): string {
 
 function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement | undefined {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === text);
+}
+
+function fileInput(container: HTMLElement): HTMLInputElement {
+  return container.querySelector<HTMLInputElement>('input[type="file"]')!;
+}
+
+async function selectFile(input: HTMLInputElement, content: string) {
+  const file = new File([content], "overrides.json", { type: "application/json" });
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  await act(async () => {
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    await flush();
+  });
 }
 
 beforeEach(async () => {
@@ -191,6 +216,163 @@ describe("PromptStudio", () => {
     expect(container.textContent).toContain("bridge-delegate");
     expect(container.textContent).toContain("missing");
     expect(buttonWithText(container, "Save delegation_protocol")!.disabled).toBe(false);
+    await unmount();
+  });
+
+  it("preview_splits_exact_envelopes_from_provider_layers", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await waitFor(() => container.textContent!.includes("Exact Bridge bytes"));
+
+    const expected = await bridgeApi.previewCompiledPrompt("orchestrator");
+    expect(container.textContent).toContain("Exact Bridge bytes");
+    expect(container.textContent).toContain(expected.prefixHash);
+    expect(container.textContent).toContain(expected.prefixId);
+    expect(container.textContent).toContain(String(expected.prefixBytes));
+    expect(container.textContent).toContain(expected.stablePrefix);
+    expect(container.textContent).toContain(expected.variableSuffix);
+
+    expect(container.textContent).toContain("Provider layers (not exact)");
+    for (const layer of expected.providerLayers) {
+      expect(container.textContent).toContain(layer.adapter);
+      expect(container.textContent).toContain("unavailable");
+      expect(container.textContent).toContain(layer.detail);
+    }
+
+    // Provider-owned detail never lands inside the exact-bytes block itself.
+    const [stablePrefixPre] = container.querySelectorAll("pre");
+    expect(stablePrefixPre.textContent).not.toContain(expected.providerLayers[0].detail);
+    await unmount();
+  });
+
+  it("cache_impact_tracks_prefix_hash_changes", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await waitFor(() => container.textContent!.includes("Exact Bridge bytes"));
+    expect(container.textContent).not.toContain("Bridge prefix changed");
+
+    await typeInto(editorTextarea(container), "You are Bridge's customized orchestrator, with materially different text so the compiled prefix hash changes.");
+    await act(async () => { buttonWithText(container, "Save bridge_role")!.click(); await flush(); });
+    await waitFor(() => container.textContent!.includes("Bridge prefix changed"));
+
+    expect(container.textContent).toContain("estimated");
+    await unmount();
+  });
+
+  it("import_rejects_malformed_files_and_applies_valid_entries", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    await flush();
+    const saveSpy = vi.spyOn(bridgeApi, "savePromptSection");
+
+    await selectFile(fileInput(container), JSON.stringify([1, 2, 3]));
+    expect(container.textContent).toMatch(/JSON object/);
+    expect(saveSpy).not.toHaveBeenCalled();
+
+    await selectFile(fileInput(container), JSON.stringify({ "not-a-real-target": { bridge_role: { state: "overridden", text: "x" } } }));
+    expect(container.textContent).toMatch(/Unknown prompt target/);
+    expect(saveSpy).not.toHaveBeenCalled();
+
+    await selectFile(fileInput(container), JSON.stringify({ orchestrator: { not_a_real_section: { state: "overridden", text: "x" } } }));
+    expect(container.textContent).toMatch(/Unknown section/);
+    expect(saveSpy).not.toHaveBeenCalled();
+
+    await selectFile(fileInput(container), JSON.stringify({ orchestrator: { bridge_role: { state: "overridden" } } }));
+    expect(container.textContent).toMatch(/Malformed override entry/);
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(optionText(container, "bridge_role")).not.toContain("Modified");
+
+    await selectFile(fileInput(container), JSON.stringify({ orchestrator: { bridge_role: { state: "overridden", text: "Imported bridge role text." } } }));
+    expect(saveSpy).toHaveBeenCalledWith("orchestrator", "bridge_role", "Imported bridge role text.");
+    expect(optionText(container, "bridge_role")).toContain("Modified");
+    await unmount();
+  });
+
+  it("export_downloads_one_json_file", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    await flush();
+
+    await typeInto(editorTextarea(container), "Exported override text.");
+    await act(async () => { buttonWithText(container, "Save bridge_role")!.click(); await flush(); });
+    await flush();
+
+    const createObjectURL = vi.fn((_blob: unknown) => "blob:mock-url");
+    const revokeObjectURL = vi.fn((_url: unknown) => undefined);
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    try {
+      await act(async () => { buttonWithText(container, "Export overrides")!.click(); await flush(); });
+
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+      expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+      const blob = createObjectURL.mock.calls[0][0] as Blob;
+      expect(blob.type).toBe("application/json");
+      // jsdom's Blob predates .text(); FileReader is the portable read.
+      const payload = JSON.parse(await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(blob);
+      }));
+      expect(payload.orchestrator.bridge_role).toEqual({ state: "overridden", text: "Exported override text." });
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+    }
+    await unmount();
+  });
+
+  it("controls_have_accessible_names_and_live_region_announces_saves", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    await flush();
+
+    expect(container.querySelector('nav[aria-label="Prompt targets"]')).not.toBeNull();
+    expect(container.querySelector('[role="listbox"][aria-label="Orchestrator prompt sections"]')).not.toBeNull();
+    expect(container.querySelector('input[aria-label="Import prompt overrides"]')).not.toBeNull();
+    expect(buttonWithText(container, "Export overrides")).toBeDefined();
+    expect(container.querySelector('aside[aria-label="Compiled prompt preview and overrides"]')).not.toBeNull();
+
+    const live = container.querySelector('[aria-live="polite"]')!;
+    expect(live.textContent).toBe("");
+
+    await typeInto(editorTextarea(container), "Accessible save text.");
+    await act(async () => { buttonWithText(container, "Save bridge_role")!.click(); await flush(); });
+    expect(live.textContent).toContain("Saved bridge_role");
+    await unmount();
+  });
+
+  it("revision_history_lists_operations_and_restore_works", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    await flush();
+
+    await typeInto(editorTextarea(container), "First override of bridge role.");
+    await act(async () => { buttonWithText(container, "Save bridge_role")!.click(); await flush(); });
+    await flush();
+
+    await typeInto(editorTextarea(container), "Second override of bridge role.");
+    await act(async () => { buttonWithText(container, "Save bridge_role")!.click(); await flush(); });
+    await flush();
+
+    expect(container.textContent).toContain("override");
+    const restoreButtons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Restore bridge_role to revision"]')];
+    expect(restoreButtons.length).toBeGreaterThanOrEqual(2);
+    // History renders most-recent first: index 0 is "Second override", index 1
+    // is "First override" — restoring index 1 should bring the older text back.
+    const olderRestoreButton = restoreButtons[1];
+    const restoreSpy = vi.spyOn(bridgeApi, "restorePromptRevision");
+
+    await act(async () => { olderRestoreButton.click(); await flush(); });
+    await flush();
+
+    expect(restoreSpy).toHaveBeenCalledWith("orchestrator", "bridge_role", expect.any(Number));
+    expect(container.textContent).toContain("restore");
+    expect(editorTextarea(container).value).toContain("First override of bridge role.");
     await unmount();
   });
 });
