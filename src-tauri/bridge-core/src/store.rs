@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 39;
+const LATEST_SCHEMA_VERSION: i64 = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -443,6 +443,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             37 => migration_37_family_only_preferences(&transaction)?,
             38 => migration_38_routing_catalogs(&transaction)?,
             39 => migration_39_learning_tunables(&transaction)?,
+            40 => migration_40_prompt_compilation_accounting(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -527,6 +528,43 @@ fn migration_18_prompt_cache_telemetry(transaction: &Transaction<'_>) -> Result<
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_prompt_compilations_turn
             ON prompt_compilations(session_id,turn_id,id DESC);",
+    )?;
+    Ok(())
+}
+
+fn migration_40_prompt_compilation_accounting(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "prompt_compilations", "sections_json", "TEXT")?;
+    add_column_if_missing(
+        transaction,
+        "prompt_compilations",
+        "stable_bytes",
+        "INTEGER",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "prompt_compilations",
+        "variable_bytes",
+        "INTEGER",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "prompt_compilations",
+        "stable_token_estimate",
+        "INTEGER",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "prompt_compilations",
+        "variable_token_estimate",
+        "INTEGER",
+    )?;
+    add_column_if_missing(
+        transaction,
+        "prompt_compilations",
+        "token_estimate_source",
+        "TEXT",
     )?;
     Ok(())
 }
@@ -2785,9 +2823,9 @@ pub fn record_prompt_compilation(
     record: &PromptCompilationRecord,
 ) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO prompt_compilations(session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-        params![record.session_id,record.turn_id,record.prefix_id,record.prefix_hash,record.schema_version,record.prefix_bytes,record.prefix_token_estimate,record.harness,record.model,record.role,record.task_family,record.restoration_mode,record.cross_harness_reuse,record.created_at],
+        "INSERT INTO prompt_compilations(session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at,sections_json,stable_bytes,variable_bytes,stable_token_estimate,variable_token_estimate,token_estimate_source)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+        params![record.session_id,record.turn_id,record.prefix_id,record.prefix_hash,record.schema_version,record.prefix_bytes,record.prefix_token_estimate,record.harness,record.model,record.role,record.task_family,record.restoration_mode,record.cross_harness_reuse,record.created_at,record.sections_json,record.stable_bytes,record.variable_bytes,record.stable_token_estimate,record.variable_token_estimate,record.token_estimate_source],
     )?;
     Ok(db.last_insert_rowid())
 }
@@ -2797,10 +2835,10 @@ pub fn latest_prompt_compilation(
     session_id: &str,
 ) -> Result<Option<PromptCompilationRecord>, BridgeError> {
     Ok(db.query_row(
-        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
+        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at,sections_json,stable_bytes,variable_bytes,stable_token_estimate,variable_token_estimate,token_estimate_source
          FROM prompt_compilations WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
         params![session_id],
-        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)? }),
+        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)?, sections_json:row.get(15)?, stable_bytes:row.get(16)?, variable_bytes:row.get(17)?, stable_token_estimate:row.get(18)?, variable_token_estimate:row.get(19)?, token_estimate_source:row.get(20)? }),
     ).optional()?)
 }
 
@@ -2821,10 +2859,10 @@ pub fn prompt_compilation_for_turn(
     turn_id: &str,
 ) -> Result<Option<PromptCompilationRecord>, BridgeError> {
     Ok(db.query_row(
-        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at
+        "SELECT id,session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at,sections_json,stable_bytes,variable_bytes,stable_token_estimate,variable_token_estimate,token_estimate_source
          FROM prompt_compilations WHERE session_id=?1 AND turn_id=?2 ORDER BY id DESC LIMIT 1",
         params![session_id, turn_id],
-        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)? }),
+        |row| Ok(PromptCompilationRecord { id:row.get(0)?, session_id:row.get(1)?, turn_id:row.get(2)?, prefix_id:row.get(3)?, prefix_hash:row.get(4)?, schema_version:row.get(5)?, prefix_bytes:row.get(6)?, prefix_token_estimate:row.get(7)?, harness:row.get(8)?, model:row.get(9)?, role:row.get(10)?, task_family:row.get(11)?, restoration_mode:row.get(12)?, cross_harness_reuse:row.get(13)?, created_at:row.get(14)?, sections_json:row.get(15)?, stable_bytes:row.get(16)?, variable_bytes:row.get(17)?, stable_token_estimate:row.get(18)?, variable_token_estimate:row.get(19)?, token_estimate_source:row.get(20)? }),
     ).optional()?)
 }
 
@@ -3669,6 +3707,18 @@ mod tests {
                 .iter()
                 .any(|column| column == required));
         }
+        for required in [
+            "sections_json",
+            "stable_bytes",
+            "variable_bytes",
+            "stable_token_estimate",
+            "variable_token_estimate",
+            "token_estimate_source",
+        ] {
+            assert!(columns(&upgraded, "prompt_compilations")
+                .iter()
+                .any(|column| column == required));
+        }
     }
 
     #[test]
@@ -4428,12 +4478,30 @@ mod tests {
             restoration_mode: "fresh".into(),
             cross_harness_reuse: "not_applicable".into(),
             created_at: "now".into(),
+            sections_json: Some(
+                json!([{"region":"stable","kind":"role","name":"role","bytes":40,"tokenEstimate":10}])
+                    .to_string(),
+            ),
+            stable_bytes: Some(400),
+            variable_bytes: Some(120),
+            stable_token_estimate: Some(100),
+            variable_token_estimate: Some(30),
+            token_estimate_source: Some("bytes_div4_v1".into()),
         };
         let compilation_id = record_prompt_compilation(&db, &compilation).unwrap();
         let stored_compilation = latest_prompt_compilation(&db, "s").unwrap().unwrap();
         assert_eq!(stored_compilation.id, compilation_id);
         assert_eq!(stored_compilation.prefix_hash, "hash-1");
         assert_eq!(stored_compilation.prefix_token_estimate, 100);
+        assert_eq!(stored_compilation.sections_json, compilation.sections_json);
+        assert_eq!(stored_compilation.stable_bytes, Some(400));
+        assert_eq!(stored_compilation.variable_bytes, Some(120));
+        assert_eq!(stored_compilation.stable_token_estimate, Some(100));
+        assert_eq!(stored_compilation.variable_token_estimate, Some(30));
+        assert_eq!(
+            stored_compilation.token_estimate_source.as_deref(),
+            Some("bytes_div4_v1")
+        );
         assert!(bind_latest_prompt_compilation_to_turn(&db, "s", "turn-1").unwrap());
         assert_eq!(
             prompt_compilation_for_turn(&db, "s", "turn-1")
@@ -4490,6 +4558,52 @@ mod tests {
         assert_eq!(rows[0].cost_microusd, Some(12_345));
         assert_eq!(rows[0].uncached_input_tokens, Some(8));
         assert_eq!(rows[0].stable_prefix_hash.as_deref(), Some("hash-1"));
+    }
+
+    #[test]
+    fn legacy_prompt_compilation_row_with_null_accounting_reads_back_without_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+
+        let legacy = PromptCompilationRecord {
+            id: 0,
+            session_id: "s".into(),
+            turn_id: None,
+            prefix_id: "prefix-legacy".into(),
+            prefix_hash: "hash-legacy".into(),
+            schema_version: 1,
+            prefix_bytes: 400,
+            prefix_token_estimate: 100,
+            harness: "codex".into(),
+            model: Some("gpt".into()),
+            role: "worker:implementation".into(),
+            task_family: "implementation".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+            sections_json: None,
+            stable_bytes: None,
+            variable_bytes: None,
+            stable_token_estimate: None,
+            variable_token_estimate: None,
+            token_estimate_source: None,
+        };
+        record_prompt_compilation(&db, &legacy).unwrap();
+        assert!(bind_latest_prompt_compilation_to_turn(&db, "s", "turn-legacy").unwrap());
+
+        let stored = latest_prompt_compilation(&db, "s").unwrap().unwrap();
+        assert_eq!(stored.sections_json, None);
+        assert_eq!(stored.stable_bytes, None);
+        assert_eq!(stored.variable_bytes, None);
+        assert_eq!(stored.stable_token_estimate, None);
+        assert_eq!(stored.variable_token_estimate, None);
+        assert_eq!(stored.token_estimate_source, None);
+
+        let for_turn = prompt_compilation_for_turn(&db, "s", "turn-legacy")
+            .unwrap()
+            .unwrap();
+        assert_eq!(for_turn.variable_bytes, None);
     }
 
     #[test]

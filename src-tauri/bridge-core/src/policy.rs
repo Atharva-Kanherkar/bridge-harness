@@ -1547,6 +1547,12 @@ mod tests {
             restoration_mode: "fresh".into(),
             cross_harness_reuse: "not_applicable".into(),
             created_at: "now".into(),
+            sections_json: None,
+            stable_bytes: None,
+            variable_bytes: None,
+            stable_token_estimate: None,
+            variable_token_estimate: None,
+            token_estimate_source: None,
         };
         store::record_prompt_compilation(&db, &first_compilation).unwrap();
         assert!(
