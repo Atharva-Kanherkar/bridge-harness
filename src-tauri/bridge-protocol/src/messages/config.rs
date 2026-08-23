@@ -151,6 +151,212 @@ pub struct ConfigState {
     pub permission_policy: PermissionPolicy,
 }
 
+// --- Prompt Studio (#241) -----------------------------------------------------
+
+/// Which compiled prompt stack a Prompt Studio method operates on. Wire values
+/// equal the storage keys the core prompt model uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum PromptTargetChoice {
+    #[serde(rename = "orchestrator")]
+    Orchestrator,
+    #[serde(rename = "worker:research")]
+    WorkerResearch,
+    #[serde(rename = "worker:implementation")]
+    WorkerImplementation,
+    #[serde(rename = "worker:verification")]
+    WorkerVerification,
+    #[serde(rename = "worker:planning")]
+    WorkerPlanning,
+    #[serde(rename = "worker:documentation")]
+    WorkerDocumentation,
+    #[serde(rename = "direct_session")]
+    DirectSession,
+}
+
+/// Every Prompt Studio method addresses one target; `depth` selects the worker
+/// topology depth for depth-sensitive worker contracts, is ignored by
+/// non-worker targets, and defaults to 0 when omitted. Each method repeats
+/// these fields because params types are named after their method.
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetPromptStackParams {
+    pub target: PromptTargetChoice,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavePromptSectionParams {
+    pub target: PromptTargetChoice,
+    pub section_id: String,
+    /// The replacement text; an empty override is refused — delete instead.
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResetPromptSectionParams {
+    pub target: PromptTargetChoice,
+    pub section_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestorePromptRevisionParams {
+    pub target: PromptTargetChoice,
+    pub section_id: String,
+    /// The revision to restore; it must belong to this exact target and
+    /// section, and restoring appends a new revision rather than rewinding.
+    pub revision_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreviewCompiledPromptParams {
+    pub target: PromptTargetChoice,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+}
+
+/// Mirrors `bridge_core::prompt_sections::PromptSectionState` exactly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PromptSectionStatePayload {
+    Default,
+    Overridden { text: String },
+    Deleted,
+}
+
+/// The closed mutation vocabulary of a revision. Mirrors
+/// `bridge_core::prompt_sections::PromptSectionOperation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptRevisionOperation {
+    Override,
+    Delete,
+    Reset,
+    Restore,
+}
+
+/// How a provider-owned layer's byte count was obtained. Closed vocabulary —
+/// mirrors `bridge_core::prompt_studio::PromptLayerSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptLayerSource {
+    /// The provider reported the number itself.
+    Reported,
+    /// Bridge observed the exact bytes.
+    Measured,
+    /// A labelled approximation.
+    Estimated,
+    /// Nothing defensible exists.
+    Unavailable,
+}
+
+/// One append-only revision of a prompt section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptRevisionView {
+    pub id: i64,
+    pub operation: PromptRevisionOperation,
+    pub state: PromptSectionStatePayload,
+    pub restored_from_revision_id: Option<i64>,
+    pub created_at: String,
+}
+
+/// A required-vocabulary warning over a section's effective text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptLintWarningView {
+    pub marker: String,
+    pub message: String,
+}
+
+/// One section of a resolved prompt stack. Mirrors
+/// `bridge_core::prompt_studio::PromptSectionView`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSectionView {
+    pub id: String,
+    pub state: PromptSectionStatePayload,
+    /// The built-in text this section falls back to when its state is default.
+    pub default_text: String,
+    /// The text the live compiler resolves to, or null when deleted.
+    pub effective_text: Option<String>,
+    pub bytes: u64,
+    /// Byte-derived estimate (`ceil(bytes / 4)`), labelled as an estimate.
+    pub token_estimate: u64,
+    pub lint_warnings: Vec<PromptLintWarningView>,
+    /// Append-only history, oldest first.
+    pub revisions: Vec<PromptRevisionView>,
+}
+
+/// The full studio view of one target's stack. Mirrors
+/// `bridge_core::prompt_studio::PromptStackView`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptStackView {
+    /// Storage key of the target (`orchestrator`, `worker:<role>`,
+    /// `direct_session`) — same vocabulary the params enum accepts.
+    pub target: String,
+    /// Worker topology depth the stack was resolved at.
+    pub depth: i64,
+    pub sections: Vec<PromptSectionView>,
+}
+
+/// What a mutation changed: the revision it appended plus the fresh stack for
+/// the target, so a client never mutates against a stale view. Mirrors
+/// `bridge_core::prompt_studio::PromptSectionMutation`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSectionMutationResult {
+    pub revision: PromptRevisionView,
+    pub stack: PromptStackView,
+}
+
+/// One provider-owned layer's honest standing inside a preview. Mirrors
+/// `bridge_core::prompt_studio::PromptProviderLayerStatus`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptProviderLayerStatus {
+    pub layer: String,
+    pub adapter: String,
+    pub source: PromptLayerSource,
+    /// Exact byte size when actually readable; never invented.
+    pub bytes: Option<u64>,
+    pub detail: Option<String>,
+}
+
+/// The exact Bridge-authored envelopes for one target's resolved stack.
+/// Mirrors `bridge_core::prompt_studio::CompiledPromptPreview`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledPromptPreviewResult {
+    pub target: String,
+    pub depth: i64,
+    pub stack: PromptStackView,
+    /// Exact `<bridge-stable-prompt …>` bytes compiled from the resolved
+    /// sections alone — no project rules, tool schemas, or runtime variables.
+    pub stable_prefix: String,
+    /// Exact `<bridge-variable-context>` bytes with an empty sections list;
+    /// runtime task/session/restoration content is never fabricated here.
+    pub variable_suffix: String,
+    pub schema_version: u32,
+    pub prefix_id: String,
+    pub prefix_hash: String,
+    pub prefix_bytes: u64,
+    pub prefix_token_estimate: u64,
+    pub provider_layers: Vec<PromptProviderLayerStatus>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +499,199 @@ mod tests {
         assert!(
             serde_json::from_value::<RefreshOpencodeCatalogParams>(json!({"cwd": "/x"})).is_err(),
             "params reject arguments the contract does not name"
+        );
+    }
+
+    #[test]
+    fn prompt_target_wire_values_are_the_storage_keys() {
+        for (wire, expected) in [
+            ("orchestrator", PromptTargetChoice::Orchestrator),
+            ("worker:research", PromptTargetChoice::WorkerResearch),
+            ("worker:implementation", PromptTargetChoice::WorkerImplementation),
+            ("worker:verification", PromptTargetChoice::WorkerVerification),
+            ("worker:planning", PromptTargetChoice::WorkerPlanning),
+            ("worker:documentation", PromptTargetChoice::WorkerDocumentation),
+            ("direct_session", PromptTargetChoice::DirectSession),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<PromptTargetChoice>(json!(wire)).unwrap(),
+                expected
+            );
+            assert_eq!(serde_json::to_value(&expected).unwrap(), json!(wire));
+        }
+        assert!(serde_json::from_value::<PromptTargetChoice>(json!("orchestrator:extra")).is_err());
+        assert!(serde_json::from_value::<PromptTargetChoice>(json!("worker")).is_err());
+        assert!(serde_json::from_value::<PromptTargetChoice>(json!("Orchestrator")).is_err());
+    }
+
+    #[test]
+    fn prompt_studio_params_round_trip_and_default_depth() {
+        let save = SavePromptSectionParams {
+            target: PromptTargetChoice::WorkerResearch,
+            section_id: "worker_contract".into(),
+            text: "Research only.".into(),
+            depth: Some(1),
+        };
+        let wire = serde_json::to_value(&save).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "target": "worker:research",
+                "sectionId": "worker_contract",
+                "text": "Research only.",
+                "depth": 1,
+            })
+        );
+        assert_eq!(round_trip(&save), save);
+
+        // Absent depth stays off the wire and defaults to None; core applies 0.
+        let minimal: PreviewCompiledPromptParams = serde_json::from_value(json!({
+            "target": "direct_session",
+        }))
+        .unwrap();
+        assert_eq!(minimal.depth, None);
+        assert_eq!(
+            serde_json::to_value(&minimal).unwrap(),
+            json!({"target": "direct_session"}),
+            "absent options stay off the wire"
+        );
+
+        // Every method's params round-trips independently; sibling param types
+        // must refuse each other's shapes (deny_unknown_fields + required fields).
+        let stack_params = GetPromptStackParams {
+            target: PromptTargetChoice::Orchestrator,
+            depth: None,
+        };
+        assert_eq!(round_trip(&stack_params), stack_params);
+        let reset_params = ResetPromptSectionParams {
+            target: PromptTargetChoice::DirectSession,
+            section_id: "bridge_role".into(),
+            depth: None,
+        };
+        assert_eq!(round_trip(&reset_params), reset_params);
+        let restore_params = RestorePromptRevisionParams {
+            target: PromptTargetChoice::Orchestrator,
+            section_id: "bridge_role".into(),
+            revision_id: 7,
+            depth: Some(0),
+        };
+        assert_eq!(round_trip(&restore_params), restore_params);
+        assert!(
+            serde_json::from_value::<GetPromptStackParams>(
+                serde_json::to_value(&reset_params).unwrap()
+            )
+            .is_err(),
+            "a stack read refuses a reset's shape"
+        );
+    }
+
+    #[test]
+    fn prompt_studio_params_reject_unknown_and_misspelled_fields() {
+        assert!(serde_json::from_value::<GetPromptStackParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<GetPromptStackParams>(json!({"target": "nope"})).is_err());
+        assert!(
+            serde_json::from_value::<GetPromptStackParams>(
+                json!({"target": "orchestrator", "workerDepth": 1})
+            )
+            .is_err(),
+            "params deny fields the contract does not name"
+        );
+        assert!(
+            serde_json::from_value::<SavePromptSectionParams>(json!({
+                "target": "orchestrator", "sectionId": "bridge_role",
+            }))
+            .is_err(),
+            "save requires text"
+        );
+        assert!(
+            serde_json::from_value::<RestorePromptRevisionParams>(json!({
+                "target": "orchestrator", "sectionId": "bridge_role",
+            }))
+            .is_err(),
+            "restore requires revisionId"
+        );
+        assert!(
+            serde_json::from_value::<PreviewCompiledPromptParams>(
+                json!({"target": "orchestrator", "revisionId": 1})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prompt_studio_results_round_trip() {
+        let stack = PromptStackView {
+            target: "orchestrator".into(),
+            depth: 0,
+            sections: vec![PromptSectionView {
+                id: "bridge_role".into(),
+                state: PromptSectionStatePayload::Overridden { text: "Custom.".into() },
+                default_text: "Default role text.".into(),
+                effective_text: Some("Custom.".into()),
+                bytes: 7,
+                token_estimate: 2,
+                lint_warnings: vec![PromptLintWarningView {
+                    marker: "bridge-delegate".into(),
+                    message: "Typed delegation may stop working.".into(),
+                }],
+                revisions: vec![PromptRevisionView {
+                    id: 4,
+                    operation: PromptRevisionOperation::Override,
+                    state: PromptSectionStatePayload::Overridden { text: "Custom.".into() },
+                    restored_from_revision_id: None,
+                    created_at: "2026-08-23T00:00:00Z".into(),
+                }],
+            }],
+        };
+        let result = stack;
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["target"], json!("orchestrator"));
+        assert_eq!(wire["sections"][0]["state"]["state"], json!("overridden"));
+        assert_eq!(wire["sections"][0]["tokenEstimate"], json!(2));
+        assert_eq!(
+            wire["sections"][0]["revisions"][0]["restoredFromRevisionId"],
+            json!(null)
+        );
+        assert_eq!(round_trip(&result), result);
+
+        let mutation = PromptSectionMutationResult {
+            revision: PromptRevisionView {
+                id: 5,
+                operation: PromptRevisionOperation::Restore,
+                state: PromptSectionStatePayload::Deleted,
+                restored_from_revision_id: Some(2),
+                created_at: "2026-08-23T00:00:00Z".into(),
+            },
+            stack: result.clone(),
+        };
+        let wire = serde_json::to_value(&mutation).unwrap();
+        assert_eq!(wire["revision"]["restoredFromRevisionId"], json!(2));
+        assert_eq!(wire["revision"]["operation"], json!("restore"));
+        assert_eq!(round_trip(&mutation), mutation);
+
+        // Typed vocabularies serialize as their closed string sets.
+        for (value, wire) in [
+            (PromptRevisionOperation::Override, "override"),
+            (PromptRevisionOperation::Delete, "delete"),
+            (PromptRevisionOperation::Reset, "reset"),
+            (PromptRevisionOperation::Restore, "restore"),
+        ] {
+            assert_eq!(serde_json::to_value(&value).unwrap(), json!(wire));
+        }
+        for (value, wire) in [
+            (PromptLayerSource::Reported, "reported"),
+            (PromptLayerSource::Measured, "measured"),
+            (PromptLayerSource::Estimated, "estimated"),
+            (PromptLayerSource::Unavailable, "unavailable"),
+        ] {
+            assert_eq!(serde_json::to_value(&value).unwrap(), json!(wire));
+        }
+        assert!(serde_json::from_value::<PromptLayerSource>(json!("fabricated")).is_err());
+
+        let deleted_state = PromptSectionStatePayload::Deleted;
+        assert_eq!(
+            serde_json::to_value(&deleted_state).unwrap(),
+            json!({"state": "deleted"})
         );
     }
 }

@@ -132,6 +132,11 @@ methods![
     (SetDefaultAgent, "config", "set_default_agent"),
     (ResetAllConfig, "config", "reset_all_config"),
     (SavePermissionPolicy, "config", "save_permission_policy"),
+    (GetPromptStack, "config", "get_prompt_stack"),
+    (SavePromptSection, "config", "save_prompt_section"),
+    (ResetPromptSection, "config", "reset_prompt_section"),
+    (RestorePromptRevision, "config", "restore_prompt_revision"),
+    (PreviewCompiledPrompt, "config", "preview_compiled_prompt"),
     // adaptive learning
     (GetLearningState, "learning", "get_learning_state"),
     (RunLearning, "learning", "run_learning"),

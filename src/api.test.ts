@@ -88,6 +88,79 @@ describe("SQLite-shaped mock observability", () => {
     expect(compacted.entries.filter(entry => entry.kind === "compaction")).toHaveLength(2);
     expect(compacted.head?.latestCheckpointEntryId).toMatch(/^checkpoint-/);
   });
+
+  it("keeps prompt-studio mutations deterministic and previews honest in browser mode", async () => {
+    const target = "worker:research" as const;
+    const stack = await bridgeApi.promptStack(target);
+    expect(stack).toMatchObject({ target, depth: 0 });
+    expect(stack.sections.map(section => section.id)).toEqual(["worker_contract"]);
+    expect(stack.sections[0]).toMatchObject({ state: { state: "default" }, effectiveText: stack.sections[0].defaultText });
+
+    const saved = await bridgeApi.savePromptSection(target, "worker_contract", "Research only, no edits.");
+    expect(saved.revision.operation).toBe("override");
+    expect(saved.revision.state).toEqual({ state: "overridden", text: "Research only, no edits." });
+    expect(saved.stack.sections[0].effectiveText).toBe("Research only, no edits.");
+
+    // Byte accounting is UTF-8, not JS string length.
+    const multibyte = await bridgeApi.savePromptSection(target, "worker_contract", "café ✓");
+    expect(multibyte.stack.sections[0].bytes).toBe(new TextEncoder().encode("café ✓").length);
+    await bridgeApi.restorePromptRevision(target, "worker_contract", saved.revision.id);
+
+    // Re-saving appends; history is never rewritten.
+    const again = await bridgeApi.savePromptSection(target, "worker_contract", "Research only, no edits.");
+    expect(again.revision.id).toBeGreaterThan(saved.revision.id);
+
+    // Invalid depth is rejected before any mutation lands.
+    const beforeFailedDepth = (await bridgeApi.promptStack(target)).sections[0].revisions.length;
+    await expect(bridgeApi.savePromptSection(target, "worker_contract", "must not land", 5)).rejects.toThrow("outside the supported range");
+    await expect(bridgeApi.resetPromptSection(target, "worker_contract", -1)).rejects.toThrow("outside the supported range");
+    expect((await bridgeApi.promptStack(target)).sections[0].revisions).toHaveLength(beforeFailedDepth);
+
+    // Restoring a foreign revision is refused without side effects.
+    await expect(bridgeApi.restorePromptRevision(target, "bridge_role", saved.revision.id)).rejects.toThrow("does not belong");
+
+    const restored = await bridgeApi.restorePromptRevision(target, "worker_contract", saved.revision.id);
+    expect(restored.revision.operation).toBe("restore");
+    expect(restored.revision.restoredFromRevisionId).toBe(saved.revision.id);
+
+    const reset = await bridgeApi.resetPromptSection(target, "worker_contract");
+    expect(reset.revision.operation).toBe("reset");
+    expect(reset.stack.sections[0]).toMatchObject({ state: { state: "default" } });
+
+    const preview = await bridgeApi.previewCompiledPrompt(target);
+    expect(preview.stablePrefix.startsWith('<bridge-stable-prompt schema="1">')).toBe(true);
+    expect(preview.stablePrefix).toContain('"role":"worker:research"');
+    expect(preview.variableSuffix).toBe('<bridge-variable-context>\n{"sections":[]}\n</bridge-variable-context>');
+    expect(preview.prefixBytes).toBe(new TextEncoder().encode(preview.stablePrefix).length);
+    expect(preview.prefixTokenEstimate).toBe(Math.ceil(preview.prefixBytes / 4));
+    // The hash is a real SHA-256 digest of the exact envelope bytes.
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(preview.stablePrefix));
+    const expectedHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    expect(preview.prefixHash).toBe(expectedHash);
+    expect(preview.prefixId).toBe(`bridge-prompt-v1-${expectedHash.slice(0, 16)}`);
+    for (const layer of preview.providerLayers) {
+      expect(layer.layer).toBe("provider_base");
+      expect(layer.source).toBe("unavailable");
+      expect(layer.bytes).toBeNull();
+      expect(layer.detail!.length).toBeGreaterThan(0);
+    }
+    // An edited section changes the exact envelope bytes and its hash.
+    await bridgeApi.savePromptSection(target, "worker_contract", "Rewritten contract.");
+    const edited = await bridgeApi.previewCompiledPrompt(target);
+    expect(edited.stablePrefix).not.toBe(preview.stablePrefix);
+    expect(edited.stablePrefix).toContain("Rewritten contract.");
+    expect(edited.prefixHash).not.toBe(preview.prefixHash);
+  });
+
+  it("keeps settings-wide resets from erasing prompt-section history in browser mode", async () => {
+    const target = "worker:planning" as const;
+    const saved = await bridgeApi.savePromptSection(target, "worker_contract", "Temporary plan contract.");
+    await bridgeApi.resetAllConfig();
+    const after = (await bridgeApi.promptStack(target)).sections[0];
+    expect(after.state).toEqual({ state: "default" });
+    const resetEntry = after.revisions.find(revision => revision.operation === "reset" && revision.id > saved.revision.id);
+    expect(resetEntry).toBeDefined();
+  });
 });
 
 describe("the Work board", () => {

@@ -381,6 +381,51 @@ pub fn dispatch(
                 into_core(method, &p.policy)?,
             ))
         }
+        MethodName::GetPromptStack => {
+            let p: wire::GetPromptStackParams = decode(method, params)?;
+            reply(api::get_prompt_stack(
+                core,
+                api::prompt_target(p.target),
+                p.depth,
+            ))
+        }
+        MethodName::SavePromptSection => {
+            let p: wire::SavePromptSectionParams = decode(method, params)?;
+            reply(api::save_prompt_section(
+                core,
+                api::prompt_target(p.target),
+                &p.section_id,
+                &p.text,
+                p.depth,
+            ))
+        }
+        MethodName::ResetPromptSection => {
+            let p: wire::ResetPromptSectionParams = decode(method, params)?;
+            reply(api::reset_prompt_section(
+                core,
+                api::prompt_target(p.target),
+                &p.section_id,
+                p.depth,
+            ))
+        }
+        MethodName::RestorePromptRevision => {
+            let p: wire::RestorePromptRevisionParams = decode(method, params)?;
+            reply(api::restore_prompt_revision(
+                core,
+                api::prompt_target(p.target),
+                &p.section_id,
+                p.revision_id,
+                p.depth,
+            ))
+        }
+        MethodName::PreviewCompiledPrompt => {
+            let p: wire::PreviewCompiledPromptParams = decode(method, params)?;
+            reply(api::preview_compiled_prompt(
+                core,
+                api::prompt_target(p.target),
+                p.depth,
+            ))
+        }
 
         MethodName::GetLearningState => {
             let p: wire::GetLearningStateParams = decode(method, params)?;

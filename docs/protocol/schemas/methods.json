@@ -555,6 +555,41 @@
       "resultSchema": "config-state.json"
     },
     {
+      "command": "get_prompt_stack",
+      "domain": "config",
+      "method": "config/get_prompt_stack",
+      "paramsSchema": "get-prompt-stack-params.json",
+      "resultSchema": "prompt-stack-view.json"
+    },
+    {
+      "command": "save_prompt_section",
+      "domain": "config",
+      "method": "config/save_prompt_section",
+      "paramsSchema": "save-prompt-section-params.json",
+      "resultSchema": "prompt-section-mutation-result.json"
+    },
+    {
+      "command": "reset_prompt_section",
+      "domain": "config",
+      "method": "config/reset_prompt_section",
+      "paramsSchema": "reset-prompt-section-params.json",
+      "resultSchema": "prompt-section-mutation-result.json"
+    },
+    {
+      "command": "restore_prompt_revision",
+      "domain": "config",
+      "method": "config/restore_prompt_revision",
+      "paramsSchema": "restore-prompt-revision-params.json",
+      "resultSchema": "prompt-section-mutation-result.json"
+    },
+    {
+      "command": "preview_compiled_prompt",
+      "domain": "config",
+      "method": "config/preview_compiled_prompt",
+      "paramsSchema": "preview-compiled-prompt-params.json",
+      "resultSchema": "compiled-prompt-preview-result.json"
+    },
+    {
       "command": "get_learning_state",
       "domain": "learning",
       "method": "learning/get_learning_state",

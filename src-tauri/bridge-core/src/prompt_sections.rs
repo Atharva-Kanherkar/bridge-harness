@@ -40,7 +40,10 @@ pub enum PromptSectionState {
     Deleted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The closed mutation vocabulary; also the wire spelling of a revision's
+/// `operation` (`override` / `delete` / `reset` / `restore`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptSectionOperation {
     Override,
     Delete,

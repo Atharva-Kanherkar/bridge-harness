@@ -168,12 +168,25 @@ impl PromptCompiler {
     }
 }
 
+/// The one way a resolved prompt stack becomes a compiler: every surviving
+/// section enters, in resolve order, as a stable section. Both the live turn
+/// path and the Prompt Studio preview must use this builder so their
+/// compositions cannot drift.
+pub fn compiler_for_resolved_stack(
+    stack: &crate::prompt_sections::ResolvedPromptStack,
+) -> Result<PromptCompiler, BridgeError> {
+    let mut compiler = PromptCompiler::new(stack.target.compiler_role());
+    for section in &stack.sections {
+        compiler = compiler.stable_section(&section.id, &section.text);
+    }
+    Ok(compiler)
+}
+
 fn insert_text(
     target: &mut BTreeMap<String, String>,
     name: impl Into<String>,
     text: impl Into<String>,
-) {
-    let name = canonical_text(&name.into());
+) {    let name = canonical_text(&name.into());
     let text = canonical_text(&text.into());
     if !text.is_empty() {
         target.insert(name, text);

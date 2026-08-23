@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -88,6 +88,144 @@ let mockLearningState: LearningState = {
   canaryPolicyVersion: null,
   rollbackTargetVersion: null,
 };
+
+// Prompt Studio browser-mode state: overrides keyed "target:sectionId" with
+// an append-only revision list per key. Default texts are demo stand-ins, not
+// the real Rust defaults.
+type MockPromptRevision = PromptRevisionView;
+const mockPromptSections = new Map<string, { state: PromptSectionStatePayload; revisions: MockPromptRevision[] }>();
+let nextMockPromptRevisionId = 1;
+const MOCK_PROMPT_MAX_DEPTH = 1; // delegation::DEFAULT_MAX_DEPTH
+const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
+
+const MOCK_PROMPT_DEFAULTS: Record<PromptTargetChoice, { id: string; text: string }[]> = {
+  orchestrator: [
+    { id: "bridge_role", text: "You are Bridge's starter orchestrator: a planner and router." },
+    { id: "delegation_protocol", text: "## Delegating work\nEmit one fenced bridge-delegate JSON object after a short sentence naming the role and reason." },
+  ],
+  "worker:research": [{ id: "worker_contract", text: "You are a research worker. Collect scoped evidence and report back." }],
+  "worker:implementation": [{ id: "worker_contract", text: "You are an implementation worker. Make one focused change." }],
+  "worker:verification": [{ id: "worker_contract", text: "You are a verification worker. Verify outcomes independently." }],
+  "worker:planning": [{ id: "worker_contract", text: "You are a planning worker. Turn ambiguous work into an executable plan." }],
+  "worker:documentation": [{ id: "worker_contract", text: "You are a documentation worker. Produce concise project documentation." }],
+  direct_session: [],
+};
+
+function mockPromptDepth(depth?: number): number {
+  const resolved = depth ?? 0;
+  if (!Number.isInteger(resolved) || resolved < 0 || resolved > MOCK_PROMPT_MAX_DEPTH) {
+    throw new Error(`worker depth ${resolved} is outside the supported range 0..=${MOCK_PROMPT_MAX_DEPTH}`);
+  }
+  return resolved;
+}
+
+function mockPromptCompilerRole(target: PromptTargetChoice): string {
+  return target === "direct_session" ? "session" : target;
+}
+
+function mockPromptLint(sectionId: string, text: string | null) {
+  if (text === null || sectionId !== "delegation_protocol") return [];
+  return text.includes("bridge-delegate") ? [] : [{
+    marker: "bridge-delegate",
+    message: "Typed delegation may stop working because `bridge-delegate` is missing.",
+  }];
+}
+
+function mockPromptStack(target: PromptTargetChoice, depth?: number): PromptStackView {
+  return {
+    target,
+    depth: depth ?? 0,
+    sections: MOCK_PROMPT_DEFAULTS[target].map(({ id, text }) => {
+      const record = mockPromptSections.get(`${target}:${id}`);
+      const state = record?.state ?? { state: "default" } as PromptSectionStatePayload;
+      const effectiveText = state.state === "deleted" ? null : state.state === "overridden" ? state.text : text;
+      const bytes = effectiveText === null ? 0 : utf8Bytes(effectiveText);
+      return {
+        id,
+        state,
+        defaultText: text,
+        effectiveText,
+        bytes,
+        tokenEstimate: Math.ceil(bytes / 4),
+        lintWarnings: mockPromptLint(id, effectiveText),
+        revisions: structuredClone(record?.revisions ?? []),
+      };
+    }),
+  };
+}
+
+function mockPromptMutation(
+  target: PromptTargetChoice,
+  sectionId: string,
+  depth: number,
+  state: PromptSectionStatePayload,
+  restoredFromRevisionId?: number,
+): PromptSectionMutationResult {
+  if (!MOCK_PROMPT_DEFAULTS[target].some(section => section.id === sectionId)) {
+    throw new Error(`prompt section "${sectionId}" is not available for target ${target}`);
+  }
+  const key = `${target}:${sectionId}`;
+  const record = mockPromptSections.get(key) ?? { state: { state: "default" } as PromptSectionStatePayload, revisions: [] };
+  const revision: MockPromptRevision = {
+    id: nextMockPromptRevisionId++,
+    operation: restoredFromRevisionId != null ? "restore" : state.state === "default" ? "reset" : "override",
+    state: structuredClone(state),
+    restoredFromRevisionId: restoredFromRevisionId ?? null,
+    createdAt: new Date().toISOString(),
+  };
+  record.state = structuredClone(state);
+  record.revisions.push(revision);
+  mockPromptSections.set(key, record);
+  return { revision, stack: mockPromptStack(target, depth) };
+}
+
+/** Settings-wide reset deletes every override but appends a reset revision per
+ * touched key, exactly like the native path's append_reset_all_revisions. */
+function mockPromptResetAll() {
+  for (const [key, record] of [...mockPromptSections.entries()]) {
+    if (record.state.state === "default") continue;
+    record.revisions.push({
+      id: nextMockPromptRevisionId++,
+      operation: "reset",
+      state: { state: "default" },
+      restoredFromRevisionId: null,
+      createdAt: new Date().toISOString(),
+    });
+    record.state = { state: "default" };
+    mockPromptSections.set(key, record);
+  }
+}
+
+async function mockPromptPreview(target: PromptTargetChoice, depth?: number): Promise<CompiledPromptPreviewResult> {
+  const stack = mockPromptStack(target, depth);
+  // Same envelope shape the real compiler serializes: sorted stable keys.
+  const stableSections = Object.fromEntries(stack.sections.filter(section => section.effectiveText !== null).map(section => [section.id, section.effectiveText]));
+  const envelope = JSON.stringify({ schemaVersion: 1, role: mockPromptCompilerRole(target), stableSections, toolSchemas: {}, projectRules: {} });
+  const stablePrefix = `<bridge-stable-prompt schema="1">\n${envelope}\n</bridge-stable-prompt>`;
+  const variableSuffix = '<bridge-variable-context>\n{"sections":[]}\n</bridge-variable-context>';
+  const providerLayers: PromptProviderLayerStatus[] = [
+    ["claude", "the Claude Agent SDK compiles the preset internally and never returns it"],
+    ["codex", "no app-server method returns Codex's own base agent instructions"],
+    ["opencode", "OpenCode's session API has no endpoint for its provider base system prompt"],
+  ].map(([adapter, detail]) => ({ layer: "provider_base", adapter, source: "unavailable", bytes: null, detail }));
+  // Real digest over the exact envelope bytes — no invented hashes.
+  const prefixBytes = utf8Bytes(stablePrefix);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stablePrefix));
+  const prefixHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return {
+    target: stack.target,
+    depth: stack.depth,
+    stack,
+    stablePrefix,
+    variableSuffix,
+    schemaVersion: 1,
+    prefixId: `bridge-prompt-v1-${prefixHash.slice(0, 16)}`,
+    prefixHash,
+    prefixBytes,
+    prefixTokenEstimate: Math.ceil(prefixBytes / 4),
+    providerLayers,
+  };
+}
 let nextEventId = 20;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
   transportConnected: false, extensionId: "jocamgijenfmpopdfecjfnjdnohhoool", extensionPath: "/path/to/browser-extension",
@@ -676,7 +814,35 @@ export const bridgeApi = {
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     // Reset clears every configuration row on the real path, the policy included.
     mockConfigState.permissionPolicy = { bypassAll: false, updatedAt: "" };
+    // Prompt-section overrides are configuration rows too: cleared, but their
+    // history survives as appended reset revisions.
+    mockPromptResetAll();
     return Promise.resolve(structuredClone(mockConfigState));
+  },
+  promptStack: (target: PromptTargetChoice, depth?: number): Promise<PromptStackView> =>
+    isTauri() ? call("config/get_prompt_stack", { target, depth: depth ?? null }) : Promise.resolve(mockPromptStack(target, mockPromptDepth(depth))),
+  savePromptSection: (target: PromptTargetChoice, sectionId: string, text: string, depth?: number): Promise<PromptSectionMutationResult> => {
+    if (isTauri()) return call("config/save_prompt_section", { target, sectionId, text, depth: depth ?? null });
+    return Promise.resolve().then(() => mockPromptMutation(target, sectionId, mockPromptDepth(depth), { state: "overridden", text }));
+  },
+  resetPromptSection: (target: PromptTargetChoice, sectionId: string, depth?: number): Promise<PromptSectionMutationResult> => {
+    if (isTauri()) return call("config/reset_prompt_section", { target, sectionId, depth: depth ?? null });
+    return Promise.resolve().then(() => mockPromptMutation(target, sectionId, mockPromptDepth(depth), { state: "default" }));
+  },
+  restorePromptRevision: (target: PromptTargetChoice, sectionId: string, revisionId: number, depth?: number): Promise<PromptSectionMutationResult> => {
+    if (isTauri()) return call("config/restore_prompt_revision", { target, sectionId, revisionId, depth: depth ?? null });
+    return Promise.resolve().then(() => {
+      const resolved = mockPromptDepth(depth);
+      const key = `${target}:${sectionId}`;
+      const record = mockPromptSections.get(key);
+      const restored = record?.revisions.find(revision => revision.id === revisionId);
+      if (!restored) throw new Error(`mock prompt revision ${revisionId} does not belong to ${key}`);
+      return mockPromptMutation(target, sectionId, resolved, structuredClone(restored.state), revisionId);
+    });
+  },
+  previewCompiledPrompt: (target: PromptTargetChoice, depth?: number): Promise<CompiledPromptPreviewResult> => {
+    if (isTauri()) return call("config/preview_compiled_prompt", { target, depth: depth ?? null });
+    return mockPromptPreview(target, mockPromptDepth(depth));
   },
   learningState: (workspaceId: string): Promise<LearningState> => isTauri() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
   runLearning: (triggerKind: LocalLearningTriggerKind = "manual", workspaceId: string): Promise<LearningRun> => {
