@@ -42,13 +42,13 @@ describe("SettingsScreen", () => {
       container.remove();
     });
 
-    it("mounts PromptStudio when the Prompts nav item is selected", async () => {
+    it("mounts PromptStudio when the Prompt Studio nav item is selected", async () => {
       await act(async () => {
         root.render(<SettingsScreen adapters={[]} onModelSetupChange={() => undefined} onSuggestionSettingsChange={() => undefined} onError={() => undefined} />);
         await flush();
       });
       await act(async () => {
-        button(container, "Prompts").click();
+        button(container, "Prompt Studio").click();
         await flush();
       });
       expect(container.textContent).toContain("Orchestrator");

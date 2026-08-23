@@ -134,7 +134,11 @@ export function PromptStudio() {
     setBusy(true);
     setError(undefined);
     try { await action(); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      setAnnouncement(`Failed: ${message}`);
+    }
     finally { setBusy(false); }
   }
 
@@ -282,6 +286,7 @@ const handleImportFile = (files: FileList | null) => {
               className={cn("flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12.5px]", sectionId === item.id ? "bg-foreground/[0.08] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground")}
             >
               <span className="min-w-0 flex-1 truncate font-mono">{item.id}</span>
+              {docKeyFor(target, item.id) in drafts && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-info" aria-label="Unsaved draft" />}
               <span className="shrink-0 text-[10px] text-muted-foreground/80">{item.tokenEstimate} tok</span>
               {item.state.state === "deleted" && <span className="shrink-0 rounded-full bg-destructive/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-destructive">Deleted</span>}
               {item.state.state === "overridden" && <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-warning">Modified</span>}
@@ -383,12 +388,14 @@ const handleImportFile = (files: FileList | null) => {
             <dt>Bytes (exact)</dt><dd>{preview.prefixBytes}</dd>
             <dt>Tokens (est.)</dt><dd>{preview.prefixTokenEstimate}</dd>
           </dl>
-          <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.stablePrefix}</pre>
-          <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.variableSuffix}</pre>
+          <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Stable prefix — exact bytes</p>
+          <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.stablePrefix}</pre>
+          <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Variable suffix — exact bytes</p>
+          <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.variableSuffix}</pre>
         </div>
 
         {prefixChanged && <p role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-2 text-[10.5px] text-warning">
-          Bridge prefix changed — the next turn rebuilds the provider cache. Provider-side cache savings shown here are always estimated, never measured.
+          Bridge prefix changed — the next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured.
         </p>}
 
         <div>

@@ -144,10 +144,13 @@ describe("PromptStudio", () => {
 
     await typeInto(editorTextarea(container), "You are Bridge's customized orchestrator.");
     expect(save().disabled).toBe(false);
+    // The unsaved draft is visible on the section row, not only via Save.
+    expect(container.querySelector('[aria-label="Unsaved draft"]')).not.toBeNull();
 
     await act(async () => { save().click(); await flush(); });
     expect(saveSpy).toHaveBeenCalledWith("orchestrator", "bridge_role", "You are Bridge's customized orchestrator.");
     expect(save().disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Unsaved draft"]')).toBeNull();
     expect(optionText(container, "bridge_role")).toContain("Modified");
     await unmount();
   });
@@ -266,6 +269,9 @@ describe("PromptStudio", () => {
     await selectFile(fileInput(container), JSON.stringify([1, 2, 3]));
     expect(container.textContent).toMatch(/JSON object/);
     expect(saveSpy).not.toHaveBeenCalled();
+    // Failures are announced through the same live region as successes.
+    const liveRegion = () => container.querySelector('[aria-live="polite"]')!;
+    expect(liveRegion().textContent).toContain("Failed:");
 
     await selectFile(fileInput(container), JSON.stringify({ "not-a-real-target": { bridge_role: { state: "overridden", text: "x" } } }));
     expect(container.textContent).toMatch(/Unknown prompt target/);

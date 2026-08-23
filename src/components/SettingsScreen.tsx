@@ -309,7 +309,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         <SectionButton active={section === "agents"} icon={<Bot size={15} />} label="Agents" onClick={() => setSection("agents")} />
         <SectionButton active={section === "harnesses"} icon={<Code2 size={15} />} label="Harnesses" onClick={() => setSection("harnesses")} />
         <SectionButton active={section === "models"} icon={<Settings2 size={15} />} label="Role models" onClick={() => setSection("models")} />
-        <SectionButton active={section === "prompts"} icon={<ScrollText size={15} />} label="Prompts" onClick={() => setSection("prompts")} />
+        <SectionButton active={section === "prompts"} icon={<ScrollText size={15} />} label="Prompt Studio" onClick={() => setSection("prompts")} />
         <SectionButton active={section === "permissions"} icon={<Shield size={15} />} label="Permissions" onClick={() => setSection("permissions")} />
         <SectionButton active={section === "work"} icon={<Sparkles size={15} />} label="Work" onClick={() => setSection("work")} />
         <SectionButton active={section === "appearance"} icon={<Sun size={15} />} label="Appearance" onClick={() => setSection("appearance")} />
@@ -335,7 +335,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
           busy={busy}
           onChange={policy => void savePolicy(policy)}
         />}
-        {section === "prompts" && <div className="mx-auto h-[75vh] max-w-6xl"><PromptStudio /></div>}
+        {section === "prompts" && <div className="mx-auto h-full max-w-6xl"><PromptStudio /></div>}
         {section === "appearance" && <AppearanceSection />}
         {section === "work" && <WorkSettingsSection onError={onError} />}
         {section === "harnesses" && config && <div className="mx-auto max-w-4xl">
