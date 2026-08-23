@@ -467,6 +467,12 @@ mod prompt_section_tests {
             restoration_mode: "fresh".into(),
             cross_harness_reuse: "not_applicable".into(),
             created_at: "now".into(),
+            sections_json: None,
+            stable_bytes: None,
+            variable_bytes: None,
+            stable_token_estimate: None,
+            variable_token_estimate: None,
+            token_estimate_source: None,
         };
         assert!(prompt_compilation_matches(
             &previous,
@@ -621,6 +627,16 @@ pub fn persist_prompt_compilation(
             restoration_mode: restoration_mode.as_str().into(),
             cross_harness_reuse: cross_harness_reuse.into(),
             created_at: Utc::now().to_rfc3339(),
+            sections_json: Some(
+                serde_json::to_string(&prompt.accounting.entries).map_err(|error| {
+                    BridgeError::Invalid(format!("Could not serialize prompt accounting: {error}"))
+                })?,
+            ),
+            stable_bytes: Some(prompt.accounting.stable_bytes as i64),
+            variable_bytes: Some(prompt.accounting.variable_bytes as i64),
+            stable_token_estimate: Some(prompt.accounting.stable_token_estimate as i64),
+            variable_token_estimate: Some(prompt.accounting.variable_token_estimate as i64),
+            token_estimate_source: Some(prompt.accounting.token_estimate_source.clone()),
         },
     )
 }

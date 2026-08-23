@@ -612,6 +612,12 @@ pub struct PromptCompilationRecord {
     pub restoration_mode: String,
     pub cross_harness_reuse: String,
     pub created_at: String,
+    pub sections_json: Option<String>,
+    pub stable_bytes: Option<i64>,
+    pub variable_bytes: Option<i64>,
+    pub stable_token_estimate: Option<i64>,
+    pub variable_token_estimate: Option<i64>,
+    pub token_estimate_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
