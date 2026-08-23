@@ -235,14 +235,38 @@ pub enum PromptSectionStatePayload {
     Deleted,
 }
 
-/// One append-only revision of a prompt section. `operation` is one of the
-/// closed set `override | delete | reset | restore` that the revision store's
-/// CHECK constraints enforce.
+/// The closed mutation vocabulary of a revision. Mirrors
+/// `bridge_core::prompt_sections::PromptSectionOperation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptRevisionOperation {
+    Override,
+    Delete,
+    Reset,
+    Restore,
+}
+
+/// How a provider-owned layer's byte count was obtained. Closed vocabulary —
+/// mirrors `bridge_core::prompt_studio::PromptLayerSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptLayerSource {
+    /// The provider reported the number itself.
+    Reported,
+    /// Bridge observed the exact bytes.
+    Measured,
+    /// A labelled approximation.
+    Estimated,
+    /// Nothing defensible exists.
+    Unavailable,
+}
+
+/// One append-only revision of a prompt section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptRevisionView {
     pub id: i64,
-    pub operation: String,
+    pub operation: PromptRevisionOperation,
     pub state: PromptSectionStatePayload,
     pub restored_from_revision_id: Option<i64>,
     pub created_at: String,
@@ -298,16 +322,14 @@ pub struct PromptSectionMutationResult {
     pub stack: PromptStackView,
 }
 
-/// One provider-owned layer's honest standing inside a preview. `source` is a
-/// closed vocabulary describing how `bytes` was obtained: `reported`,
-/// `measured`, `estimated`, or `unavailable`. Mirrors
+/// One provider-owned layer's honest standing inside a preview. Mirrors
 /// `bridge_core::prompt_studio::PromptProviderLayerStatus`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptProviderLayerStatus {
     pub layer: String,
     pub adapter: String,
-    pub source: String,
+    pub source: PromptLayerSource,
     /// Exact byte size when actually readable; never invented.
     pub bytes: Option<u64>,
     pub detail: Option<String>,
@@ -614,7 +636,7 @@ mod tests {
                 }],
                 revisions: vec![PromptRevisionView {
                     id: 4,
-                    operation: "override".into(),
+                    operation: PromptRevisionOperation::Override,
                     state: PromptSectionStatePayload::Overridden { text: "Custom.".into() },
                     restored_from_revision_id: None,
                     created_at: "2026-08-23T00:00:00Z".into(),
@@ -635,7 +657,7 @@ mod tests {
         let mutation = PromptSectionMutationResult {
             revision: PromptRevisionView {
                 id: 5,
-                operation: "restore".into(),
+                operation: PromptRevisionOperation::Restore,
                 state: PromptSectionStatePayload::Deleted,
                 restored_from_revision_id: Some(2),
                 created_at: "2026-08-23T00:00:00Z".into(),
@@ -646,6 +668,25 @@ mod tests {
         assert_eq!(wire["revision"]["restoredFromRevisionId"], json!(2));
         assert_eq!(wire["revision"]["operation"], json!("restore"));
         assert_eq!(round_trip(&mutation), mutation);
+
+        // Typed vocabularies serialize as their closed string sets.
+        for (value, wire) in [
+            (PromptRevisionOperation::Override, "override"),
+            (PromptRevisionOperation::Delete, "delete"),
+            (PromptRevisionOperation::Reset, "reset"),
+            (PromptRevisionOperation::Restore, "restore"),
+        ] {
+            assert_eq!(serde_json::to_value(&value).unwrap(), json!(wire));
+        }
+        for (value, wire) in [
+            (PromptLayerSource::Reported, "reported"),
+            (PromptLayerSource::Measured, "measured"),
+            (PromptLayerSource::Estimated, "estimated"),
+            (PromptLayerSource::Unavailable, "unavailable"),
+        ] {
+            assert_eq!(serde_json::to_value(&value).unwrap(), json!(wire));
+        }
+        assert!(serde_json::from_value::<PromptLayerSource>(json!("fabricated")).is_err());
 
         let deleted_state = PromptSectionStatePayload::Deleted;
         assert_eq!(

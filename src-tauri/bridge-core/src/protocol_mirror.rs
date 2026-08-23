@@ -1130,7 +1130,7 @@ fn prompt_studio_payloads_mirror_core() {
     let overridden = prompt_sections::PromptSectionState::Overridden { text: "Custom.".into() };
     let revision_view = prompt_studio::PromptRevisionView {
         id: 4,
-        operation: "override".into(),
+        operation: prompt_sections::PromptSectionOperation::Override,
         state: overridden.clone(),
         restored_from_revision_id: None,
         created_at: "now".into(),
@@ -1140,6 +1140,8 @@ fn prompt_studio_payloads_mirror_core() {
     assert_mirrors::<wire::PromptSectionStatePayload>(
         &prompt_sections::PromptSectionState::Deleted,
     );
+    assert_mirrors::<wire::PromptRevisionOperation>(&prompt_sections::PromptSectionOperation::Restore);
+    assert_mirrors::<wire::PromptLayerSource>(&prompt_studio::PromptLayerSource::Unavailable);
     assert_mirrors::<wire::PromptLintWarningView>(&prompt_studio::PromptLintWarningView {
         marker: "bridge-delegate".into(),
         message: "Typed delegation may stop working.".into(),
@@ -1186,7 +1188,7 @@ fn prompt_studio_payloads_mirror_core() {
         provider_layers: vec![prompt_studio::PromptProviderLayerStatus {
             layer: "provider_base".into(),
             adapter: "claude".into(),
-            source: "unavailable".into(),
+            source: prompt_studio::PromptLayerSource::Unavailable,
             bytes: None,
             detail: Some("the Claude Agent SDK compiles the preset internally".into()),
         }],

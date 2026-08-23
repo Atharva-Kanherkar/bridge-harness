@@ -851,6 +851,8 @@ export interface Project {
   path: string;
 }
 
+export type PromptLayerSource = "reported" | "measured" | "estimated" | "unavailable";
+
 export interface PromptLintWarningView {
   marker: string;
   message: string;
@@ -861,13 +863,15 @@ export interface PromptProviderLayerStatus {
   bytes?: number | null;
   detail?: string | null;
   layer: string;
-  source: string;
+  source: PromptLayerSource;
 }
+
+export type PromptRevisionOperation = "override" | "delete" | "reset" | "restore";
 
 export interface PromptRevisionView {
   createdAt: string;
   id: number;
-  operation: string;
+  operation: PromptRevisionOperation;
   restoredFromRevisionId?: number | null;
   state: PromptSectionStatePayload;
 }

@@ -18,8 +18,18 @@
       ],
       "type": "object"
     },
+    "PromptRevisionOperation": {
+      "description": "The closed mutation vocabulary of a revision. Mirrors `bridge_core::prompt_sections::PromptSectionOperation`.",
+      "enum": [
+        "override",
+        "delete",
+        "reset",
+        "restore"
+      ],
+      "type": "string"
+    },
     "PromptRevisionView": {
-      "description": "One append-only revision of a prompt section. `operation` is one of the closed set `override | delete | reset | restore` that the revision store's CHECK constraints enforce.",
+      "description": "One append-only revision of a prompt section.",
       "properties": {
         "createdAt": {
           "type": "string"
@@ -29,7 +39,7 @@
           "type": "integer"
         },
         "operation": {
-          "type": "string"
+          "$ref": "#/definitions/PromptRevisionOperation"
         },
         "restoredFromRevisionId": {
           "format": "int64",

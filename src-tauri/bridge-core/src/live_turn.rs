@@ -132,7 +132,7 @@ fn compile_worker_prompt(
     compiler.compile()
 }
 
-fn compiler_for_stack(
+pub(crate) fn compiler_for_stack(
     stack: &prompt_sections::ResolvedPromptStack,
     expected_target: prompts::PromptTarget,
 ) -> Result<prompt_compiler::PromptCompiler, BridgeError> {
@@ -143,11 +143,7 @@ fn compiler_for_stack(
             expected_target.storage_key()
         )));
     }
-    let mut compiler = prompt_compiler::PromptCompiler::new(stack.target.compiler_role());
-    for section in &stack.sections {
-        compiler = compiler.stable_section(&section.id, &section.text);
-    }
-    Ok(compiler)
+    prompt_compiler::compiler_for_resolved_stack(stack)
 }
 
 fn prompt_compilation_matches(

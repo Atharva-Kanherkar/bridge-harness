@@ -12,11 +12,31 @@
 //! provider-base row is `unavailable` with the authority reason attached.
 
 use crate::{
-    delegation, prompt_authority, prompt_compiler::PromptCompiler, prompt_sections, prompts,
-    BridgeError,
+    delegation, prompt_authority, prompt_compiler, prompt_sections,
+    prompt_sections::PromptSectionOperation, prompts, BridgeError,
 };
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// The most recent window of each section's history embedded in views. The
+/// store keeps everything append-only; views stay bounded so responses cannot
+/// grow without limit. Older revisions remain addressable by id for restore.
+pub const MAX_REVISIONS_IN_VIEW: usize = 50;
+
+/// How a provider-owned layer's `bytes` value was obtained. Closed vocabulary:
+/// never fabricate a number that a source below does not defend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptLayerSource {
+    /// The provider reported the number itself.
+    Reported,
+    /// Bridge observed the exact bytes.
+    Measured,
+    /// A labelled approximation.
+    Estimated,
+    /// Nothing defensible exists.
+    Unavailable,
+}
 
 /// One section of a target's prompt stack, as the studio sees it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -52,9 +72,7 @@ pub struct PromptStackView {
 #[serde(rename_all = "camelCase")]
 pub struct PromptRevisionView {
     pub id: i64,
-    /// One of `override`, `delete`, `reset`, `restore` — the closed set the
-    /// revision store's CHECK constraints enforce.
-    pub operation: String,
+    pub operation: PromptSectionOperation,
     pub state: prompt_sections::PromptSectionState,
     pub restored_from_revision_id: Option<i64>,
     pub created_at: String,
@@ -109,7 +127,7 @@ pub struct CompiledPromptPreview {
 pub struct PromptProviderLayerStatus {
     pub layer: String,
     pub adapter: String,
-    pub source: String,
+    pub source: PromptLayerSource,
     /// Exact byte size when actually readable; never invented.
     pub bytes: Option<u64>,
     pub detail: Option<String>,
@@ -129,23 +147,30 @@ fn storage_key(target: prompts::PromptTarget) -> String {
     target.storage_key().to_owned()
 }
 
-fn operation_name(operation: prompt_sections::PromptSectionOperation) -> &'static str {
-    match operation {
-        prompt_sections::PromptSectionOperation::Override => "override",
-        prompt_sections::PromptSectionOperation::Delete => "delete",
-        prompt_sections::PromptSectionOperation::Reset => "reset",
-        prompt_sections::PromptSectionOperation::Restore => "restore",
-    }
-}
-
 fn revision_view(revision: &prompt_sections::PromptSectionRevision) -> PromptRevisionView {
     PromptRevisionView {
         id: revision.id,
-        operation: operation_name(revision.operation).to_owned(),
+        operation: revision.operation,
         state: revision.state.clone(),
         restored_from_revision_id: revision.restored_from_revision_id,
         created_at: revision.created_at.clone(),
     }
+}
+
+/// The bounded history window: the newest [`MAX_REVISIONS_IN_VIEW`] revisions,
+/// kept oldest-first so clients render chronological order without reversal.
+fn bounded_revisions(
+    db: &Connection,
+    key: &prompt_sections::PromptSectionKey,
+) -> Result<Vec<PromptRevisionView>, BridgeError> {
+    let mut revisions = prompt_sections::revisions(db, key)?
+        .iter()
+        .map(revision_view)
+        .collect::<Vec<_>>();
+    if revisions.len() > MAX_REVISIONS_IN_VIEW {
+        revisions.drain(..revisions.len() - MAX_REVISIONS_IN_VIEW);
+    }
+    Ok(revisions)
 }
 
 fn section_view(
@@ -171,10 +196,7 @@ fn section_view(
             message: warning.message,
         })
         .collect();
-    let revisions = prompt_sections::revisions(db, &key)?
-        .iter()
-        .map(revision_view)
-        .collect();
+    let revisions = bounded_revisions(db, &key)?;
     Ok(PromptSectionView {
         id: default_section.id.to_owned(),
         state,
@@ -222,6 +244,9 @@ pub fn save_section(
     depth: i64,
     text: &str,
 ) -> Result<PromptSectionMutation, BridgeError> {
+    // Validate everything before the first write: a rejected request must
+    // leave states, texts, and revision counts exactly as they were.
+    validate_depth(depth)?;
     let key = prompt_sections::PromptSectionKey::new(target, section_id)?;
     let revision = prompt_sections::save_override(db, &key, text)?;
     Ok(PromptSectionMutation {
@@ -236,6 +261,7 @@ pub fn reset_section(
     section_id: &str,
     depth: i64,
 ) -> Result<PromptSectionMutation, BridgeError> {
+    validate_depth(depth)?;
     let key = prompt_sections::PromptSectionKey::new(target, section_id)?;
     let revision = prompt_sections::reset_section(db, &key)?;
     Ok(PromptSectionMutation {
@@ -251,6 +277,7 @@ pub fn restore_revision(
     revision_id: i64,
     depth: i64,
 ) -> Result<PromptSectionMutation, BridgeError> {
+    validate_depth(depth)?;
     let key = prompt_sections::PromptSectionKey::new(target, section_id)?;
     let revision = prompt_sections::restore_revision(db, &key, revision_id)?;
     Ok(PromptSectionMutation {
@@ -268,10 +295,10 @@ fn provider_layer_statuses() -> Vec<PromptProviderLayerStatus> {
             // the match below is exactly what it must extend.
             let (source, detail) = match capability.readable {
                 prompt_authority::PromptVerdict::Unsupported { reason } => {
-                    ("unavailable", Some(reason.to_string()))
+                    (PromptLayerSource::Unavailable, Some(reason.to_string()))
                 }
                 prompt_authority::PromptVerdict::Supported => (
-                    "unavailable",
+                    PromptLayerSource::Unavailable,
                     Some(
                         "this adapter could expose its base prompt, but Bridge does not \
                          capture provider-base bytes yet"
@@ -282,7 +309,7 @@ fn provider_layer_statuses() -> Vec<PromptProviderLayerStatus> {
             PromptProviderLayerStatus {
                 layer: "provider_base".to_owned(),
                 adapter: capability.adapter.to_owned(),
-                source: source.to_owned(),
+                source,
                 bytes: None,
                 detail,
             }
@@ -306,11 +333,8 @@ pub fn preview(
 ) -> Result<CompiledPromptPreview, BridgeError> {
     let stack = stack_view(db, target, depth)?;
     let resolved = prompt_sections::resolve(db, target, depth)?;
-    let mut compiler = PromptCompiler::new(resolved.target.compiler_role());
-    for section in &resolved.sections {
-        compiler = compiler.stable_section(&section.id, &section.text);
-    }
-    let compiled = compiler.compile()?;
+    // The exact same builder the live turn path uses — one composition, no drift.
+    let compiled = prompt_compiler::compiler_for_resolved_stack(&resolved)?.compile()?;
     Ok(CompiledPromptPreview {
         target: stack.target.clone(),
         depth,
@@ -389,7 +413,7 @@ mod tests {
             "an edit that strips required markers must surface lint warnings"
         );
         assert_eq!(role.revisions.len(), 1);
-        assert_eq!(role.revisions[0].operation, "override");
+        assert_eq!(role.revisions[0].operation, PromptSectionOperation::Override);
 
         prompt_sections::delete_section(
             &db,
@@ -421,7 +445,7 @@ mod tests {
 
         let saved =
             save_section(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, 0, "Policy v1").unwrap();
-        assert_eq!(saved.revision.operation, "override");
+        assert_eq!(saved.revision.operation, PromptSectionOperation::Override);
         assert_eq!(saved.stack.target, "orchestrator");
         let saved_role = section(&saved.stack, prompts::BRIDGE_ROLE_SECTION_ID);
         assert_eq!(saved_role.effective_text.as_deref(), Some("Policy v1"));
@@ -439,7 +463,7 @@ mod tests {
         );
 
         let reset = reset_section(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, 0).unwrap();
-        assert_eq!(reset.revision.operation, "reset");
+        assert_eq!(reset.revision.operation, PromptSectionOperation::Reset);
         let reset_role = section(&reset.stack, prompts::BRIDGE_ROLE_SECTION_ID);
         assert_eq!(reset_role.state, prompt_sections::PromptSectionState::Default);
         assert_eq!(reset_role.revisions.len(), 3);
@@ -447,7 +471,7 @@ mod tests {
         let restored =
             restore_revision(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, saved.revision.id, 0)
                 .unwrap();
-        assert_eq!(restored.revision.operation, "restore");
+        assert_eq!(restored.revision.operation, PromptSectionOperation::Restore);
         assert_eq!(restored.revision.restored_from_revision_id, Some(saved.revision.id));
         let restored_role = section(&restored.stack, prompts::BRIDGE_ROLE_SECTION_ID);
         assert_eq!(restored_role.effective_text.as_deref(), Some("Policy v1"));
@@ -480,6 +504,77 @@ mod tests {
         )
         .revisions
         .is_empty());
+    }
+
+    #[test]
+    fn failed_depth_mutations_have_no_side_effects() {
+        let db = db();
+        let target = prompts::PromptTarget::Orchestrator;
+        save_section(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, 0, "Before.").unwrap();
+        let before = stack(&db, target, 0).unwrap();
+
+        for bad_depth in [-1, delegation::DEFAULT_MAX_DEPTH + 1] {
+            assert!(save_section(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, bad_depth, "x")
+                .is_err());
+            assert!(reset_section(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, bad_depth).is_err());
+            assert!(
+                restore_revision(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, 1, bad_depth)
+                    .is_err()
+            );
+        }
+
+        let after = stack(&db, target, 0).unwrap();
+        assert_eq!(before, after, "rejected mutations must not touch the database");
+    }
+
+    #[test]
+    fn revision_views_are_bounded_to_the_most_recent_window() {
+        let db = db();
+        let target = prompts::PromptTarget::Orchestrator;
+        for round in 0..(MAX_REVISIONS_IN_VIEW + 10) {
+            save_section(
+                &db,
+                target,
+                prompts::BRIDGE_ROLE_SECTION_ID,
+                0,
+                &format!("v{round}"),
+            )
+            .unwrap();
+        }
+        let view = stack(&db, target, 0).unwrap();
+        let role = section(&view, prompts::BRIDGE_ROLE_SECTION_ID);
+        assert_eq!(role.revisions.len(), MAX_REVISIONS_IN_VIEW);
+        // The window keeps the newest revisions, oldest-first within it.
+        assert_eq!(
+            role.revisions.first().unwrap().id,
+            role.revisions.last().unwrap().id - (MAX_REVISIONS_IN_VIEW as i64 - 1)
+        );
+
+        // An older, out-of-window revision is still addressable by id.
+        let oldest_kept = role.revisions.first().unwrap().id;
+        let restored = restore_revision(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, oldest_kept - 1, 0);
+        assert!(restored.is_ok(), "restore must reach beyond the view window");
+    }
+
+    #[test]
+    fn live_and_studio_share_one_compiler_builder() {
+        // The preview path and the live-turn path must produce byte-identical
+        // compilers from the same resolved stack: one builder, two callers.
+        let db = db();
+        let target = prompts::PromptTarget::Orchestrator;
+        save_section(&db, target, prompts::BRIDGE_ROLE_SECTION_ID, 0, "Shared builder.").unwrap();
+        let resolved = prompt_sections::resolve(&db, target, 0).unwrap();
+
+        let via_shared = prompt_compiler::compiler_for_resolved_stack(&resolved)
+            .unwrap()
+            .compile()
+            .unwrap();
+        let via_live = crate::live_turn::compiler_for_stack(&resolved, target)
+            .unwrap()
+            .compile()
+            .unwrap();
+        assert_eq!(via_shared.stable_prefix, via_live.stable_prefix);
+        assert_eq!(via_shared.metadata.prefix_hash, via_live.metadata.prefix_hash);
     }
 
     #[test]
@@ -520,7 +615,7 @@ mod tests {
         // Independently rebuild the expected compilation from the resolved
         // stack and require byte equality on both envelopes.
         let resolved = crate::prompt_sections::resolve(&db, target, 0).unwrap();
-        let mut expected = PromptCompiler::new(resolved.target.compiler_role());
+        let mut expected = prompt_compiler::PromptCompiler::new(resolved.target.compiler_role());
         for compiled_section in &resolved.sections {
             expected = expected.stable_section(&compiled_section.id, &compiled_section.text);
         }
@@ -610,19 +705,18 @@ mod tests {
             assert_eq!(status.layer, "provider_base");
             assert_eq!(status.adapter, authority.adapter);
             assert_eq!(status.bytes, None, "provider-base bytes must never be fabricated");
-            match status.source.as_str() {
-                "reported" | "measured" => panic!(
-                    "{} claims {} without an adapter capture behind it",
+            match status.source {
+                PromptLayerSource::Reported | PromptLayerSource::Measured => panic!(
+                    "{} claims {:?} without an adapter capture behind it",
                     status.adapter, status.source
                 ),
-                "estimated" | "unavailable" => {}
-                other => panic!("unknown provider-layer source {other:?}"),
+                PromptLayerSource::Estimated | PromptLayerSource::Unavailable => {}
             }
             let detail = status.detail.as_deref().unwrap_or_default();
             assert!(!detail.is_empty(), "{} needs a reason worth reading", status.adapter);
             match authority.readable {
                 prompt_authority::PromptVerdict::Unsupported { reason } => {
-                    assert_eq!(status.source, "unavailable");
+                    assert_eq!(status.source, PromptLayerSource::Unavailable);
                     assert_eq!(detail, reason);
                 }
                 prompt_authority::PromptVerdict::Supported => {
