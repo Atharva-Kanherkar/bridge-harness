@@ -31,6 +31,10 @@ prompt API shipped in feat/prompt-studio-3-prompt-protocol (#284). Implements
 - Section editing reuses `CodeEditor` (CodeMirror 6) with markdown language
   support (`path="prompt.md"`); `docKey` is `${target}:${sectionId}` so
   switching sections re-seeds cleanly. No second editor implementation.
+  Implementation note: because `CodeEditor` re-seeds only on `docKey` change,
+  the key handed to the editor appends the section's revision count so that a
+  save/reset/restore forces a fresh seed; dirty tracking still keys off the
+  stable `${target}:${sectionId}`.
 - Dirty state: the editor starts from the section's effective text (default
   text when `default`; disabled/read-only presentation when `deleted` until
   reset). Any unsaved change marks the section and the surface dirty. Navigating
