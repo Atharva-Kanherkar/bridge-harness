@@ -1,6 +1,10 @@
 use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
     binary,
+    context_inventory::{
+        AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextObservedSize,
+        ContextSegmentClass, ContextSegmentObservation,
+    },
     delegation::WriteMode,
     BridgeError,
 };
@@ -21,6 +25,7 @@ pub struct ClaudeRuntime {
     pub child: Child,
     pub session_id: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
+    context_inventory: Mutex<Vec<AdapterContextInventory>>,
     request_id: AtomicU64,
     stopped: bool,
     stderr_tail: crate::adapters::StderrTail,
@@ -108,6 +113,12 @@ fn launch(
         None => None,
     };
     let sdk_configuration = crate::marketplace::claude_sdk_configuration();
+    let lifecycle_phase = if resume_session_id.is_some() {
+        ContextLifecyclePhase::Resume
+    } else {
+        ContextLifecyclePhase::Start
+    };
+    let context_inventory = claude_context_inventory(lifecycle_phase, &sdk_configuration)?;
     let config = json!({
         "sessionId": session_id,
         "model": chosen_model,
@@ -200,6 +211,7 @@ fn launch(
             child,
             session_id,
             current_turn: Arc::new(Mutex::new(None)),
+            context_inventory: Mutex::new(context_inventory),
             request_id: AtomicU64::new(1),
             stopped: false,
             stderr_tail,
@@ -462,6 +474,34 @@ impl ClaudeRuntime {
                 }
             }),
         )?;
+        let (mcp_names, plugin_names) = {
+            let inventory = self.context_inventory.lock().unwrap();
+            let catalog = inventory
+                .iter()
+                .find(|item| item.scope == ContextInventoryScope::Catalog);
+            let names = |class| {
+                catalog
+                    .and_then(|item| {
+                        item.observations
+                            .iter()
+                            .find(|observation| observation.segment_class == class)
+                    })
+                    .map(|observation| observation.names.clone())
+                    .unwrap_or_default()
+            };
+            (
+                names(ContextSegmentClass::McpDynamicTools),
+                names(ContextSegmentClass::SkillsPlugins),
+            )
+        };
+        crate::context_inventory::record_runtime_inventory(
+            &self.context_inventory,
+            [claude_turn_presented_inventory(
+                ContextLifecyclePhase::PerTurn,
+                &mcp_names,
+                &plugin_names,
+            )?],
+        );
         Ok(())
     }
 
@@ -506,6 +546,9 @@ impl AdapterRuntime for ClaudeRuntime {
     fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
         self.current_turn.clone()
     }
+    fn context_inventory(&self) -> Vec<AdapterContextInventory> {
+        self.context_inventory.lock().unwrap().clone()
+    }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text)
     }
@@ -527,6 +570,89 @@ impl AdapterRuntime for ClaudeRuntime {
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
     }
+}
+
+pub(crate) fn claude_context_inventory(
+    lifecycle_phase: ContextLifecyclePhase,
+    configuration: &crate::marketplace::ClaudeSdkConfiguration,
+) -> Result<Vec<AdapterContextInventory>, BridgeError> {
+    let mcp_names = configuration
+        .mcp_servers
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let plugin_names = configuration.plugins.clone();
+    let catalog = AdapterContextInventory::new(
+        "claude",
+        ContextInventoryScope::Catalog,
+        lifecycle_phase,
+        vec![
+            ContextSegmentObservation::unavailable_with_names(
+                ContextSegmentClass::ProviderBaseInstructions,
+                ["claude_code"],
+                "Claude Agent SDK identifies the provider preset but does not expose its instruction bytes or tokens",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::ToolSchemas,
+                "Claude Agent SDK does not expose the provider-owned tool schemas compiled for the query",
+            ),
+            ContextSegmentObservation::measured(
+                ContextSegmentClass::McpDynamicTools,
+                &mcp_names,
+                ContextObservedSize::bounded(Some(mcp_names.len() as u64), None, None),
+            ),
+            ContextSegmentObservation::measured(
+                ContextSegmentClass::SkillsPlugins,
+                &plugin_names,
+                ContextObservedSize::bounded(Some(plugin_names.len() as u64), None, None),
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::AgentDefinitions,
+                "Claude Agent SDK does not expose provider-owned agent definitions compiled for the query",
+            ),
+        ],
+    )?;
+    Ok(vec![
+        catalog,
+        claude_turn_presented_inventory(lifecycle_phase, &mcp_names, &plugin_names)?,
+    ])
+}
+
+fn claude_turn_presented_inventory(
+    lifecycle_phase: ContextLifecyclePhase,
+    mcp_names: &[String],
+    plugin_names: &[String],
+) -> Result<AdapterContextInventory, BridgeError> {
+    AdapterContextInventory::new(
+        "claude",
+        ContextInventoryScope::TurnPresented,
+        lifecycle_phase,
+        vec![
+            ContextSegmentObservation::unavailable_with_names(
+                ContextSegmentClass::ProviderBaseInstructions,
+                ["claude_code"],
+                "The claude_code preset is selected for this query, but the SDK does not expose the provider-owned bytes presented to the turn",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::ToolSchemas,
+                "The SDK does not report the provider-owned tool schemas actually presented to this turn",
+            ),
+            ContextSegmentObservation::unavailable_with_names(
+                ContextSegmentClass::McpDynamicTools,
+                mcp_names,
+                "Configured MCP servers are known, but the SDK does not report which generated tools are actually presented to this turn",
+            ),
+            ContextSegmentObservation::unavailable_with_names(
+                ContextSegmentClass::SkillsPlugins,
+                plugin_names,
+                "Configured plugins are known, but the SDK does not report their actual per-turn context contribution",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::AgentDefinitions,
+                "The SDK does not report provider-owned agent definitions actually presented to this turn",
+            ),
+        ],
+    )
 }
 
 impl Drop for ClaudeRuntime {
@@ -630,6 +756,7 @@ fn lock_writer<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_inventory::ContextObservationProvenance;
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());
@@ -641,6 +768,53 @@ mod tests {
             lock_writer(&writer, "Claude"),
             Err(BridgeError::Adapter(_))
         ));
+    }
+
+    #[test]
+    fn claude_context_inventory_covers_start_resume_and_per_turn() {
+        let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+        let configuration = crate::marketplace::ClaudeSdkConfiguration {
+            plugins: vec![format!("plugin-{secret}")],
+            mcp_servers: std::collections::BTreeMap::from([(
+                format!("server-{secret}"),
+                json!({"type": "http", "url": "http://127.0.0.1"}),
+            )]),
+            connector_health: Default::default(),
+        };
+        for phase in [ContextLifecyclePhase::Start, ContextLifecyclePhase::Resume] {
+            let inventories = claude_context_inventory(phase, &configuration).unwrap();
+            assert_eq!(inventories.len(), 2);
+            let catalog = inventories
+                .iter()
+                .find(|item| item.scope == ContextInventoryScope::Catalog)
+                .unwrap();
+            for class in [
+                ContextSegmentClass::McpDynamicTools,
+                ContextSegmentClass::SkillsPlugins,
+            ] {
+                let observation = catalog
+                    .observations
+                    .iter()
+                    .find(|observation| observation.segment_class == class)
+                    .unwrap();
+                assert!(matches!(
+                    observation.provenance,
+                    ContextObservationProvenance::Measured { .. }
+                ));
+                assert!(observation.names.iter().all(|name| !name.contains(secret)));
+            }
+        }
+        let per_turn = claude_turn_presented_inventory(
+            ContextLifecyclePhase::PerTurn,
+            &["configured-server".into()],
+            &["configured-plugin".into()],
+        )
+        .unwrap();
+        assert_eq!(per_turn.scope, ContextInventoryScope::TurnPresented);
+        assert!(per_turn.observations.iter().all(|observation| matches!(
+            observation.provenance,
+            ContextObservationProvenance::Unavailable { .. }
+        )));
     }
 
     #[test]
