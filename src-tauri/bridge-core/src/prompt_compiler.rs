@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 pub const PROMPT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_VARIABLE_SUFFIX_BYTES: usize = 128 * 1024;
+pub const TOKEN_ESTIMATE_SOURCE: &str = "bytes_div4_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,11 +24,76 @@ pub struct PromptMetadata {
     pub prefix_token_estimate: u64,
 }
 
+/// Which region of the wire payload (`stable_prefix + "\n\n" + variable_suffix`)
+/// an accounting entry's bytes belong to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAccountingRegion {
+    Stable,
+    Variable,
+    Separator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAccountingKind {
+    Role,
+    StableSection,
+    ToolSchema,
+    ProjectRule,
+    VariableSection,
+    Overhead,
+}
+
+/// A leave-one-out attribution of serialized bytes to one causing element
+/// (or, for `Overhead`, to envelope tags/punctuation charged to no element).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAccountingEntry {
+    pub region: PromptAccountingRegion,
+    pub kind: PromptAccountingKind,
+    pub name: String,
+    pub bytes: usize,
+    pub token_estimate: u64,
+}
+
+impl PromptAccountingEntry {
+    fn new(
+        region: PromptAccountingRegion,
+        kind: PromptAccountingKind,
+        name: impl Into<String>,
+        bytes: usize,
+    ) -> Self {
+        Self {
+            region,
+            kind,
+            name: name.into(),
+            bytes,
+            token_estimate: bytes.div_ceil(4) as u64,
+        }
+    }
+}
+
+/// Exact byte accounting for a compiled prompt. Entries sum to
+/// `stable_bytes + variable_bytes + 2` (the `\n\n` separator) with zero
+/// unattributed remainder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAccounting {
+    pub entries: Vec<PromptAccountingEntry>,
+    pub stable_bytes: usize,
+    pub variable_bytes: usize,
+    pub stable_token_estimate: u64,
+    pub variable_token_estimate: u64,
+    pub token_estimate_source: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledPrompt {
     pub metadata: PromptMetadata,
     pub stable_prefix: String,
     pub variable_suffix: String,
+    pub accounting: PromptAccounting,
     instructions: String,
 }
 
@@ -57,7 +123,11 @@ struct NamedText {
 #[serde(rename_all = "camelCase")]
 struct StableEnvelope<'a> {
     schema_version: u32,
-    role: &'a str,
+    // `Option` so leave-one-out accounting can serialize a "role removed"
+    // variant by passing `None`; real compilations always pass `Some`, so
+    // the wire bytes are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'a str>,
     stable_sections: &'a BTreeMap<String, String>,
     tool_schemas: &'a BTreeMap<String, Value>,
     project_rules: &'a BTreeMap<String, String>,
@@ -123,7 +193,7 @@ impl PromptCompiler {
 
         let stable_json = serde_json::to_string(&StableEnvelope {
             schema_version: PROMPT_SCHEMA_VERSION,
-            role: &self.role,
+            role: Some(self.role.as_str()),
             stable_sections: &self.stable_sections,
             tool_schemas: &self.tool_schemas,
             project_rules: &self.project_rules,
@@ -159,10 +229,22 @@ impl PromptCompiler {
             prefix_token_estimate: prefix_bytes.div_ceil(4) as u64,
         };
         let instructions = format!("{stable_prefix}\n\n{variable_suffix}");
+        let accounting = compute_accounting(
+            &self.role,
+            &self.stable_sections,
+            &self.tool_schemas,
+            &self.project_rules,
+            &self.variable_sections,
+            stable_json.len(),
+            variable_json.len(),
+            stable_prefix.len(),
+            variable_suffix.len(),
+        )?;
         Ok(CompiledPrompt {
             metadata,
             stable_prefix,
             variable_suffix,
+            accounting,
             instructions,
         })
     }
@@ -180,6 +262,161 @@ pub fn compiler_for_resolved_stack(
         compiler = compiler.stable_section(&section.id, &section.text);
     }
     Ok(compiler)
+}
+
+/// Leave-one-out delta serialization: for each surviving element, serialize
+/// the envelope once with it present and once with it removed; the byte
+/// difference is charged to that element (escaping, quotes, colons, and
+/// separators included). What's left over — tag literals, braces, the
+/// `schema_version` field, and any un-attributed JSON punctuation — becomes
+/// an explicit overhead entry so the region's bytes close exactly.
+#[allow(clippy::too_many_arguments)]
+fn compute_accounting(
+    role: &str,
+    stable_sections: &BTreeMap<String, String>,
+    tool_schemas: &BTreeMap<String, Value>,
+    project_rules: &BTreeMap<String, String>,
+    variable_sections: &[NamedText],
+    stable_json_len: usize,
+    variable_json_len: usize,
+    stable_prefix_len: usize,
+    variable_suffix_len: usize,
+) -> Result<PromptAccounting, BridgeError> {
+    let mut entries = Vec::new();
+    let mut stable_element_total = 0usize;
+
+    let role_removed_len = serde_json::to_string(&StableEnvelope {
+        schema_version: PROMPT_SCHEMA_VERSION,
+        role: None,
+        stable_sections,
+        tool_schemas,
+        project_rules,
+    })
+    .map_err(prompt_error)?
+    .len();
+    let role_bytes = stable_json_len - role_removed_len;
+    stable_element_total += role_bytes;
+    entries.push(PromptAccountingEntry::new(
+        PromptAccountingRegion::Stable,
+        PromptAccountingKind::Role,
+        "role",
+        role_bytes,
+    ));
+
+    for name in stable_sections.keys() {
+        let mut without = stable_sections.clone();
+        without.remove(name);
+        let without_len = serde_json::to_string(&StableEnvelope {
+            schema_version: PROMPT_SCHEMA_VERSION,
+            role: Some(role),
+            stable_sections: &without,
+            tool_schemas,
+            project_rules,
+        })
+        .map_err(prompt_error)?
+        .len();
+        let bytes = stable_json_len - without_len;
+        stable_element_total += bytes;
+        entries.push(PromptAccountingEntry::new(
+            PromptAccountingRegion::Stable,
+            PromptAccountingKind::StableSection,
+            name.clone(),
+            bytes,
+        ));
+    }
+
+    for name in tool_schemas.keys() {
+        let mut without = tool_schemas.clone();
+        without.remove(name);
+        let without_len = serde_json::to_string(&StableEnvelope {
+            schema_version: PROMPT_SCHEMA_VERSION,
+            role: Some(role),
+            stable_sections,
+            tool_schemas: &without,
+            project_rules,
+        })
+        .map_err(prompt_error)?
+        .len();
+        let bytes = stable_json_len - without_len;
+        stable_element_total += bytes;
+        entries.push(PromptAccountingEntry::new(
+            PromptAccountingRegion::Stable,
+            PromptAccountingKind::ToolSchema,
+            name.clone(),
+            bytes,
+        ));
+    }
+
+    for name in project_rules.keys() {
+        let mut without = project_rules.clone();
+        without.remove(name);
+        let without_len = serde_json::to_string(&StableEnvelope {
+            schema_version: PROMPT_SCHEMA_VERSION,
+            role: Some(role),
+            stable_sections,
+            tool_schemas,
+            project_rules: &without,
+        })
+        .map_err(prompt_error)?
+        .len();
+        let bytes = stable_json_len - without_len;
+        stable_element_total += bytes;
+        entries.push(PromptAccountingEntry::new(
+            PromptAccountingRegion::Stable,
+            PromptAccountingKind::ProjectRule,
+            name.clone(),
+            bytes,
+        ));
+    }
+
+    let stable_overhead_bytes = stable_prefix_len - stable_element_total;
+    entries.push(PromptAccountingEntry::new(
+        PromptAccountingRegion::Stable,
+        PromptAccountingKind::Overhead,
+        "stable_envelope",
+        stable_overhead_bytes,
+    ));
+
+    let mut variable_element_total = 0usize;
+    for index in 0..variable_sections.len() {
+        let mut without = variable_sections.to_vec();
+        without.remove(index);
+        let without_len = serde_json::to_string(&VariableEnvelope { sections: &without })
+            .map_err(prompt_error)?
+            .len();
+        let bytes = variable_json_len - without_len;
+        variable_element_total += bytes;
+        entries.push(PromptAccountingEntry::new(
+            PromptAccountingRegion::Variable,
+            PromptAccountingKind::VariableSection,
+            variable_sections[index].name.clone(),
+            bytes,
+        ));
+    }
+
+    let variable_overhead_bytes = variable_suffix_len - variable_element_total;
+    entries.push(PromptAccountingEntry::new(
+        PromptAccountingRegion::Variable,
+        PromptAccountingKind::Overhead,
+        "variable_envelope",
+        variable_overhead_bytes,
+    ));
+
+    entries.push(PromptAccountingEntry::new(
+        PromptAccountingRegion::Separator,
+        PromptAccountingKind::Overhead,
+        "separator",
+        2,
+    ));
+
+    Ok(PromptAccounting {
+        entries,
+        stable_bytes: stable_prefix_len,
+        variable_bytes: variable_suffix_len,
+        stable_token_estimate: stable_prefix_len.div_ceil(4) as u64,
+        variable_token_estimate: variable_suffix_len.div_ceil(4) as u64,
+        token_estimate_source: TOKEN_ESTIMATE_SOURCE.to_string(),
+    })
 }
 
 fn insert_text(
@@ -360,5 +597,119 @@ mod tests {
             .compile()
             .unwrap_err();
         assert!(error.to_string().contains("maximum"));
+    }
+
+    #[test]
+    fn accounting_closes_to_the_exact_wire_bytes() {
+        let compiled = compiler("Task one").compile().unwrap();
+        let accounting = &compiled.accounting;
+
+        let stable_total: usize = accounting
+            .entries
+            .iter()
+            .filter(|entry| entry.region == PromptAccountingRegion::Stable)
+            .map(|entry| entry.bytes)
+            .sum();
+        assert_eq!(stable_total, compiled.stable_prefix.len());
+
+        let variable_total: usize = accounting
+            .entries
+            .iter()
+            .filter(|entry| entry.region == PromptAccountingRegion::Variable)
+            .map(|entry| entry.bytes)
+            .sum();
+        assert_eq!(variable_total, compiled.variable_suffix.len());
+
+        let separator_bytes: usize = accounting
+            .entries
+            .iter()
+            .filter(|entry| entry.region == PromptAccountingRegion::Separator)
+            .map(|entry| entry.bytes)
+            .sum();
+        assert_eq!(separator_bytes, 2);
+
+        let grand_total: usize = accounting.entries.iter().map(|entry| entry.bytes).sum();
+        assert_eq!(grand_total, compiled.instructions().len());
+    }
+
+    #[test]
+    fn json_escaping_is_charged_to_the_causing_element() {
+        let text = "line one\"quote\\backslash\nline two";
+        let compiled = PromptCompiler::new("worker")
+            .stable_section("weird", text)
+            .compile()
+            .unwrap();
+        let entry = compiled
+            .accounting
+            .entries
+            .iter()
+            .find(|entry| entry.kind == PromptAccountingKind::StableSection && entry.name == "weird")
+            .unwrap();
+        assert!(entry.bytes > text.len());
+    }
+
+    #[test]
+    fn empty_and_deleted_sections_produce_no_phantom_entries() {
+        let compiled = PromptCompiler::new("worker")
+            .stable_section("kept", "")
+            .project_rule("kept", "")
+            .variable_section("kept", "")
+            .compile()
+            .unwrap();
+        assert!(compiled
+            .accounting
+            .entries
+            .iter()
+            .all(|entry| entry.kind != PromptAccountingKind::StableSection
+                && entry.kind != PromptAccountingKind::ProjectRule
+                && entry.kind != PromptAccountingKind::VariableSection));
+    }
+
+    #[test]
+    fn separator_and_tags_are_explicitly_attributed() {
+        let compiled = compiler("Task one").compile().unwrap();
+        assert!(compiled.accounting.entries.iter().any(|entry| entry.region
+            == PromptAccountingRegion::Stable
+            && entry.kind == PromptAccountingKind::Overhead
+            && entry.name == "stable_envelope"));
+        assert!(compiled.accounting.entries.iter().any(|entry| entry.region
+            == PromptAccountingRegion::Variable
+            && entry.kind == PromptAccountingKind::Overhead
+            && entry.name == "variable_envelope"));
+        assert!(compiled.accounting.entries.iter().any(|entry| entry.region
+            == PromptAccountingRegion::Separator
+            && entry.name == "separator"
+            && entry.bytes == 2));
+        for entry in &compiled.accounting.entries {
+            assert!(entry.bytes < compiled.instructions().len());
+        }
+    }
+
+    #[test]
+    fn token_estimates_are_labelled_and_bounded() {
+        let compiled = compiler("Task one").compile().unwrap();
+        let accounting = &compiled.accounting;
+        assert_eq!(accounting.token_estimate_source, TOKEN_ESTIMATE_SOURCE);
+        assert_eq!(
+            accounting.stable_token_estimate,
+            accounting.stable_bytes.div_ceil(4) as u64
+        );
+        assert_eq!(
+            accounting.variable_token_estimate,
+            accounting.variable_bytes.div_ceil(4) as u64
+        );
+        assert!(accounting.variable_bytes <= MAX_VARIABLE_SUFFIX_BYTES);
+        assert!(accounting.variable_token_estimate <= MAX_VARIABLE_SUFFIX_BYTES.div_ceil(4) as u64);
+    }
+
+    #[test]
+    fn prefix_identity_is_unchanged_by_accounting() {
+        let first = compiler("Task one").compile().unwrap();
+        let second = compiler("Task one").compile().unwrap();
+        assert_eq!(first.metadata, second.metadata);
+        assert_eq!(first.stable_prefix, second.stable_prefix);
+        assert_eq!(first.metadata.prefix_bytes, first.stable_prefix.len());
+        assert!(!first.stable_prefix.contains("tokenEstimate"));
+        assert!(!first.variable_suffix.contains("tokenEstimate"));
     }
 }
