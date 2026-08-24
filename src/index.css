@@ -59,6 +59,9 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* Nested chrome shares a corner center with the window: inner = outer − inset. */
+    --radius-window: var(--window-radius);
+    --radius-window-control: calc(var(--window-radius) - var(--window-control-inset));
 }
 
 /* ── Light · paper ────────────────────────────────────────────────────────── */
@@ -122,6 +125,12 @@
     --syn-punct: #5d5d57;
 
     --radius: 0.75rem;
+
+    /* macOS Tahoe titlebar-only windows. 16pt is the measured community fallback
+       (toolbar windows are larger). Trailing titlebar chrome is inset by the
+       same amount on both axes so its top-right arc is concentric with the window. */
+    --window-radius: 16px;
+    --window-control-inset: 6px;
 
     --sidebar-foreground: #5d5d57;
     --sidebar-accent: color-mix(in srgb, #1f1f1d 5%, transparent);
@@ -284,6 +293,13 @@
 
   .u-hairline-t {
     border-top: 1px solid var(--color-border);
+  }
+
+  /* Apple squircles where the engine supports them. Unsupported browsers keep
+     circular arcs; those still share a center when the radius follows the inset. */
+  .rounded-window,
+  .rounded-window-control {
+    corner-shape: squircle;
   }
 }
 

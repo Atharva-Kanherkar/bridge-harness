@@ -11,7 +11,8 @@ export type AppTitleBarProps = {
   title: string;
   navOpen: boolean;
   onOpenNav: () => void;
-  /** Right-edge cluster: view toggles, usage. Controls block dragging on their own. */
+  /** Right-edge cluster: view toggles, usage. Trailing inset matches the usage chip
+   *  so its top-right corner is concentric with the window. Controls block dragging. */
   actions?: ReactNode;
 };
 
@@ -19,7 +20,7 @@ export function AppTitleBar({ title, navOpen, onOpenNav, actions }: AppTitleBarP
   return (
     <header
       data-tauri-drag-region="deep"
-      className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-sidebar pl-24 pr-2 sm:pr-3"
+      className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-sidebar pl-24 pr-[var(--window-control-inset)]"
     >
       <button
         type="button"
