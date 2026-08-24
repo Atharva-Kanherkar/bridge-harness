@@ -310,16 +310,19 @@
   }
 }
 
-/* Desktop-only: native Sidebar material sits behind the webview. These fills
-   stay nearly opaque so wallpaper tint is a wash, not a see-through overlay.
-   They live in utilities so they beat `bg-sidebar` / `bg-background`. Vite in
-   Chrome never sets data-tauri, so it stays fully opaque. */
+/* Desktop-only: native Sidebar material sits behind the webview. The rail
+   keeps a light token wash over the material — high fills multiply the
+   wallpaper wash away (90% left 10% of an already subtle signal and read
+   as solid), while a bare material reads too raw. The canvas keeps a
+   near-opaque fill so content stays quiet. These live in utilities so
+   they beat `bg-sidebar` / `bg-background`. Vite in Chrome never sets
+   data-tauri, so it stays fully opaque. */
 @layer utilities {
   html[data-tauri] .u-app-shell {
     background: transparent;
   }
   html[data-tauri] .u-vibrancy-sidebar {
-    background-color: color-mix(in srgb, var(--color-sidebar) 90%, transparent);
+    background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
   }
   html[data-tauri] .u-vibrancy-canvas {
     background-color: color-mix(in srgb, var(--color-background) 97%, transparent);

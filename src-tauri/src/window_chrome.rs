@@ -61,21 +61,14 @@ pub fn position_traffic_lights<R: tauri::Runtime>(_window: &tauri::Window<R>) {
     // platform keeps them in chrome we do not draw over.
 }
 
-/// Put the native Sidebar material behind the webview so wallpaper tint can
-/// reach the rail. A no-op off macOS — CSS in Chrome stays fully opaque.
+/// Keep the window clear so the Sidebar material behind the webview stays
+/// visible. The material itself comes from `windowEffects` in tauri.conf.json,
+/// installed once at window creation — calling `set_effects` here again would
+/// stack another `NSVisualEffectView` on every theme change, because tauri's
+/// macOS path only ever adds effect views. A no-op off macOS.
 #[cfg(target_os = "macos")]
 pub fn apply_wallpaper_tint<R: tauri::Runtime>(window: &tauri::Window<R>) {
     use objc2_app_kit::{NSColor, NSWindow};
-    use tauri::window::{Color, Effect, EffectState, EffectsBuilder};
-
-    let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
-    let _ = window.set_effects(
-        EffectsBuilder::new()
-            .effect(Effect::Sidebar)
-            .state(EffectState::FollowsWindowActiveState)
-            .radius(16.0)
-            .build(),
-    );
 
     let Ok(handle) = window.ns_window() else { return };
     if handle.is_null() {
