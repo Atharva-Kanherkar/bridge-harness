@@ -257,6 +257,7 @@ mod prompt_section_tests {
         credential_context: &str,
     ) -> prompt_compiler::CompiledPrompt {
         prompt_compiler::PromptCompiler::new("session")
+            .stable_section("rendering_note", prompts::RENDERING_NOTE)
             .project_rule("configured_project_rules", configured_prompt)
             .variable_section("session_capabilities", credential_context)
             .compile()
