@@ -95,6 +95,11 @@ function icon(id, size) {
   return '<svg class="icon" style="width:' + (size || 15) + 'px;height:' + (size || 15) + 'px"><use href="#' + id + '"></use></svg>';
 }
 
+function footerTag() {
+  var isLocal = ['localhost', '127.0.0.1', ''].indexOf(window.location.hostname) !== -1;
+  return isLocal ? 'BRIDGE DOCS &mdash; RUNS LOCALLY' : 'BRIDGE DOCS &mdash; PUBLISHED FROM A LOCAL-FIRST APP';
+}
+
 function buildSidebar() {
   var mount = document.getElementById('sidebar');
   if (!mount) return;
@@ -120,7 +125,7 @@ function buildSidebar() {
       '<button class="search-pill" type="button">' + icon('i-search') + '<span>Search docs&hellip;</span><kbd>&#8984;K</kbd></button>' +
     '</div>' +
     '<nav class="sidebar-scroll" aria-label="Docs navigation">' + navHtml + '</nav>' +
-    '<div class="sidebar-foot"><span>BRIDGE DOCS &mdash; RUNS LOCALLY</span></div>' +
+    '<div class="sidebar-foot"><span>' + footerTag() + '</span></div>' +
     '<div class="sidebar-resize" id="sidebarResize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>';
 }
 
