@@ -435,7 +435,13 @@ mod tests {
         // Direct sessions carry no Bridge-authored stable sections at all.
         let direct = stack(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
         assert_eq!(direct.target, "direct_session");
-        assert!(direct.sections.is_empty());
+        assert_eq!(
+            direct.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>(),
+            [prompts::RENDERING_SECTION_ID]
+        );
+        let rendering = section(&direct, prompts::RENDERING_SECTION_ID);
+        assert_eq!(rendering.state, prompt_sections::PromptSectionState::Default);
+        assert_eq!(rendering.effective_text.as_deref(), Some(prompts::RENDERING_NOTE));
     }
 
     #[test]
