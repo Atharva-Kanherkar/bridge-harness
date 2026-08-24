@@ -50,6 +50,9 @@ pub struct Health {
     pub snapshot_count: u64,
     pub snapshot_total_bytes: u64,
     pub adapters: Vec<AdapterDescriptor>,
+    /// Actionable environment warnings (today: macOS TCC-protected project
+    /// paths and ad-hoc code signing). Empty when the environment is clean.
+    pub warnings: Vec<crate::health::HealthWarning>,
 }
 
 pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
@@ -75,6 +78,7 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
         snapshot_count,
         snapshot_total_bytes,
         adapters,
+        warnings: crate::health::macos_environment_warnings(core),
     })
 }
 

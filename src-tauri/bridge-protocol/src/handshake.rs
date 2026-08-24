@@ -39,7 +39,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// client that needs it from handshaking against a daemon that does not have it
 /// and only finding out at `method_not_found` — the daemon outlives the app, so
 /// that pairing is routine rather than exotic.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 3 };
+///
+/// **1.4 adds the optional `warnings` array to `health/health`** (macOS
+/// TCC-protected paths and ad-hoc signing). Defaulted on decode, so a 1.4
+/// client still reads a 1.3 daemon's health — the bump only records that a
+/// daemon serving 1.4 emits it.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 4 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

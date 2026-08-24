@@ -1036,6 +1036,12 @@ fn result_payloads_mirror_core() {
             }],
             default_model: Some("gpt-5".into()),
         }],
+        warnings: vec![crate::health::HealthWarning {
+            id: "macos-adhoc-signature".into(),
+            title: "This build is ad-hoc signed".into(),
+            detail: "See \u{201c}macOS file access prompts\u{201d} in README.md.".into(),
+            paths: vec!["/Users/dev/Documents/app".into()],
+        }],
     });
     assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
         digest: "v1:42:2026-08-20T00:00:00Z".into(),
