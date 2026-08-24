@@ -248,17 +248,28 @@ function markColor(emphasis: DiagramEmphasis | undefined): string {
  * every mark is `currentColor` or `var(--ring)`, so it repaints for free when
  * the `dark` class flips, unlike the Mermaid output it replaces.
  */
+// Chat prose is 15px; the SVG's labels are drawn at 11px, so a 1:1 render
+// reads noticeably smaller than the text around it. Scaling the display
+// size (viewBox untouched, so all geometry scales together) lands the
+// labels at ~15px — the diagram reads at the same size as the prose.
+const DISPLAY_SCALE = 1.35;
+
 export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
   const layout = useMemo(() => layoutDiagram(spec), [spec]);
   const { positions, outDegree, labelSides } = layout;
 
   return (
-    // Sized to its own content at 1:1 (the 11px label text means something
-    // specific only at native scale) via width/height attributes, not CSS —
-    // max-width only ever shrinks an oversized diagram to fit its column,
-    // it never stretches a small one to fill it.
-    <figure className="my-[0.9em] flex flex-col items-start gap-[0.6em] [&_svg]:h-auto [&_svg]:max-w-[min(100%,480px)]">
-      <svg viewBox={layout.viewBox} width={layout.width} height={layout.height} role="img" aria-label={spec.ariaLabel}>
+    // Sized to its own content via width/height attributes, not CSS —
+    // max-width only ever shrinks a diagram wider than its column back
+    // down to fit, it never stretches a small one to fill it.
+    <figure className="my-[0.9em] flex flex-col items-start gap-[0.6em] [&_svg]:h-auto [&_svg]:max-w-full">
+      <svg
+        viewBox={layout.viewBox}
+        width={layout.width * DISPLAY_SCALE}
+        height={layout.height * DISPLAY_SCALE}
+        role="img"
+        aria-label={spec.ariaLabel}
+      >
         <g fill="none" strokeWidth={1.75}>
           {spec.edges.map((edge, index) => {
             const from = positions[edge.from];

@@ -186,6 +186,16 @@ describe("DiagramFigure rendering", () => {
     expect(activeHtml).toContain("var(--ring)");
   });
 
+  it("displays larger than native scale so labels read at prose size", () => {
+    // The viewBox stays at native geometry; the width/height attributes
+    // scale the rendered size up so the 11px labels land near the chat's
+    // 15px prose instead of reading like fine print.
+    const { width, height } = layoutDiagram(BASIC);
+    const html = renderToStaticMarkup(<DiagramFigure spec={BASIC} />);
+    expect(html).toContain(`width="${width * 1.35}"`);
+    expect(html).toContain(`height="${height * 1.35}"`);
+  });
+
   it("draws a halo for checkpoint and tip markers", () => {
     const spec: DiagramSpec = {
       nodes: [
