@@ -14,11 +14,11 @@ Both modes are renderings of the same token names, defined in [`src/index.css`](
 
 |                | Light · paper | Dark · graphite |
 | -------------- | ------------- | --------------- |
-| `--sidebar`    | `#F3F3F1`     | `#191918`       |
-| `--background` | `#FAFAF9`     | `#212120`       |
-| `--card`       | `#FFFFFF`     | `#2A2A28`       |
-| `--popover`    | `#FFFFFF`     | `#323230`       |
-| `--border`     | `#E7E7E4`     | `#31312F`       |
+| `--sidebar`    | `#F3F3F1`     | `#121211`       |
+| `--background` | `#FAFAF9`     | `#171716`       |
+| `--card`       | `#FFFFFF`     | `#1F1F1E`       |
+| `--popover`    | `#FFFFFF`     | `#262624`       |
+| `--border`     | `#E7E7E4`     | `#232321`       |
 | `--foreground` | `#1F1F1D`     | `#ECECEA`       |
 | `--muted-foreground` | `#5D5D57` | `#A8A8A3`      |
 | `--primary`    | `#1F1F1D`     | `#ECECEA`       |
@@ -100,7 +100,7 @@ resolved tokens from the document and re-themes when the mode flips.
 - `text-<status>-foreground` used anywhere but on a full-strength `bg-<status>`
 
 It also asserts the ladder rungs stay distinct within each mode, that both grounds are exactly
-`#FAFAF9` and `#212120`, that `--primary` equals `--foreground`, that no `color-scheme` is pinned on
+`#FAFAF9` and `#171716`, that `--primary` equals `--foreground`, that no `color-scheme` is pinned on
 the document, and that reduced motion is honoured.
 
 Screenshots on this page are the real components rendered against the real compiled CSS with

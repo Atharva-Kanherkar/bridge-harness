@@ -12,7 +12,7 @@ export const THEME_STORAGE_KEY = "bridge.theme";
 /** Window background per mode, kept in sync with `--background` in index.css. */
 const THEME_COLOR: Record<ResolvedTheme, string> = {
   light: "#fafaf9",
-  dark: "#212120",
+  dark: "#171716",
 };
 
 export function isThemePreference(value: unknown): value is ThemePreference {
