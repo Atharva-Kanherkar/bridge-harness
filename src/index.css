@@ -607,76 +607,53 @@
 }
 
 /* ── Syntax highlighting ────────────────────────────────────────────────── */
-.hljs {
+/* Class names emitted by `highlight.ts`'s scope classifier (Shiki tokens
+   bucketed by TextMate scope, not Shiki's own theme colours) — kept
+   deliberately generic (not `shiki-*`) because the classifier, not the
+   library, owns this taxonomy. */
+.stx {
   color: var(--code-foreground);
   background: transparent;
 }
-.hljs-comment,
-.hljs-quote {
+.stx-comment {
   color: var(--syn-comment);
   font-style: italic;
 }
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-meta .hljs-keyword,
-.hljs-doctag {
+.stx-keyword {
   color: var(--syn-keyword);
 }
-.hljs-string,
-.hljs-regexp,
-.hljs-meta .hljs-string {
+.stx-string {
   color: var(--syn-string);
 }
-.hljs-number,
-.hljs-literal {
+.stx-number {
   color: var(--syn-number);
 }
-.hljs-title,
-.hljs-title.function_,
-.hljs-section {
+.stx-function {
   color: var(--syn-function);
 }
-.hljs-title.class_,
-.hljs-type,
-.hljs-built_in {
+.stx-type {
   color: var(--syn-type);
 }
-.hljs-name,
-.hljs-tag,
-.hljs-selector-class,
-.hljs-selector-id {
+.stx-tag {
   color: var(--syn-tag);
 }
-.hljs-attr,
-.hljs-attribute,
-.hljs-variable,
-.hljs-template-variable,
-.hljs-selector-attr {
-  color: var(--code-foreground);
-}
-.hljs-params {
+.stx-params {
   color: var(--color-muted-foreground);
 }
-.hljs-punctuation,
-.hljs-operator {
+.stx-punct {
   color: var(--syn-punct);
 }
-.hljs-symbol,
-.hljs-bullet,
-.hljs-link {
-  color: var(--syn-type);
-}
-.hljs-emphasis {
+.stx-emphasis {
   font-style: italic;
 }
-.hljs-strong {
+.stx-strong {
   font-weight: 600;
 }
-.hljs-addition {
+.stx-addition {
   color: var(--color-success);
   background: color-mix(in srgb, var(--color-success) 12%, transparent);
 }
-.hljs-deletion {
+.stx-deletion {
   color: var(--color-destructive);
   background: color-mix(in srgb, var(--color-destructive) 11%, transparent);
 }
@@ -824,7 +801,7 @@
   background: color-mix(in srgb, var(--color-warning) 55%, transparent);
 }
 
-/* Syntax tokens — the same ramp as `.hljs-*` above, keyed to
+/* Syntax tokens — the same ramp as `.stx-*` above, keyed to
    `@lezer/highlight`'s standard class names. */
 .tok-comment { color: var(--syn-comment); font-style: italic; }
 .tok-keyword, .tok-modifier, .tok-controlKeyword, .tok-operatorKeyword,

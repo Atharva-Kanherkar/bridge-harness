@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
-import { highlightCode, normalizeLang } from "./highlight";
+import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 
 type Block =
@@ -201,7 +201,24 @@ function renderInline(text: string): React.ReactNode[] {
 }
 
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
-  const highlighted = useMemo(() => highlightCode(body, lang), [body, lang]);
+  // `html` is derived at render time, not reset by an effect: an effect only
+  // runs after commit, so for one real paint a naive `useEffect`-driven reset
+  // would show the *previous* block's coloured HTML under the *new* body.
+  // Comparing the cache against the current props keeps that impossible —
+  // the very first render after a change already falls back to plain.
+  const [cache, setCache] = useState<{ body: string; lang: string; html: string } | null>(null);
+  const html = cache && cache.body === body && cache.lang === lang ? cache.html : escapeHtml(body);
+
+  useEffect(() => {
+    let live = true;
+    // Debounced: see `COLORIZE_DEBOUNCE_MS` — a streaming reply re-renders
+    // this on every delta, and a still-growing fence shouldn't schedule a
+    // tokenization pass for every intermediate length.
+    const timer = window.setTimeout(() => {
+      void colorizeCode(body, lang).then(result => { if (live) setCache({ body, lang, html: result }); });
+    }, COLORIZE_DEBOUNCE_MS);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [body, lang]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
   return (
     <div className="code-block">
@@ -209,7 +226,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
         <span className="code-block-lang">{label}</span>
         <CopyButton text={body} className="code-block-copy" />
       </div>
-      <pre><code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} /></pre>
+      <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
     </div>
   );
 }

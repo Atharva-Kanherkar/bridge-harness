@@ -1,82 +1,94 @@
-import hljs from "highlight.js/lib/core";
-import bash from "highlight.js/lib/languages/bash";
-import c from "highlight.js/lib/languages/c";
-import cpp from "highlight.js/lib/languages/cpp";
-import csharp from "highlight.js/lib/languages/csharp";
-import css from "highlight.js/lib/languages/css";
-import dart from "highlight.js/lib/languages/dart";
-import diff from "highlight.js/lib/languages/diff";
-import dockerfile from "highlight.js/lib/languages/dockerfile";
-import elixir from "highlight.js/lib/languages/elixir";
-import go from "highlight.js/lib/languages/go";
-import graphql from "highlight.js/lib/languages/graphql";
-import ini from "highlight.js/lib/languages/ini";
-import java from "highlight.js/lib/languages/java";
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import kotlin from "highlight.js/lib/languages/kotlin";
-import lua from "highlight.js/lib/languages/lua";
-import makefile from "highlight.js/lib/languages/makefile";
-import markdown from "highlight.js/lib/languages/markdown";
-import objectivec from "highlight.js/lib/languages/objectivec";
-import perl from "highlight.js/lib/languages/perl";
-import php from "highlight.js/lib/languages/php";
-import protobuf from "highlight.js/lib/languages/protobuf";
-import python from "highlight.js/lib/languages/python";
-import ruby from "highlight.js/lib/languages/ruby";
-import rust from "highlight.js/lib/languages/rust";
-import scala from "highlight.js/lib/languages/scala";
-import scss from "highlight.js/lib/languages/scss";
-import sql from "highlight.js/lib/languages/sql";
-import swift from "highlight.js/lib/languages/swift";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
+import { createHighlighterCore, type HighlighterCore, type LanguageInput } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-hljs.registerLanguage("bash", bash);
-hljs.registerLanguage("c", c);
-hljs.registerLanguage("cpp", cpp);
-hljs.registerLanguage("csharp", csharp);
-hljs.registerLanguage("css", css);
-hljs.registerLanguage("dart", dart);
-hljs.registerLanguage("diff", diff);
-hljs.registerLanguage("dockerfile", dockerfile);
-hljs.registerLanguage("elixir", elixir);
-hljs.registerLanguage("go", go);
-hljs.registerLanguage("graphql", graphql);
-hljs.registerLanguage("ini", ini);
-hljs.registerLanguage("java", java);
-hljs.registerLanguage("javascript", javascript);
-hljs.registerLanguage("json", json);
-hljs.registerLanguage("kotlin", kotlin);
-hljs.registerLanguage("lua", lua);
-hljs.registerLanguage("makefile", makefile);
-hljs.registerLanguage("markdown", markdown);
-hljs.registerLanguage("objectivec", objectivec);
-hljs.registerLanguage("perl", perl);
-hljs.registerLanguage("php", php);
-hljs.registerLanguage("protobuf", protobuf);
-hljs.registerLanguage("python", python);
-hljs.registerLanguage("ruby", ruby);
-hljs.registerLanguage("rust", rust);
-hljs.registerLanguage("scala", scala);
-hljs.registerLanguage("scss", scss);
-hljs.registerLanguage("sql", sql);
-hljs.registerLanguage("swift", swift);
-hljs.registerLanguage("typescript", typescript);
-hljs.registerLanguage("xml", xml);
-hljs.registerLanguage("yaml", yaml);
+/**
+ * The public language vocabulary. This exact set of ids is a shared contract
+ * with `editor/language.ts`'s `LOADERS` map — that file is keyed by whatever
+ * `languageFromPath`/`normalizeLang` produce here, specifically so the
+ * CodeMirror editor and the diff/chat viewer never disagree about what
+ * language a file is in. Do not rename or split an id here without adding a
+ * matching change there; `SHIKI_GRAMMAR_FOR` below is where a *better*
+ * grammar gets used without touching this public vocabulary at all.
+ */
+const CANONICAL_LANGS = new Set([
+  "bash", "c", "cpp", "csharp", "css", "dart", "diff", "dockerfile", "elixir", "go",
+  "graphql", "ini", "java", "javascript", "json", "kotlin", "lua", "makefile",
+  "markdown", "objectivec", "perl", "php", "protobuf", "python", "ruby", "rust",
+  "scala", "scss", "sql", "swift", "typescript", "xml", "yaml",
+]);
 
 const LANG_ALIASES: Record<string, string> = {
   js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
   ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
   py: "python", rs: "rust", sh: "bash", zsh: "bash", shell: "bash", console: "bash",
   yml: "yaml", html: "xml", vue: "xml", svelte: "xml", md: "markdown",
-  "c++": "cpp", objc: "objectivec", patch: "diff", toml: "ini", plaintext: "", text: "",
+  "c++": "cpp", objc: "objectivec", patch: "diff", toml: "ini",
   rb: "ruby", kt: "kotlin", kts: "kotlin", cs: "csharp", ex: "elixir", exs: "elixir",
   gql: "graphql", pl: "perl", sass: "scss", m: "objectivec", mm: "objectivec",
   h: "c", hpp: "cpp", cc: "cpp", cxx: "cpp", proto: "protobuf", make: "makefile",
-  jsonc: "json", json5: "json", ndjson: "json", mdx: "markdown",
+  jsonc: "json", json5: "json", ndjson: "json", mdx: "markdown", plaintext: "", text: "",
+};
+
+/**
+ * Where Shiki's real grammar is more accurate than the public id above would
+ * suggest — translated only at load time, so `normalizeLang`'s output (and
+ * therefore the editor's contract) never changes. `javascript`/`typescript`
+ * route to Shiki's `jsx`/`tsx` grammars unconditionally: both are strict
+ * supersets that tokenize plain, JSX-free code identically to the
+ * non-JSX grammar (verified directly), so there's no plain-code downside —
+ * only the alternative, misparsing `<Component>` as a comparison
+ * expression under the plain `typescript`/`javascript` grammar.
+ */
+const SHIKI_GRAMMAR_FOR: Partial<Record<string, string>> = {
+  objectivec: "objective-c",
+  ini: "toml",
+  javascript: "jsx",
+  typescript: "tsx",
+};
+
+/**
+ * Every grammar (and the one theme we load) is a dynamic import: rendering a
+ * TypeScript block must not also pay for the PHP grammar. Literal per-language
+ * import specifiers (not a templated path) are what let Vite split each one
+ * into its own chunk — the same shape `editor/language.ts` already uses for
+ * CodeMirror's lazily-loaded language support. Keyed by Shiki's own grammar
+ * ids, which is a different (and finer) vocabulary than `CANONICAL_LANGS`
+ * above — `SHIKI_GRAMMAR_FOR` bridges the two.
+ */
+const LANG_LOADERS: Record<string, () => LanguageInput> = {
+  bash: () => import("shiki/langs/bash.mjs"),
+  c: () => import("shiki/langs/c.mjs"),
+  cpp: () => import("shiki/langs/cpp.mjs"),
+  csharp: () => import("shiki/langs/csharp.mjs"),
+  css: () => import("shiki/langs/css.mjs"),
+  dart: () => import("shiki/langs/dart.mjs"),
+  diff: () => import("shiki/langs/diff.mjs"),
+  dockerfile: () => import("shiki/langs/dockerfile.mjs"),
+  elixir: () => import("shiki/langs/elixir.mjs"),
+  go: () => import("shiki/langs/go.mjs"),
+  graphql: () => import("shiki/langs/graphql.mjs"),
+  java: () => import("shiki/langs/java.mjs"),
+  json: () => import("shiki/langs/json.mjs"),
+  jsx: () => import("shiki/langs/jsx.mjs"),
+  kotlin: () => import("shiki/langs/kotlin.mjs"),
+  lua: () => import("shiki/langs/lua.mjs"),
+  makefile: () => import("shiki/langs/makefile.mjs"),
+  markdown: () => import("shiki/langs/markdown.mjs"),
+  "objective-c": () => import("shiki/langs/objective-c.mjs"),
+  perl: () => import("shiki/langs/perl.mjs"),
+  php: () => import("shiki/langs/php.mjs"),
+  protobuf: () => import("shiki/langs/protobuf.mjs"),
+  python: () => import("shiki/langs/python.mjs"),
+  ruby: () => import("shiki/langs/ruby.mjs"),
+  rust: () => import("shiki/langs/rust.mjs"),
+  scala: () => import("shiki/langs/scala.mjs"),
+  scss: () => import("shiki/langs/scss.mjs"),
+  sql: () => import("shiki/langs/sql.mjs"),
+  swift: () => import("shiki/langs/swift.mjs"),
+  toml: () => import("shiki/langs/toml.mjs"),
+  tsx: () => import("shiki/langs/tsx.mjs"),
+  xml: () => import("shiki/langs/xml.mjs"),
+  yaml: () => import("shiki/langs/yaml.mjs"),
 };
 
 /** Extensionless files that still have an obvious language. */
@@ -115,22 +127,16 @@ export function languageFromPath(path: string): string {
   return "";
 }
 
+/** Normalize to one of `CANONICAL_LANGS`, or `""` when we have no grammar. */
 export function normalizeLang(lang: string): string {
   const key = lang.trim().toLowerCase();
   if (!key) return "";
   const aliased = LANG_ALIASES[key] ?? key;
-  return hljs.getLanguage(aliased) ? aliased : "";
+  return CANONICAL_LANGS.has(aliased) ? aliased : "";
 }
 
-/** Highlight a code block, returning safe HTML (hljs escapes entities). */
-export function highlightCode(code: string, lang: string): string {
-  const language = normalizeLang(lang);
-  try {
-    if (language) return hljs.highlight(code, { language, ignoreIllegals: true }).value;
-    return hljs.highlightAuto(code).value;
-  } catch {
-    return escapeHtml(code);
-  }
+export function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 const DIFF_LINE = /^(\+\+\+|---|@@|\+[^+]|-[^-])/m;
@@ -147,20 +153,169 @@ export function looksLikeDiff(text: string): boolean {
   return diffLines.length >= 3 && diffLines.length / lines.length > 0.4;
 }
 
-export function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/* ── Shiki setup ──────────────────────────────────────────────────────────
+ * One highlighter, lazily created once. It carries exactly one theme —
+ * "github-dark" — used only to make the tokenizer resolve real per-token
+ * scope runs (Shiki won't split a line into fine-grained tokens with no
+ * theme active at all). Its *colours* are never read: `classifyScope` below
+ * maps each token's TextMate scope to one of `index.css`'s `--syn-*`
+ * classes, the same ones the diff viewer and the CodeMirror editor already
+ * share, so a highlighter swap can never make chat code, diffs, and the
+ * editor disagree about colour. */
+const SCOPE_THEME = "github-dark";
+
+let corePromise: Promise<HighlighterCore> | null = null;
+function core(): Promise<HighlighterCore> {
+  corePromise ??= createHighlighterCore({
+    engine: createJavaScriptRegexEngine(),
+    themes: [import("shiki/themes/github-dark.mjs")],
+    langs: [],
+  });
+  return corePromise;
+}
+
+/** The Shiki grammar id to actually load for a public `CANONICAL_LANGS` id. */
+function shikiLangFor(language: string): string {
+  return SHIKI_GRAMMAR_FOR[language] ?? language;
+}
+
+/** Load `shikiLang`'s grammar into the shared highlighter, or `null` if it — or the highlighter itself — fails to load. */
+async function highlighterFor(shikiLang: string): Promise<HighlighterCore | null> {
+  const loader = LANG_LOADERS[shikiLang];
+  if (!loader) return null;
+  try {
+    const highlighter = await core();
+    await highlighter.loadLanguage(loader());
+    return highlighter;
+  } catch {
+    return null;
+  }
+}
+
+/** Minimal shape we read off a Shiki token — deliberately not importing
+ *  Shiki's own token type, so this keeps working across its internal type
+ *  re-export churn. */
+interface ScopedToken {
+  content: string;
+  explanation?: { scopes: { scopeName: string }[] }[];
+}
+
+/**
+ * Bucket a TextMate scope stack into one of `index.css`'s `.stx-*` classes.
+ * Ordered most-specific-scope-first; the first matching prefix wins. This is
+ * the same "handful of semantic buckets keyed to one palette" shape as the
+ * old `.hljs-*` classes and the editor's `.tok-*` classes — just fed from
+ * Shiki's real grammars instead of hljs's lexer or Lezer's parser.
+ */
+const SCOPE_RULES: [prefix: string, className: string][] = [
+  // A comment/string's own delimiters (`/* */`, quote marks) carry their own,
+  // more specific `punctuation.definition.*` scope — checked here, before the
+  // generic `punctuation` rule below, so `*/` still reads as comment-coloured
+  // instead of falling through to plain punctuation.
+  ["punctuation.definition.comment", "stx-comment"],
+  ["punctuation.definition.string", "stx-string"],
+  ["comment", "stx-comment"],
+  ["markup.inserted", "stx-addition"],
+  ["markup.deleted", "stx-deletion"],
+  ["markup.bold", "stx-strong"],
+  ["markup.italic", "stx-emphasis"],
+  ["markup.heading", "stx-function"],
+  ["entity.name.section", "stx-function"],
+  ["string", "stx-string"],
+  ["constant.numeric", "stx-number"],
+  ["constant.language", "stx-number"],
+  ["constant.character", "stx-number"],
+  ["storage.type", "stx-keyword"],
+  ["storage.modifier", "stx-keyword"],
+  ["keyword.operator", "stx-punct"],
+  ["keyword", "stx-keyword"],
+  ["entity.name.function", "stx-function"],
+  ["support.function", "stx-function"],
+  ["entity.name.tag", "stx-tag"],
+  ["support.class.component", "stx-tag"],
+  ["entity.name.type", "stx-type"],
+  ["entity.name.class", "stx-type"],
+  ["support.type", "stx-type"],
+  ["support.class", "stx-type"],
+  ["punctuation", "stx-punct"],
+  ["variable.parameter", "stx-params"],
+];
+
+function classifyScope(token: ScopedToken): string | null {
+  const scopes = token.explanation?.flatMap(entry => entry.scopes.map(scope => scope.scopeName)) ?? [];
+  for (let i = scopes.length - 1; i >= 0; i -= 1) {
+    const scope = scopes[i];
+    const rule = SCOPE_RULES.find(([prefix]) => scope === prefix || scope.startsWith(`${prefix}.`));
+    if (rule) return rule[1];
+  }
+  return null;
+}
+
+function tokenToHtml(token: ScopedToken): string {
+  const body = escapeHtml(token.content);
+  const className = classifyScope(token);
+  return className ? `<span class="${className}">${body}</span>` : body;
+}
+
+/** One HTML string per source line, colour-classified via TextMate scopes. */
+function linesToHtml(lines: ScopedToken[][]): string[] {
+  return lines.map(line => line.map(tokenToHtml).join(""));
+}
+
+/** Beyond this, classifying every token's scope costs more than it's worth
+ *  (benchmarked: `includeExplanation` typically runs several times slower
+ *  than plain tokenization, climbing well past a second on inputs in this
+ *  range); render plain. Lower than hljs's old 400,000-char cap because
+ *  Shiki's scope classification is measurably heavier than hljs's lexer. */
+export const MAX_HIGHLIGHT_CHARS = 50_000;
+
+/**
+ * How long a code block's `[lang, body]` must sit still before it's worth
+ * colorizing. A streaming reply re-renders `CodeBlock`/`PatchView` on every
+ * delta while a fence is still growing — without this, a 200-line fence
+ * would schedule ~200 increasingly expensive tokenization passes on its way
+ * in, almost all of them for a state the user never gets to see coloured.
+ */
+export const COLORIZE_DEBOUNCE_MS = 200;
+
+/**
+ * Colorize a single code block for `Markdown.tsx`'s `CodeBlock`. Async,
+ * because the grammar is a dynamic import — callers render `escapeHtml`
+ * plain text immediately and swap this in when it resolves (see
+ * `CodeBlock`), the same "on screen now, coloured a frame later" shape
+ * `editor/CodeEditor.tsx` already uses for CodeMirror's grammars.
+ *
+ * An empty or unrecognized `lang` renders plain. hljs used to run
+ * `highlightAuto` here — a heuristic best guess across every registered
+ * grammar — but Shiki has no equivalent turnkey mode, and running scope
+ * classification once per candidate grammar just to score them would multiply
+ * the cost this file already spends real effort bounding (see
+ * `MAX_HIGHLIGHT_CHARS`, `COLORIZE_DEBOUNCE_MS`). Unlabeled fences losing
+ * their guessed colour is an accepted trade-off, not an oversight.
+ */
+export async function colorizeCode(code: string, lang: string): Promise<string> {
+  const language = normalizeLang(lang);
+  if (!language || code.length > MAX_HIGHLIGHT_CHARS) return escapeHtml(code);
+  const shikiLang = shikiLangFor(language);
+  const highlighter = await highlighterFor(shikiLang);
+  if (!highlighter) return escapeHtml(code);
+  try {
+    const { tokens } = highlighter.codeToTokens(code, { lang: shikiLang, theme: SCOPE_THEME, includeExplanation: true });
+    return linesToHtml(tokens).join("\n");
+  } catch {
+    return escapeHtml(code);
+  }
 }
 
 /* ── Unified diffs ───────────────────────────────────────────────────────── */
 
 export type DiffRowKind = "add" | "del" | "context" | "hunk" | "meta";
 
-/** One rendered diff line: what it is, where it sits, and its highlighted body. */
+/** One rendered diff line: what it is, where it sits, and its (escaped, and
+ *  once `colorizePatch` resolves, coloured) body. */
 export interface DiffRow {
   kind: DiffRowKind;
-  /** Highlighted HTML for the line body (marker stripped). Already escaped. */
   html: string;
-  /** 1-based line number on each side, or null where the side has no line. */
   oldLine: number | null;
   newLine: number | null;
 }
@@ -173,76 +328,33 @@ const PATCH_HEADER = /^(diff --git |index |--- |\+\+\+ |old mode |new mode |new 
 const FILE_HEADER = /^diff --git /;
 const HUNK_HEADER = /^@@+ (?:-(\d+)(?:,(\d+))? )?\+(\d+)(?:,(\d+))? @@/;
 
-/** Beyond this, highlighting a patch costs more than it's worth; render plain. */
-const MAX_HIGHLIGHT_CHARS = 400_000;
-
-/**
- * Split hljs output into one HTML string per line, re-opening any span that
- * straddles a newline. Highlighting the whole side at once is what keeps
- * multi-line constructs (block comments, template literals) intact; this puts
- * the result back into rows we can colour and number individually.
- */
-export function splitHighlightedLines(html: string): string[] {
-  const lines: string[] = [];
-  const open: string[] = [];
-  let current = "";
-  for (const token of html.match(/<span[^>]*>|<\/span>|[^<]+/g) ?? []) {
-    if (token.startsWith("</")) {
-      open.pop();
-      current += token;
-    } else if (token.startsWith("<")) {
-      open.push(token);
-      current += token;
-    } else {
-      const parts = token.split("\n");
-      parts.forEach((part, index) => {
-        if (index > 0) {
-          current += "</span>".repeat(open.length);
-          lines.push(current);
-          current = open.join("");
-        }
-        current += part;
-      });
-    }
-  }
-  lines.push(current);
-  return lines;
-}
-
-/** Highlight lines as one document, falling back to plain text on any mismatch. */
-function highlightSide(lines: string[], language: string): string[] {
-  if (!lines.length) return [];
-  if (!language) return lines.map(escapeHtml);
-  const code = lines.join("\n");
-  if (code.length > MAX_HIGHLIGHT_CHARS) return lines.map(escapeHtml);
-  try {
-    const split = splitHighlightedLines(hljs.highlight(code, { language, ignoreIllegals: true }).value);
-    if (split.length === lines.length) return split;
-  } catch {
-    // fall through
-  }
-  return lines.map(escapeHtml);
+interface ParsedPatch {
+  rows: DiffRow[];
+  oldSide: string[];
+  newSide: string[];
+  /** Where each row's body lives, so its highlighted text can be pasted back in. */
+  source: (({ side: "old" | "new"; index: number }) | null)[];
+  language: string;
 }
 
 /**
- * Parse a unified diff into rows whose bodies are highlighted in the file's own
- * language. Additions and deletions are highlighted as two separate documents —
- * the "after" file and the "before" file — so each side parses as real code
- * instead of as an interleaved soup that no grammar can make sense of.
+ * Parse a unified diff into rows and the two per-file bodies ("after" and
+ * "before") it's made of. Additions and deletions are kept on two separate
+ * bodies — an interleaved add/del soup doesn't parse as any real language.
+ * Bodies are always plain-escaped here; colour is a separate, async step.
  */
-export function highlightPatch(patch: string, path = ""): DiffRow[] {
+function parsePatch(patch: string, path: string): ParsedPatch {
   const raw = patch.split("\n");
   while (raw.length && raw[raw.length - 1] === "") raw.pop();
-  if (!raw.length) return [];
+  if (!raw.length) return { rows: [], oldSide: [], newSide: [], source: [], language: "" };
 
-  // Measured on the whole patch, not per side: two 250k sides are still half a
-  // megabyte of parsing.
+  // Measured on the whole patch, not per side: two 25k sides are still half
+  // the cap.
   const language = patch.length > MAX_HIGHLIGHT_CHARS ? "" : languageFromPath(path);
   const rows: DiffRow[] = [];
   const oldSide: string[] = [];
   const newSide: string[] = [];
-  // Where each row's body lives, so we can paste highlighted text back in.
-  const source: Array<{ side: "old" | "new"; index: number } | null> = [];
+  const source: ParsedPatch["source"] = [];
   let oldNo = 0;
   let newNo = 0;
   // Lines still owed to the current hunk, taken from its own header. Counting
@@ -251,7 +363,7 @@ export function highlightPatch(patch: string, path = ""): DiffRow[] {
   let oldLeft = 0;
   let newLeft = 0;
 
-  const push = (row: DiffRow, from: { side: "old" | "new"; index: number } | null) => {
+  const push = (row: DiffRow, from: ParsedPatch["source"][number]) => {
     rows.push(row);
     source.push(from);
   };
@@ -292,25 +404,70 @@ export function highlightPatch(patch: string, path = ""): DiffRow[] {
     }
     const body = line.slice(1);
     if (marker === "+") {
-      push({ kind: "add", html: "", oldLine: null, newLine: inside ? newNo++ : null }, { side: "new", index: newSide.length });
+      push({ kind: "add", html: escapeHtml(body), oldLine: null, newLine: inside ? newNo++ : null }, { side: "new", index: newSide.length });
       newSide.push(body);
       if (inside) newLeft -= 1;
     } else if (marker === "-") {
-      push({ kind: "del", html: "", oldLine: inside ? oldNo++ : null, newLine: null }, { side: "old", index: oldSide.length });
+      push({ kind: "del", html: escapeHtml(body), oldLine: inside ? oldNo++ : null, newLine: null }, { side: "old", index: oldSide.length });
       oldSide.push(body);
       if (inside) oldLeft -= 1;
     } else {
-      push({ kind: "context", html: "", oldLine: inside ? oldNo++ : null, newLine: inside ? newNo++ : null }, { side: "new", index: newSide.length });
+      push({ kind: "context", html: escapeHtml(body), oldLine: inside ? oldNo++ : null, newLine: inside ? newNo++ : null }, { side: "new", index: newSide.length });
       oldSide.push(body);
       newSide.push(body);
       if (inside) { oldLeft -= 1; newLeft -= 1; }
     }
   }
 
-  const highlighted = { old: highlightSide(oldSide, language), new: highlightSide(newSide, language) };
-  rows.forEach((row, index) => {
-    const from = source[index];
-    if (from) row.html = highlighted[from.side][from.index] ?? "";
+  return { rows, oldSide, newSide, source, language };
+}
+
+/**
+ * Parse a unified diff into rows with plain, escaped bodies — synchronous,
+ * so `DiffView.tsx`'s `PatchView` can lay out the gutter and row kinds on
+ * first render. `colorizePatch` below produces the same rows with the
+ * bodies coloured, once the file's grammar has loaded.
+ */
+export function highlightPatch(patch: string, path = ""): DiffRow[] {
+  return parsePatch(patch, path).rows;
+}
+
+/** Highlight one side's lines as a single document — so multi-line constructs
+ *  (block comments, template literals) still get the tokens they'd have as
+ *  real code — then hand back one HTML string per line. */
+async function highlightLines(lines: string[], language: string): Promise<string[] | null> {
+  if (!lines.length) return [];
+  const shikiLang = shikiLangFor(language);
+  const highlighter = await highlighterFor(shikiLang);
+  if (!highlighter) return null;
+  const code = lines.join("\n");
+  try {
+    const { tokens } = highlighter.codeToTokens(code, { lang: shikiLang, theme: SCOPE_THEME, includeExplanation: true });
+    const html = linesToHtml(tokens);
+    return html.length === lines.length ? html : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same rows `highlightPatch` returns, with bodies coloured in the file's
+ * own language. Async — see `colorizeCode` for why — so `PatchView` renders
+ * the plain version first and swaps this in once it resolves.
+ */
+export async function colorizePatch(patch: string, path = ""): Promise<DiffRow[]> {
+  const parsed = parsePatch(patch, path);
+  if (!parsed.language) return parsed.rows;
+  const [oldHtml, newHtml] = await Promise.all([
+    highlightLines(parsed.oldSide, parsed.language),
+    highlightLines(parsed.newSide, parsed.language),
+  ]);
+  if (!oldHtml && !newHtml) return parsed.rows;
+  parsed.rows.forEach((row, index) => {
+    const from = parsed.source[index];
+    if (!from) return;
+    const html = from.side === "old" ? oldHtml : newHtml;
+    if (html) row.html = html[from.index] ?? row.html;
   });
-  return rows;
+  return parsed.rows;
 }
