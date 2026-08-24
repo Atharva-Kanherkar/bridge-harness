@@ -221,6 +221,49 @@ describe("copy affordances (interactive)", () => {
   });
 });
 
+describe("CodeBlock async colorization", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => { root.unmount(); });
+    container.remove();
+  });
+
+  const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+
+  it("renders plain escaped text immediately, then upgrades to .stx-* spans", async () => {
+    // A plain (non-async) act() flushes the effect's synchronous first half
+    // (the immediate `setHtml(escapeHtml(body))`) without waiting for the
+    // `colorizeCode` promise it also kicks off — the only way to observe the
+    // pre-colour frame deterministically, independent of how warm the
+    // shared Shiki module cache happens to be from earlier tests.
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code).toBeTruthy();
+    expect(code.innerHTML).toBe("const x = 1;");
+
+    await flush();
+    expect(code.innerHTML).toContain("stx-keyword");
+  });
+
+  it("resets to plain text immediately when the code changes, instead of keeping stale colour", async () => {
+    await act(async () => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    await flush();
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toContain("stx-keyword");
+
+    act(() => { root.render(<Markdown text={"```ts\nconst y = 2;\n```"} />); });
+    expect(code.innerHTML).toBe("const y = 2;");
+  });
+});
+
 describe("existing markdown behavior is preserved", () => {
   it("still renders headings, lists, and inline styles", () => {
     const html = renderToStaticMarkup(<Markdown text={"# Title\n\n- one\n- two\n\n**bold** and `code`"} />);

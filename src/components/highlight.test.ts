@@ -1,6 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import hljs from "highlight.js/lib/core";
-import { highlightPatch, languageFromPath, splitHighlightedLines } from "./highlight";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { colorizeCode, colorizePatch, highlightPatch, languageFromPath, normalizeLang, looksLikeDiff } from "./highlight";
 
 describe("languageFromPath", () => {
   it("maps common extensions", () => {
@@ -28,17 +27,62 @@ describe("languageFromPath", () => {
   });
 });
 
-describe("splitHighlightedLines", () => {
-  it("re-opens spans that straddle a newline", () => {
-    const lines = splitHighlightedLines('<span class="hljs-comment">/* one\ntwo */</span> tail');
-    expect(lines).toEqual([
-      '<span class="hljs-comment">/* one</span>',
-      '<span class="hljs-comment">two */</span> tail',
-    ]);
+describe("normalizeLang", () => {
+  it("resolves common aliases to their canonical Shiki id", () => {
+    expect(normalizeLang("ts")).toBe("typescript");
+    expect(normalizeLang("yml")).toBe("yaml");
+    expect(normalizeLang("html")).toBe("xml");
   });
 
-  it("keeps plain text intact", () => {
-    expect(splitHighlightedLines("a\nb")).toEqual(["a", "b"]);
+  it("remaps objective-c's aliases to Shiki's hyphenated id", () => {
+    expect(normalizeLang("objectivec")).toBe("objective-c");
+    expect(normalizeLang("objc")).toBe("objective-c");
+    expect(normalizeLang("m")).toBe("objective-c");
+  });
+
+  it("gives toml, json5 and jsonc their own grammars instead of aliasing", () => {
+    expect(normalizeLang("toml")).toBe("toml");
+    expect(normalizeLang("json5")).toBe("json5");
+    expect(normalizeLang("jsonc")).toBe("jsonc");
+  });
+
+  it("rejects unknown languages and the explicit plain markers", () => {
+    expect(normalizeLang("not-a-real-language")).toBe("");
+    expect(normalizeLang("plaintext")).toBe("");
+    expect(normalizeLang("text")).toBe("");
+  });
+});
+
+describe("looksLikeDiff", () => {
+  it("recognises unified diff shapes and rejects ordinary text", () => {
+    expect(looksLikeDiff("@@ -1,2 +1,2 @@\n-old\n+new")).toBe(true);
+    expect(looksLikeDiff("just some prose about a project")).toBe(false);
+    expect(looksLikeDiff("")).toBe(false);
+  });
+});
+
+describe("colorizeCode", () => {
+  it("wraps recognized tokens in .stx-* classes", async () => {
+    const html = await colorizeCode("const x = 1;", "typescript");
+    expect(html).toContain("stx-keyword");
+  });
+
+  it("colours a comment distinctly from code", async () => {
+    const html = await colorizeCode("// just a comment", "typescript");
+    expect(html).toContain("stx-comment");
+  });
+
+  it("escapes and returns plain text for a language with no grammar", async () => {
+    expect(await colorizeCode("<script>x</script>", "notarealtoollang")).toBe("&lt;script&gt;x&lt;/script&gt;");
+  });
+
+  it("escapes and returns plain text past the size cap", async () => {
+    const big = "const value = 1;\n".repeat(10_000); // well past MAX_HIGHLIGHT_CHARS
+    const html = await colorizeCode(big, "typescript");
+    expect(html).not.toContain("stx-");
+    expect(html).toBe(
+      big.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
+    );
   });
 });
 
@@ -54,7 +98,7 @@ const PATCH = [
   "+  return doubled;",
 ].join("\n");
 
-describe("highlightPatch", () => {
+describe("highlightPatch (sync, plain)", () => {
   it("classifies headers, hunks and content", () => {
     const rows = highlightPatch(PATCH, "src/sum.ts");
     expect(rows.map(row => row.kind)).toEqual([
@@ -68,11 +112,12 @@ describe("highlightPatch", () => {
     expect(numbers).toEqual([[4, 4], [5, null], [null, 5], [null, 6]]);
   });
 
-  it("highlights bodies in the file's language and strips the marker", () => {
+  it("strips the marker but never colours — that is colorizePatch's job", () => {
     const rows = highlightPatch(PATCH, "src/sum.ts");
     const added = rows.find(row => row.kind === "add");
-    expect(added?.html).toContain("hljs-keyword");
     expect(added?.html.startsWith("+")).toBe(false);
+    expect(added?.html).not.toContain("stx-");
+    expect(added?.html).toBe("  const doubled = total * 2;");
   });
 
   it("leaves bodies plain but escaped for unknown languages", () => {
@@ -80,13 +125,7 @@ describe("highlightPatch", () => {
     expect(rows[1].html).toBe("&lt;script&gt;x&lt;/script&gt;");
   });
 
-  it("keeps multi-line constructs intact across added lines", () => {
-    const rows = highlightPatch("@@ -1,0 +1,2 @@\n+/* one\n+   two */", "a.ts");
-    expect(rows[1].html).toContain("hljs-comment");
-    expect(rows[2].html).toContain("hljs-comment");
-  });
-
-  it("still colours a bare fragment with no hunk header", () => {
+  it("still classifies a bare fragment with no hunk header", () => {
     const rows = highlightPatch("-const a = 1;\n+const a = 2;", "a.ts");
     expect(rows.map(row => row.kind)).toEqual(["del", "add"]);
     expect(rows.every(row => row.oldLine === null && row.newLine === null)).toBe(true);
@@ -110,8 +149,6 @@ describe("highlightPatch", () => {
 
   it("keeps every file's headers intact in a multi-file patch", () => {
     const rows = highlightPatch(TWO_FILES, "a.ts");
-    // The hunk's own line counts are what end it; without them the second
-    // file's headers are read as code and lose their first character.
     expect(rows.map(row => row.kind)).toEqual([
       "meta", "meta", "meta", "meta", "hunk", "context", "del", "add",
       "meta", "meta", "meta", "hunk", "del", "add",
@@ -142,29 +179,77 @@ describe("highlightPatch", () => {
     const rows = highlightPatch("@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new", "a.ts");
     expect(rows.map(row => row.kind)).toEqual(["hunk", "del", "meta", "add"]);
   });
+});
 
-  it("skips highlighting a patch past the size cap", () => {
+describe("colorizePatch (async, coloured)", () => {
+  it("highlights bodies in the file's language and strips the marker", async () => {
+    const rows = await colorizePatch(PATCH, "src/sum.ts");
+    const added = rows.find(row => row.kind === "add");
+    expect(added?.html).toContain("stx-keyword");
+    expect(added?.html.startsWith("+")).toBe(false);
+  });
+
+  it("keeps multi-line constructs intact across added lines", async () => {
+    const rows = await colorizePatch("@@ -1,0 +1,2 @@\n+/* one\n+   two */", "a.ts");
+    expect(rows[1].html).toContain("stx-comment");
+    expect(rows[2].html).toContain("stx-comment");
+  });
+
+  it("colours a blank context line without losing row alignment", async () => {
+    const rows = await colorizePatch("@@ -1,3 +1,3 @@\n const a = 1;\n \n const b = 2;", "a.ts");
+    expect(rows).toHaveLength(4); // hunk header + 3 content lines
+    expect(rows[2].html).toBe("");
+  });
+
+  it("leaves bodies plain but escaped for unknown languages", async () => {
+    const rows = await colorizePatch("@@ -1 +1 @@\n+<script>x</script>", "notes.unknownext");
+    expect(rows[1].html).toBe("&lt;script&gt;x&lt;/script&gt;");
+  });
+
+  it("skips highlighting a patch past the size cap", async () => {
     const filler = "+const value = 1;".repeat(30_000);
-    const rows = highlightPatch(`@@ -1 +1 @@\n${filler}\n+const a = 1;`, "a.ts");
+    const rows = await colorizePatch(`@@ -1 +1 @@\n${filler}\n+const a = 1;`, "a.ts");
     expect(rows.at(-1)!.html).toBe("const a = 1;");
   });
 
-  it("falls back to escaped text when the grammar throws", () => {
-    const spy = vi.spyOn(hljs, "highlight").mockImplementation(() => { throw new Error("grammar exploded"); });
-    try {
-      expect(highlightPatch("@@ -1 +1 @@\n+const a = 1;", "a.ts").at(-1)!.html).toBe("const a = 1;");
-    } finally {
-      spy.mockRestore();
-    }
+  it("returns nothing for an empty patch", async () => {
+    expect(await colorizePatch("", "a.ts")).toEqual([]);
+  });
+});
+
+describe("colorization failure fallbacks", () => {
+  afterEach(() => {
+    vi.doUnmock("shiki/core");
+    vi.resetModules();
   });
 
-  it("falls back when highlighting returns the wrong number of lines", () => {
-    const spy = vi.spyOn(hljs, "highlight").mockReturnValue({ value: "only one line" } as never);
-    try {
-      const rows = highlightPatch("@@ -1,2 +1,2 @@\n+const a = 1;\n+const b = 2;", "a.ts");
-      expect(rows.slice(1).map(row => row.html)).toEqual(["const a = 1;", "const b = 2;"]);
-    } finally {
-      spy.mockRestore();
-    }
+  it("falls back to escaped text when the highlighter itself fails to load", async () => {
+    vi.resetModules();
+    vi.doMock("shiki/core", async () => {
+      const real = await vi.importActual<typeof import("shiki/core")>("shiki/core");
+      return {
+        ...real,
+        createHighlighterCore: () => Promise.reject(new Error("engine exploded")),
+      };
+    });
+    const { colorizeCode: freshColorizeCode } = await import("./highlight");
+    expect(await freshColorizeCode("const a = 1;", "typescript")).toBe("const a = 1;");
+  });
+
+  it("falls back to escaped text when highlighting returns the wrong number of lines", async () => {
+    vi.resetModules();
+    vi.doMock("shiki/core", async () => {
+      const real = await vi.importActual<typeof import("shiki/core")>("shiki/core");
+      const core = await real.createHighlighterCore({
+        engine: (await import("shiki/engine/javascript")).createJavaScriptRegexEngine(),
+        themes: [import("shiki/themes/github-dark.mjs")],
+        langs: [import("shiki/langs/typescript.mjs")],
+      });
+      vi.spyOn(core, "codeToTokens").mockReturnValue({ tokens: [[]], fg: "", bg: "", themeName: "" } as never);
+      return { ...real, createHighlighterCore: () => Promise.resolve(core) };
+    });
+    const { colorizePatch: freshColorizePatch } = await import("./highlight");
+    const rows = await freshColorizePatch("@@ -1,2 +1,2 @@\n+const a = 1;\n+const b = 2;", "a.ts");
+    expect(rows.slice(1).map(row => row.html)).toEqual(["const a = 1;", "const b = 2;"]);
   });
 });

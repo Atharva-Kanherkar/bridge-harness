@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
-import { highlightCode, normalizeLang } from "./highlight";
+import { colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 
 type Block =
@@ -201,7 +201,16 @@ function renderInline(text: string): React.ReactNode[] {
 }
 
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
-  const highlighted = useMemo(() => highlightCode(body, lang), [body, lang]);
+  // The grammar is a dynamic import: the block is on screen, plain, on the
+  // same render, and picks up colour a frame or two later — same shape as
+  // `editor/CodeEditor.tsx`'s lazily-loaded CodeMirror grammars.
+  const [html, setHtml] = useState(() => escapeHtml(body));
+  useEffect(() => {
+    setHtml(escapeHtml(body));
+    let live = true;
+    void colorizeCode(body, lang).then(result => { if (live) setHtml(result); });
+    return () => { live = false; };
+  }, [body, lang]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
   return (
     <div className="code-block">
@@ -209,7 +218,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
         <span className="code-block-lang">{label}</span>
         <CopyButton text={body} className="code-block-copy" />
       </div>
-      <pre><code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} /></pre>
+      <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
     </div>
   );
 }

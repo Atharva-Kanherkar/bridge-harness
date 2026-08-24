@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { highlightPatch, type DiffRow, type DiffRowKind } from "./highlight";
+import { colorizePatch, highlightPatch, type DiffRow, type DiffRowKind } from "./highlight";
 
 /** Row tint, marker glyph and marker colour for each kind of diff line. */
 const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass: string }> = {
@@ -35,12 +35,22 @@ function DiffLine({ row, numbered }: { row: DiffRow; numbered: boolean }) {
  * rest of the app's code, with old/new line numbers pinned to the left.
  */
 export function PatchView({ patch, path = "", className }: { patch: string; path?: string; className?: string }) {
-  const rows = useMemo(() => highlightPatch(patch, path), [patch, path]);
+  // Rows lay out immediately with plain, escaped bodies; the file's grammar
+  // is a dynamic import, so colour arrives a frame or two later (same shape
+  // as `Markdown.tsx`'s `CodeBlock`) rather than blocking the gutter and
+  // row kinds on it.
+  const [rows, setRows] = useState(() => highlightPatch(patch, path));
+  useEffect(() => {
+    setRows(highlightPatch(patch, path));
+    let live = true;
+    void colorizePatch(patch, path).then(colored => { if (live) setRows(colored); });
+    return () => { live = false; };
+  }, [patch, path]);
   // Fragments (tool output, patches with no @@ header) have nothing to number,
   // and an empty gutter is just wasted width.
   const numbered = useMemo(() => rows.some(row => row.oldLine !== null || row.newLine !== null), [rows]);
   if (!rows.length) return null;
-  return <div className={cn("hljs overflow-auto py-2 font-mono text-[11.5px] leading-[1.6]", className)}>
+  return <div className={cn("stx overflow-auto py-2 font-mono text-[11.5px] leading-[1.6]", className)}>
     <div className="w-max min-w-full">
       {rows.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} />)}
     </div>
