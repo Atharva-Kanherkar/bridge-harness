@@ -126,7 +126,7 @@ pub const REQUIRED_MARKERS: &[&str] = &[
     "screenshot-first computer use",
     "automated_test",
     "untrusted evidence",
-    "```mermaid",
+    "```diagram",
     "sandboxed iframe",
 ];
 
@@ -164,7 +164,7 @@ pub fn lint_required_markers(text: &str) -> Vec<PromptLintWarning> {
 /// injected into the live worker path.
 pub const RENDERING_NOTE: &str = "## Rich rendering in the Bridge chat UI
 Bridge renders your replies inline — no external or headless browser is involved:
-- Mermaid diagrams: put the diagram in a ```mermaid fenced code block.
+- Diagrams: put a JSON spec in a ```diagram fenced code block (Bridge does not render Mermaid). Shape: nodes (id, row, col, optional label/emphasis/marker/labelSide) and edges (from, to, optional curve/emphasis), plus a caption and an ariaLabel. row/col place nodes on a grid; emphasis: active is the one accent color a diagram gets, so reserve it for whatever the reader should follow; marker: checkpoint or tip draws a halo ring; curve: true peels an edge off to the side instead of a straight line. Keep it small — a few nodes that show one real mechanism, not an inventory.
 - Math / LaTeX: use `$...$` for inline math and `$$...$$` (or a ```math fenced block) for display math.
 - HTML: put markup in a ```html fenced code block; it renders in a fully sandboxed iframe (no scripts run), so treat it as layout, not a live app.
 Reach for these when a diagram, formula, or formatted layout communicates better than plain prose; otherwise keep replies in plain markdown.";
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn rendering_note_lists_every_supported_format() {
-        for value in ["```mermaid", "$$", "```math", "```html", "sandboxed"] {
+        for value in ["```diagram", "$$", "```math", "```html", "sandboxed"] {
             assert!(
                 RENDERING_NOTE.contains(value),
                 "rendering note is missing {value:?}"

@@ -5,18 +5,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Markdown, renderMathToHtml, splitBlocks } from "./Markdown";
 
-vi.mock("mermaid", () => ({
-  default: {
-    initialize: vi.fn(),
-    parse: vi.fn().mockResolvedValue(true),
-    render: vi.fn().mockResolvedValue({ svg: '<svg data-testid="diagram"></svg>' }),
-  },
-}));
-
 describe("splitBlocks rich content detection", () => {
-  it("detects a mermaid fenced block", () => {
-    const blocks = splitBlocks("```mermaid\ngraph TD; A-->B;\n```");
-    expect(blocks).toEqual([{ kind: "mermaid", code: "graph TD; A-->B;" }]);
+  it("detects a diagram fenced block", () => {
+    const spec = '{"nodes":[],"edges":[],"caption":"c","ariaLabel":"a"}';
+    const blocks = splitBlocks("```diagram\n" + spec + "\n```");
+    expect(blocks).toEqual([{ kind: "diagram", spec }]);
+  });
+
+  it("classifies a legacy mermaid fence as plain code, not a diagram", () => {
+    expect(splitBlocks("```mermaid\ngraph TD; A-->B;\n```")).toEqual([
+      { kind: "code", lang: "mermaid", body: "graph TD; A-->B;" },
+    ]);
   });
 
   it("detects an html fenced block", () => {
@@ -60,6 +59,49 @@ describe("splitBlocks rich content detection", () => {
 
   it("still treats a lone dash line as a rule, not a table separator", () => {
     expect(splitBlocks("---")).toEqual([{ kind: "rule" }]);
+  });
+});
+
+describe("DiagramBlock rendering", () => {
+  it("renders a valid diagram spec as a labeled, captioned SVG", () => {
+    const spec = JSON.stringify({
+      nodes: [
+        { id: "a", row: 0, col: 0, label: "start" },
+        { id: "b", row: 1, col: 0, emphasis: "active", marker: "tip" },
+      ],
+      edges: [{ from: "a", to: "b", emphasis: "active" }],
+      caption: "A grows into B.",
+      ariaLabel: "Diagram: A grows into B.",
+    });
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\n" + spec + "\n```"} />);
+    expect(html).toContain('role="img"');
+    expect(html).toContain("Diagram: A grows into B.");
+    expect(html).toContain("A grows into B.");
+    expect(html).toContain("start");
+  });
+
+  it("falls back to a labeled code block when the diagram JSON is malformed", () => {
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\nnot json\n```"} />);
+    expect(html).toContain("Could not render this diagram");
+    expect(html).toContain("code-block");
+  });
+
+  it("falls back to source when an edge references a node id that doesn't exist", () => {
+    const spec = JSON.stringify({
+      nodes: [{ id: "a", row: 0, col: 0 }],
+      edges: [{ from: "a", to: "ghost" }],
+      caption: "c",
+      ariaLabel: "a",
+    });
+    const html = renderToStaticMarkup(<Markdown text={"```diagram\n" + spec + "\n```"} />);
+    expect(html).toContain("Could not render this diagram");
+  });
+
+  it("no longer treats a legacy mermaid block as a failed diagram — just a plain code block", () => {
+    const html = renderToStaticMarkup(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />);
+    expect(html).toContain("code-block");
+    expect(html).toContain("mermaid");
+    expect(html).not.toContain("Could not render");
   });
 });
 
@@ -146,15 +188,18 @@ describe("copy affordances (interactive)", () => {
     expect(button.textContent).toContain("Copied");
   });
 
-  it("MermaidBlock's copy button copies the raw diagram source", async () => {
-    const code = "graph TD; A-->B;";
-    await act(async () => { root.render(<Markdown text={`\`\`\`mermaid\n${code}\n\`\`\``} />); });
-    // Flush the dynamic import + async parse/render chain before the copy button exists.
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  it("DiagramBlock's copy button copies the raw JSON source", async () => {
+    const spec = JSON.stringify({
+      nodes: [{ id: "a", row: 0, col: 0 }],
+      edges: [],
+      caption: "c",
+      ariaLabel: "a",
+    });
+    await act(async () => { root.render(<Markdown text={`\`\`\`diagram\n${spec}\n\`\`\``} />); });
     const button = container.querySelector(".rich-block-copy") as HTMLButtonElement;
     expect(button).toBeTruthy();
     await act(async () => { button.click(); await Promise.resolve(); await Promise.resolve(); });
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(code);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(spec);
     expect(button.textContent).toContain("Copied");
   });
 

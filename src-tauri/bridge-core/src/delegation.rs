@@ -2111,7 +2111,7 @@ mod tests {
         assert!(briefing.contains("bridge-worker-result"));
         assert!(briefing.contains("schemaVersion"));
         assert!(briefing.contains("you need one focused specialist"));
-        assert!(briefing.contains("```mermaid"));
+        assert!(briefing.contains("```diagram"));
         assert!(briefing.contains("sandboxed iframe"));
         assert!(briefing.contains("entry-evidence-1"));
         assert!(briefing.contains("worker-1"));
