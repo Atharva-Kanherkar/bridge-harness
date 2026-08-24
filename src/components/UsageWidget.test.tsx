@@ -12,6 +12,7 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("0% used");
     expect(html).toContain("pointer-events-none");
     expect(html).not.toContain("group-hover:");
+    expect(html).toContain("rounded-window-control");
     expect(html).toContain("Close usage health details");
     expect(html).toContain("Hide usage widget");
   });
