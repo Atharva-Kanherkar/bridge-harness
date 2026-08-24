@@ -1,11 +1,12 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { highlightCode, normalizeLang } from "./highlight";
+import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
-  | { kind: "mermaid"; code: string }
+  | { kind: "diagram"; spec: string }
   | { kind: "math"; tex: string }
   | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
@@ -31,7 +32,7 @@ function isTableRow(line: string): boolean {
 /** Classify a fenced block by its info string into a rich-content block kind. */
 function fencedBlock(lang: string, body: string): Block {
   const key = lang.trim().toLowerCase();
-  if (key === "mermaid") return { kind: "mermaid", code: body };
+  if (key === "diagram") return { kind: "diagram", spec: body };
   if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
   if (key === "html") return { kind: "html", html: body };
   return { kind: "code", lang, body };
@@ -138,8 +139,8 @@ function InlineMath({ tex }: { tex: string }) {
 
 /**
  * The `dark` class on <html> is the single source of truth for the theme.
- * Mermaid and the sandboxed iframe render outside our token scope, so they
- * have to follow it explicitly instead of inheriting CSS variables.
+ * The sandboxed iframe renders outside our token scope, so it has to follow
+ * it explicitly instead of inheriting CSS variables.
  */
 function useDarkTheme(): boolean {
   const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
@@ -213,50 +214,28 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   );
 }
 
-let mermaidSeq = 0;
+function DiagramBlock({ spec }: { spec: string }) {
+  const parsed = useMemo<DiagramSpec | null>(() => {
+    try {
+      const value: unknown = JSON.parse(spec);
+      return isValidDiagramSpec(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }, [spec]);
 
-function MermaidBlock({ code }: { code: string }) {
-  const [svg, setSvg] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const dark = useDarkTheme();
-  const idRef = useRef("");
-  if (!idRef.current) { mermaidSeq += 1; idRef.current = `bridge-mermaid-${mermaidSeq}`; }
-
-  useEffect(() => {
-    let cancelled = false;
-    setSvg(null);
-    setFailed(false);
-    (async () => {
-      try {
-        const mermaid = (await import("mermaid")).default;
-        // Mermaid bakes colors into the SVG it emits, so the diagram is
-        // re-initialized and re-rendered whenever the theme flips.
-        mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
-        await mermaid.parse(code); // throws on malformed diagrams
-        const rendered = await mermaid.render(idRef.current, code);
-        if (!cancelled) setSvg(rendered.svg);
-      } catch {
-        if (!cancelled) setFailed(true);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [code, dark]);
-
-  if (failed) {
+  if (!parsed) {
     return (
       <div className="my-[0.8em]">
-        <div className="mb-[0.35em] text-xs text-warning">Could not render this Mermaid diagram — showing its source.</div>
-        <CodeBlock lang="mermaid" body={code} />
+        <div className="mb-[0.35em] text-xs text-warning">Could not render this diagram — showing its source.</div>
+        <CodeBlock lang="diagram" body={spec} />
       </div>
     );
   }
-  if (svg == null) {
-    return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
-  }
   return (
     <div className="rich-block my-[0.9em]">
-      <CopyButton text={code} className="rich-block-copy" />
-      <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" dangerouslySetInnerHTML={{ __html: svg }} />
+      <CopyButton text={spec} className="rich-block-copy" />
+      <DiagramFigure spec={parsed} />
     </div>
   );
 }
@@ -324,7 +303,7 @@ export const Markdown = memo(function Markdown({ text, dim }: { text: string; di
     <div className={dim ? "md dim" : "md"}>
       {splitBlocks(text).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
-        if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
+        if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
         if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
         if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
         if (block.kind === "heading") {
