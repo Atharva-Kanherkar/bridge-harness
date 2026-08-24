@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Session forest — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="session-forest">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">core concepts</p>
+          <h1>Session forest</h1>
+          <p class="lede">Every conversation Bridge has ever had lives in one append-only forest. Nothing is deleted and nothing is rewritten &mdash; the forest only ever grows.</p>
+
+          <figure class="diagram-figure">
+            <svg viewBox="0 0 280 390" role="img" aria-label="Diagram: a session tree forks into an abandoned branch, shown faded, and an active branch that continues through a checkpoint to its current tip." style="color:var(--fg)">
+              <g fill="none" stroke="currentColor" stroke-width="1.75">
+                <line x1="100" y1="32" x2="100" y2="88"></line>
+                <line x1="100" y1="88" x2="100" y2="144"></line>
+                <path d="M100,144 C100,172 48,172 48,200" opacity="0.45"></path>
+              </g>
+              <g fill="none" stroke="var(--ring)" stroke-width="1.75">
+                <line x1="100" y1="144" x2="100" y2="200"></line>
+                <line x1="100" y1="200" x2="100" y2="256"></line>
+                <line x1="100" y1="256" x2="100" y2="312"></line>
+              </g>
+              <circle cx="100" cy="32" r="5" fill="currentColor"></circle>
+              <circle cx="100" cy="88" r="5" fill="currentColor"></circle>
+              <circle cx="100" cy="144" r="6" fill="currentColor"></circle>
+              <circle cx="48" cy="200" r="5" fill="currentColor" opacity="0.45"></circle>
+              <circle cx="100" cy="200" r="5" fill="var(--ring)"></circle>
+              <circle cx="100" cy="256" r="6" fill="var(--ring)"></circle>
+              <circle cx="100" cy="256" r="11" fill="none" stroke="var(--ring)" stroke-width="1.5" opacity="0.55"></circle>
+              <circle cx="100" cy="312" r="6" fill="var(--ring)"></circle>
+              <circle cx="100" cy="312" r="11" fill="none" stroke="var(--ring)" stroke-width="1.5" stroke-dasharray="2.5 3" opacity="0.6"></circle>
+              <circle cx="100" cy="336" r="2" fill="var(--ring)" opacity="0.45"></circle>
+              <circle cx="100" cy="350" r="2" fill="var(--ring)" opacity="0.3"></circle>
+              <circle cx="100" cy="364" r="2" fill="var(--ring)" opacity="0.18"></circle>
+              <g style="font-family:var(--font-mono); font-size:11px;">
+                <line x1="108" y1="32" x2="120" y2="32" stroke="currentColor" stroke-width="1.5" opacity="0.5"></line>
+                <text x="126" y="35.5" fill="currentColor">session start</text>
+                <line x1="108" y1="144" x2="120" y2="144" stroke="currentColor" stroke-width="1.5" opacity="0.5"></line>
+                <text x="126" y="147.5" fill="currentColor">fork</text>
+                <text x="48" y="222" text-anchor="middle" fill="currentColor" opacity="0.6">abandoned</text>
+                <line x1="108" y1="256" x2="120" y2="256" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                <text x="126" y="259.5" fill="var(--ring)">checkpoint</text>
+                <line x1="108" y1="312" x2="120" y2="312" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                <text x="126" y="315.5" fill="var(--ring)">active tip</text>
+              </g>
+            </svg>
+            <figcaption>Forking doesn't delete the old path &mdash; it stays in the forest at reduced opacity while new history grows on from the fork point. A checkpoint partway down a branch is a verified boundary, not a rewrite.</figcaption>
+          </figure>
+
+          <div class="prose">
+            <h2 id="h-immutable">Immutable entries</h2>
+            <p>Each entry carries a parent, an event kind, and the visibility rules that decide what gets projected into context. Switching branches, forking a conversation, or resuming after a restart are all just different walks over the same structure.</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">forest entry</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"evt_9f2c"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"parent"</span><span class="tok-punct">:</span> <span class="tok-string">"evt_8ad1"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"kind"</span><span class="tok-punct">:</span> <span class="tok-string">"assistant_message"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"visibility"</span><span class="tok-punct">:</span> <span class="tok-string">"context"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"checkpoint"</span><span class="tok-punct">:</span> <span class="tok-num">false</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <h2 id="h-compaction">Compaction and resume</h2>
+            <p>Long conversations get summarized without losing the underlying record. A checkpoint is added, not substituted — the raw entries stay in the forest even after a summary sits in front of them. See <a href="compaction.html">Compaction & resume</a> for the restart-recovery modes this enables.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Compaction adds a verified checkpoint boundary rather than rewriting events &mdash; history stays intact even after it's been summarized.</p>
+            </div>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

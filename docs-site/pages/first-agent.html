@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Your first agent — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="first-agent">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">getting started</p>
+          <h1>Your first agent</h1>
+          <p class="lede">Bridge has exactly two entry points &mdash; a direct chat you fall into by typing, and a workspace orchestrator you opt into by connecting a folder &mdash; and the two are briefed on entirely different facts about themselves before either reads your first message.</p>
+          <div class="prose">
+
+            <h2 id="h-two-entry-points">Two entry points</h2>
+
+            <div class="feature-grid">
+              <div class="feature-card">
+                <div class="feature-icon"><svg class="icon" style="width:17px;height:17px"><use href="#i-terminal"></use></svg></div>
+                <div><h3>Direct chat</h3><p>Type into the Welcome composer and send. No folder, no worktree, no delegation &mdash; <code>kind: "direct"</code>.</p></div>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon"><svg class="icon" style="width:17px;height:17px"><use href="#i-branch"></use></svg></div>
+                <div><h3>Workspace orchestrator</h3><p>Connect a folder, optionally take an isolated worktree, and land in a session that can ask for workers &mdash; <code>kind: "orchestrator"</code>.</p></div>
+              </div>
+            </div>
+
+            <p>Open Bridge for the first time and there is one screen: a greeting headline over a single composer pill, nothing else. Type a message and press Enter, or click the arrow, and &mdash; unless what you typed is a <code>$harness</code> shortcut, covered below &mdash; Bridge calls <code>openNewChat</code>. That creates a session with <code>kind: "direct"</code>, <code>workspaceId: null</code>, and <code>cwd: null</code>: a conversation with no folder, no worktree, nothing behind it but a provider process. You are not asked to pick a harness first. <code>openNewChat</code> resolves one on its own: if you already had a direct chat open, it carries that harness and model forward, so switching providers sticks across "new chat"; otherwise it falls back to the adapter behind the configured "standard orchestrator" model profile, then to the first available adapter. A small tier badge (Fast / Balanced / High) sits in the composer's trailing slot, showing which model that first message would actually run on. If no provider is installed or signed in yet, the composer disables itself and its placeholder says so directly &mdash; "Install or sign in to a model adapter&hellip;" &mdash; rather than accepting text it has nowhere to send.</p>
+
+            <p>The composer's own <code>+</code> button does not mean "attach a file" here &mdash; there is nothing yet to attach to, so Welcome relabels it "New workspace" and routes it to the second entry point instead. Clicking it opens a small dialog titled "New workspace," subtitled "Group related chats. Connect a folder later." &mdash; naming a workspace is deliberately separate from giving it a folder. The next step does that: a workspace gets a connect action that opens the OS folder picker, titled "Connect a folder or git repository" in the full desktop app (a fixed path when you run the Vite dev server on its own, since there is no native picker to call). Click <code>+</code> on the resulting workspace card and Bridge asks "Create an isolated worktree?", explaining the choice in its own words: "Bridge can create a new Git branch and worktree automatically. This orchestrator gets its own files and cannot overwrite another chat's uncommitted work." Two buttons follow &mdash; "Create worktree," disabled with an inline note if the folder isn't backed by a registered Git repository, and "Use current folder" &mdash; plus a caption underneath: "The worktree starts from the repository's current HEAD. Uncommitted changes are not copied." Closing the dialog any other way, including Escape, takes the same no-worktree path as "Use current folder"; its close control is accessibility-labeled "Continue without a worktree," not a bare cancel. Either way you land straight inside the new session's chat, not back on the card or dialog you started from. That session comes back with <code>kind: "orchestrator"</code>, the <code>workspaceId</code> you connected, and a <code>cwd</code> pointing at either the fresh worktree or the folder itself.</p>
+
+            <p>A third route reaches the same fork more directly once a workspace already exists: a dedicated new-chat action opens a dialog that asks "Where should it run?" up front &mdash; no project, or an existing project-backed workspace with its own worktree checkbox &mdash; instead of arriving at the choice by clicking through cards.</p>
+
+            <h2 id="h-what-kind-changes">What <code>kind</code> actually changes</h2>
+
+            <p><code>kind</code> is not a label. It decides what a session is told about itself, and even what Bridge bothers to look for in its replies. Every session's system prompt is assembled from a small, fixed set of Bridge-authored sections keyed off a <code>PromptTarget</code> &mdash; <code>Orchestrator</code>, <code>Worker(role)</code>, or <code>DirectSession</code> &mdash; before the provider process ever starts:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">prompt sections</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-fn">DirectSession</span>  <span class="tok-punct">&rarr;</span> [<span class="tok-string">rendering_note</span>]
+<span class="tok-fn">Orchestrator</span>   <span class="tok-punct">&rarr;</span> [<span class="tok-string">bridge_role</span>, <span class="tok-string">delegation_protocol</span>]</code></pre></div>
+            </div>
+
+            <p>A direct session's one section, <code>rendering_note</code>, says only that Bridge renders diagrams (a fenced <code>```diagram</code> JSON block &mdash; not Mermaid), inline and display math (<code>$...$</code>, <code>$$...$$</code>), and sandboxed HTML specially, and to reach for those only when they communicate better than plain markdown. Nothing about delegation, nothing about capability tiers or effort &mdash; just enough for the model to know Bridge's chat is not a plain terminal.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>A direct session has no delegation role to brief, but it is still a chat Bridge renders rich content into &mdash; it needs the rendering note just as much as the orchestrator does, which is why it carries its own copy of the same text rather than none at all.</p>
+            </div>
+
+            <p>That section is recent. Until a fix landed in this repository, <code>DirectSession</code>'s list was empty &mdash; a plain chat had no idea Bridge renders anything specially, so asking one for a diagram fell back to the model's own habit: hand-drawn ASCII art in a plain code block, not the format the renderer actually understands. The fix gave direct chats their own copy of the note the orchestrator already carried baked into its role briefing, closing a gap that had sat unnoticed until someone actually asked a plain chat to draw something.</p>
+
+            <p>The orchestrator's two sections are heavier. <code>bridge_role</code> is <code>orchestrator::briefing()</code> &mdash; opening "You are Bridge's starter orchestrator&hellip; You are a planner and router" &mdash; and lays out when to handle something directly instead of delegating, the <code>fast</code> / <code>standard</code> / <code>strong</code> capability tiers, the <code>low</code> / <code>medium</code> / <code>high</code> / <code>xhigh</code> effort levels, and browser-routing rules, folding its own copy of the rendering note in rather than carrying a separate section for it. <code>delegation_protocol</code> adds the exact shape a delegation request has to take: one fenced <code>```bridge-delegate</code> JSON object naming a role (<code>research</code>, <code>implementation</code>, <code>verification</code>, <code>planning</code>, <code>documentation</code>), a capability tier, an effort, a write mode, and acceptance criteria &mdash; validated field by field before any worker starts, with the exact rejection reason handed back for the model to correct if it gets one wrong.</p>
+
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th></th><th>Direct chat</th><th>Workspace orchestrator</th></tr></thead>
+                <tbody>
+                  <tr><td><code>kind</code></td><td><code>direct</code></td><td><code>orchestrator</code></td></tr>
+                  <tr><td>Created by</td><td><code>openNewChat</code> &rarr; <code>sessions/create_chat</code></td><td><code>newWorkspaceSession</code> &rarr; <code>sessions/create_workspace_session</code></td></tr>
+                  <tr><td>Tied to a workspace</td><td>no</td><td>yes</td></tr>
+                  <tr><td>Worktree option</td><td>never offered</td><td>asked at creation</td></tr>
+                  <tr><td>Prompt sections</td><td><code>rendering_note</code></td><td><code>bridge_role</code>, <code>delegation_protocol</code></td></tr>
+                  <tr><td>Replies scanned for <code>bridge-delegate</code></td><td>never</td><td>after every completed turn</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p>The gap runs deeper than prompting. Bridge only scans a completed assistant message for <code>bridge-delegate</code> fences when the session's <code>kind</code> is not <code>direct</code> &mdash; a flag computed once per turn as <code>is_direct = session_kind == "direct"</code>. A direct chat is not merely unbriefed about delegation; its output is never even inspected for the syntax. And being inspected is not the same as being granted: as Bridge's own delegation policy puts it, "Agents may request delegation, but Rust decides whether it runs." The policy engine still checks capability availability, write scope, worktree isolation, concurrency, depth, retries, and budget on every request an orchestrator makes, exactly as it would for any other write. <code>kind: "orchestrator"</code> buys the vocabulary to ask. It does not buy the answer.</p>
+
+            <h2 id="h-harness-shortcut">The <code>$harness</code> shortcut</h2>
+
+            <p>One composer shortcut cuts across both entry points. Typing a bare <code>$</code>, a harness id, whitespace, and then a message &mdash; anywhere in Bridge's composer &mdash; skips whatever session you're looking at and opens a fresh direct chat pinned to that harness, handing it the rest of the text as its first message:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">composer</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">$</span><span class="tok-fn">codex</span> do you think we're right?</code></pre></div>
+            </div>
+
+            <p>Both composers check for this before doing anything else with what you typed: Welcome's own submit handler, and every open direct or orchestrator session's send path. A <code>$</code> with nothing after it yet does not fire the shortcut &mdash; it drives an autocomplete dropdown instead, matched against the id of every currently <em>available</em> adapter (an unavailable one is filtered out of the list entirely, not just greyed out), prefix matches sorted first. Tab, Enter, or a click completes it to <code>$id&nbsp;</code> and leaves the caret ready for the real message &mdash; picking a harness this way sends nothing by itself.</p>
+
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>The shortcut always calls the same path a brand-new chat does, so its result is always a fresh <code>kind: "direct"</code> session &mdash; even typed from inside an orchestrator, or a direct chat already pinned to a different harness. It does not retarget the conversation you're in; it replaces your view with a different one. It has no effect inside a worker's own steering box either, which is a separate component that amends the worker's objective rather than sending a chat message.</p>
+            </div>
+
+            <p>This is deliberately not the same feature as a <code>/name</code> slash command, which rewrites the current direct chat's harness for its next message and stays put. <code>$harness</code> abandons the session outright. Typing the full <code>$id message</code> form by hand, past whatever the dropdown offered, still works &mdash; but only if that harness is actually available; naming one that isn't returns an inline error saying so instead of silently sending the literal text or falling through to your current session.</p>
+
+            <p>None of this parsing lives inside <code>ComposerPill</code> itself. The component is deliberately dumb: a <code>value</code>, an <code>onChange</code>, an <code>onSubmit</code>, and a handful of presentation props &mdash; <code>layout: "hero" | "dock"</code>, a ghost-text <code>suggestion</code> for inline typeahead, <code>activeAction: "steer" | "queue"</code> for what submitting does mid-turn. The <code>$harness</code> state &mdash; the query, the match list, the dropdown's own keyboard handling &mdash; is computed one level up, in the same place that owns the equivalent state for <code>/</code> slash commands and <code>@</code> file mentions, and rendered as a popover layered above the same pill. Three independent autocomplete systems wired in from outside is more to assemble than a composer that understands Bridge's own vocabulary directly &mdash; but it keeps the pill itself reusable: it renders a text box, and nothing it does depends on knowing what a harness is.</p>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../assets/shell.js"></script>
+</body>
+</html>

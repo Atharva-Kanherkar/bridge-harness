@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Claude Code — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="claude-code">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">agents &amp; runtimes</p>
+          <h1>Claude Code</h1>
+          <p class="lede">Claude Code runs inside Bridge through the Claude Agent SDK in a long-lived Node sidecar, never as a claude -p subprocess spawned per turn &mdash; that one substitution is what makes a session interruptible, steerable mid-reply, and able to gate individual tool calls in code instead of at a CLI prompt.</p>
+
+          <div class="prose">
+            <h2 id="h-sidecar-vs-cli">A sidecar, not claude -p</h2>
+            <p>Every Claude Code turn in Bridge runs through <code>sidecar/claude-agent/index.mjs</code>, a small Node process that imports <code>@anthropic-ai/claude-agent-sdk</code> and drives one long-lived, streaming-input <code>query()</code> call for the entire life of the session. <code>claude_adapter.rs</code> used to shell out to <code>claude -p</code> once per turn; the sidecar replaces that path entirely, because a one-shot CLI invocation exits after a single reply &mdash; keeping a session going meant re-spawning and re-parsing output for every turn.</p>
+
+            <p>A longer-lived CLI process would only fix that exit-per-turn problem. What the Agent SDK adds on top is control a subprocess boundary can't offer: a <code>canUseTool</code> callback that decides on every tool call, synchronously, in the same process, before anything reaches the model's tool-execution path &mdash; the exact mechanism the briefing boundary below depends on; an <code>interrupt()</code> method on the live query object, so stopping a turn doesn't mean killing the process; and messages that already arrive as typed objects (<code>system</code>, <code>assistant</code>, <code>stream_event</code>, <code>user</code>, <code>result</code>) instead of text scraped off a terminal.</p>
+
+            <p>The sidecar's own contract is two frame shapes on stdin and whatever the SDK produces on stdout, one JSON object per line. The stdout shapes are unmodified SDK output &mdash; the same shapes Bridge's Claude message normalizer already understood from the <code>claude -p</code> era, so switching transports never required rewriting how Bridge reads a Claude message:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">stdio</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-comment">// stdin — Rust writes these to the sidecar's stdin</span>
+<span class="tok-punct">{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"user"</span><span class="tok-punct">,</span><span class="tok-attr">"message"</span><span class="tok-punct">:</span><span class="tok-punct">{</span><span class="tok-attr">"role"</span><span class="tok-punct">:</span><span class="tok-string">"user"</span><span class="tok-punct">,</span><span class="tok-attr">"content"</span><span class="tok-punct">:</span><span class="tok-punct">[{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"text"</span><span class="tok-punct">,</span><span class="tok-attr">"text"</span><span class="tok-punct">:</span><span class="tok-string">"…"</span><span class="tok-punct">}]}}</span>
+<span class="tok-punct">{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"control_request"</span><span class="tok-punct">,</span><span class="tok-attr">"request_id"</span><span class="tok-punct">:</span><span class="tok-string">"irq-3"</span><span class="tok-punct">,</span><span class="tok-attr">"request"</span><span class="tok-punct">:</span><span class="tok-punct">{</span><span class="tok-attr">"subtype"</span><span class="tok-punct">:</span><span class="tok-string">"interrupt"</span><span class="tok-punct">}}</span>
+
+<span class="tok-comment">// stdout — raw SDK messages relayed one per line, unmodified</span>
+<span class="tok-punct">{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"system"</span><span class="tok-punct">,</span><span class="tok-attr">"subtype"</span><span class="tok-punct">:</span><span class="tok-string">"session_ready"</span><span class="tok-punct">,</span><span class="tok-attr">"session_id"</span><span class="tok-punct">:</span><span class="tok-string">"b8b1e4b2-…"</span><span class="tok-punct">,</span><span class="tok-attr">"cwd"</span><span class="tok-punct">:</span><span class="tok-string">"/Users/…/worktree"</span><span class="tok-punct">,</span><span class="tok-attr">"model"</span><span class="tok-punct">:</span><span class="tok-string">"sonnet"</span><span class="tok-punct">,</span><span class="tok-attr">"resumed"</span><span class="tok-punct">:</span><span class="tok-keyword">false</span><span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p>Three verbs cross this boundary. <code>start_turn</code> writes a <code>user</code> frame, and is what <code>send_turn</code> resolves to on the shared <code>AdapterRuntime</code> trait. <code>interrupt</code> writes the <code>control_request</code> frame above; the sidecar's line handler responds by calling the SDK's own <code>run.interrupt()</code>, not by killing the process. <code>respond</code> answers a permission decision the SDK is still waiting on, translating Bridge's own <code>accept</code> / <code>acceptForSession</code> / anything-else vocabulary into the SDK's <code>allow</code> / <code>deny</code>, over a <code>control_response</code> frame.</p>
+
+            <p>One more override shows up directly in the product. <code>supports_active_turn_steering</code> defaults to <code>false</code> on the shared trait — most adapters queue a message sent mid-turn and deliver it once the turn ends. Claude's runtime is the one adapter that overrides it to <code>true</code>, because the sidecar feeds one continuous streaming input: a message written while a turn is running is simply picked up by that same turn, the SDK's own steering path, rather than starting a competing one. That flag is also literally what tells Bridge's UI to offer <strong>Steer</strong> instead of <strong>Queue</strong> before you submit.</p>
+
+            <h2 id="h-locating">Locating the sidecar</h2>
+            <p>Before any of that can run, Bridge has to find <code>index.mjs</code> on disk. <code>sidecar_entry()</code> tries three locations in order:</p>
+
+            <div class="crate-strip">
+              <span class="crate-chip">BRIDGE_CLAUDE_SIDECAR</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">next to the executable</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">in-repo path</span>
+            </div>
+
+            <ol>
+              <li><strong>The <code>BRIDGE_CLAUDE_SIDECAR</code> env var.</strong> It only wins if the path it names actually exists on disk — an env var pointing nowhere is skipped rather than treated as a fatal misconfiguration.</li>
+              <li><strong>Next to the running executable.</strong> Two candidates relative to <code>current_exe()</code>'s directory: <code>sidecar/claude-agent/index.mjs</code>, and <code>../Resources/sidecar/claude-agent/index.mjs</code> for a packaged macOS app's <code>Contents/Resources</code> layout.</li>
+              <li><strong>The in-repo path.</strong> <code>sidecar/claude-agent/index.mjs</code> resolved from <code>CARGO_MANIFEST_DIR</code> up to the repo root — what a <code>cargo</code> or <code>tauri dev</code> checkout finds with no packaging step at all.</li>
+            </ol>
+
+            <p>If none of the three exist, starting or resuming a Claude session fails with exactly this message: <code>Claude Agent SDK sidecar not found (set BRIDGE_CLAUDE_SIDECAR or ship sidecar/claude-agent/index.mjs next to the app)</code>.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Node itself is optional at the Bridge level, not just the sidecar. With no <code>node</code> on PATH, Claude reports itself unavailable with "Node.js 18+ is required to run Claude models" instead of blocking the rest of Bridge from starting — the same optional-provider treatment CLAUDE.md describes for every provider CLI.</p>
+            </div>
+
+            <p>A second, easily-confused variable sits next to this one. <code>BRIDGE_CLAUDE_SIDECAR</code> picks which script runs; <code>BRIDGE_CLAUDE_SDK_ENTRY</code> picks which installed copy of <code>@anthropic-ai/claude-agent-sdk</code> that script imports. Rust sets it only when a managed runtime payload for Claude is installed, and explicitly clears it otherwise, so a value left over in the environment can never point the sidecar at an SDK Bridge doesn't own. The version Bridge reports for Claude follows the same distinction: it reads the installed SDK's own <code>package.json</code> version — the managed payload's if there is one, else the bundled sidecar's own <code>node_modules</code> — never the Node runtime's version, because the SDK's version, not Node's, is the actual subject a briefing certification check compares against.</p>
+
+            <h2 id="h-config">Turning a session into SDK options</h2>
+            <p>Model, effort, write mode, instructions, enabled plugins and MCP servers, and whether this is a briefing run all cross the process boundary as one JSON value, passed as the sidecar's <code>argv[2]</code>:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"sessionId"</span><span class="tok-punct">:</span> <span class="tok-string">"b8b1e4b2-…"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"model"</span><span class="tok-punct">:</span> <span class="tok-string">"sonnet"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"cwd"</span><span class="tok-punct">:</span> <span class="tok-string">"/Users/…/worktree"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"resume"</span><span class="tok-punct">:</span> <span class="tok-keyword">false</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"instructions"</span><span class="tok-punct">:</span> <span class="tok-string">"Follow the worker contract…"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"writeMode"</span><span class="tok-punct">:</span> <span class="tok-string">"Isolated"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"plugins"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span><span class="tok-string">"/…/claude-plugins/notion"</span><span class="tok-punct">],</span>
+  <span class="tok-attr">"mcpServers"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"notion"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"type"</span><span class="tok-punct">:</span> <span class="tok-string">"http"</span><span class="tok-punct">,</span> <span class="tok-attr">"url"</span><span class="tok-punct">:</span> <span class="tok-string">"…"</span> <span class="tok-punct">}</span> <span class="tok-punct">},</span>
+  <span class="tok-attr">"briefing"</span><span class="tok-punct">:</span> <span class="tok-keyword">null</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p><code>options.mjs</code>'s <code>buildOptions</code> turns this into the SDK's own options object. <code>model</code> defaults to <code>"sonnet"</code> whenever the field is missing or blank. <code>effort</code> never reaches the SDK directly — Claude Code has no per-run effort flag, so the adapter's closest real knob is the extended-thinking budget, set through the <code>MAX_THINKING_TOKENS</code> environment variable: <code>16000</code> for <code>high</code>, <code>32000</code> for <code>xhigh</code>, and left alone — Claude Code's own default — for <code>low</code> and <code>medium</code>.</p>
+
+            <p><code>writeMode</code> selects a <code>permissionMode</code>, and for <code>ReadOnly</code>, an explicit built-in tool allow and deny list:</p>
+
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Write mode</th><th>permissionMode</th><th>Built-in tool access</th></tr></thead>
+                <tbody>
+                  <tr><td><code>ReadOnly</code></td><td><code>dontAsk</code></td><td>Allowed: Read, Grep, Glob, Bash. Denied: Edit, Write, NotebookEdit.</td></tr>
+                  <tr><td><code>Shared</code> / <code>Isolated</code></td><td><code>acceptEdits</code></td><td>File edits proceed without a prompt; no explicit allow or deny list.</td></tr>
+                  <tr><td><code>Full</code> (or unset)</td><td><code>bypassPermissions</code></td><td><code>allowDangerouslySkipPermissions: true</code> — every tool call proceeds unprompted.</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p><code>ReadOnly</code> still allows Bash. That's a tool-identity allow-list enforced by the SDK's own permission layer, not a sandboxed shell — it stops Claude from calling <code>Edit</code> or <code>Write</code>, not from running a shell command that deletes a file. Bridge's actual filesystem-level containment for an untrusted run is the separate read-only sandbox covered next.</p>
+
+            <p><code>instructions</code> — Bridge's delegation protocol and worker brief — never becomes the whole system prompt. It's appended to Claude Code's own built-in preset: <code>systemPrompt: { type: "preset", preset: "claude_code", append: instructions }</code>. Bridge's own prompt-capability ledger records why precisely: Claude's <code>appendable</code> verdict is <code>Supported</code>, because that's what ships; its <code>replaceable</code> verdict is <code>Unsupported</code>, because nobody has yet proven what a bare-string <code>systemPrompt</code> — which the SDK also accepts, and which would replace the preset outright instead of appending to it — actually does to Claude Code's own tool-use instincts, and Bridge won't claim the capability until a live-credentialed integration test confirms it one way or the other. Its <code>readable</code> verdict is <code>Unsupported</code> for an unrelated reason: the SDK compiles the <code>claude_code</code> preset internally and never exposes the resulting text, so Bridge cannot read back what it actually sent even if it wanted to.</p>
+
+            <h2 id="h-authority">Narrower authority: sandboxed and briefing runs</h2>
+            <p>Two mechanisms give a Claude run less authority than an ordinary interactive session gets, at two different layers and for two different reasons.</p>
+
+            <div class="tree-row cols-2">
+              <div class="tree-card">
+                <h3>Read-only sandbox</h3>
+                <p>OS-level. The whole process runs under a macOS seatbelt profile. Used for delegated worker runs.</p>
+              </div>
+              <div class="tree-card">
+                <h3>Briefing run</h3>
+                <p>SDK-level. A <code>canUseTool</code> callback gates every tool call by name. Used for the work board's read-only sweeps.</p>
+              </div>
+            </div>
+
+            <h3>Read-only sandbox</h3>
+            <p><code>launch()</code> takes an optional <code>read_only_sandbox: Option&lt;&amp;ReadOnlySandbox&gt;</code>. When it's set, the whole <code>node</code> invocation is wrapped by the shared <code>worker_sandbox::command()</code> helper — on macOS, that means running under <code>/usr/bin/sandbox-exec -f &lt;profile&gt; --</code>, an actual OS-level sandbox, not a permission list the model is trusted to respect. That wrapping isn't Claude-specific — it's shared across adapters (see Worktree isolation for the general mechanism). What follows is specific to this adapter's use of it.</p>
+
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>If <code>sandbox-exec</code> is unavailable — off macOS, or a stripped-down macOS install — <code>launch()</code> fails outright: "Read-only workers require macOS sandbox-exec, but it is unavailable; refusing to start without isolation." A sandboxed Claude run never silently falls back to running unsandboxed.</p>
+            </div>
+
+            <p>One easy mix-up: under a read-only sandbox, the process's actual OS working directory becomes <code>sandbox.output_dir()</code>, not the <code>cwd</code> carried in the config JSON above — that field still names the real worktree the SDK itself operates on. The two only diverge in sandboxed runs; everywhere else they're the same path.</p>
+
+            <p>The rest of what happens here is Claude-specific. <code>launch()</code> points <code>CLAUDE_CONFIG_DIR</code> at a fresh <code>.claude</code> directory inside the sandbox's own output directory rather than the user's real <code>~/.claude</code> — <code>prepare_isolated_claude_config</code> symlinks in only <code>.credentials.json</code> from the real one, so a sandboxed run can authenticate without inheriting the rest of the user's global settings, hooks, or permissions. <code>CLAUDE_CODE_TMPDIR</code>, <code>TMPDIR</code>, and <code>BRIDGE_WORKER_OUTPUT_DIR</code> all point at that same sandbox output directory. And if <code>CLAUDE_CODE_OAUTH_TOKEN</code> isn't already set in the environment, Bridge reads it straight out of the macOS Keychain (<code>security find-generic-password -s "Claude Code-credentials" -w</code>) rather than requiring it to be exported — a macOS-only path with no fallback, consistent with Bridge being a macOS app.</p>
+
+            <h3>Briefing runs</h3>
+            <p>A briefing run is how the work board reads your connected tools — search, list, fetch — without a human approving each call. Bridge's own request type documents the design choice directly: briefing authority is a separate axis from write mode, not a rung of it, and the sidecar's <code>briefingOptions()</code> agrees in practice — it replaces the whole permission half of the SDK options wholesale rather than layering on top of whatever <code>writeMode</code> would otherwise have produced. Entering one at all requires <code>write_mode</code> to be exactly <code>ReadOnly</code>; the adapter's own test asserts <code>Shared</code>, <code>Isolated</code>, and <code>Full</code> are all refused.</p>
+
+            <p>The gate itself is <code>canUseTool</code>, built by <code>makeBriefingGate</code>. It denies by default and allows exactly two things: an exact match against the reviewed <code>mcp__server__tool</code> wire names Rust compiled into the policy, or a read-verb call (<code>search</code>, <code>read</code>, <code>list</code>, <code>get</code>, <code>query</code>, <code>fetch</code>, <code>find</code>) against a server whose reads were pre-cleared wholesale. Every call that passes is still measured on its serialized argument size against a byte ceiling before it's let through. Nothing is pre-approved through <code>allowedTools</code> — the file's own comment is explicit that doing so would let a call skip the gate, and with it the size check. Around that per-call gate: named built-in tools (Bash, Read, Write, WebFetch, Task, Skill, per the adapter's own pinned test) are stripped before they would even reach it, through <code>disallowedTools</code>; <code>strictMcpConfig</code> restricts the reachable MCP servers to only the reviewed ones; and <code>settingSources: []</code> plus <code>plugins: []</code> mean a briefing run inherits nothing from the project it happens to run in. No dialog kind is declared either, which is what stops a permission prompt or an MCP elicitation from parking a run that has no human attached to answer it.</p>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

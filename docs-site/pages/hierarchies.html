@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Three hierarchies — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="hierarchies">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">core concepts</p>
+          <h1>Three hierarchies</h1>
+          <p class="lede">Bridge keeps three separate data structures—workspace, agent, and conversation—independent by design, because conflating them is the recurring bug in agent tooling.</p>
+
+          <figure class="diagram-figure">
+            <svg viewBox="0 0 540 420" role="img" aria-label="Diagram showing three parallel trees: workspace tree (repo to task worktree to worker worktree), agent tree (orchestrator to policy-authorized workers), and conversation tree (root entries to active branch). Arrows between trees show limited interactions." style="color:var(--fg)">
+              <!-- Workspace tree (left) -->
+              <g>
+                <text x="80" y="25" style="font-family:var(--font-mono); font-size:13px; font-weight:600; fill:currentColor">Workspace</text>
+                <line x1="80" y1="40" x2="80" y2="80" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="80" cy="40" r="5" fill="currentColor"></circle>
+                <text x="90" y="48" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">repo</text>
+
+                <line x1="80" y1="80" x2="80" y2="140" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="80" cy="80" r="5" fill="currentColor"></circle>
+                <text x="90" y="88" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">task worktree</text>
+
+                <line x1="80" y1="140" x2="80" y2="200" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="80" cy="140" r="5" fill="currentColor"></circle>
+                <text x="90" y="148" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">worker worktree</text>
+
+                <circle cx="80" cy="200" r="5" fill="currentColor"></circle>
+                <text x="90" y="208" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">filesystem</text>
+              </g>
+
+              <!-- Agent tree (middle) -->
+              <g>
+                <text x="270" y="25" style="font-family:var(--font-mono); font-size:13px; font-weight:600; fill:currentColor">Agent</text>
+                <line x1="270" y1="40" x2="270" y2="100" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="270" cy="40" r="5" fill="currentColor"></circle>
+                <text x="280" y="48" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">orchestrator</text>
+
+                <line x1="270" y1="100" x2="270" y2="170" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="270" cy="100" r="5" fill="currentColor"></circle>
+                <text x="280" y="108" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">worker</text>
+
+                <line x1="270" y1="170" x2="270" y2="240" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="270" cy="170" r="5" fill="currentColor"></circle>
+                <text x="280" y="178" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">worker</text>
+
+                <circle cx="270" cy="240" r="5" fill="currentColor"></circle>
+                <text x="280" y="248" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">process hierarchy</text>
+              </g>
+
+              <!-- Conversation tree (right) -->
+              <g>
+                <text x="450" y="25" style="font-family:var(--font-mono); font-size:13px; font-weight:600; fill:currentColor">Conversation</text>
+                <line x1="450" y1="40" x2="450" y2="90" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="450" cy="40" r="5" fill="currentColor"></circle>
+                <text x="460" y="48" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">root</text>
+
+                <line x1="450" y1="90" x2="450" y2="150" stroke="currentColor" stroke-width="1.75" fill="none"></line>
+                <circle cx="450" cy="90" r="5" fill="currentColor"></circle>
+                <text x="460" y="98" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">entry</text>
+
+                <line x1="450" y1="150" x2="450" y2="210" stroke="var(--ring)" stroke-width="1.75" fill="none"></line>
+                <circle cx="450" cy="150" r="5" fill="currentColor"></circle>
+                <text x="460" y="158" style="font-family:var(--font-mono); font-size:11px; fill:currentColor">fork</text>
+
+                <circle cx="450" cy="210" r="6" fill="var(--ring)"></circle>
+                <circle cx="450" cy="210" r="11" fill="none" stroke="var(--ring)" stroke-width="1.5" opacity="0.55"></circle>
+                <text x="460" y="218" style="font-family:var(--font-mono); font-size:11px; fill:var(--ring)">active tip</text>
+              </g>
+
+              <!-- Connecting arrows to show limited interaction -->
+              <defs>
+                <marker id="arrow-small" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="currentColor" opacity="0.4"></path>
+                </marker>
+              </defs>
+
+              <!-- Workspace to Agent: spawns worker -->
+              <line x1="110" y1="160" x2="240" y2="160" stroke="currentColor" stroke-width="1" stroke-dasharray="2.5 2.5" opacity="0.3" marker-end="url(#arrow-small)"></line>
+              <text x="160" y="155" style="font-family:var(--font-mono); font-size:9px; fill:currentColor; opacity:0.5">spawns</text>
+
+              <!-- Agent to Conversation: records result -->
+              <line x1="300" y1="240" x2="420" y2="210" stroke="currentColor" stroke-width="1" stroke-dasharray="2.5 2.5" opacity="0.3" marker-end="url(#arrow-small)"></line>
+              <text x="340" y="235" style="font-family:var(--font-mono); font-size:9px; fill:currentColor; opacity:0.5">records</text>
+
+              <!-- Key constraint label -->
+              <g>
+                <rect x="140" y="300" width="260" height="100" rx="4" fill="none" stroke="var(--ring)" stroke-width="1.5" opacity="0.3"></rect>
+                <text x="155" y="320" style="font-family:var(--font-mono); font-size:11px; font-weight:600; fill:var(--ring); opacity:0.8">Key constraint:</text>
+                <text x="155" y="338" style="font-family:var(--font-mono); font-size:10px; fill:currentColor; opacity:0.7">Forking a conversation does not</text>
+                <text x="155" y="352" style="font-family:var(--font-mono); font-size:10px; fill:currentColor; opacity:0.7">undo filesystem changes.</text>
+                <text x="155" y="370" style="font-family:var(--font-mono); font-size:10px; fill:currentColor; opacity:0.7">Ending a session does not discard</text>
+                <text x="155" y="384" style="font-family:var(--font-mono); font-size:10px; fill:currentColor; opacity:0.7">a worktree or worker process.</text>
+              </g>
+            </svg>
+            <figcaption>Three independent hierarchies. Operations on one tree do not automatically affect the others—you can fork a conversation, end a session, or even switch worktrees while the filesystem, agent processes, and conversation log all remain independent.</figcaption>
+          </figure>
+
+          <div class="prose">
+            <h2 id="h-core-insight">Why this matters</h2>
+            <p>In agent tooling, it is tempting to assume that these three structures are in lockstep. When you fork a conversation, you might expect a new filesystem snapshot. When you end a session, you might expect a worktree to be cleaned up. When you switch between agents, you might expect the conversation to move with you. None of these assumptions hold. Bridge deliberately keeps them separate because conflating them is the recurring design bug.</p>
+            <p>The separation buys concrete properties: a conversation can be examined or resumed later without touching the filesystem. A worker can be spawned in an isolated worktree without disrupting an ongoing conversation. A conversation can be forked and explored in a branch while the worker process continues unaffected. These independence guarantees are impossible if the three trees are entwined.</p>
+
+            <h2 id="h-workspace">The workspace tree</h2>
+            <p>The workspace tree is the Git repository on disk, from the root repository down through task and worker worktrees. Each level holds real filesystem state:</p>
+            <ul>
+              <li><strong>Repository:</strong> the original clone, usually the user's working copy.</li>
+              <li><strong>Task worktree:</strong> a Git worktree for a single user task. Created when the user starts a task session, it isolates the user's work from other parallel sessions.</li>
+              <li><strong>Worker worktree:</strong> an optional additional layer created by a policy-authorized worker. If a worker requests isolated execution, it gets its own worktree, with changes verified and adopted back into the task worktree only after completion, via fast-forward merge.</li>
+            </ul>
+            <p>Worktree lifetimes are governed by the policy engine and the completion lifecycle: a worker worktree is retained until its adoption attempt (successful or deliberate discard) is terminal. A task worktree persists across multiple agent sessions and conversation branches—ending a conversation does not remove it.</p>
+
+            <h2 id="h-agent">The agent tree</h2>
+            <p>The agent tree is the process hierarchy and delegation structure. It starts with an orchestrator (e.g., Claude Code running in the parent session) and spawns workers to handle delegated sub-tasks.</p>
+            <ul>
+              <li><strong>Orchestrator:</strong> the parent agent running the user's conversation. It makes decisions about what to delegate.</li>
+              <li><strong>Workers:</strong> child agents spawned on demand. Each worker runs in its own process and session. Workers may themselves spawn further workers.</li>
+            </ul>
+            <p>Policy gates every delegation: capability tier, write scope, owned paths, concurrency, retries, and approvals are all decided in the policy engine before a worker spawns. A worker result is a typed, validated data structure that the orchestrator receives—not a transcript, not raw prose, but a structured summary with evidence binding. Workers cannot be resumed across harness families (Codex, Claude, OpenCode are separate runtime ecosystems); cross-harness delegations are projected at boundaries rather than native.</p>
+
+            <h2 id="h-conversation">The conversation tree</h2>
+            <p>The conversation tree is the <a href="session-forest.html">session forest</a>: the append-only, immutable record of every message, tool call, and event in a conversation. It is stored locally in SQLite.</p>
+            <ul>
+              <li><strong>Root entries:</strong> the starting point of a conversation.</li>
+              <li><strong>Entries:</strong> immutable records with a parent, an event kind, and visibility rules. Each entry belongs to one session and is never modified.</li>
+              <li><strong>Active branch:</strong> the currently-selected branch. Forking the conversation switches which branch is active, but the old entries remain in the forest.</li>
+            </ul>
+            <p>A conversation can be forked at any point. The fork does not create a new session, a new worktree, or a new worker; it simply marks a new branch in the forest as active. Later appends to that branch create a new history thread. All previous entries on both branches remain accessible. When a conversation is compacted (summarized to reduce context), the summary is added as a checkpoint, not substituted into the history—the raw entries stay intact.</p>
+
+            <h2 id="h-interactions">How they interact (and don't)</h2>
+            <p>The trees interact in a few specific, carefully gated ways:</p>
+
+            <h3>Workspace to Agent</h3>
+            <p>A worker is spawned with a binding to a specific worktree checkout. The worker's typed result records which worktree path it ran in and the exact Git HEAD at that time. If it is a write-capable worker in isolated mode, it gets a child worktree and its changes must be verified against Git before adoption. This binding is durable evidence: you can always look up a worker result and know exactly which checkout it ran in.</p>
+
+            <h3>Agent to Conversation</h3>
+            <p>When a worker completes, its result is recorded as a durable `worker.result` entry in the conversation forest. The entry ID is the evidence reference. Later workers can request that evidence by ID, and Bridge resolves the exact typed payload from SQLite, checking that the evidence belongs to the same session and active branch. Conversely, a worker receives excerpted evidence from recent ancestors—not the raw transcript, but a digest of messages and tool calls—so it knows what has been tried already.</p>
+
+            <h3>Conversation to Workspace</h3>
+            <p>At resume time or after a compaction checkpoint, the forest snapshot is compared with the current worktree state. Every entry records a deterministic hash of the porcelain dirty state at the time it was created. A mismatch surfaces as conversation/file divergence and is shown to the user—"your conversation remembers the files at state X, but the worktree is now at state Y." This is not automatic reconciliation; it is visibility. The conversation never rewrites filesystem history, and the filesystem never rewrites the conversation.</p>
+
+            <h2 id="h-why-separate">Why separation is essential</h2>
+            <p>Keeping these trees separate enables several safety and usability properties:</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-shield"></use></svg>
+              <p><strong>Isolation:</strong> a worker can run in an isolated worktree without affecting the user's task worktree until the user explicitly accepts the result. A conversation fork does not change the filesystem at all.</p>
+            </div>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-layers"></use></svg>
+              <p><strong>Durability without coupling:</strong> a conversation can be paused, resumed, forked, or searched months later. The worktree may have moved, the workers may be gone, but the forest entries are immutable and self-contained.</p>
+            </div>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-branch"></use></svg>
+              <p><strong>Concurrency:</strong> multiple workers can be active at once. Each one gets its own workspace layer (via worktree or write-scope isolation) and its own process tree. The conversation can record events from all of them on the same branch.</p>
+            </div>
+
+            <p>If you conflate these trees—assume a conversation fork creates a filesystem snapshot, or that ending a worker cleans up its worktree, or that switching harnesses moves the conversation with it—you will create edge cases where users lose work, where state gets corrupted, or where cleanup is incomplete. Bridge pays the cost of keeping them separate upfront so those bugs never materialize.</p>
+
+            <h2 id="h-for-agents">For AI agents working on Bridge</h2>
+            <p>When modifying the codebase, remember that these trees are deliberately independent. A change that assumes they are coupled will almost certainly introduce a subtle bug. Some specific red flags:</p>
+            <ul>
+              <li>A worker spawn that assumes the task worktree is already at a specific state without binding it.</li>
+              <li>A conversation fork or branch switch that tries to revert or reset the filesystem.</li>
+              <li>A session end that deletes a worktree without checking policy rules and adoption status.</li>
+              <li>Reading a worker result without verifying it belongs to the active session and branch.</li>
+            </ul>
+            <p>The policy engine in `bridge_core` and the session forest in `session_forest.rs` are the two places that formalize this separation. Learn those modules first.</p>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Codex — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="codex">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">agents & runtimes</p>
+          <h1>Codex</h1>
+          <p class="lede">Codex is Bridge's one adapter that never leaves native code: it spawns the <code>codex</code> binary itself in its own long-lived <code>app-server</code> protocol mode, with no Node runtime, SDK package, or sidecar script standing between Bridge and the model the way there is for Claude.</p>
+
+          <div class="prose">
+            <h2 id="h-transport">One subprocess, not a chain of them</h2>
+            <p>Bridge launches Codex by spawning the <code>codex</code> binary directly, in its own protocol mode: <code>codex app-server --listen stdio://</code>. Stdin, stdout, and stderr are all piped — stdin carries every request Bridge writes, stdout carries everything Codex writes back (handshake responses, turn events, and Codex's own incoming requests, all interleaved on the same stream), and stderr is captured into a bounded rolling tail kept only for failure reporting. The process is spawned once, at start or resume, and stays open for the life of the session: every later turn is a new message on the same pipe, not a new invocation of the binary.</p>
+
+            <p>That persistence is exactly the point of contrast with Claude. Claude's adapter never invokes the <code>claude</code> binary for a turn — it spawns <code>node</code> running a script Bridge itself wrote (<code>sidecar/claude-agent/index.mjs</code>), which imports and drives the <code>@anthropic-ai/claude-agent-sdk</code> package. The adapter's own comment explains why: Claude runs through the Agent SDK, driven by a Node sidecar, so that one long-lived streaming query serves every turn on a single session — fixing what the comment itself calls the <code>claude -p</code> &lsquo;exit after one turn&rsquo; behaviour. Codex doesn't need an equivalent layer, because its own <code>app-server</code> mode already is that long-lived, stateful protocol; Bridge's job is to speak it, not to build persistence on top of something that lacks it.</p>
+
+            <h3>Codex</h3>
+            <div class="crate-strip">
+              <span class="crate-chip">Bridge adapter</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">codex binary (app-server)</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">OpenAI</span>
+            </div>
+            <h3>Claude Code</h3>
+            <div class="crate-strip">
+              <span class="crate-chip">Bridge adapter</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">node</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">sidecar (index.mjs)</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">Claude Agent SDK</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">Anthropic</span>
+            </div>
+
+            <p>Day to day this is mostly invisible — a Codex-backed session looks like any other Bridge session — but it does mean Codex has exactly one external dependency: the <code>codex</code> binary itself, Bridge-managed or already on your PATH. Claude needs Node 18+ as well; <code>claude_adapter::start</code> fails immediately with an explicit message if <code>node</code> doesn't resolve, a check Codex's launch path has no equivalent of.</p>
+
+            <h2 id="h-lifecycle">Starting and resuming a thread</h2>
+            <p>A session opens with a synchronous handshake: <code>initialize</code> (request id 1), wait for the matching response, then a bare <code>initialized</code> notification with no id — Codex isn't expected to answer it. Only then does Bridge send <code>thread/start</code> for a new session, or <code>thread/resume</code> for an existing one, as request id 2, and wait again. <code>wait_for_response</code> reads the stream line by line until it finds a frame whose <code>id</code> matches the one it's blocking on; Codex is free to start emitting other frames before it gets there, and none of those are dropped — they're collected and handed back to the caller as <code>startup_messages</code>.</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">stdio</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-muted">→</span> <span class="tok-punct">{</span> <span class="tok-attr">"method"</span><span class="tok-punct">:</span> <span class="tok-string">"initialize"</span><span class="tok-punct">,</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-num">1</span><span class="tok-punct">,</span> <span class="tok-attr">"params"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"clientInfo"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"name"</span><span class="tok-punct">:</span> <span class="tok-string">"bridge"</span><span class="tok-punct">,</span> <span class="tok-attr">"title"</span><span class="tok-punct">:</span> <span class="tok-string">"Bridge"</span><span class="tok-punct">,</span> <span class="tok-attr">"version"</span><span class="tok-punct">:</span> <span class="tok-string">"0.9.4"</span> <span class="tok-punct">}</span><span class="tok-punct">,</span> <span class="tok-attr">"capabilities"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"experimentalApi"</span><span class="tok-punct">:</span> <span class="tok-num">false</span><span class="tok-punct">,</span> <span class="tok-attr">"requestAttestation"</span><span class="tok-punct">:</span> <span class="tok-num">false</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span>
+<span class="tok-muted">←</span> <span class="tok-comment">id 1 result: handshake acknowledged</span>
+<span class="tok-muted">→</span> <span class="tok-punct">{</span> <span class="tok-attr">"method"</span><span class="tok-punct">:</span> <span class="tok-string">"initialized"</span> <span class="tok-punct">}</span>
+<span class="tok-muted">→</span> <span class="tok-punct">{</span> <span class="tok-attr">"method"</span><span class="tok-punct">:</span> <span class="tok-string">"thread/start"</span><span class="tok-punct">,</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-num">2</span><span class="tok-punct">,</span> <span class="tok-attr">"params"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"cwd"</span><span class="tok-punct">:</span> <span class="tok-string">"/repo"</span><span class="tok-punct">,</span> <span class="tok-attr">"approvalPolicy"</span><span class="tok-punct">:</span> <span class="tok-string">"on-request"</span><span class="tok-punct">,</span> <span class="tok-attr">"sandbox"</span><span class="tok-punct">:</span> <span class="tok-string">"workspace-write"</span><span class="tok-punct">,</span> <span class="tok-attr">"ephemeral"</span><span class="tok-punct">:</span> <span class="tok-num">false</span><span class="tok-punct">,</span> <span class="tok-attr">"serviceName"</span><span class="tok-punct">:</span> <span class="tok-string">"Bridge"</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span>
+<span class="tok-muted">←</span> <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-num">2</span><span class="tok-punct">,</span> <span class="tok-attr">"result"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"thread"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"thread_7f2a91"</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p>The thread's identity is not Bridge's to choose. It comes back from Codex in that response, read out with a JSON pointer at <code>/result/thread/id</code>; if that path isn't there, starting the session fails outright rather than continuing with something Bridge can never resume later. That's the inverse of Claude, whose <code>session_id</code> is a UUID Bridge generates before the process is even spawned and simply hands to the sidecar as configuration. Codex's provider issues the identity; Claude's adapter does.</p>
+
+            <p>Resuming isn't just "start again with an id." <code>thread_resume_params</code> sends <code>threadId</code>, <code>cwd</code>, <code>approvalPolicy</code>, and <code>sandbox</code> unconditionally, plus <code>model</code> and <code>developerInstructions</code> when given — and nothing else. It never sends <code>ephemeral</code> or <code>serviceName</code>, which describe how to create a thread rather than how to reattach to one, and — more consequentially — it never sends an effort value at all: <code>ResumeRequest</code> carries one, but the function that builds resume params was never written to accept it as a parameter. A reasoning-effort override only takes effect on a fresh <code>thread/start</code>; resuming a Codex thread leaves whatever effort it already had running. Claude doesn't have this gap — the extended-thinking budget derived from effort is set in the same <code>launch()</code> path that both start and resume share.</p>
+
+            <h2 id="h-turns">Turns, interruption, and approval</h2>
+            <p>A turn is <code>{"threadId", "input":[{"type":"text","text":…,"text_elements":[]}]}</code>. When a caller uses <code>send_turn_with_context</code> instead of the plain <code>send_turn</code>, an <code>additionalContext.bridge.credentials</code> object rides alongside it — trusted, application-owned context, such as a broker-scoped credential, that stays out of the human-visible turn text entirely. That's a real capability, not a cosmetic one: the trait's default implementation of <code>send_turn_with_context</code> just calls <code>send_turn</code>, folding everything into one visible message, and Claude's runtime never overrides it. Codex's does.</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">stdio</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-muted">→</span> <span class="tok-punct">{</span> <span class="tok-attr">"method"</span><span class="tok-punct">:</span> <span class="tok-string">"turn/start"</span><span class="tok-punct">,</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-num">10</span><span class="tok-punct">,</span> <span class="tok-attr">"params"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"threadId"</span><span class="tok-punct">:</span> <span class="tok-string">"thread_7f2a91"</span><span class="tok-punct">,</span> <span class="tok-attr">"input"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span> <span class="tok-punct">{</span> <span class="tok-attr">"type"</span><span class="tok-punct">:</span> <span class="tok-string">"text"</span><span class="tok-punct">,</span> <span class="tok-attr">"text"</span><span class="tok-punct">:</span> <span class="tok-string">"run the test suite"</span><span class="tok-punct">,</span> <span class="tok-attr">"text_elements"</span><span class="tok-punct">:</span> <span class="tok-punct">[]</span> <span class="tok-punct">}</span> <span class="tok-punct">]</span><span class="tok-punct">,</span> <span class="tok-attr">"additionalContext"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"bridge.credentials"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"kind"</span><span class="tok-punct">:</span> <span class="tok-string">"application"</span><span class="tok-punct">,</span> <span class="tok-attr">"value"</span><span class="tok-punct">:</span> <span class="tok-string">"broker-scoped-token"</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span>
+<span class="tok-muted">←</span> <span class="tok-comment">turn/started, item/agentMessage/delta or item/completed, turn/completed — streamed back asynchronously, not paired to this id</span>
+<span class="tok-muted">→</span> <span class="tok-punct">{</span> <span class="tok-attr">"method"</span><span class="tok-punct">:</span> <span class="tok-string">"turn/interrupt"</span><span class="tok-punct">,</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-num">11</span><span class="tok-punct">,</span> <span class="tok-attr">"params"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"threadId"</span><span class="tok-punct">:</span> <span class="tok-string">"thread_7f2a91"</span><span class="tok-punct">,</span> <span class="tok-attr">"turnId"</span><span class="tok-punct">:</span> <span class="tok-string">"turn_c11e"</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p><code>turn/interrupt</code> needs a turn id, read out of <code>current_turn</code>, and if that's still <code>None</code> — no turn ever recorded — <code>interrupt()</code> returns a typed error, <code>"No active turn to stop"</code>, instead of doing nothing quietly.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p><code>codex_adapter.rs</code> never writes to <code>current_turn</code> itself — the field starts at <code>None</code> and <code>interrupt()</code> only ever reads it. Something on the event-normalization path fills it in once Codex's own <code>turn/started</code> notification confirms a turn has actually begun, which means interrupting immediately after sending a turn — before that confirmation lands — fails with the same "No active turn to stop" error as interrupting an idle session.</p>
+            </div>
+
+            <p>Approval runs the same exchange in reverse: Codex sends a request of its own — a frame carrying both <code>method</code> and <code>id</code> — and Bridge answers by echoing that id back with a result. <code>respond()</code> writes exactly <code>{"id", "result":{"decision"}}</code>. Nothing about the transport marks an approval ask as different from a turn event except that shape; the registry's own <code>normalize</code> checks for both fields being present before routing a frame to <code>normalize_codex_request</code> instead of <code>normalize_codex_message</code>. <code>read_usage()</code> follows the same fire-and-forget pattern as a turn: it sends <code>account/rateLimits/read</code> with <code>null</code> params — the protocol requires that field to be null — and lets the answer arrive later on the shared read loop rather than blocking for it. Only the two startup calls are ever awaited synchronously; everything after id 2 is numbered upward from 10 and never paired to a response inline.</p>
+
+            <p>Codex never overrides <code>supports_active_turn_steering</code>, so it keeps the trait's default of <code>false</code>: a second message sent while a turn is running queues behind it rather than joining it. Claude overrides it to <code>true</code>, for exactly the reason above — one streaming query can absorb a message the way a queue can't. The asymmetry doesn't run only one way, though: Codex's descriptor declares <code>plans</code>, <code>file_changes</code>, and <code>history</code> as capabilities that Claude's descriptor doesn't, while <code>steering</code> is the one tag unique to Claude's.</p>
+
+            <h2 id="h-sandbox">Two sandboxes, enforced separately</h2>
+            <p>Codex's own approval and sandbox behavior is set once, at thread start, from Bridge's write mode — and the mapping collapses more cases than it distinguishes.</p>
+
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Write mode</th><th>approvalPolicy</th><th>sandbox</th></tr></thead>
+                <tbody>
+                  <tr><td>none (the orchestrator's own session)</td><td><code>never</code></td><td><code>danger-full-access</code></td></tr>
+                  <tr><td>ReadOnly</td><td><code>on-request</code></td><td><code>workspace-write</code></td></tr>
+                  <tr><td>Shared</td><td><code>on-request</code></td><td><code>workspace-write</code></td></tr>
+                  <tr><td>Isolated</td><td><code>on-request</code></td><td><code>workspace-write</code></td></tr>
+                  <tr><td>Full</td><td><code>never</code></td><td><code>danger-full-access</code></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p>No write mode at all and <code>WriteMode::Full</code> land on the same pair: Codex is told not to gate itself. ReadOnly, Shared, and Isolated all land on the other pair, and Codex can't tell those three apart from this setting alone — the difference between a worker sharing the task worktree and one with its own isolated copy isn't something Codex is ever told about. It's enforced by which worktree Bridge actually points <code>cwd</code> at, and by how Bridge answers the approval requests that <code>on-request</code> generates.</p>
+
+            <p>That's one sandbox. A second, independent one exists only when a session runs inside Bridge's own OS-level read-only worker sandbox (<code>read_only_sandbox: Some(...)</code>), a mechanism <code>worker_sandbox::command</code> sets up around the process regardless of which provider is inside it. When that sandbox is active, every <code>turn/start</code> additionally carries a per-turn <code>sandboxPolicy</code>:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"type"</span><span class="tok-punct">:</span> <span class="tok-string">"workspaceWrite"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"writableRoots"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span><span class="tok-string">"/private/tmp/bridge-worker-9c2f"</span><span class="tok-punct">]</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"networkAccess"</span><span class="tok-punct">:</span> <span class="tok-num">false</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p>This pins Codex's idea of a writable root to exactly the one output directory Bridge carved out for the run, on top of — not instead of — the isolated <code>HOME</code>/<code>TMPDIR</code> the OS-level sandbox already set. A sandboxed Codex worker is constrained twice, by two mechanisms that don't know about each other.</p>
+
+            <div class="tree-row cols-2">
+              <div class="tree-card"><h3>Bridge's own sandbox</h3><p>Wraps the process itself: isolated <code>HOME</code> and <code>TMPDIR</code>, one designated output directory, network allowed or not. Set up by <code>worker_sandbox::command</code> the same way for every provider.</p></div>
+              <div class="tree-card"><h3>Codex's own sandbox</h3><p>The <code>approvalPolicy</code>/<code>sandbox</code> pair from the write mode, narrowed further — only inside a read-only sandbox — by a per-turn <code>sandboxPolicy</code> naming that same one output directory.</p></div>
+            </div>
+
+            <p>Reaching that sandboxed worker still has to authenticate. <code>prepare_isolated_codex_home</code> builds an isolated <code>.codex</code> directory under the sandbox's output directory and symlinks in <code>auth.json</code> and <code>config.toml</code> from the real <code>~/.codex</code>, when they exist and aren't already linked, then points <code>HOME</code>/<code>TMPDIR</code> there. It's Unix-only — on any other platform the function fails outright rather than launching an unauthenticated worker. Claude's equivalent, <code>prepare_isolated_claude_config</code>, does the same symlink trick for one file, <code>.credentials.json</code>, and goes one step further on macOS: reading an OAuth token straight out of the Keychain when the environment doesn't already carry one. Codex's adapter has no analogous Keychain lookup.</p>
+
+            <p>Both adapters are eligible for this sandbox at all: Codex and Claude each advertise Bridge's full <code>SandboxMode::ALL</code> range, ReadOnly included. OpenCode is the sole exception, and the registry has a test pinning exactly why — OpenCode drives a local HTTP server, and that sandbox is offline, so a read-only OpenCode worker can never start. Day to day, a Codex-backed verification worker can still write files; just only inside its own scratch directory, invisible from the outside twice over.</p>
+
+            <h2 id="h-briefing">Briefing runs are refused, not ignored</h2>
+            <p>A "briefing" run is Bridge's deny-by-construction mode for letting a model read from connected tools without a human watching each step: nothing is reachable except one exact, already-reviewed tool identity, and the built-in tool families a coding agent would normally reach for are refused by name as well.</p>
+
+            <p>Codex's <code>launch()</code> checks for a briefing policy before it does anything else — before even resolving the binary.</p>
+
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Codex refuses a briefing run outright. The reasoning is in the code itself: Codex "cannot express one connector tool's exact identity," so treating a briefing policy as real here would only be decoration. The refusal carries the reason; it is never accepted and silently ignored.</p>
+            </div>
+
+            <p>Claude, by contrast, actively supports it. After confirming the adapter is allowed to brief at all and that the write mode is ReadOnly — a briefing run may never also hold a writable tree — it compiles the policy into <code>allowedTools</code>, <code>allowedServers</code>, <code>readScopeServers</code>, <code>deniedBuiltins</code>, and <code>maxArgumentBytes</code>, and hands all of it to the sidecar as configuration. Codex isn't a degraded option for this kind of run; it isn't an option at all.</p>
+
+            <h2 id="h-resolution">Which binary actually runs</h2>
+            <p><code>resolve_runtime()</code> prefers a Bridge-managed payload and falls back to whatever <code>codex</code> is already on PATH. The doc comment states the intent plainly: a user-managed <code>codex</code> "keeps working exactly as before when no managed payload is installed, and is never claimed or removed by Bridge." <code>binary_version()</code> doesn't cache or assume a version string — it runs whichever copy would actually launch and asks that copy for its own version, so a managed payload is never described by whatever else happens to sit on PATH. The descriptor's <code>available</code> flag is literally <code>version.is_some()</code>: there's no separate existence probe, only this one.</p>
+
+            <p>Whether a Codex session can be resumed at all isn't assumed from the binary being present — it's discovered from the binary's own protocol schema, once, and cached. <code>discover_native_resume</code> shells out to <code>codex app-server generate-json-schema --experimental --out &lt;dir&gt;</code> and checks the emitted <code>ClientRequest.json</code> for both <code>"thread/resume"</code> and <code>"ThreadResumeParams"</code>. Compare that to Claude's and OpenCode's own resume checks: Claude's is just whether <code>node</code> resolves and the sidecar file exists; OpenCode's is just whether its server-discovery catalog has finished loading. Codex is the only one of the three that actually interrogates the installed binary's protocol surface before trusting it — and the registry checks that result before ever calling into the adapter, refusing a resume with an explicit "does not support native resume" otherwise.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>The schema probe runs once per process lifetime — its result is cached in a <code>OnceLock</code>, not re-checked on every session start. Upgrading the installed Codex binary to a version that adds <code>thread/resume</code> support needs a Bridge restart before that capability is picked up.</p>
+            </div>
+
+            <p>The descriptor also advertises four models across three tiers: <code>gpt-5.6-luna</code> (fast, and the overall default), <code>gpt-5.6-terra</code> (standard), <code>gpt-5.6-sol</code> (strong), and <code>gpt-5.3-codex</code> (a non-default standard-tier option).</p>
+
+            <h2 id="h-failure">When the process dies</h2>
+            <p>Codex's stderr is captured on a dedicated thread into a rolling tail — the last 30 non-empty lines, each truncated to 500 bytes — the same <code>StderrTail</code> machinery Claude's adapter uses. <code>failure_context()</code> pairs that tail with the exit status, when there is one, into a single string; if the process is still running and has said nothing on stderr, it returns nothing rather than reporting a failure that hasn't happened. When a worker's typed result never arrives, this is what gets attached to the synthetic failure a supervisor reports — Codex's own last words, not a bare "process exited."</p>
+
+            <p>Shutdown goes through the same path whether it's asked for or not: <code>stop()</code> and <code>Drop</code> both call <code>terminate()</code>, which signals the whole process group with <code>TERM</code>, polls for exit, escalates to <code>KILL</code> if it doesn't, then falls back to a direct <code>child.kill()</code>/<code>wait()</code>. Because it also runs from <code>Drop</code>, a <code>CodexRuntime</code> that's simply dropped without an explicit <code>stop()</code> still tears its subprocess down instead of leaking it.</p>
+
+            <h2 id="h-comparison">Codex against Claude, mechanism by mechanism</h2>
+            <p>None of this makes one integration more correct than the other — it follows from what each provider ships. Codex's <code>app-server</code> mode is a stateful protocol server Bridge only has to translate; Claude Code's own CLI doesn't expose that same surface, so Bridge builds the equivalent statefulness itself, in a sidecar it owns, on top of the Agent SDK the vendor does ship for exactly this purpose. Everything above follows from that one difference:</p>
+
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Dimension</th><th>Codex</th><th>Claude Code</th></tr></thead>
+                <tbody>
+                  <tr><td>Transport</td><td>the <code>codex</code> binary as a subprocess, speaking <code>app-server</code> directly over stdio</td><td><code>node</code> running Bridge's own sidecar script, driving the Claude Agent SDK</td></tr>
+                  <tr><td>Session identity</td><td>issued by the provider, read back from the <code>thread/start</code> response</td><td>minted by Bridge — a UUID — before the process is even spawned</td></tr>
+                  <tr><td>Multi-turn persistence</td><td>native to the protocol</td><td>built by Bridge, via the SDK's streaming-input query</td></tr>
+                  <tr><td>Active-turn steering</td><td>not supported — a second message queues</td><td>supported — a running turn absorbs it</td></tr>
+                  <tr><td>Per-turn trusted context</td><td><code>additionalContext</code>, kept out of the visible turn</td><td>no adapter-level equivalent</td></tr>
+                  <tr><td>Briefing runs</td><td>refused outright at launch</td><td>supported, compiled into sidecar config</td></tr>
+                  <tr><td>Native-resume discovery</td><td>a live schema probe against the installed binary, cached once</td><td>a static check that <code>node</code> and the sidecar file resolve</td></tr>
+                  <tr><td>Sandboxed-worker auth</td><td>symlinks <code>auth.json</code> + <code>config.toml</code> into an isolated <code>.codex</code> home</td><td>symlinks <code>.credentials.json</code>, plus a macOS Keychain token lookup</td></tr>
+                  <tr><td>Effort on resume</td><td>dropped — <code>thread_resume_params</code> never sends it</td><td>reapplied — the thinking-budget env var is set on every launch</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

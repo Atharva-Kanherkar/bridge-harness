@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Protocol / RPC — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="protocol">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">reference</p>
+          <h1>Protocol / RPC</h1>
+          <p class="lede">Bridge runs as a versioned JSON-RPC service over a Unix socket, designed so every client — the desktop shell, CLI tools, remote interfaces, and AI agents — speaks the same typed contract.</p>
+          <div class="prose">
+            <h2 id="h-why-rpc">Why JSON-RPC, not REST</h2>
+            <p>Bridge's surface spans commands, approvals, cancellation, and bidirectional events — RPC is the natural shape for that. REST+SSE was considered and rejected: the protocol needs clients to talk back during an event stream (cancellation, approval responses), and separate polling loops would fragment ownership of the connection state. One RPC channel handles all the traffic.</p>
+            <p>The protocol lives in the <code>bridge-protocol</code> crate. Everything under <code>docs/protocol/schemas/</code> and <code>src/protocol/generated/</code> is generated from a single source of truth and kept in sync by test.</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>cargo run --manifest-path src-tauri/Cargo.toml -p bridge-protocol --bin generate-protocol-artifacts
+cargo test --manifest-path src-tauri/Cargo.toml -p bridge-protocol</code></pre></div>
+            </div>
+
+            <h2 id="h-transports">Transports</h2>
+            <p>Bridge supports multiple transports so different clients can connect from wherever they live:</p>
+            <ul>
+              <li><strong>Unix-domain socket</strong> (local only): <code>&lt;data_dir&gt;/bridged.sock</code>, served by the <code>bridged</code> daemon. This is the primary transport, used by the Tauri shell, CLI tools, and TUI clients.</li>
+              <li><strong>WebSocket</strong> (future, remote-capable): Authentication tokens and origin rules are already designed into the handshake so this can ship without redesign.</li>
+              <li><strong>Tauri invoke/event adapter</strong> (desktop webview): The React frontend proxies through Tauri, which forwards to <code>bridged</code> by default or runs the runtime in-process in fallback mode.</li>
+              <li><strong>Plain HTTP</strong> (health checks only): <code>/healthz</code> and <code>/readyz</code> on <code>127.0.0.1:4318</code> for system monitoring.</li>
+            </ul>
+
+            <h2 id="h-the-daemon">The daemon and ownership</h2>
+            <p>Only one owner can hold a data directory at a time. <code>bridged</code> acquires an exclusive OS file lease on <code>&lt;data_dir&gt;/owner.lock</code> and keeps it for the entire lifetime of the daemon. If another process — the desktop app, a CLI tool, another daemon — tries to start, it fails fast and reports who holds the lease. The lock dies with the process; <code>kill -9</code> needs no recovery, and boot-time recovery handles anything the dead process left behind.</p>
+            <p>A daemon is started with:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>bridged --data-dir ~/Library/Application\ Support/dev.bridge.deck</code></pre></div>
+            </div>
+            <p>The desktop app finds or starts the bundled daemon on startup, and <code>bridge exec</code> either attaches to a running daemon (if one owns the directory) or hosts the runtime itself for exactly the duration of the command.</p>
+
+            <h2 id="h-handshake">Connection and handshake</h2>
+            <p>Every new connection opens on the Unix socket with mode 0600 (owner-only). The first request must be <code>protocol/handshake</code>, or the server answers <code>invalid_request</code>.</p>
+            <p>The client sends an auth token from <code>&lt;data_dir&gt;/daemon.token</code> (64-character hex, created 0600 on first daemon start). The server verifies it; a wrong or missing token is rejected with error code <strong>2001 <code>unauthorized</code></strong> before revealing any version or capability information. The handshake has a 10-second deadline; if it doesn't complete in time, the server reclaims the connection slot.</p>
+            <p>On success, the server responds with:</p>
+            <ul>
+              <li><code>protocolVersion</code> — the protocol level (today <strong>1.0</strong>)</li>
+              <li><code>server.name</code> and <code>server.version</code> — the application identity</li>
+              <li><code>capabilities</code> — which method domains it serves</li>
+            </ul>
+            <p>A version mismatch is caught here: if the client's major version differs from the server's, the server rejects with error code <strong>2000 <code>incompatible_protocol</code></strong>, including both versions in the error data. A major bump is breaking; a minor bump is additive (new methods, optional fields). A server accepts a client if majors match and the client's minor is not newer than the server's.</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-comment">// Client request</span>
+<span class="tok-punct">{</span>
+  <span class="tok-attr">"jsonrpc"</span><span class="tok-punct">:</span> <span class="tok-string">"2.0"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"hs-1"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"method"</span><span class="tok-punct">:</span> <span class="tok-string">"protocol/handshake"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"params"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span>
+    <span class="tok-attr">"authToken"</span><span class="tok-punct">:</span> <span class="tok-string">"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"</span>
+  <span class="tok-punct">}</span>
+<span class="tok-punct">}</span>
+
+<span class="tok-comment">// Server response</span>
+<span class="tok-punct">{</span>
+  <span class="tok-attr">"jsonrpc"</span><span class="tok-punct">:</span> <span class="tok-string">"2.0"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"hs-1"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"result"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span>
+    <span class="tok-attr">"protocolVersion"</span><span class="tok-punct">:</span> <span class="tok-string">"1.0"</span><span class="tok-punct">,</span>
+    <span class="tok-attr">"server"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span>
+      <span class="tok-attr">"name"</span><span class="tok-punct">:</span> <span class="tok-string">"Bridge"</span><span class="tok-punct">,</span>
+      <span class="tok-attr">"version"</span><span class="tok-punct">:</span> <span class="tok-string">"0.1.0"</span>
+    <span class="tok-punct">},</span>
+    <span class="tok-attr">"capabilities"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span><span class="tok-string">"sessions"</span><span class="tok-punct">,</span> <span class="tok-string">"approvals"</span><span class="tok-punct">,</span> <span class="tok-string">"state"</span><span class="tok-punct">]</span>
+  <span class="tok-punct">}</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <h2 id="h-frame-format">Frame format</h2>
+            <p>After handshake succeeds, the connection speaks newline-delimited JSON-RPC 2.0. One frame per line in both directions; notifications can interleave between responses.</p>
+            <ul>
+              <li><strong>Request ids</strong> are client-chosen strings or numbers, echoed back in the response. Numeric ids must fit in JavaScript's safe integer range (±2^53 − 1); anything larger is rejected on the wire.</li>
+              <li><strong>Params</strong>, when present, must be an object or array. Sending <code>"params": null</code> is rejected; omit the key instead.</li>
+              <li><strong>Responses</strong> are a union: exactly one of <code>result</code> or <code>error</code>, never both. <code>"result": null</code> is a valid success (for commands returning nothing).</li>
+              <li><strong>Frames over 1 MiB</strong> → error <code>invalid_request</code>, connection closed.</li>
+              <li><strong>Requests per connection</strong> are sequential; backpressure is the socket. Only one request is in flight at a time.</li>
+            </ul>
+            <p>A connection that can't keep up with events is told so explicitly: it receives a <code>stream-lagged</code> notification with the count of missed events, then refetch hints, then replay durable history from its saved cursor. Lag is never silent.</p>
+
+            <h2 id="h-health">Health endpoints</h2>
+            <p><code>/healthz</code> and <code>/readyz</code> are plain HTTP, served on <code>127.0.0.1:4318</code> by default (disable with <code>--health-addr none</code>). A <code>GET /healthz</code> returns 200 when the daemon is alive; <code>GET /readyz</code> returns 200 when it's ready to serve connections. These exist for system monitoring and container orchestration — they are not RPC methods and do not require authentication. Bind and startup failures are fatal and printed to stderr; they never silently fail.</p>
+
+            <h2 id="h-methods">Methods and contract</h2>
+            <p>All methods are in the registry (<code>docs/protocol/schemas/methods.json</code>). Wire names are <code>domain/command</code>, matching the Tauri command names exactly — the compatibility adapter maps by name alone, and a test keeps the registry 1:1 with the shell's command handlers.</p>
+            <p>Domains include: <code>approvals</code>, <code>browser</code>, <code>sessions</code>, <code>state</code>, <code>health</code>, <code>terminal</code>, <code>config</code>, <code>models</code>, <code>learning</code>, and others.</p>
+            <p>Every method has a <code>paramsSchema</code> (a schema file) or explicitly <code>null</code> meaning no parameters — there is no uncontracted state. Params use camelCase, matching Tauri's invoke arguments, and a test ensures the registry matches the shell's actual signatures.</p>
+            <p>Every method's result is contracted too — either a <code>resultSchema</code> (a schema file) or documented as a deferred core DTO, or <code>UnitResult</code> for commands returning nothing. Nothing is silently absent.</p>
+
+            <h2 id="h-harness-id">Agent harness identifiers</h2>
+            <p><code>HarnessId</code> is an open string that names which agent runs a session. It follows the pattern <code>[a-z0-9][a-z0-9._-]{0,63}</code>. Examples: <code>claude</code>, <code>codex</code>, <code>opencode</code>, <code>gemini</code>, <code>cline</code>.</p>
+            <p>The id is the agent, never how Bridge runs it. Claude reached through the Agent SDK and Claude reached through an ACP adapter are the same agent with one id and one session history; the transport is Bridge's concern. This also means a custom adapter can replace a generic one without renaming anything or migrating sessions.</p>
+            <p>Whether an id is runnable (does Bridge have an adapter for it?) is separate from whether it's valid (does it match the grammar?). A well-formed but unknown id parses fine and fails at session start with an error naming the missing harness.</p>
+            <p>Params carry strict <code>HarnessId</code> (the pattern above); results carry <code>StoredHarnessId</code> (unconstrained). This way, a session persisted by a newer Bridge with an agent the current version doesn't know stays readable — history doesn't vanish because an agent was uninstalled.</p>
+
+            <h2 id="h-errors">Error codes</h2>
+            <p>Error codes are the contract; message text is not. Codes are never reused or renumbered.</p>
+            <ul>
+              <li><strong>-32700 to -32600</strong>: JSON-RPC envelope errors (spec-reserved)</li>
+              <li><strong>1000–1999</strong>: Runtime errors, variant-for-variant with <code>bridge_core::BridgeError</code></li>
+              <li><strong>2000–2999</strong>: Protocol lifecycle errors</li>
+            </ul>
+            <p>Notable codes:</p>
+            <ul>
+              <li><strong>2000</strong> <code>incompatible_protocol</code> — version mismatch at handshake, with both versions in <code>error.data</code></li>
+              <li><strong>2001</strong> <code>unauthorized</code> — token missing or wrong</li>
+              <li><strong>2002</strong> <code>cancelled</code> — request was cancelled</li>
+              <li><strong>2003</strong> <code>shutting_down</code> — daemon is shutting down and new requests are refused</li>
+              <li><strong>2004</strong> <code>overloaded</code> — too many concurrent connections</li>
+            </ul>
+
+            <h2 id="h-cancellation">Cancellation</h2>
+            <p>Send a <strong>notification</strong> named <code>$/cancel</code> with the in-flight request id you want to cancel. Cancellation is best-effort, LSP-style: the cancelled request still gets a response — either its result if it won the race, or error <strong>2002 <code>cancelled</code></strong> if it didn't.</p>
+            <p>On the daemon's sequential socket transport, a <code>$/cancel</code> notification arrives only after the request it names has already completed, so it's consumed as a valid no-op. For long-running turns, the domain-level interrupt is <code>sessions/interrupt_turn</code>, which stops a running agent session.</p>
+
+            <h2 id="h-notifications">Notifications and events</h2>
+            <p>The server pushes notifications to clients. Each notification is marked durable or transient in the registry (<code>docs/protocol/schemas/notifications.json</code>):</p>
+            <table style="width:100%">
+              <thead>
+                <tr>
+                  <th>Notification</th>
+                  <th>Delivery</th>
+                  <th>Meaning</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>agent-event</code></td>
+                  <td>mixed</td>
+                  <td>Session entry; durable ones carry a per-session <code>sequence</code> number; sequence-zero frames are transient</td>
+                </tr>
+                <tr>
+                  <td><code>state-changed</code></td>
+                  <td>transient</td>
+                  <td>Refetch hint: re-read the state snapshot</td>
+                </tr>
+                <tr>
+                  <td><code>adapters-changed</code></td>
+                  <td>transient</td>
+                  <td>Refetch hint: re-read which agents are available</td>
+                </tr>
+                <tr>
+                  <td><code>session-output</code></td>
+                  <td>transient</td>
+                  <td>Terminal bytes (worthless once stale)</td>
+                </tr>
+                <tr>
+                  <td><code>stream-lagged</code></td>
+                  <td>transient</td>
+                  <td>This connection's live event channel dropped events; refetch hints follow, replay durable history from your cursor</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>The session forest (SQLite) is the source of truth for durable history. The live channel is bounded and notify-only — it drops the oldest events when a receiver falls behind. Durable events are published only after their database transaction commits and carry the cursor needed to reconcile after a disconnect or lag.</p>
+
+            <h2 id="h-event-stream">Gap-free event replay</h2>
+            <p>When a client connects or falls behind on the live channel, it needs to recover events it missed. Bridge provides two mechanisms working together:</p>
+            <ol>
+              <li><strong>Replay on lag:</strong> When a connection can't keep up, it receives a <code>stream-lagged</code> notification naming how many events were missed, then refetch hints. The client re-reads the durable snapshots (via <code>state/get_state</code>, etc.) to catch up on high-level state.</li>
+              <li><strong>Durable event replay:</strong> For a session's raw event history, call <code>sessions/replay_session_events</code> with the last durable cursor you saw (<code>afterSequence</code>). The server returns the next page of missed events in order, no gaps, no duplicates. The default limit is 500 events per page (maximum 1000); keep calling with the last returned sequence until fewer than the requested number of events come back. Transient and sequence-zero frames are never replayed.</li>
+            </ol>
+            <p>This design ensures that across disconnects, daemon restarts, and live-channel lag, a client can reconstruct the exact sequence of events. To close the subscribe-before-replay race: discard any live durable events at or below the highest sequence you received from replay, then process newer live events normally.</p>
+            <p>The <code>bridge-client</code> Rust crate (<code>src-tauri/bridge-client/</code>) encodes these recovery rules once, so the Tauri shell and TUI build on top of it without reimplementing the state machine.</p>
+
+            <h2 id="h-clients">Clients</h2>
+            <h3>Desktop shell</h3>
+            <p>The Tauri app runs as a daemon client by default. On startup it attaches to <code>bridged</code>, or starts the bundled binary and waits for it. Every Tauri invoke is proxied generically: the command's registry method is called with the invoke payload as params, and every daemon notification is re-emitted to the React webview unchanged — the frontend cannot tell which host it is running on.</p>
+            <p>A supervisor thread owns the connection. After a daemon restart it reattaches on its own, and after any reconnect or <code>stream-lagged</code> marker it emits refetch hints so the UI recovers durable history (open approvals included) exactly as the in-process fallback always worked. The environment variable <code>BRIDGE_DESKTOP_HOST</code> selects the host strategy: <code>auto</code> (default: attach → start → fall back to embedded), <code>daemon</code> (daemon only, no fallback), or <code>embedded</code> (in-process, for migration). An exclusive file lease prevents concurrent daemon and embedded owners of the same data directory.</p>
+            <h3>CLI tools and CI</h3>
+            <p><code>bridge exec --json</code> is the one-shot CI client. It attaches to a running daemon if one owns the directory, otherwise hosts the runtime itself for exactly that command — CI never keeps a daemon alive. It supports prompt mode via <code>--harness</code> naming an available agent, and <code>--timeout</code> budgeting the whole flow (connect, setup, event stream). Failed turns are recognized by a trailing <code>error</code> event after the completion event. Exit codes: 0 success, 1 failure, 2 usage, 3 timeout.</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-comment"># One-shot state read</span>
+bridge exec --json --data-dir "$DIR" --method state/get_state
+
+<span class="tok-comment"># Interactive turn with an agent</span>
+bridge exec --json --data-dir "$DIR" --harness codex "run the tests"</code></pre></div>
+            </div>
+
+            <h3>Shared Rust client</h3>
+            <p><code>bridge-client</code> wraps the handshake, sequential request dispatch, interleaved notifications, and the gap-free recovery rules. It exports <code>SessionEventStream</code>, which yields a session's durable events without gaps across disconnects, lag, and sequence gaps. The Tauri proxy and TUI build on this client rather than reimplementing recovery.</p>
+
+            <h2 id="h-generated-types">Generated types</h2>
+            <p><code>src/protocol/generated/protocol.ts</code> is generated from the JSON schemas (one source of truth) and type-checked by <code>tsc</code>. It exports envelope and handshake interfaces, the <code>BridgeMethod</code> string union, the <code>BRIDGE_METHODS</code table, <code>ERROR_CODES</code>, and <code>PROTOCOL_VERSION</code>. The frontend will migrate onto these types as the compatibility adapter lands.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>The protocol is the contract. Generated code is never hand-edited — drift is test-enforced so the schema, the Rust types, and the TypeScript types stay in sync.</p>
+            </div>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>
