@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Worktree isolation — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="worktrees">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">git & worktrees</p>
+          <h1>Worktree isolation</h1>
+          <p class="lede">Every agent runs in its own git worktree, stored alongside its siblings on disk, isolated by owned-path leases and a durable adoption lifecycle that survives restarts.</p>
+          <div class="prose">
+
+            <h2 id="h-what-is-a-worktree">What is a Bridge worktree</h2>
+            <p>Bridge uses <code>git worktree</code> to give each agent its own directory alongside the user's checkout. The workspace tree has three levels:</p>
+            <div class="tree-row cols-2">
+              <div class="tree-card">
+                <h3>Repository root</h3>
+                <p>The original clone or working tree the user is using.</p>
+              </div>
+              <div class="tree-card">
+                <h3>Task worktree</h3>
+                <p>One per Bridge session, the checkout the user is currently working against — usually a branch.</p>
+              </div>
+            </div>
+            <div class="tree-row">
+              <div class="tree-card">
+                <h3>Worker worktrees</h3>
+                <p>Isolated checkouts where agents run. Each gets a child worktree under a namespace directory.</p>
+              </div>
+            </div>
+            <p>On disk, the structure looks like this:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">text</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>my-repo/
+  .git/
+  src/
+  bridge/
+    task-worktrees/
+      prague/           <span class="tok-comment"># one task worktree per Bridge session</span>
+        .git
+        src/
+    worker-worktrees/
+      prague/           <span class="tok-comment"># namespace per task</span>
+        claude-123/     <span class="tok-comment"># one child per agent, named by session ID</span>
+          .git
+          src/
+        claude-456/
+          .git
+          src/</code></pre></div>
+            </div>
+            <p>Each agent gets a dedicated directory where it writes, commits, and potentially makes changes. For isolated agents, this child worktree is completely separate from the user's checkout — the agent's work stays in its directory until the user decides to adopt it.</p>
+
+            <h2 id="h-isolation-by-owned-paths">Isolation by owned-path leases</h2>
+            <p>When an agent is launched with write access, it declares which paths it owns. Bridge enforces these leases so concurrent agents cannot edit the same files. A lease like <code>["src/**", "tests/integration/**"]</code> means the agent can write anywhere under those patterns, while other agents touching those paths are refused creation entirely.</p>
+            <p>This is checked when the worktree is created, not during execution — <code>create_child_worktree</code> queries the database for active writer sessions and calls <code>authorize_disjoint_writer</code>. If overlap is detected, the new worktree never gets created. Once a worktree exists, the paths it can touch are fixed, so the user can start multiple agents without them colliding later.</p>
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>In-place writers share the task checkout with the user and with each other. The lease still prevents overlapping writes, but they operate on the same files, so they need coordination outside the worktree system.</p>
+            </div>
+
+            <h2 id="h-durable-adoption-lifecycle">The adoption lifecycle</h2>
+            <p>Agents that write into isolated worktrees produce changes that exist only in their directory. Bridge records where every write-mode agent runs in a <code>worker_worktree_adoptions</code> row, and tracks whether the user has approved merging that work into the task checkout.</p>
+            <p>The lifecycle has five states:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">states</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-attr">in_place</span>          <span class="tok-comment"># agent wrote directly in task worktree; nothing to adopt</span>
+<span class="tok-attr">pending_adoption</span>   <span class="tok-comment"># isolated agent produced changes; awaiting user decision</span>
+<span class="tok-attr">adopted</span>            <span class="tok-comment"># changes merged into task worktree</span>
+<span class="tok-attr">discarded</span>          <span class="tok-comment"># isolated changes thrown away on purpose</span>
+<span class="tok-attr">empty</span>              <span class="tok-comment"># isolated agent finished without touching files</span>
+<span class="tok-attr">settling</span>           <span class="tok-comment"># adoption or discard in flight; claim prevents race conditions</span></code></pre></div>
+            </div>
+
+            <h3>Recording the binding</h3>
+            <p>When an agent starts, Bridge records a binding: the path where it will write, the base commit it started from, what the task checkout's branch is, and which paths were already dirty (for in-place writers). The state depends on whether the agent writes in isolation or in place.</p>
+            <p>For an isolated worker, the initial state is <code>pending_adoption</code>. For in-place writers, it's <code>in_place</code> immediately, because there's nothing separate to adopt — they're editing the shared task checkout.</p>
+
+            <h3>Deriving evidence and settling the state</h3>
+            <p>When the agent finishes, Bridge reads the Git state of its checkout: what commits it made, what paths it changed, whether the tree is dirty. This <strong>derived evidence</strong> is the ground truth. An isolated agent with no commits and no uncommitted changes is marked <code>empty</code>. One with changes is marked <code>pending_adoption</code> and waits for the user.</p>
+            <p>If the agent worked in place, the binding is immediately marked <code>in_place</code> — there's no separate worktree to adopt, so the state is terminal and the worktree directory is left alone (it's the task checkout, after all).</p>
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>A parent session cannot finish until all its children are in a terminal state (<code>adopted</code>, <code>discarded</code>, <code>empty</code>, or <code>in_place</code>). The user must make an adoption decision for every child with pending changes before they can close the session.</p>
+            </div>
+
+            <h3>Integration without verification loss</h3>
+            <p>When changes are adopted, Bridge runs <code>git merge --no-ff</code> to integrate the worker's branch into the task worktree. But it doesn't just blindly merge: it checks that the tree being merged is the exact same tree that passed a completion gate during verification. If the worker's checkout changed after being verified, or if the task branch advanced so the merge produces a combined tree nobody verified, adoption records that the proof is stale and re-opens the completion gate.</p>
+            <p>This prevents a simple race: agent finishes, gets verified, then something else edits its worktree before adoption completes. The merged result wouldn't be the verified one, so it needs re-verification.</p>
+            <p>For dirty worktrees (common with coding harnesses that don't commit), Bridge calls <code>commit_worker_worktree</code> to capture the uncommitted edits onto the worker's own branch before integrating. That way the normal case — edit, don't commit, adopt — still works.</p>
+
+            <h2 id="h-cleanup-and-removal">Cleanup and removal</h2>
+            <p>Worker worktrees are never removed until their adoption state is terminal and the worker session can no longer be resumed. This is conservative by design: removing a directory while a session is warm or active would break resumption.</p>
+            <p>The flow is:</p>
+            <ol>
+              <li>Adoption or discard settles the state in the database.</li>
+              <li>Bridge calls <code>git worktree remove</code> only if the binding is terminal and the worker is not reusable.</li>
+              <li>A maintenance pass (<code>release_terminal_worktrees</code>) runs periodically, collecting any worktrees that have since become collectable.</li>
+            </ol>
+            <p>If removal fails — the tree is dirty, another session is using it, or Git refuses for any reason — Bridge silently leaves it in place and logs the event. No work is ever lost to a background cleanup failure.</p>
+
+            <h2 id="h-worker-adoption-recovery">Worker adoption after restart</h2>
+            <p>Bridge's data directory can be shared across sessions. If Bridge crashes with a worker adoption in flight, the database record survives. On startup, <code>worker_adoption::recover</code> reconciles the database state with what actually exists on disk.</p>
+
+            <h3>Stuck claims</h3>
+            <p>An adoption or discard sets the state to <code>settling</code> before Git runs (with the database lock released, so Git doesn't block other operations). If Bridge crashes mid-Git, restart finds a <code>settling</code> row. Recovery unsticks it by returning to <code>pending_adoption</code>, so the decision can be retried.</p>
+
+            <h3>Missing worktrees</h3>
+            <p>If a worker worktree no longer exists but its binding is still <code>pending_adoption</code> or <code>settling</code>, the work was already lost (perhaps deleted manually, or cleaned up by another process). Recovery marks the binding <code>discarded</code> explicitly, with a detail message explaining the worktree was gone. This unblocks the parent session instead of leaving it wedged forever waiting for work that will never reappear.</p>
+
+            <h3>Warm workers and worktree retention</h3>
+            <p>A worker that was warm at adoption time (paused, not finished) is never removed immediately, because the user might resume it. The binding stays in its terminal state but the directory remains. Only when the worker genuinely becomes terminal — finished and un-resumable — does the maintenance pass collect it.</p>
+            <p>Similarly, if multiple workers share a worktree path (a verifier running in the same checkout as the implementation worker), removal is blocked until all of them are done. Bridge queries <code>live_borrowers</code> to find every session currently using that path and refuses removal if any are still running.</p>
+
+            <h2 id="h-why-this-design">Why this design</h2>
+            <p>The three-level workspace tree could be flattened — every agent could write into a fresh clone. But that's expensive: cloning a large repository for every agent, fetching updates, managing disk space. Git worktrees solve this by sharing the object database and letting multiple working trees point to the same repository, so the overhead is just the `.git/` metadata and the working files.</p>
+            <p>The durable adoption lifecycle exists because agents are not trusted to be correct about what they changed. A coding harness might claim it modified five files when Git shows ten. Or it might have crashed and left the worktree dirty. By deriving evidence from Git rather than from the agent's report, Bridge always knows the truth. And by gating adoption on a decision the user actually made, Bridge never silently merges unreviewed work.</p>
+            <p>Recovery reconciliation handles the restart case: a data directory that survives a crash should still be usable. An agent's worktree might have been deleted by the user or by the OS, but the database row lived on. Rather than assuming the row's state was correct, recovery checks disk and corrects the record — turning stuck claims back to pending, and marking work permanently discarded when its worktree is gone.</p>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

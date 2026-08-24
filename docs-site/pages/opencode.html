@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>OpenCode — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="opencode">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">agents & runtimes</p>
+          <h1>OpenCode</h1>
+          <p class="lede">Codex and Claude are subprocesses Bridge drives over their own stdin and stdout &mdash; OpenCode is the one adapter that spawns a local HTTP server instead and dials into it, and that single choice explains most of what makes this integration different.</p>
+          <div class="prose">
+            <p>All three coding-agent adapters implement the same <code>AdapterRuntime</code> trait &mdash; <code>send_turn</code>, <code>interrupt</code>, <code>respond</code>, an event stream Bridge normalizes into its own message shape. What differs underneath that trait is the physical channel, and for OpenCode it's the odd one out among the three.</p>
+
+            <div class="feature-grid">
+              <div class="feature-card">
+                <div class="feature-icon"><svg class="icon" style="width:17px;height:17px"><use href="#i-globe"></use></svg></div>
+                <div><h3>Loopback HTTP, not a pipe</h3><p>Bridge dials into <code>opencode serve</code> over 127.0.0.1 instead of driving the child's own stdin and stdout.</p></div>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon"><svg class="icon" style="width:17px;height:17px"><use href="#i-shield"></use></svg></div>
+                <div><h3>No read-only sandbox</h3><p>The only one of Bridge's three adapter descriptors that excludes the offline, read-only worker sandbox.</p></div>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon"><svg class="icon" style="width:17px;height:17px"><use href="#i-sliders"></use></svg></div>
+                <div><h3>Coarse permission families</h3><p>Rules cover edit, bash, and external-directory access as whole families &mdash; never one named tool.</p></div>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon"><svg class="icon" style="width:17px;height:17px"><use href="#i-route"></use></svg></div>
+                <div><h3>A live catalog, not a roster</h3><p>Models are discovered from whatever providers are connected, then sorted into tiers on the fly.</p></div>
+              </div>
+            </div>
+
+            <figure class="diagram-figure">
+              <svg viewBox="0 0 330 210" role="img" aria-label="Diagram: Bridge talks to Codex and Claude over the stdin and stdout of a process it owns, but reaches OpenCode through an extra loopback network hop instead." style="color:var(--fg)">
+                <g fill="none" stroke="currentColor" stroke-width="1.75">
+                  <path d="M150,26 C150,62 55,62 55,100"></path>
+                  <line x1="150" y1="26" x2="150" y2="100"></line>
+                </g>
+                <g fill="none" stroke="var(--ring)" stroke-width="1.75">
+                  <path d="M150,26 C150,62 245,62 245,100"></path>
+                  <line x1="245" y1="100" x2="245" y2="172"></line>
+                </g>
+                <circle cx="150" cy="26" r="6" fill="currentColor"></circle>
+                <circle cx="55" cy="100" r="5" fill="currentColor"></circle>
+                <circle cx="150" cy="100" r="5" fill="currentColor"></circle>
+                <circle cx="245" cy="100" r="5" fill="var(--ring)"></circle>
+                <circle cx="245" cy="172" r="5" fill="var(--ring)"></circle>
+                <g style="font-family:var(--font-mono); font-size:11px;">
+                  <line x1="158" y1="26" x2="170" y2="26" stroke="currentColor" stroke-width="1.5" opacity="0.5"></line>
+                  <text x="176" y="29.5" fill="currentColor">Bridge</text>
+                  <text x="55" y="122" text-anchor="middle" fill="currentColor">Codex</text>
+                  <text x="150" y="122" text-anchor="middle" fill="currentColor">Claude</text>
+                  <line x1="251" y1="100" x2="263" y2="100" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                  <text x="269" y="103.5" fill="var(--ring)">loopback</text>
+                  <text x="245" y="194" text-anchor="middle" fill="var(--ring)">OpenCode</text>
+                </g>
+              </svg>
+              <figcaption>Codex and Claude are child processes Bridge talks to over their own stdin and stdout. OpenCode is the one adapter with a network hop in the middle: Bridge spawns <code>opencode serve</code> and dials back into it over HTTP on 127.0.0.1, authenticated with a password generated fresh for that one process.</figcaption>
+            </figure>
+
+            <h2 id="h-transport">A local server, not a pipe</h2>
+            <p><code>launch()</code> resolves an <code>opencode</code> executable, checks its version, reserves a free TCP port, and spawns <code>opencode serve --hostname 127.0.0.1 --port &lt;port&gt;</code> with <code>OPENCODE_SERVER_USERNAME</code> and <code>OPENCODE_SERVER_PASSWORD</code> set to <code>bridge</code> and a UUID generated fresh for that one process. Every request afterward carries an HTTP Basic-auth header built from those two values. Codex's adapter runs <code>codex app-server --listen stdio://</code> and keeps the child's own piped stdin and stdout; Claude's adapter launches a Node sidecar over piped stdio, driving the Claude Agent SDK. Both of those channels are file descriptors only Bridge and that one child hold. OpenCode's is a TCP socket on loopback &mdash; reachable, in principle, by anything else on the machine that finds the port.</p>
+
+            <p>Which <code>opencode</code> binary actually runs follows one fixed order &mdash; an explicit path from Settings always wins, a Bridge-managed copy outranks anything already on <code>PATH</code>:</p>
+            <div class="crate-strip">
+              <span class="crate-chip">configured path</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">Bridge-managed</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">system PATH</span>
+            </div>
+
+            <p>That loopback socket costs two checks neither other adapter needs. <code>reserve_port()</code> binds port 0 to get a free number from the OS, then releases it before <code>opencode serve</code> binds that same port &mdash; a real gap, named directly in the source: another local process can win the race and answer in the child's place before it's even spawned. So once the health endpoint responds, a second check fires an unauthenticated request at it from a separate probe client and requires a 401 back &mdash; proof that whatever just answered is this launch's own server, which demands the password just generated for it, and not an unrelated process that happened to grab the port first. A pipe never needs this: the two ends of a pipe are guaranteed to be the two processes holding the descriptors.</p>
+
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>OpenCode below version 1.18.3 is refused before any process starts. Version parsing is lenient about missing components (a bare <code>"1.19"</code> reads as <code>1.19.0</code>), but the floor itself isn't negotiable &mdash; a test names the reason one exists at all as an incompatible context schema below that version. <code>discover</code> enforces the identical floor before it will list a single provider.</p>
+            </div>
+
+            <p>The same command also runs a second, throwaway way. <code>discover</code>, saving a provider's API key, and removing one each spin up their own <code>opencode serve</code> purely to answer one or two HTTP calls, then never become a session. A dedicated wrapper kills that child in its own <code>Drop</code> implementation the moment the call returns, so &mdash; in the source's own words &mdash; the child dies and its launch record clears on every exit from the scope, unwinding included, instead of only on the straight-line return path.</p>
+
+            <p>One effect of all this is visible from the outside: before Bridge treats an OpenCode session as ready, it polls that health endpoint roughly ten times a second for up to eight seconds. Codex and Claude have no equivalent wait &mdash; their process is usable the moment the OS hands back a live child.</p>
+
+            <h2 id="h-streaming">Streaming turns over SSE</h2>
+            <p>Sending a turn posts to <code>/session/{id}/prompt_async</code> with the message text, the resolved model if one was set, and an optional <code>variant</code> &mdash; Bridge's effort hint. The system prompt is Bridge's own instructions and any trusted per-turn application context, joined with a blank line and attached only if at least one side is non-empty. What comes back streams over a completely separate connection: a dedicated thread holds a long-lived GET to <code>/event</code>, reads it line by line, and parses each <code>data:</code>-prefixed payload as JSON. Nothing on that connection guarantees the events belong to this one session, so every frame is checked against <code>properties.sessionID</code> and dropped if it doesn't match.</p>
+
+            <p>Most surviving frames go through a durable send that back-pressures the socket when Bridge's own consumer stalls, instead of buffering without bound. One event kind is the exception: <code>message.part.delta</code>, an incremental streaming chunk, is sent as transient and may be dropped under load &mdash; safely, because its own eventual <code>message.part.updated</code> carries the complete text regardless. <code>event_queue_metrics()</code> exposes that bounded queue's pressure for diagnostics.</p>
+
+            <p>If the event stream ends while Bridge isn't the one shutting things down, the turn doesn't just quietly look finished. The adapter synthesizes its own <code>session.error</code> frame &mdash; "OpenCode event stream disconnected unexpectedly" &mdash; and pushes it durably, so a network hiccup surfaces as a visible error in the transcript rather than a turn that silently stops updating.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Every blocking HTTP call this adapter makes, and every drop of its <code>reqwest</code> client, runs on its own dedicated OS thread rather than inline on the calling Tauri command. <code>reqwest</code>'s blocking client owns an internal Tokio runtime that panics if its last handle is dropped from an async context &mdash; a real constraint this file works around explicitly, not an accident of style.</p>
+            </div>
+
+            <h2 id="h-permissions">Write modes become permission families</h2>
+            <p>Bridge's <code>WriteMode</code> &mdash; the same <code>ReadOnly</code> / <code>Shared</code> / <code>Isolated</code> / <code>Full</code> vocabulary used across every adapter &mdash; gets translated into OpenCode's own shape once, at session creation: a JSON array of <code>{permission, pattern, action}</code> rules. Every session starts from one wildcard rule that allows everything, then the write mode layers overrides on exactly three named families.</p>
+
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Write mode</th><th>edit</th><th>bash</th><th>external_directory</th></tr></thead>
+                <tbody>
+                  <tr><td>ReadOnly</td><td>deny</td><td>ask</td><td>deny</td></tr>
+                  <tr><td>Shared</td><td>ask</td><td>ask</td><td>ask</td></tr>
+                  <tr><td>Isolated</td><td>ask</td><td>ask</td><td>ask</td></tr>
+                  <tr><td>Full (or unset)</td><td>allow</td><td>allow</td><td>allow</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p>The literal rule list an <code>Isolated</code> session sends:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">[</span>
+  <span class="tok-punct">{</span> <span class="tok-attr">"permission"</span><span class="tok-punct">:</span> <span class="tok-string">"*"</span><span class="tok-punct">,</span> <span class="tok-attr">"pattern"</span><span class="tok-punct">:</span> <span class="tok-string">"*"</span><span class="tok-punct">,</span> <span class="tok-attr">"action"</span><span class="tok-punct">:</span> <span class="tok-string">"allow"</span> <span class="tok-punct">},</span>
+  <span class="tok-punct">{</span> <span class="tok-attr">"permission"</span><span class="tok-punct">:</span> <span class="tok-string">"edit"</span><span class="tok-punct">,</span> <span class="tok-attr">"pattern"</span><span class="tok-punct">:</span> <span class="tok-string">"*"</span><span class="tok-punct">,</span> <span class="tok-attr">"action"</span><span class="tok-punct">:</span> <span class="tok-string">"ask"</span> <span class="tok-punct">},</span>
+  <span class="tok-punct">{</span> <span class="tok-attr">"permission"</span><span class="tok-punct">:</span> <span class="tok-string">"bash"</span><span class="tok-punct">,</span> <span class="tok-attr">"pattern"</span><span class="tok-punct">:</span> <span class="tok-string">"*"</span><span class="tok-punct">,</span> <span class="tok-attr">"action"</span><span class="tok-punct">:</span> <span class="tok-string">"ask"</span> <span class="tok-punct">},</span>
+  <span class="tok-punct">{</span> <span class="tok-attr">"permission"</span><span class="tok-punct">:</span> <span class="tok-string">"external_directory"</span><span class="tok-punct">,</span> <span class="tok-attr">"pattern"</span><span class="tok-punct">:</span> <span class="tok-string">"*"</span><span class="tok-punct">,</span> <span class="tok-attr">"action"</span><span class="tok-punct">:</span> <span class="tok-string">"ask"</span> <span class="tok-punct">}</span>
+<span class="tok-punct">]</span></code></pre></div>
+            </div>
+
+            <p>Answering an approval maps Bridge's four abstract decisions onto OpenCode's own three-word reply vocabulary &mdash; <code>accept</code> becomes <code>once</code>, <code>acceptForSession</code> becomes <code>always</code>, <code>decline</code> and <code>cancel</code> both become <code>reject</code> &mdash; posted to <code>/permission/{id}/reply</code>. Separately, OpenCode is the only one of Bridge's three adapters that overrides <code>answer_question</code> and <code>reject_question</code>; Codex and Claude both fall through to the trait's default, which errs immediately rather than silently doing nothing, because neither raises question-shaped requests at all. OpenCode's questions are a distinct channel from permission prompts &mdash; answers post as an array of chosen values per question to <code>/question/{id}/reply</code>, a rejection to <code>/question/{id}/reject</code> &mdash; for whatever OpenCode's own protocol asks mid-turn that isn't a yes-or-no over one tool call.</p>
+
+            <p>Every id interpolated into one of these URLs &mdash; session, permission, question &mdash; is checked first against a strict allowlist (alphanumeric plus <code>-</code>, <code>_</code>, <code>.</code>, 128 characters max) so nothing shaped like a path segment or a query string can ride along into the request.</p>
+
+            <h2 id="h-refusals">Where OpenCode refuses to run</h2>
+            <p>OpenCode's <code>AdapterDescriptor</code> declares only two of Bridge's three sandbox modes &mdash; <code>WorkspaceWrite</code> and <code>DangerFullAccess</code> &mdash; leaving out <code>ReadOnly</code> entirely. Codex and Claude both declare all three. The reason is named directly in the registration comment: OpenCode drives a loopback HTTP server, and Bridge's read-only worker sandbox is offline, with no network at all, so a read-only OpenCode worker could never reach its own server in the first place. Declaring the gap at the descriptor level lets the router exclude that combination before a worker session is ever attempted, rather than after a launch that was doomed from the start. <code>launch()</code> checks again anyway: asked to start under the read-only sandbox, it refuses up front, refusing to start without isolation rather than attempting it and leaving the failure to whatever happens when an HTTP client can't reach a server it just spawned.</p>
+
+            <p>The same root cause shows up again for a different feature. A start request carrying a briefing &mdash; Bridge's read-only, connector-scoped session kind &mdash; is refused outright, citing Bridge's briefing policy table for OpenCode. That table gives the reason in one line: OpenCode's permission rules are coarse families &mdash; <code>edit</code>, <code>bash</code>, <code>external_directory</code> &mdash; not individual named tools, so one reviewed connector tool cannot be admitted without admitting its neighbours. A briefing session needs a real allowlist: read this one connector, nothing else. OpenCode's permission surface has no rule finer than an entire family, so rather than approximate that with whichever coarse rule is closest &mdash; locking out every connector, or opening all of them &mdash; the adapter refuses at the boundary, with the reason attached, before anything runs.</p>
+
+            <h2 id="h-catalog">A live catalog, not a fixed roster</h2>
+            <p>Codex and Claude's descriptors each carry a short, hand-maintained tuple list &mdash; id, label, tier, whether it's the tier's default &mdash; written directly into the adapter registry. OpenCode carries none: its model list comes from whatever <code>discover()</code> just fetched from the running server's <code>/provider</code> and <code>/provider/auth</code> endpoints. The adapter is a router over however many providers a person has actually connected, so Bridge can't hand-maintain that list &mdash; it doesn't know what's in it until it asks.</p>
+
+            <p><code>parse_catalog</code> normalizes OpenCode's raw provider JSON into a sorted, connected-first catalog. One entry, abbreviated:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"anthropic"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"connected"</span><span class="tok-punct">:</span> <span class="tok-num">true</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"defaultModel"</span><span class="tok-punct">:</span> <span class="tok-string">"anthropic/claude-sonnet-4"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"models"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"anthropic/claude-sonnet-4"</span><span class="tok-punct">,</span> <span class="tok-attr">"reasoning"</span><span class="tok-punct">:</span> <span class="tok-num">true</span><span class="tok-punct">,</span> <span class="tok-attr">"contextWindow"</span><span class="tok-punct">:</span> <span class="tok-num">200000</span> <span class="tok-punct">}</span>
+  <span class="tok-punct">]</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p>None of that raw data carries a "how strong is this model" signal, and Bridge's picker only knows Fast, Standard, and Strong. A keyword-and-cost heuristic scores each model &mdash; names containing <code>nano</code>, <code>mini</code>, or <code>flash</code> score down, <code>pro</code>, <code>max</code>, <code>opus</code>, or <code>reasoning</code> score up, and a model's own output cost adds a little more &mdash; then splits the sorted result into thirds, preferring whichever model each connected provider already reports as its own default for that tier's pick. It's a heuristic standing in for a lookup table that an open-ended catalog can't have, but a deterministic one: a test asserts that re-running it against the same catalog always assigns the same tiers, so a model doesn't visibly jump tiers between one app launch and the next.</p>
+
+            <p>What a person actually sees in Settings follows directly from this: with no configuration, every model from every connected provider shows up, sorted into tiers automatically. Naming a subset in <code>visibleModels</code> narrows that list to just those &mdash; the setting that matters once "however many providers you've connected" stops being a short list.</p>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>
