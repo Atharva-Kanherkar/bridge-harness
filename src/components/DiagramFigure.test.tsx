@@ -67,14 +67,13 @@ describe("layoutDiagram", () => {
     expect(withContinues.viewBox).not.toBe(bare.viewBox);
   });
 
-  it("widens column spacing so three adjacent labeled nodes never collide, on either side", () => {
-    // The exact shape a live model produced: three labeled nodes one column
-    // apart. A first fix (auto-flip to "below" on collision) turned out
-    // insufficient here — it stopped the right-side collision but the two
-    // "below" labels then collided with *each other* instead, since 1-column
-    // spacing is too tight for either placement. The real fix is spacing:
-    // column pitch widens to whatever the widest label needs, so the
-    // collision this spec used to produce cannot happen in the first place.
+  it("drops labels below the line when a horizontal edge would strike through them", () => {
+    // The exact shape two live tests produced: a horizontal client→server→db
+    // chain. A right-side label sits at the node's own y — the same y the
+    // connecting edge runs along — so wider columns alone still rendered the
+    // text struck through by the edge. Any label a same-row edge crosses
+    // must drop below the line; the last node has no edge to its right, so
+    // its label stays put (it was the only legible one in the live test).
     const spec: DiagramSpec = {
       nodes: [
         { id: "client", row: 0, col: 0, label: "Client (UI)" },
@@ -89,11 +88,14 @@ describe("layoutDiagram", () => {
       ariaLabel: "a",
     };
     const { labelSides, positions } = layoutDiagram(spec);
-    expect(labelSides.client).toBe("right");
-    expect(labelSides.server).toBe("right");
+    expect(labelSides.client).toBe("below");
+    expect(labelSides.server).toBe("below");
     expect(labelSides.db).toBe("right");
-    // Column pitch grew well past the 66px floor to fit "Server logic".
+    // Column pitch grew past the 66px floor so the below-labels clear each other.
     expect(positions.server.x - positions.client.x).toBeGreaterThan(66);
+    // The leftmost below-label is centered on its node, so the left margin
+    // grew to keep it inside the viewBox instead of clipping ("bandoned"-style).
+    expect(positions.client.x).toBeGreaterThan(20);
   });
 
   it("does not flip to below when same-row nodes already have enough room", () => {

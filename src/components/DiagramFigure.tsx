@@ -46,13 +46,7 @@ const ROW_STEP = 56;
 // too narrow, so the fix has to be the gap itself, not the placement.
 const COL_STEP_MIN = 66;
 const PAD = 20;
-const RIGHT_LABEL_BUDGET = 170;
 const BELOW_LABEL_HEIGHT = 26;
-// A "below" label is centered on its node, so it can overhang either side —
-// unlike a "right" label, which only ever extends into RIGHT_LABEL_BUDGET's
-// space. Any node at the grid's left or right edge needs this much extra
-// margin reserved, or a centered label there clips against the viewBox edge.
-const BELOW_LABEL_HALF_WIDTH = 40;
 const CONTINUES_BUDGET = 56;
 const R_NORMAL = 5;
 const R_HEAVY = 6;
@@ -78,12 +72,22 @@ function estimateLabelWidth(label: string): number {
   return label.length * MONO_CHAR_WIDTH;
 }
 
-/** A same-row right-side label that would collide with the next node falls back to "below". */
+/**
+ * A right-side label sits at the node's own y — exactly where a horizontal
+ * edge to a same-row neighbor runs. No amount of column spacing rescues that:
+ * the edge spans the whole gap, so the text renders struck-through. Any label
+ * a same-row edge would cross drops below the line instead (safe, because
+ * column pitch is already widened to fit the widest label). A label that
+ * would run into the next node's text is the second, rarer trigger.
+ */
 function computeLabelSides(
   spec: DiagramSpec,
   positions: Record<string, { x: number; y: number }>,
 ): Record<string, "right" | "below"> {
   const sides: Record<string, "right" | "below"> = {};
+  const rowOf = new Map(spec.nodes.map(node => [node.id, node.row]));
+  const sameRowEdges = spec.edges.filter(edge => rowOf.get(edge.from) === rowOf.get(edge.to));
+
   const byRow = new Map<number, DiagramNode[]>();
   for (const node of spec.nodes) {
     if (!node.label) continue;
@@ -98,10 +102,17 @@ function computeLabelSides(
         sides[node.id] = "below";
         return;
       }
-      const next = sorted[index + 1];
+      const labelStart = positions[node.id].x + 8;
       const labelEnd = positions[node.id].x + LABEL_RIGHT_OFFSET + estimateLabelWidth(truncateLabel(node.label!));
-      const collides = !!next && labelEnd + LABEL_MIN_GAP > positions[next.id].x;
-      sides[node.id] = collides ? "below" : "right";
+      const edgeCrosses = sameRowEdges.some(edge => {
+        if (rowOf.get(edge.from) !== node.row) return false;
+        const lo = Math.min(positions[edge.from].x, positions[edge.to].x);
+        const hi = Math.max(positions[edge.from].x, positions[edge.to].x);
+        return lo < labelEnd && hi > labelStart;
+      });
+      const next = sorted[index + 1];
+      const textCollides = !!next && labelEnd + LABEL_MIN_GAP > positions[next.id].x;
+      sides[node.id] = edgeCrosses || textCollides ? "below" : "right";
     });
   }
   return sides;
@@ -123,7 +134,6 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   const minRow = Math.min(0, ...rows);
   const maxRow = Math.max(0, ...rows);
   const minCol = Math.min(0, ...cols);
-  const maxCol = Math.max(0, ...cols);
 
   // The column pitch widens once, for the whole diagram, to whatever its
   // widest label needs — guaranteeing no two same-row neighbors can collide
@@ -148,10 +158,25 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   }
   const labelSides = computeLabelSides(spec, rawPositions);
 
-  const hasBelowLabelAt = (col: number) =>
-    spec.nodes.some(node => node.col === col && node.label && labelSides[node.id] === "below");
-  const leftPad = PAD + (hasBelowLabelAt(minCol) ? BELOW_LABEL_HALF_WIDTH : 0);
-  const rightPad = PAD + RIGHT_LABEL_BUDGET + (hasBelowLabelAt(maxCol) ? BELOW_LABEL_HALF_WIDTH : 0);
+  // Margins come from what each node actually draws — a centered below-label
+  // can overhang its node's x on both sides, a right-label extends only
+  // rightward — instead of fixed budgets, which either clip a wide label at
+  // the grid's edge or pad empty space the drawing never uses.
+  let leftOverhang = 0;
+  let rightExtent = 0;
+  for (const node of spec.nodes) {
+    const gridX = (node.col - minCol) * colStep;
+    const labelWidth = node.label ? estimateLabelWidth(truncateLabel(node.label)) : 0;
+    const below = !!node.label && labelSides[node.id] === "below";
+    if (below) leftOverhang = Math.max(leftOverhang, labelWidth / 2 - gridX);
+    const nodeRight = below
+      ? Math.max(gridX + labelWidth / 2, gridX + HALO_R)
+      : node.label
+        ? gridX + LABEL_RIGHT_OFFSET + labelWidth
+        : gridX + HALO_R;
+    rightExtent = Math.max(rightExtent, nodeRight);
+  }
+  const leftPad = PAD + Math.max(0, leftOverhang);
 
   const positions: Record<string, { x: number; y: number }> = {};
   for (const node of spec.nodes) {
@@ -167,7 +192,7 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   const hasBelowLabel = spec.nodes.some(node => node.label && labelSides[node.id] === "below");
   const hasContinues = spec.nodes.some(node => node.marker === "continues");
 
-  const width = leftPad + (maxCol - minCol) * colStep + rightPad;
+  const width = leftPad + rightExtent + PAD;
   const height =
     PAD * 2 +
     (maxRow - minRow) * ROW_STEP +
