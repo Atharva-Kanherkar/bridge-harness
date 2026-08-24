@@ -2,11 +2,58 @@ import { createHighlighterCore, type HighlighterCore, type LanguageInput } from 
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 /**
+ * The public language vocabulary. This exact set of ids is a shared contract
+ * with `editor/language.ts`'s `LOADERS` map — that file is keyed by whatever
+ * `languageFromPath`/`normalizeLang` produce here, specifically so the
+ * CodeMirror editor and the diff/chat viewer never disagree about what
+ * language a file is in. Do not rename or split an id here without adding a
+ * matching change there; `SHIKI_GRAMMAR_FOR` below is where a *better*
+ * grammar gets used without touching this public vocabulary at all.
+ */
+const CANONICAL_LANGS = new Set([
+  "bash", "c", "cpp", "csharp", "css", "dart", "diff", "dockerfile", "elixir", "go",
+  "graphql", "ini", "java", "javascript", "json", "kotlin", "lua", "makefile",
+  "markdown", "objectivec", "perl", "php", "protobuf", "python", "ruby", "rust",
+  "scala", "scss", "sql", "swift", "typescript", "xml", "yaml",
+]);
+
+const LANG_ALIASES: Record<string, string> = {
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
+  py: "python", rs: "rust", sh: "bash", zsh: "bash", shell: "bash", console: "bash",
+  yml: "yaml", html: "xml", vue: "xml", svelte: "xml", md: "markdown",
+  "c++": "cpp", objc: "objectivec", patch: "diff", toml: "ini",
+  rb: "ruby", kt: "kotlin", kts: "kotlin", cs: "csharp", ex: "elixir", exs: "elixir",
+  gql: "graphql", pl: "perl", sass: "scss", m: "objectivec", mm: "objectivec",
+  h: "c", hpp: "cpp", cc: "cpp", cxx: "cpp", proto: "protobuf", make: "makefile",
+  jsonc: "json", json5: "json", ndjson: "json", mdx: "markdown", plaintext: "", text: "",
+};
+
+/**
+ * Where Shiki's real grammar is more accurate than the public id above would
+ * suggest — translated only at load time, so `normalizeLang`'s output (and
+ * therefore the editor's contract) never changes. `javascript`/`typescript`
+ * route to Shiki's `jsx`/`tsx` grammars unconditionally: both are strict
+ * supersets that tokenize plain, JSX-free code identically to the
+ * non-JSX grammar (verified directly), so there's no plain-code downside —
+ * only the alternative, misparsing `<Component>` as a comparison
+ * expression under the plain `typescript`/`javascript` grammar.
+ */
+const SHIKI_GRAMMAR_FOR: Partial<Record<string, string>> = {
+  objectivec: "objective-c",
+  ini: "toml",
+  javascript: "jsx",
+  typescript: "tsx",
+};
+
+/**
  * Every grammar (and the one theme we load) is a dynamic import: rendering a
  * TypeScript block must not also pay for the PHP grammar. Literal per-language
  * import specifiers (not a templated path) are what let Vite split each one
  * into its own chunk — the same shape `editor/language.ts` already uses for
- * CodeMirror's lazily-loaded language support.
+ * CodeMirror's lazily-loaded language support. Keyed by Shiki's own grammar
+ * ids, which is a different (and finer) vocabulary than `CANONICAL_LANGS`
+ * above — `SHIKI_GRAMMAR_FOR` bridges the two.
  */
 const LANG_LOADERS: Record<string, () => LanguageInput> = {
   bash: () => import("shiki/langs/bash.mjs"),
@@ -20,12 +67,9 @@ const LANG_LOADERS: Record<string, () => LanguageInput> = {
   elixir: () => import("shiki/langs/elixir.mjs"),
   go: () => import("shiki/langs/go.mjs"),
   graphql: () => import("shiki/langs/graphql.mjs"),
-  ini: () => import("shiki/langs/ini.mjs"),
   java: () => import("shiki/langs/java.mjs"),
-  javascript: () => import("shiki/langs/javascript.mjs"),
   json: () => import("shiki/langs/json.mjs"),
-  json5: () => import("shiki/langs/json5.mjs"),
-  jsonc: () => import("shiki/langs/jsonc.mjs"),
+  jsx: () => import("shiki/langs/jsx.mjs"),
   kotlin: () => import("shiki/langs/kotlin.mjs"),
   lua: () => import("shiki/langs/lua.mjs"),
   makefile: () => import("shiki/langs/makefile.mjs"),
@@ -42,21 +86,9 @@ const LANG_LOADERS: Record<string, () => LanguageInput> = {
   sql: () => import("shiki/langs/sql.mjs"),
   swift: () => import("shiki/langs/swift.mjs"),
   toml: () => import("shiki/langs/toml.mjs"),
-  typescript: () => import("shiki/langs/typescript.mjs"),
+  tsx: () => import("shiki/langs/tsx.mjs"),
   xml: () => import("shiki/langs/xml.mjs"),
   yaml: () => import("shiki/langs/yaml.mjs"),
-};
-
-const LANG_ALIASES: Record<string, string> = {
-  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
-  py: "python", rs: "rust", sh: "bash", zsh: "bash", shell: "bash", console: "bash",
-  yml: "yaml", html: "xml", vue: "xml", svelte: "xml", md: "markdown",
-  "c++": "cpp", objc: "objective-c", objectivec: "objective-c", patch: "diff",
-  rb: "ruby", kt: "kotlin", kts: "kotlin", cs: "csharp", ex: "elixir", exs: "elixir",
-  gql: "graphql", pl: "perl", sass: "scss", m: "objective-c", mm: "objective-c",
-  h: "c", hpp: "cpp", cc: "cpp", cxx: "cpp", proto: "protobuf", make: "makefile",
-  ndjson: "json", mdx: "markdown", plaintext: "", text: "",
 };
 
 /** Extensionless files that still have an obvious language. */
@@ -95,12 +127,12 @@ export function languageFromPath(path: string): string {
   return "";
 }
 
-/** Normalize to one of `LANG_LOADERS`' keys, or `""` when we have no grammar. */
+/** Normalize to one of `CANONICAL_LANGS`, or `""` when we have no grammar. */
 export function normalizeLang(lang: string): string {
   const key = lang.trim().toLowerCase();
   if (!key) return "";
   const aliased = LANG_ALIASES[key] ?? key;
-  return aliased in LANG_LOADERS ? aliased : "";
+  return CANONICAL_LANGS.has(aliased) ? aliased : "";
 }
 
 export function escapeHtml(text: string): string {
@@ -142,9 +174,14 @@ function core(): Promise<HighlighterCore> {
   return corePromise;
 }
 
-/** Load `language`'s grammar into the shared highlighter, or `null` if it — or the highlighter itself — fails to load. */
-async function highlighterFor(language: string): Promise<HighlighterCore | null> {
-  const loader = LANG_LOADERS[language];
+/** The Shiki grammar id to actually load for a public `CANONICAL_LANGS` id. */
+function shikiLangFor(language: string): string {
+  return SHIKI_GRAMMAR_FOR[language] ?? language;
+}
+
+/** Load `shikiLang`'s grammar into the shared highlighter, or `null` if it — or the highlighter itself — fails to load. */
+async function highlighterFor(shikiLang: string): Promise<HighlighterCore | null> {
+  const loader = LANG_LOADERS[shikiLang];
   if (!loader) return null;
   try {
     const highlighter = await core();
@@ -233,19 +270,37 @@ function linesToHtml(lines: ScopedToken[][]): string[] {
 export const MAX_HIGHLIGHT_CHARS = 50_000;
 
 /**
+ * How long a code block's `[lang, body]` must sit still before it's worth
+ * colorizing. A streaming reply re-renders `CodeBlock`/`PatchView` on every
+ * delta while a fence is still growing — without this, a 200-line fence
+ * would schedule ~200 increasingly expensive tokenization passes on its way
+ * in, almost all of them for a state the user never gets to see coloured.
+ */
+export const COLORIZE_DEBOUNCE_MS = 200;
+
+/**
  * Colorize a single code block for `Markdown.tsx`'s `CodeBlock`. Async,
  * because the grammar is a dynamic import — callers render `escapeHtml`
  * plain text immediately and swap this in when it resolves (see
  * `CodeBlock`), the same "on screen now, coloured a frame later" shape
  * `editor/CodeEditor.tsx` already uses for CodeMirror's grammars.
+ *
+ * An empty or unrecognized `lang` renders plain. hljs used to run
+ * `highlightAuto` here — a heuristic best guess across every registered
+ * grammar — but Shiki has no equivalent turnkey mode, and running scope
+ * classification once per candidate grammar just to score them would multiply
+ * the cost this file already spends real effort bounding (see
+ * `MAX_HIGHLIGHT_CHARS`, `COLORIZE_DEBOUNCE_MS`). Unlabeled fences losing
+ * their guessed colour is an accepted trade-off, not an oversight.
  */
 export async function colorizeCode(code: string, lang: string): Promise<string> {
   const language = normalizeLang(lang);
   if (!language || code.length > MAX_HIGHLIGHT_CHARS) return escapeHtml(code);
-  const highlighter = await highlighterFor(language);
+  const shikiLang = shikiLangFor(language);
+  const highlighter = await highlighterFor(shikiLang);
   if (!highlighter) return escapeHtml(code);
   try {
-    const { tokens } = highlighter.codeToTokens(code, { lang: language, theme: SCOPE_THEME, includeExplanation: true });
+    const { tokens } = highlighter.codeToTokens(code, { lang: shikiLang, theme: SCOPE_THEME, includeExplanation: true });
     return linesToHtml(tokens).join("\n");
   } catch {
     return escapeHtml(code);
@@ -382,11 +437,12 @@ export function highlightPatch(patch: string, path = ""): DiffRow[] {
  *  real code — then hand back one HTML string per line. */
 async function highlightLines(lines: string[], language: string): Promise<string[] | null> {
   if (!lines.length) return [];
-  const highlighter = await highlighterFor(language);
+  const shikiLang = shikiLangFor(language);
+  const highlighter = await highlighterFor(shikiLang);
   if (!highlighter) return null;
   const code = lines.join("\n");
   try {
-    const { tokens } = highlighter.codeToTokens(code, { lang: language, theme: SCOPE_THEME, includeExplanation: true });
+    const { tokens } = highlighter.codeToTokens(code, { lang: shikiLang, theme: SCOPE_THEME, includeExplanation: true });
     const html = linesToHtml(tokens);
     return html.length === lines.length ? html : null;
   } catch {

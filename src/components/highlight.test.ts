@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { colorizeCode, colorizePatch, highlightPatch, languageFromPath, normalizeLang, looksLikeDiff } from "./highlight";
+import { EDITOR_LANGUAGES } from "./editor/language";
 
 describe("languageFromPath", () => {
   it("maps common extensions", () => {
@@ -28,28 +29,74 @@ describe("languageFromPath", () => {
 });
 
 describe("normalizeLang", () => {
-  it("resolves common aliases to their canonical Shiki id", () => {
+  it("resolves common aliases to their canonical id", () => {
     expect(normalizeLang("ts")).toBe("typescript");
     expect(normalizeLang("yml")).toBe("yaml");
     expect(normalizeLang("html")).toBe("xml");
   });
 
-  it("remaps objective-c's aliases to Shiki's hyphenated id", () => {
-    expect(normalizeLang("objectivec")).toBe("objective-c");
-    expect(normalizeLang("objc")).toBe("objective-c");
-    expect(normalizeLang("m")).toBe("objective-c");
+  // The public vocabulary is a shared contract with editor/language.ts's
+  // LOADERS map (keyed by exactly these ids) — it must not change even
+  // though highlight.ts internally loads a better Shiki grammar for some of
+  // them. See the "uses a better Shiki grammar than the public id implies"
+  // describe block below for that internal behaviour.
+  it("keeps objective-c's aliases on the original public id", () => {
+    expect(normalizeLang("objectivec")).toBe("objectivec");
+    expect(normalizeLang("objc")).toBe("objectivec");
+    expect(normalizeLang("m")).toBe("objectivec");
   });
 
-  it("gives toml, json5 and jsonc their own grammars instead of aliasing", () => {
-    expect(normalizeLang("toml")).toBe("toml");
-    expect(normalizeLang("json5")).toBe("json5");
-    expect(normalizeLang("jsonc")).toBe("jsonc");
+  it("keeps toml, json5 and jsonc aliased to their original public id", () => {
+    expect(normalizeLang("toml")).toBe("ini");
+    expect(normalizeLang("json5")).toBe("json");
+    expect(normalizeLang("jsonc")).toBe("json");
   });
 
   it("rejects unknown languages and the explicit plain markers", () => {
     expect(normalizeLang("not-a-real-language")).toBe("");
     expect(normalizeLang("plaintext")).toBe("");
     expect(normalizeLang("text")).toBe("");
+  });
+
+  // editor/language.ts's LOADERS map is keyed by exactly what this function
+  // produces (its own doc comment says so) — this PR once broke that by
+  // renaming objectivec/ini/json's public id to match Shiki's own grammar
+  // ids, silently disabling the editor's language support for .m/.mm/.toml/
+  // .jsonc/.json5 without touching editor/language.ts at all. Guard the
+  // exact ids SHIKI_GRAMMAR_FOR redirects internally, so a future change
+  // that reintroduces the same mistake fails here instead of shipping.
+  it("keeps every SHIKI_GRAMMAR_FOR-touched id resolvable by the editor's own loader map", () => {
+    const touchedInputs = ["objectivec", "objc", "m", "mm", "toml", "json5", "jsonc", "javascript", "js", "jsx", "typescript", "ts", "tsx"];
+    for (const input of touchedInputs) {
+      const id = normalizeLang(input);
+      expect(id).not.toBe("");
+      expect(EDITOR_LANGUAGES).toContain(id);
+    }
+  });
+});
+
+describe("uses a better Shiki grammar than the public id implies", () => {
+  it("colours a JSX component tag instead of misreading it as a comparison", async () => {
+    const html = await colorizeCode("const el = <Button>Hi</Button>;", "tsx");
+    expect(html).toContain("stx-tag");
+  });
+
+  it("still colours plain, JSX-free TypeScript correctly via the same grammar", async () => {
+    const html = await colorizeCode("const x: number = 1;", "typescript");
+    expect(html).toContain("stx-keyword");
+    expect(html).toContain("stx-number");
+  });
+
+  it("colours Objective-C despite normalizeLang reporting the old public id", async () => {
+    expect(normalizeLang("objectivec")).toBe("objectivec"); // the contract, restated
+    const html = await colorizeCode("@interface Foo : NSObject\n@end", "objectivec");
+    expect(html).toContain("stx-");
+  });
+
+  it("colours a TOML-shaped .env-like file despite normalizeLang reporting ini", async () => {
+    expect(normalizeLang("toml")).toBe("ini"); // the contract, restated
+    const html = await colorizeCode('name = "bridge"\n[package]\nversion = "1.0"', "toml");
+    expect(html).toContain("stx-");
   });
 });
 
