@@ -236,7 +236,17 @@ describe("CodeBlock async colorization", () => {
     container.remove();
   });
 
-  const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  // Real dynamic-import + real Shiki tokenization, timed against the actual
+  // wall clock — under a full, concurrent test-suite run, a single
+  // `setTimeout(0)` tick isn't a reliable wait. Poll instead of guessing a
+  // fixed delay.
+  const waitFor = async (check: () => boolean, timeoutMs = 3000) => {
+    const start = Date.now();
+    while (!check()) {
+      if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for colorization");
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    }
+  };
 
   it("renders plain escaped text immediately, then upgrades to .stx-* spans", async () => {
     // A plain (non-async) act() flushes the effect's synchronous first half
@@ -249,14 +259,13 @@ describe("CodeBlock async colorization", () => {
     expect(code).toBeTruthy();
     expect(code.innerHTML).toBe("const x = 1;");
 
-    await flush();
-    expect(code.innerHTML).toContain("stx-keyword");
+    await waitFor(() => code.innerHTML.includes("stx-keyword"));
   });
 
   it("resets to plain text immediately when the code changes, instead of keeping stale colour", async () => {
     await act(async () => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
-    await flush();
     const code = container.querySelector("code.stx") as HTMLElement;
+    await waitFor(() => code.innerHTML.includes("stx-keyword"));
     expect(code.innerHTML).toContain("stx-keyword");
 
     act(() => { root.render(<Markdown text={"```ts\nconst y = 2;\n```"} />); });
