@@ -38,7 +38,13 @@ export interface DiagramSpec {
 }
 
 const ROW_STEP = 56;
-const COL_STEP = 66;
+// The floor for column pitch — widened per-diagram below when a label needs
+// more room than this to clear its neighbor. A fixed 66px works for the
+// common case (short labels, or nodes without one) but three consecutive
+// labeled nodes at that pitch collide regardless of which side the label
+// renders on — there's no label placement that rescues a gap that's just
+// too narrow, so the fix has to be the gap itself, not the placement.
+const COL_STEP_MIN = 66;
 const PAD = 20;
 const RIGHT_LABEL_BUDGET = 170;
 const BELOW_LABEL_HEIGHT = 26;
@@ -52,10 +58,62 @@ const R_NORMAL = 5;
 const R_HEAVY = 6;
 const HALO_R = 11;
 
+// Geist Mono is monospace, so character count is a reliable width proxy —
+// no DOM measurement needed. A right-side label that would run into the next
+// same-row node is illegible, not just untidy, so this isn't an authoring
+// nicety: an authored spec (frequently model-generated, with no way to
+// preview its own output) gets a correctness fallback, not just a rule to
+// follow. LABEL_MAX_CHARS is a second, independent net for a label that's
+// simply too long regardless of neighbors.
+const MONO_CHAR_WIDTH = 6.6;
+const LABEL_RIGHT_OFFSET = 26;
+const LABEL_MIN_GAP = 10;
+const LABEL_MAX_CHARS = 18;
+
+export function truncateLabel(label: string): string {
+  return label.length > LABEL_MAX_CHARS ? `${label.slice(0, LABEL_MAX_CHARS - 1)}…` : label;
+}
+
+function estimateLabelWidth(label: string): number {
+  return label.length * MONO_CHAR_WIDTH;
+}
+
+/** A same-row right-side label that would collide with the next node falls back to "below". */
+function computeLabelSides(
+  spec: DiagramSpec,
+  positions: Record<string, { x: number; y: number }>,
+): Record<string, "right" | "below"> {
+  const sides: Record<string, "right" | "below"> = {};
+  const byRow = new Map<number, DiagramNode[]>();
+  for (const node of spec.nodes) {
+    if (!node.label) continue;
+    const list = byRow.get(node.row) ?? [];
+    list.push(node);
+    byRow.set(node.row, list);
+  }
+  for (const nodesInRow of byRow.values()) {
+    const sorted = [...nodesInRow].sort((a, b) => a.col - b.col);
+    sorted.forEach((node, index) => {
+      if (node.labelSide === "below") {
+        sides[node.id] = "below";
+        return;
+      }
+      const next = sorted[index + 1];
+      const labelEnd = positions[node.id].x + LABEL_RIGHT_OFFSET + estimateLabelWidth(truncateLabel(node.label!));
+      const collides = !!next && labelEnd + LABEL_MIN_GAP > positions[next.id].x;
+      sides[node.id] = collides ? "below" : "right";
+    });
+  }
+  return sides;
+}
+
 export interface DiagramLayout {
   viewBox: string;
+  width: number;
+  height: number;
   positions: Record<string, { x: number; y: number }>;
   outDegree: Record<string, number>;
+  labelSides: Record<string, "right" | "below">;
 }
 
 /** Pure grid → pixel layout, kept separate from rendering so the math is unit-testable on its own. */
@@ -67,15 +125,38 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   const minCol = Math.min(0, ...cols);
   const maxCol = Math.max(0, ...cols);
 
-  const edgeHasBelowLabel = (col: number) =>
-    spec.nodes.some(node => node.col === col && node.label && node.labelSide === "below");
-  const leftPad = PAD + (edgeHasBelowLabel(minCol) ? BELOW_LABEL_HALF_WIDTH : 0);
-  const rightPad = PAD + RIGHT_LABEL_BUDGET + (edgeHasBelowLabel(maxCol) ? BELOW_LABEL_HALF_WIDTH : 0);
+  // The column pitch widens once, for the whole diagram, to whatever its
+  // widest label needs — guaranteeing no two same-row neighbors can collide
+  // regardless of which side either label renders on. A single long label
+  // among otherwise-short ones costs some sparseness elsewhere in the grid;
+  // that's a cheaper price than a diagram that's illegible where it counts.
+  const widestLabel = Math.max(
+    0,
+    ...spec.nodes.filter(node => node.label).map(node => estimateLabelWidth(truncateLabel(node.label!))),
+  );
+  const colStep = Math.max(COL_STEP_MIN, widestLabel + LABEL_RIGHT_OFFSET + LABEL_MIN_GAP);
+
+  // Collision detection only needs relative gaps between columns, which a
+  // uniform left-padding shift never changes — so it's safe to compute
+  // against this unpadded pass before the padding it depends on is known.
+  const rawPositions: Record<string, { x: number; y: number }> = {};
+  for (const node of spec.nodes) {
+    rawPositions[node.id] = {
+      x: PAD + (node.col - minCol) * colStep,
+      y: PAD + (node.row - minRow) * ROW_STEP,
+    };
+  }
+  const labelSides = computeLabelSides(spec, rawPositions);
+
+  const hasBelowLabelAt = (col: number) =>
+    spec.nodes.some(node => node.col === col && node.label && labelSides[node.id] === "below");
+  const leftPad = PAD + (hasBelowLabelAt(minCol) ? BELOW_LABEL_HALF_WIDTH : 0);
+  const rightPad = PAD + RIGHT_LABEL_BUDGET + (hasBelowLabelAt(maxCol) ? BELOW_LABEL_HALF_WIDTH : 0);
 
   const positions: Record<string, { x: number; y: number }> = {};
   for (const node of spec.nodes) {
     positions[node.id] = {
-      x: leftPad + (node.col - minCol) * COL_STEP,
+      x: leftPad + (node.col - minCol) * colStep,
       y: PAD + (node.row - minRow) * ROW_STEP,
     };
   }
@@ -83,17 +164,17 @@ export function layoutDiagram(spec: DiagramSpec): DiagramLayout {
   const outDegree: Record<string, number> = {};
   for (const edge of spec.edges) outDegree[edge.from] = (outDegree[edge.from] ?? 0) + 1;
 
-  const hasBelowLabel = spec.nodes.some(node => node.label && node.labelSide === "below");
+  const hasBelowLabel = spec.nodes.some(node => node.label && labelSides[node.id] === "below");
   const hasContinues = spec.nodes.some(node => node.marker === "continues");
 
-  const width = leftPad + (maxCol - minCol) * COL_STEP + rightPad;
+  const width = leftPad + (maxCol - minCol) * colStep + rightPad;
   const height =
     PAD * 2 +
     (maxRow - minRow) * ROW_STEP +
     (hasBelowLabel ? BELOW_LABEL_HEIGHT : 0) +
     (hasContinues ? CONTINUES_BUDGET : 0);
 
-  return { viewBox: `0 0 ${width} ${height}`, positions, outDegree };
+  return { viewBox: `0 0 ${width} ${height}`, width, height, positions, outDegree, labelSides };
 }
 
 const EMPHASIS_VALUES = new Set<string>(["default", "muted", "active"]);
@@ -144,11 +225,15 @@ function markColor(emphasis: DiagramEmphasis | undefined): string {
  */
 export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
   const layout = useMemo(() => layoutDiagram(spec), [spec]);
-  const { positions, outDegree } = layout;
+  const { positions, outDegree, labelSides } = layout;
 
   return (
-    <figure className="my-[0.9em] flex flex-col items-start gap-[0.6em] [&_svg]:h-auto [&_svg]:w-full [&_svg]:max-w-[280px]">
-      <svg viewBox={layout.viewBox} role="img" aria-label={spec.ariaLabel}>
+    // Sized to its own content at 1:1 (the 11px label text means something
+    // specific only at native scale) via width/height attributes, not CSS —
+    // max-width only ever shrinks an oversized diagram to fit its column,
+    // it never stretches a small one to fill it.
+    <figure className="my-[0.9em] flex flex-col items-start gap-[0.6em] [&_svg]:h-auto [&_svg]:max-w-[min(100%,480px)]">
+      <svg viewBox={layout.viewBox} width={layout.width} height={layout.height} role="img" aria-label={spec.ariaLabel}>
         <g fill="none" strokeWidth={1.75}>
           {spec.edges.map((edge, index) => {
             const from = positions[edge.from];
@@ -196,10 +281,11 @@ export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
             const pos = positions[node.id];
             const color = markColor(node.emphasis);
             const muted = node.emphasis === "muted";
-            if (node.labelSide === "below") {
+            const label = truncateLabel(node.label!);
+            if (labelSides[node.id] === "below") {
               return (
                 <text key={node.id} x={pos.x} y={pos.y + 22} textAnchor="middle" fill={color} opacity={muted ? 0.6 : 1}>
-                  {node.label}
+                  {label}
                 </text>
               );
             }
@@ -207,7 +293,7 @@ export function DiagramFigure({ spec }: { spec: DiagramSpec }) {
               <g key={node.id}>
                 <line x1={pos.x + 8} y1={pos.y} x2={pos.x + 20} y2={pos.y} stroke={color} strokeWidth={1.5} opacity={0.5} />
                 <text x={pos.x + 26} y={pos.y + 3.5} fill={color} opacity={muted ? 0.6 : 1}>
-                  {node.label}
+                  {label}
                 </text>
               </g>
             );
