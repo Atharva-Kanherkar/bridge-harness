@@ -14,11 +14,11 @@ Both modes are renderings of the same token names, defined in [`src/index.css`](
 
 |                | Light · paper | Dark · graphite |
 | -------------- | ------------- | --------------- |
-| `--sidebar`    | `#F3F3F1`     | `#0A0A09`       |
-| `--background` | `#FAFAF9`     | `#000000`       |
-| `--card`       | `#FFFFFF`     | `#131312`       |
-| `--popover`    | `#FFFFFF`     | `#1C1C1A`       |
-| `--border`     | `#E7E7E4`     | `#1F1F1D`       |
+| `--sidebar`    | `#F3F3F1`     | `#121211`       |
+| `--background` | `#FAFAF9`     | `#171716`       |
+| `--card`       | `#FFFFFF`     | `#1F1F1E`       |
+| `--popover`    | `#FFFFFF`     | `#262624`       |
+| `--border`     | `#E7E7E4`     | `#232321`       |
 | `--foreground` | `#1F1F1D`     | `#ECECEA`       |
 | `--muted-foreground` | `#5D5D57` | `#A8A8A3`      |
 | `--primary`    | `#1F1F1D`     | `#ECECEA`       |
@@ -30,11 +30,8 @@ Both modes are renderings of the same token names, defined in [`src/index.css`](
 
 Four rules hold the system together:
 
-1. **Elevation is a ladder** — ground < `card` < `popover`. The rail and the canvas share the ground:
-   paper seats `sidebar` just under `background`, while graphite runs `background` to true black and
-   lifts `sidebar` a hair above it, so the rail still reads where no native material sits behind it.
-   Resting surfaces are opaque; only genuinely floating layers (menus, dialogs, toasts) get a shadow.
-   Nothing blurs at rest.
+1. **Elevation is a ladder** — `sidebar` < `background` < `card` < `popover`. Resting surfaces are
+   opaque; only genuinely floating layers (menus, dialogs, toasts) get a shadow. Nothing blurs at rest.
 2. **The primary action is an inversion**, not a hue: `bg-primary text-primary-foreground` is ink on
    paper and paper on ink.
 3. **One slate signal** carries focus rings, links, text selection, and the active-session tick. It is
@@ -103,7 +100,7 @@ resolved tokens from the document and re-themes when the mode flips.
 - `text-<status>-foreground` used anywhere but on a full-strength `bg-<status>`
 
 It also asserts the ladder rungs stay distinct within each mode, that both grounds are exactly
-`#FAFAF9` and `#000000`, that `--primary` equals `--foreground`, that no `color-scheme` is pinned on
+`#FAFAF9` and `#171716`, that `--primary` equals `--foreground`, that no `color-scheme` is pinned on
 the document, and that reduced motion is honoured.
 
 Screenshots on this page are the real components rendered against the real compiled CSS with

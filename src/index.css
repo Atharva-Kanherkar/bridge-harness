@@ -5,11 +5,8 @@
 /* ── Graphite & Paper ───────────────────────────────────────────────────────
    Bridge hosts Codex, Claude Code, and OpenCode side by side, so its chrome
    stays achromatic and color is reserved for meaning: agent status, diffs,
-   and approvals. Elevation is a lightness ladder — ground < card < popover —
-   not borders, blur, or shadows. The rail and the canvas share that ground:
-   paper seats the rail just under the canvas, while graphite runs the canvas
-   to true black and lifts the rail a hair above it, so the rail still reads
-   where no native material sits behind it. */
+   and approvals. Elevation is a lightness ladder — sidebar < canvas < card <
+   popover — not borders, blur, or shadows. */
 
 @theme inline {
     --font-family-display: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -148,26 +145,26 @@
 .dark {
     color-scheme: dark;
 
-    --sidebar: #0a0a09;
-    --background: #000000;
-    --card: #131312;
-    --popover: #1c1c1a;
+    --sidebar: #121211;
+    --background: #171716;
+    --card: #1f1f1e;
+    --popover: #262624;
 
     --foreground: #ececea;
     --card-foreground: #ececea;
     --popover-foreground: #ececea;
     --muted-foreground: #a8a8a3;
 
-    --border: #1f1f1d;
-    --input: #2b2b29;
-    --muted: #151514;
-    --secondary: #131312;
+    --border: #232321;
+    --input: #30302e;
+    --muted: #212120;
+    --secondary: #1f1f1e;
     --secondary-foreground: #ececea;
     --accent: color-mix(in srgb, #ececea 6%, transparent);
     --accent-foreground: #ececea;
 
     --primary: #ececea;
-    --primary-foreground: #000000;
+    --primary-foreground: #171716;
 
     --ring: #6a9bcc;
     --scrim: rgb(0 0 0 / 0.62);
@@ -181,7 +178,7 @@
     --destructive: #e5695e;
     --destructive-foreground: #210f0d;
 
-    --code: #0d0d0c;
+    --code: #0e0e0d;
     --code-foreground: #ececea;
     --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
 
@@ -197,9 +194,9 @@
     --sidebar-foreground: #a8a8a3;
     --sidebar-accent: color-mix(in srgb, #ececea 6%, transparent);
     --sidebar-accent-foreground: #ececea;
-    --sidebar-border: #171715;
+    --sidebar-border: #1e1e1c;
     --sidebar-primary: #ececea;
-    --sidebar-primary-foreground: #000000;
+    --sidebar-primary-foreground: #171716;
     --sidebar-ring: #6a9bcc;
 }
 
