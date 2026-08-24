@@ -53,6 +53,11 @@ describe("AppTitleBar", () => {
     expect(header().className).toContain("pl-24");
   });
 
+  it("insets trailing chrome so nested controls can be concentric with the window", () => {
+    mount();
+    expect(header().className).toContain("pr-[var(--window-control-inset)]");
+  });
+
   it("opens navigation from the mobile toggle", () => {
     const onOpenNav = vi.fn();
     mount({ onOpenNav });

@@ -1,6 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Gauge, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
+
+/** Details panel padding; inner cards use panel radius minus this so the arcs share a center. */
+const PANEL_PAD = "p-2.5";
+const PANEL_NESTED = "rounded-[calc(var(--radius-2xl)-0.625rem)]";
 
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
@@ -76,38 +81,38 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
   if (dismissed) return null;
 
   return <div ref={rootRef} className="relative">
-    <button type="button" className="flex h-9 max-w-full cursor-pointer items-center gap-2 rounded-full border border-border bg-card py-0 pl-3 pr-9 text-foreground transition-colors hover:bg-accent" aria-label={open ? "Close usage health details" : "Open usage health details"} aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
+    <button type="button" className="flex h-8 max-w-full cursor-pointer items-center gap-2 overflow-hidden rounded-window-control border border-border bg-card py-0 pl-2.5 pr-8 text-foreground transition-colors hover:bg-accent" aria-label={open ? "Close usage health details" : "Open usage health details"} aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
       <Gauge size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       {PROVIDERS.map((provider, index) => {
         const snapshot = usage[provider.id];
         const used = highestUse(snapshot);
         return <div key={provider.id} className="flex shrink-0 items-center gap-1.5">
-          {index > 0 && <span className="mr-0.5 h-4 w-px bg-border" aria-hidden="true" />}
+          {index > 0 && <span className="mr-0.5 h-3.5 w-px bg-border" aria-hidden="true" />}
           <UsageRing used={used} />
           <span className="hidden text-[10px] font-medium sm:inline">{provider.label}</span>
           <span className="hidden font-mono text-[9px] tabular-nums text-muted-foreground md:inline">{used == null ? "unknown" : `${Math.round(used)}% · ${snapshot?.source}`}</span>
         </div>;
       })}
-      <span className="hidden h-4 w-px bg-border sm:block" aria-hidden="true" />
+      <span className="hidden h-3.5 w-px bg-border sm:block" aria-hidden="true" />
       <span className="hidden whitespace-nowrap text-[9px] text-muted-foreground sm:inline">Ctx {pressure.percent == null ? "unknown" : `${Math.round(pressure.percent)}% · ${contextSource}`}</span>
       {projections.length > 0 && <AlertTriangle size={12} className="shrink-0 text-warning" aria-label="Projected usage exhaustion" />}
     </button>
-    <button type="button" onClick={() => { setOpen(false); setDismissed(true); }} className="absolute right-1.5 top-1/2 z-10 grid size-6 -translate-y-1/2 place-items-center rounded-full text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground" aria-label="Hide usage widget"><X size={12} aria-hidden="true" /></button>
+    <button type="button" onClick={() => { setOpen(false); setDismissed(true); }} className="absolute right-1.5 top-1/2 z-10 grid size-5 -translate-y-1/2 place-items-center rounded-[calc(var(--radius-window-control)-6px)] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground" aria-label="Hide usage widget"><X size={11} aria-hidden="true" /></button>
 
     <div id="usage-health-panel" role="dialog" aria-label="Usage health details" className={`absolute right-0 top-full z-50 pt-2 transition-all duration-150 ${open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0"}`}>
-      <div className="u-overlay-strong max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl p-4">
-        <div className="mb-3 flex items-center gap-2">
+      <div className={cn("u-overlay-strong max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl", PANEL_PAD)}>
+        <div className="mb-2.5 flex items-center gap-2 px-0.5">
           <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
           <span className="ml-auto truncate text-[9px] text-muted-foreground/70">No invented limits</span>
           <button type="button" onClick={() => setOpen(false)} className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
         </div>
 
-        <div className="grid gap-3">
+        <div className="grid gap-2">
           {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} />)}
         </div>
 
-        <section className="mt-3 rounded-xl border border-border p-3" aria-label="Context pressure">
+        <section className={cn("mt-2 border border-border p-3", PANEL_NESTED)} aria-label="Context pressure">
           <div className="flex flex-wrap items-center gap-2">
             <b className="text-[11px] text-foreground">{pressure.label}</b>
             {pressure.percent != null && <span className="font-mono text-[10px] text-muted-foreground">{Math.round(pressure.percent)}%</span>}
@@ -116,23 +121,23 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
           <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">{pressure.explanation}</p>
         </section>
 
-        <section className="mt-4" aria-label="Prompt cache diagnostics">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <section className="mt-3" aria-label="Prompt cache diagnostics">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
             <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Prompt cache</h3>
             <span className="text-[9px] text-muted-foreground/70">Provider-reported tokens</span>
           </div>
           {cacheDiagnostics.length ? <>
             <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div>
-            {cacheDiagnostics.length > 6 && <p className="mt-2 text-[9px] text-muted-foreground/70">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
-          </> : <p className="rounded-xl border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70">No prompt-cache telemetry reported yet.</p>}
+            {cacheDiagnostics.length > 6 && <p className="mt-2 px-0.5 text-[9px] text-muted-foreground/70">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
+          </> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No prompt-cache telemetry reported yet.</p>}
         </section>
 
-        <section className="mt-4" aria-label="Usage history">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <section className="mt-3" aria-label="Usage history">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
             <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Recent work units</h3>
             <span className="text-[9px] text-muted-foreground/70">Newest first</span>
           </div>
-          {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className="rounded-xl border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70">No measured work-unit history yet.</p>}
+          {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No measured work-unit history yet.</p>}
         </section>
       </div>
     </div>
@@ -145,7 +150,7 @@ function CacheRow({ diagnostic }: { diagnostic: CacheDiagnostic }) {
   const cost = diagnostic.reportedCostMicrousd == null
     ? "Cost unknown — provider did not report it"
     : `$${(diagnostic.reportedCostMicrousd / 1_000_000).toFixed(4)} ${diagnostic.costCoverage}`;
-  return <div className="rounded-xl border border-border px-3 py-2">
+  return <div className={cn("border border-border px-3 py-2", PANEL_NESTED)}>
     <div className="flex min-w-0 items-center gap-2">
       <b className="shrink-0 text-[10px] text-foreground">{diagnostic.harness}</b>
       <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground">{diagnostic.model}</span>
@@ -177,7 +182,7 @@ function humanizeMetric(value: string): string {
 function ProviderDetail({ provider, snapshot, samples }: { provider: { id: UsageProvider; label: string }; snapshot?: UsageSnapshot; samples: UsageRateSample[] }) {
   const used = highestUse(snapshot);
   const projection = projectUsageExhaustion(samples);
-  return <section className="rounded-xl border border-border p-3" aria-label={`${provider.label} usage`}>
+  return <section className={cn("border border-border p-3", PANEL_NESTED)} aria-label={`${provider.label} usage`}>
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <UsageRing used={used} />
       <b className="text-[11px] text-foreground">{provider.label}</b>
@@ -199,7 +204,7 @@ function ProviderDetail({ provider, snapshot, samples }: { provider: { id: Usage
 }
 
 function HistoryRow({ entry }: { entry: UsageHistoryEntry }) {
-  return <div className="rounded-xl border border-border px-3 py-2">
+  return <div className={cn("border border-border px-3 py-2", PANEL_NESTED)}>
     <div className="flex min-w-0 items-center gap-2">
       <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-foreground" title={entry.workUnit}>{entry.workUnit}</span>
       <SourceBadge source={entry.source} />
