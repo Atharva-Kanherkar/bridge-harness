@@ -1409,9 +1409,14 @@ pub fn workspace_base_divergence(
     session_id: &str,
     fetch: bool,
 ) -> Result<git::BaseBranchDivergence, BridgeError> {
-    // Resolve under the lock, run Git outside it: a fetch can be slow.
-    let path = store::repository_path_for_session(&core.db.lock().unwrap(), session_id)?
-        .ok_or_else(|| BridgeError::Invalid("this session has no connected repository".into()))?;
+    // Resolve under the lock, run Git outside it: a fetch can be slow. The
+    // workspace root, not the session cwd: the board's cached reading was
+    // measured there, and acting on a different directory would answer a
+    // question nobody asked (issue #306).
+    let path =
+        store::base_branch_path_for_session(&core.db.lock().unwrap(), session_id)?.ok_or_else(
+            || BridgeError::Invalid("this session has no connected repository".into()),
+        )?;
     let divergence = git::base_branch_divergence(&path, fetch);
     cache_base_divergence(core, session_id, &divergence);
     Ok(divergence)
@@ -1426,7 +1431,9 @@ pub fn refresh_workspace_base(
 ) -> Result<git::BaseBranchDivergence, BridgeError> {
     let (path, active) = {
         let db = core.db.lock().unwrap();
-        let path = store::repository_path_for_session(&db, session_id)?.ok_or_else(|| {
+        // Same directory the measurement was taken at: the workspace root for
+        // a workspace session, the session cwd only for a direct chat.
+        let path = store::base_branch_path_for_session(&db, session_id)?.ok_or_else(|| {
             BridgeError::Invalid("this session has no connected repository".into())
         })?;
         let active: bool = db

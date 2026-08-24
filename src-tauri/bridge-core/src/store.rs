@@ -2203,6 +2203,28 @@ pub fn repository_path_for_session(
     Ok(path.map(PathBuf::from))
 }
 
+/// The directory a session's base-branch facts describe: the workspace root
+/// when the session belongs to a workspace — the same directory the Work
+/// observer measures and the board projects — falling back to the session's
+/// own cwd only for direct chats, which have no workspace row.
+///
+/// This deliberately differs from [`repository_path_for_session`], whose
+/// cwd-first order answers "where is this session running". A drift fact
+/// measured at the workspace root but acted on at the session cwd produced
+/// issue #306: a fresh measurement of one directory next to a "not a git
+/// repository" failure from another.
+pub fn base_branch_path_for_session(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<PathBuf>, BridgeError> {
+    let path: Option<String> = db.query_row(
+        "SELECT COALESCE(w.path,s.cwd) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+        params![session_id],
+        |row| row.get(0),
+    ).optional()?.flatten();
+    Ok(path.map(PathBuf::from))
+}
+
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
     let head = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
