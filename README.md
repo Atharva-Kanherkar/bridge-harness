@@ -140,6 +140,15 @@ node --version
 rustc --version
 ```
 
+## macOS file access prompts
+
+macOS gates `~/Desktop`, `~/Documents`, and `~/Downloads` behind per-app consent (TCC). The first time Bridge — or an agent process it supervises — touches a file inside one of those folders, macOS shows a "Bridge would like to access…" prompt, and a denied prompt turns into silent file-access failures later. Bridge's health response checks for the two situations that make this painful and shows a warning in the app for each:
+
+- **A project or workspace registered inside a protected folder.** Every process in the chain needs its own grant, so prompts repeat per app and per folder. Keep repositories somewhere unprotected such as `~/Code`, or grant Bridge Full Disk Access under System Settings → Privacy & Security if you must work inside these folders.
+- **An ad-hoc signed build.** macOS keys file-access grants to the app's code-signing identity. Locally built binaries (`bun run tauri dev`, `bun run tauri build --debug`) are ad-hoc signed by default — `codesign -dv` shows `Signature=adhoc` and no `TeamIdentifier` — and an ad-hoc identity changes on every rebuild, so yesterday's grants vanish and the prompts come back. Sign development builds with a stable identity (configure `signingIdentity` in the Tauri bundle settings, or re-sign the built app with your Apple Development certificate) to keep grants across rebuilds.
+
+If prompts keep reappearing, address whichever of the two warnings the app shows. Stale per-app decisions can be cleared with `tccutil reset SystemPolicyDocumentsFolder <bundle-id>` (and the matching `SystemPolicyDesktopFolder` / `SystemPolicyDownloadsFolder` services) before relaunching.
+
 ## Verify and build
 
 Run the checks used by the project before opening a pull request:

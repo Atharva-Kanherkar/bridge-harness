@@ -179,6 +179,20 @@ pub struct AdapterDescriptor {
     pub default_model: Option<String>,
 }
 
+/// One actionable environment warning on the health response. Mirrors
+/// `bridge_core::health::HealthWarning`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthWarning {
+    /// Stable kebab-case id, e.g. `macos-tcc-protected-path`.
+    pub id: String,
+    pub title: String,
+    /// Actionable guidance: the symptom, the cause, and where the fix is.
+    pub detail: String,
+    /// The offending registered paths; empty when the warning is not about paths.
+    pub paths: Vec<String>,
+}
+
 /// `health/health`'s result. Mirrors `bridge_core::api::Health`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +211,11 @@ pub struct HealthResult {
     #[serde(rename = "snapshot_total_bytes")]
     pub snapshot_total_bytes: u64,
     pub adapters: Vec<AdapterDescriptor>,
+    /// Actionable environment warnings (today: macOS TCC-protected project
+    /// paths and ad-hoc code signing). Defaulted so a document from an older
+    /// daemon still parses.
+    #[serde(default)]
+    pub warnings: Vec<HealthWarning>,
 }
 
 #[cfg(test)]
@@ -320,6 +339,12 @@ mod tests {
                 }],
                 default_model: Some("gpt-5".into()),
             }],
+            warnings: vec![HealthWarning {
+                id: "macos-tcc-protected-path".into(),
+                title: "Project folders sit inside macOS-protected locations".into(),
+                detail: "See \u{201c}macOS file access prompts\u{201d} in README.md.".into(),
+                paths: vec!["/Users/dev/Documents/app".into()],
+            }],
         };
         let wire = serde_json::to_value(&health).unwrap();
         assert_eq!(wire["adapters"][0]["models"][0]["defaultForTier"], json!(true));
@@ -328,6 +353,27 @@ mod tests {
         assert_eq!(wire["snapshot_directory"], json!("/data/history-snapshots"));
         assert!(wire.get("telemetryDatabase").is_none());
         assert!(wire.get("snapshotDirectory").is_none());
+        assert_eq!(wire["warnings"][0]["id"], json!("macos-tcc-protected-path"));
         assert_eq!(round_trip(&health), health);
+    }
+
+    #[test]
+    fn a_health_document_from_an_older_daemon_parses_without_warnings() {
+        let mut wire = serde_json::to_value(&HealthResult {
+            ok: true,
+            version: "0.1.0".into(),
+            harnesses: Default::default(),
+            database: "/data/bridge.db".into(),
+            telemetry_database: "/data/bridge-telemetry.db".into(),
+            snapshot_directory: "/data/history-snapshots".into(),
+            snapshot_count: 0,
+            snapshot_total_bytes: 0,
+            adapters: vec![],
+            warnings: vec![],
+        })
+        .unwrap();
+        wire.as_object_mut().unwrap().remove("warnings");
+        let parsed: HealthResult = serde_json::from_value(wire).unwrap();
+        assert!(parsed.warnings.is_empty());
     }
 }
