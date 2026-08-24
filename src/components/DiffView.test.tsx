@@ -21,10 +21,23 @@ describe("PatchView", () => {
     container.remove();
   });
 
-  const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  // Real dynamic-import + real Shiki tokenization, timed against the actual
+  // wall clock — under a full, concurrent test-suite run, a single
+  // `setTimeout(0)` tick isn't a reliable wait. Poll instead of guessing a
+  // fixed delay.
+  const waitFor = async (check: () => boolean, timeoutMs = 3000) => {
+    const start = Date.now();
+    while (!check()) {
+      if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for colorization");
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    }
+  };
 
-  it("lays out rows, kinds and the gutter on first render, before any colour arrives", async () => {
-    await act(async () => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+  it("lays out rows, kinds and the gutter on first render, before any colour arrives", () => {
+    // Sync act(): flushes the effect's immediate plain-escaped setRows call
+    // without waiting for colorizePatch's promise, so this reliably observes
+    // the pre-colour frame regardless of system load.
+    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
     const rows = container.querySelectorAll(".stx > div > div");
     expect(rows.length).toBeGreaterThan(0);
     expect(container.textContent).toContain("const a = 1;");
@@ -33,15 +46,13 @@ describe("PatchView", () => {
   });
 
   it("upgrades bodies to .stx-* coloured spans once the grammar loads", async () => {
-    await act(async () => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
-    await flush();
-    expect(container.innerHTML).toContain("stx-keyword");
+    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+    await waitFor(() => container.innerHTML.includes("stx-keyword"));
   });
 
   it("resets to plain text immediately on a new patch, instead of keeping the previous one's colour", async () => {
-    await act(async () => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
-    await flush();
-    expect(container.innerHTML).toContain("stx-keyword");
+    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+    await waitFor(() => container.innerHTML.includes("stx-keyword"));
 
     // A plain (non-async) act() observes the reset before `colorizePatch`'s
     // promise for the new patch has had a chance to resolve, regardless of
