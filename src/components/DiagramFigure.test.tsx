@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { DiagramFigure, isValidDiagramSpec, layoutDiagram, type DiagramSpec } from "./DiagramFigure";
+import { DiagramFigure, isValidDiagramSpec, layoutDiagram, truncateLabel, type DiagramSpec } from "./DiagramFigure";
 
 const BASIC: DiagramSpec = {
   nodes: [
@@ -66,6 +66,80 @@ describe("layoutDiagram", () => {
     expect(withBelow.viewBox).not.toBe(bare.viewBox);
     expect(withContinues.viewBox).not.toBe(bare.viewBox);
   });
+
+  it("drops labels below the line when a horizontal edge would strike through them", () => {
+    // The exact shape two live tests produced: a horizontal client→server→db
+    // chain. A right-side label sits at the node's own y — the same y the
+    // connecting edge runs along — so wider columns alone still rendered the
+    // text struck through by the edge. Any label a same-row edge crosses
+    // must drop below the line; the last node has no edge to its right, so
+    // its label stays put (it was the only legible one in the live test).
+    const spec: DiagramSpec = {
+      nodes: [
+        { id: "client", row: 0, col: 0, label: "Client (UI)" },
+        { id: "server", row: 0, col: 1, label: "Server logic" },
+        { id: "db", row: 0, col: 2, label: "Database" },
+      ],
+      edges: [
+        { from: "client", to: "server" },
+        { from: "server", to: "db" },
+      ],
+      caption: "c",
+      ariaLabel: "a",
+    };
+    const { labelSides, positions } = layoutDiagram(spec);
+    expect(labelSides.client).toBe("below");
+    expect(labelSides.server).toBe("below");
+    expect(labelSides.db).toBe("right");
+    // Column pitch grew past the 66px floor so the below-labels clear each other.
+    expect(positions.server.x - positions.client.x).toBeGreaterThan(66);
+    // The leftmost below-label is centered on its node, so the left margin
+    // grew to keep it inside the viewBox instead of clipping ("bandoned"-style).
+    expect(positions.client.x).toBeGreaterThan(20);
+  });
+
+  it("does not flip to below when same-row nodes already have enough room", () => {
+    const spec: DiagramSpec = {
+      nodes: [
+        { id: "a", row: 0, col: -2, label: "left" },
+        { id: "b", row: 0, col: 0, label: "middle" },
+        { id: "c", row: 0, col: 2, label: "right" },
+      ],
+      edges: [],
+      caption: "c",
+      ariaLabel: "a",
+    };
+    const { labelSides } = layoutDiagram(spec);
+    expect(labelSides.a).toBe("right");
+    expect(labelSides.b).toBe("right");
+    expect(labelSides.c).toBe("right");
+  });
+
+  it("respects an explicit labelSide: below regardless of spacing", () => {
+    const spec: DiagramSpec = {
+      nodes: [
+        { id: "a", row: 0, col: -2, label: "left", labelSide: "below" },
+        { id: "b", row: 0, col: 0, label: "right neighbor" },
+      ],
+      edges: [],
+      caption: "c",
+      ariaLabel: "a",
+    };
+    const { labelSides } = layoutDiagram(spec);
+    expect(labelSides.a).toBe("below");
+  });
+});
+
+describe("truncateLabel", () => {
+  it("leaves short labels untouched", () => {
+    expect(truncateLabel("fork")).toBe("fork");
+  });
+
+  it("truncates an overly long label with an ellipsis", () => {
+    const long = truncateLabel("a label that is much too long for a diagram node");
+    expect(long.length).toBeLessThanOrEqual(18);
+    expect(long.endsWith("…")).toBe(true);
+  });
 });
 
 describe("isValidDiagramSpec", () => {
@@ -110,6 +184,16 @@ describe("DiagramFigure rendering", () => {
     const activeHtml = renderToStaticMarkup(<DiagramFigure spec={activeSpec} />);
     expect(neutralHtml).not.toContain("var(--ring)");
     expect(activeHtml).toContain("var(--ring)");
+  });
+
+  it("displays larger than native scale so labels read at prose size", () => {
+    // The viewBox stays at native geometry; the width/height attributes
+    // scale the rendered size up so the 11px labels land near the chat's
+    // 15px prose instead of reading like fine print.
+    const { width, height } = layoutDiagram(BASIC);
+    const html = renderToStaticMarkup(<DiagramFigure spec={BASIC} />);
+    expect(html).toContain(`width="${width * 1.35}"`);
+    expect(html).toContain(`height="${height * 1.35}"`);
   });
 
   it("draws a halo for checkpoint and tip markers", () => {
