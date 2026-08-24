@@ -70,6 +70,36 @@
       ],
       "type": "string"
     },
+    "HealthWarning": {
+      "description": "One actionable environment warning on the health response. Mirrors `bridge_core::health::HealthWarning`.",
+      "properties": {
+        "detail": {
+          "description": "Actionable guidance: the symptom, the cause, and where the fix is.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable kebab-case id, e.g. `macos-tcc-protected-path`.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "The offending registered paths; empty when the warning is not about paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "detail",
+        "id",
+        "paths",
+        "title"
+      ],
+      "type": "object"
+    },
     "ModelOption": {
       "description": "Mirrors `bridge_core::model::ModelOption`.",
       "properties": {
@@ -143,6 +173,14 @@
     },
     "version": {
       "type": "string"
+    },
+    "warnings": {
+      "default": [],
+      "description": "Actionable environment warnings (today: macOS TCC-protected project paths and ad-hoc code signing). Defaulted so a document from an older daemon still parses.",
+      "items": {
+        "$ref": "#/definitions/HealthWarning"
+      },
+      "type": "array"
     }
   },
   "required": [

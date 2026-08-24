@@ -32,6 +32,7 @@ pub mod events;
 pub mod frame_queue;
 pub mod git;
 pub mod handoff;
+pub mod health;
 pub mod learning_job;
 pub mod learning_router;
 pub mod live_turn;

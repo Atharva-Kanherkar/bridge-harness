@@ -59,6 +59,7 @@ export type {
    EvalKind,
    ExternalLearningTriggerKind,
    HarnessConfig,
+   HealthWarning,
    LearningSchedule,
    LocalLearningTriggerKind,
    ModelOption,
