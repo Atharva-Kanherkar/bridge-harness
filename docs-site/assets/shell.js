@@ -120,7 +120,61 @@ function buildSidebar() {
       '<button class="search-pill" type="button">' + icon('i-search') + '<span>Search docs&hellip;</span><kbd>&#8984;K</kbd></button>' +
     '</div>' +
     '<nav class="sidebar-scroll" aria-label="Docs navigation">' + navHtml + '</nav>' +
-    '<div class="sidebar-foot"><span>BRIDGE DOCS &mdash; RUNS LOCALLY</span></div>';
+    '<div class="sidebar-foot"><span>BRIDGE DOCS &mdash; RUNS LOCALLY</span></div>' +
+    '<div class="sidebar-resize" id="sidebarResize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>';
+}
+
+var SIDEBAR_WIDTH_KEY = 'bridge-docs-sidebar-width';
+var SIDEBAR_MIN = 220;
+var SIDEBAR_MAX = 420;
+var SIDEBAR_DEFAULT = 272;
+
+function applySidebarWidth(px) {
+  document.getElementById('sidebar').style.setProperty('--sidebar-width', px + 'px');
+}
+
+function initSidebarResize() {
+  var sidebar = document.getElementById('sidebar');
+  var handle = document.getElementById('sidebarResize');
+  if (!sidebar || !handle) return;
+
+  var stored = null;
+  try { stored = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY), 10); } catch (e) {}
+  var initial = (stored && stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX) ? stored : SIDEBAR_DEFAULT;
+  applySidebarWidth(initial);
+
+  var dragging = false;
+  var startX = 0;
+  var startWidth = initial;
+
+  handle.addEventListener('mousedown', function (e) {
+    dragging = true;
+    startX = e.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    handle.classList.add('is-dragging');
+    document.body.classList.add('is-resizing-sidebar');
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    var next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)));
+    applySidebarWidth(next);
+  });
+
+  window.addEventListener('mouseup', function () {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('is-dragging');
+    document.body.classList.remove('is-resizing-sidebar');
+    var current = sidebar.getBoundingClientRect().width;
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(Math.round(current))); } catch (e) {}
+  });
+
+  handle.addEventListener('dblclick', function () {
+    applySidebarWidth(SIDEBAR_DEFAULT);
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT)); } catch (e) {}
+  });
 }
 
 function buildToc() {
@@ -203,6 +257,7 @@ buildIconSprite();
 buildSidebar();
 buildToc();
 buildPager();
+initSidebarResize();
 
 var storedTheme = null;
 try { storedTheme = localStorage.getItem(THEME_KEY); } catch (e) {}

@@ -124,10 +124,22 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 /* ── Sidebar ──────────────────────────────────────────────────────────── */
 .sidebar {
-  width: 272px; flex-shrink: 0; height: 100%;
+  width: var(--sidebar-width, 272px); flex-shrink: 0; height: 100%;
   background: var(--sidebar); border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
+  position: relative;
 }
+.sidebar-resize {
+  position: absolute; top: 0; right: -3px; width: 6px; height: 100%;
+  cursor: col-resize; z-index: 10; background: transparent;
+}
+.sidebar-resize::after {
+  content: ''; position: absolute; top: 0; left: 2px; width: 2px; height: 100%;
+  background: var(--ring); opacity: 0; transition: opacity 120ms ease;
+}
+.sidebar-resize:hover::after, .sidebar-resize.is-dragging::after { opacity: 0.5; }
+body.is-resizing-sidebar { cursor: col-resize; user-select: none; }
+body.is-resizing-sidebar .content-scroll { pointer-events: none; }
 .sidebar-head { padding: 18px 14px 12px; display: flex; flex-direction: column; gap: 12px; }
 .brand-row { display: flex; align-items: baseline; gap: 7px; padding: 0 2px; }
 .brand-name { font-family: var(--font-display); font-size: 17px; font-weight: 650; letter-spacing: -0.015em; }
@@ -287,8 +299,9 @@ td:last-child { white-space: normal; color: var(--muted-fg); min-width: 220px; }
 @media (max-width: 760px) {
   .menu-btn { display: flex; }
   .scrim.is-open { display: block; }
-  .sidebar { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; transform: translateX(-100%); transition: transform 220ms cubic-bezier(.22,1,.36,1); box-shadow: var(--shadow-2); }
+  .sidebar { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: 272px !important; transform: translateX(-100%); transition: transform 220ms cubic-bezier(.22,1,.36,1); box-shadow: var(--shadow-2); }
   .sidebar.is-open { transform: translateX(0); }
+  .sidebar-resize { display: none; }
   .content-inner { padding: 4.5rem 1.25rem 5rem; }
   .pager { flex-direction: column; }
   .pager-link.next { margin-left: 0; text-align: left; }
