@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { colorizePatch, highlightPatch, type DiffRow, type DiffRowKind } from "./highlight";
+import { COLORIZE_DEBOUNCE_MS, colorizePatch, highlightPatch, type DiffRow, type DiffRowKind } from "./highlight";
 
 /** Row tint, marker glyph and marker colour for each kind of diff line. */
 const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass: string }> = {
@@ -35,16 +35,24 @@ function DiffLine({ row, numbered }: { row: DiffRow; numbered: boolean }) {
  * rest of the app's code, with old/new line numbers pinned to the left.
  */
 export function PatchView({ patch, path = "", className }: { patch: string; path?: string; className?: string }) {
-  // Rows lay out immediately with plain, escaped bodies; the file's grammar
-  // is a dynamic import, so colour arrives a frame or two later (same shape
-  // as `Markdown.tsx`'s `CodeBlock`) rather than blocking the gutter and
-  // row kinds on it.
-  const [rows, setRows] = useState(() => highlightPatch(patch, path));
+  // `rows` is derived at render time, not reset by an effect: an effect only
+  // runs after commit, so a naive `useEffect`-driven reset would show one
+  // real paint of the *previous* patch's coloured rows under the *new*
+  // patch. Comparing the cache against the current props keeps that
+  // impossible — the very first render after a change already falls back to
+  // the cheap, synchronous, plain-escaped structural parse.
+  const [cache, setCache] = useState<{ patch: string; path: string; rows: DiffRow[] } | null>(null);
+  const rows = cache && cache.patch === patch && cache.path === path ? cache.rows : highlightPatch(patch, path);
+
   useEffect(() => {
-    setRows(highlightPatch(patch, path));
     let live = true;
-    void colorizePatch(patch, path).then(colored => { if (live) setRows(colored); });
-    return () => { live = false; };
+    // Debounced: see `COLORIZE_DEBOUNCE_MS` — tool output can arrive in
+    // growing chunks, and a still-growing patch shouldn't schedule a
+    // tokenization pass for every intermediate length.
+    const timer = window.setTimeout(() => {
+      void colorizePatch(patch, path).then(colored => { if (live) setCache({ patch, path, rows: colored }); });
+    }, COLORIZE_DEBOUNCE_MS);
+    return () => { live = false; window.clearTimeout(timer); };
   }, [patch, path]);
   // Fragments (tool output, patches with no @@ header) have nothing to number,
   // and an empty gutter is just wasted width.

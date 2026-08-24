@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
-import { colorizeCode, escapeHtml, normalizeLang } from "./highlight";
+import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 
 type Block =
@@ -201,15 +201,23 @@ function renderInline(text: string): React.ReactNode[] {
 }
 
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
-  // The grammar is a dynamic import: the block is on screen, plain, on the
-  // same render, and picks up colour a frame or two later — same shape as
-  // `editor/CodeEditor.tsx`'s lazily-loaded CodeMirror grammars.
-  const [html, setHtml] = useState(() => escapeHtml(body));
+  // `html` is derived at render time, not reset by an effect: an effect only
+  // runs after commit, so for one real paint a naive `useEffect`-driven reset
+  // would show the *previous* block's coloured HTML under the *new* body.
+  // Comparing the cache against the current props keeps that impossible —
+  // the very first render after a change already falls back to plain.
+  const [cache, setCache] = useState<{ body: string; lang: string; html: string } | null>(null);
+  const html = cache && cache.body === body && cache.lang === lang ? cache.html : escapeHtml(body);
+
   useEffect(() => {
-    setHtml(escapeHtml(body));
     let live = true;
-    void colorizeCode(body, lang).then(result => { if (live) setHtml(result); });
-    return () => { live = false; };
+    // Debounced: see `COLORIZE_DEBOUNCE_MS` — a streaming reply re-renders
+    // this on every delta, and a still-growing fence shouldn't schedule a
+    // tokenization pass for every intermediate length.
+    const timer = window.setTimeout(() => {
+      void colorizeCode(body, lang).then(result => { if (live) setCache({ body, lang, html: result }); });
+    }, COLORIZE_DEBOUNCE_MS);
+    return () => { live = false; window.clearTimeout(timer); };
   }, [body, lang]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
   return (
