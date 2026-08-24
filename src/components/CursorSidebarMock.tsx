@@ -124,7 +124,7 @@ export function CursorSidebarMock({
         <button type="button" className="fixed inset-0 z-30 bg-scrim sm:hidden" onClick={onCloseMobile} aria-label="Close navigation" />
       )}
       <aside
-        className="relative z-20 flex h-full w-[16.5rem] shrink-0 flex-col overflow-hidden bg-sidebar font-sans antialiased"
+        className="u-vibrancy-sidebar relative z-20 flex h-full w-[16.5rem] shrink-0 flex-col overflow-hidden bg-sidebar font-sans antialiased"
       >
         <div className="flex h-full min-h-0 flex-col px-2 py-2">
           <p className="mb-1.5 px-2 text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground/55">Sidebar mock</p>

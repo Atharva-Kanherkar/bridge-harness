@@ -395,7 +395,7 @@ export function BridgeSidebar({
           "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
           "sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
-          "border-r border-sidebar-border bg-sidebar",
+          "u-vibrancy-sidebar border-r border-sidebar-border bg-sidebar",
           animateWidth ? "sm:transition-[width] sm:duration-300 sm:ease-[cubic-bezier(0.22,1,0.36,1)]" : "sm:transition-none",
         )}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}

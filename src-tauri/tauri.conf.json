@@ -11,6 +11,7 @@
   },
   "app": {
     "withGlobalTauri": false,
+    "macOSPrivateApi": true,
     "windows": [{
       "title": "Bridge",
       "width": 1380,
@@ -18,10 +19,16 @@
       "minWidth": 420,
       "minHeight": 480,
       "decorations": true,
+      "transparent": true,
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
       "trafficLightPosition": { "x": 18, "y": 15 },
-      "acceptFirstMouse": true
+      "acceptFirstMouse": true,
+      "windowEffects": {
+        "effects": ["sidebar"],
+        "state": "followsWindowActiveState",
+        "radius": 16
+      }
     }],
     "security": { "csp": null }
   },

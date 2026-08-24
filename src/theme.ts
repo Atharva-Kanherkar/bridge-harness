@@ -58,6 +58,9 @@ export function applyTheme(preference: ThemePreference, prefersDark = systemPref
 
   document.documentElement.classList.toggle("dark", resolved === "dark");
   document.documentElement.dataset.theme = resolved;
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    document.documentElement.dataset.tauri = "";
+  }
 
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", THEME_COLOR[resolved]);

@@ -5,6 +5,11 @@
 //! buttons to their default corner, and tao's config-time inset does not
 //! survive that, so Bridge positions the buttons itself from their measured
 //! frames and reapplies on window events.
+//!
+//! Wallpaper tint is the same story: CSS cannot sample the desktop. The
+//! Sidebar material (`NSVisualEffectView`) sits behind a transparent webview
+//! and AppKit mixes in the wallpaper when System Settings → Appearance →
+//! "Allow wallpaper tinting in windows" is on.
 
 /// Where the buttons sit: left inset, and the strip midline they center on.
 /// The strip is 44pt tall with the brand centered, so the midline is 22pt.
@@ -55,3 +60,32 @@ pub fn position_traffic_lights<R: tauri::Runtime>(_window: &tauri::Window<R>) {
     // Only macOS overlays its window controls on the client area; every other
     // platform keeps them in chrome we do not draw over.
 }
+
+/// Put the native Sidebar material behind the webview so wallpaper tint can
+/// reach the rail. A no-op off macOS — CSS in Chrome stays fully opaque.
+#[cfg(target_os = "macos")]
+pub fn apply_wallpaper_tint<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    use objc2_app_kit::{NSColor, NSWindow};
+    use tauri::window::{Color, Effect, EffectState, EffectsBuilder};
+
+    let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
+    let _ = window.set_effects(
+        EffectsBuilder::new()
+            .effect(Effect::Sidebar)
+            .state(EffectState::FollowsWindowActiveState)
+            .radius(16.0)
+            .build(),
+    );
+
+    let Ok(handle) = window.ns_window() else { return };
+    if handle.is_null() {
+        return;
+    }
+    let ns_window: &NSWindow = unsafe { &*handle.cast::<NSWindow>() };
+    ns_window.setOpaque(false);
+    let clear = NSColor::clearColor();
+    ns_window.setBackgroundColor(Some(&clear));
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn apply_wallpaper_tint<R: tauri::Runtime>(_window: &tauri::Window<R>) {}

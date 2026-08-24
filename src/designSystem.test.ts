@@ -16,6 +16,8 @@ const COLOR_LITERAL_ALLOWLIST = new Set([
   // Mirrors --background per mode for the <meta name="theme-color"> tag, which
   // cannot read a CSS custom property.
   "theme.ts",
+  // Look-at mock of Cursor's avatar wash; not Bridge chrome.
+  "components/CursorSidebarMock.tsx",
 ]);
 
 const BANNED_PALETTES = [

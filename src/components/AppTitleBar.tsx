@@ -26,8 +26,8 @@ export function AppTitleBar({ title, navOpen, onOpenNav, actions, flush = false,
     <header
       data-tauri-drag-region="deep"
       className={cn(
-        "flex h-11 shrink-0 items-center gap-2 bg-sidebar pr-[var(--window-control-inset)]",
-        flush ? "pl-2" : "border-b border-border pl-24",
+        "flex h-11 shrink-0 items-center gap-2 pr-[var(--window-control-inset)]",
+        flush ? "bg-transparent pl-2" : "u-vibrancy-sidebar border-b border-border bg-sidebar pl-24",
       )}
     >
       <button

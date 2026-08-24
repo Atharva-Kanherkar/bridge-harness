@@ -1044,8 +1044,7 @@ export function App() {
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  return <div className={cn("relative flex h-[100dvh] overflow-hidden text-foreground", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-row bg-sidebar" : "flex-col bg-background")}>
-
+  return <div className={cn("u-app-shell relative flex h-[100dvh] overflow-hidden text-foreground", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-row" : "flex-col bg-background")}>
     {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <CursorSidebarMock
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
@@ -1069,7 +1068,7 @@ export function App() {
       </>}
     />}
 
-    <div className={cn("flex min-h-0 min-w-0 flex-1", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-col" : "relative flex")}>
+    <div className={cn("u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 bg-background", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-col" : "relative flex")}>
     {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <AppTitleBar
       flush
       hideBrand
@@ -1101,7 +1100,7 @@ export function App() {
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
     />}
-    <main className={cn("relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount", SHOW_CURSOR_SIDEBAR_MOCK && "bg-sidebar")}>
+    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl" />
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView

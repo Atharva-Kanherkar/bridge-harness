@@ -1377,7 +1377,9 @@ fn select_host(
     host: &std::sync::OnceLock<HostMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(window) = app.get_webview_window("main") {
-        window_chrome::position_traffic_lights(&window.as_ref().window());
+        let window = window.as_ref().window();
+        window_chrome::position_traffic_lights(&window);
+        window_chrome::apply_wallpaper_tint(&window);
     }
     let data = app.path().app_data_dir()?;
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
@@ -1670,6 +1672,9 @@ pub fn run() {
                     | tauri::WindowEvent::ThemeChanged(_)
             ) {
                 window_chrome::position_traffic_lights(window);
+            }
+            if matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
+                window_chrome::apply_wallpaper_tint(window);
             }
         })
         .invoke_handler(move |invoke| {

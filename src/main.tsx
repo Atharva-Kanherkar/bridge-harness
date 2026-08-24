@@ -9,4 +9,6 @@ import { installExternalLinkHandler } from "./externalLinks";
 
 installExternalLinkHandler();
 
+if ("__TAURI_INTERNALS__" in window) document.documentElement.dataset.tauri = "";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
