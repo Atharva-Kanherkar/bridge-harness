@@ -53,6 +53,13 @@ describe("AppTitleBar", () => {
     expect(header().className).toContain("pl-24");
   });
 
+  it("can sit flush beside a sidebar without a hairline", () => {
+    mount({ flush: true, hideBrand: true });
+    expect(header().className).not.toContain("border-b");
+    expect(header().className).not.toContain("pl-24");
+    expect(header().textContent).not.toContain("bridge");
+  });
+
   it("insets trailing chrome so nested controls can be concentric with the window", () => {
     mount();
     expect(header().className).toContain("pr-[var(--window-control-inset)]");

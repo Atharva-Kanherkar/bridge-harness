@@ -9,6 +9,10 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
+import { CursorSidebarMock } from "./components/CursorSidebarMock";
+
+/** Look-at mock for the Vite website. Flip to false to restore the real rail. */
+const SHOW_CURSOR_SIDEBAR_MOCK = true;
 import { HealthWarnings } from "./components/HealthWarnings";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
@@ -1040,9 +1044,21 @@ export function App() {
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  return <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background text-foreground">
+  return <div className={cn("relative flex h-[100dvh] overflow-hidden text-foreground", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-row bg-sidebar" : "flex-col bg-background")}>
 
-    {!fullscreen && <AppTitleBar
+    {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <CursorSidebarMock
+      mobileOpen={navOpen}
+      onCloseMobile={() => setNavOpen(false)}
+      workBoardActive={view === "work"}
+      workNeedsYouCount={needsYouCount(workBoard?.facts ?? [])}
+      onOpenWorkBoard={openWorkBoard}
+      onOpenNewChat={() => setModal("chat")}
+      onOpenProjects={() => setView("projects")}
+      onOpenMarketplace={() => setView("marketplace")}
+      onOpenSettings={() => setView("settings")}
+    />}
+
+    {!SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <AppTitleBar
       title={view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}
       navOpen={navOpen}
       onOpenNav={() => setNavOpen(true)}
@@ -1053,8 +1069,20 @@ export function App() {
       </>}
     />}
 
-    <div className="relative flex min-h-0 flex-1">
-    {!fullscreen && <BridgeSidebar
+    <div className={cn("flex min-h-0 min-w-0 flex-1", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-col" : "relative flex")}>
+    {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <AppTitleBar
+      flush
+      hideBrand
+      title={view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}
+      navOpen={navOpen}
+      onOpenNav={() => setNavOpen(true)}
+      actions={<>
+        <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
+        {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
+        <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
+      </>}
+    />}
+    {!SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <BridgeSidebar
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
@@ -1073,7 +1101,7 @@ export function App() {
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
     />}
-    <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
+    <main className={cn("relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount", SHOW_CURSOR_SIDEBAR_MOCK && "bg-sidebar")}>
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl" />
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
