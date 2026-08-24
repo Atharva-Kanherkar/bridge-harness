@@ -54,23 +54,44 @@ has, no more.
 - **Curved edges peel off; straight edges continue.** `curve: true` draws a
   smooth S-curve to a node in a different column (a branch, a fan-out/fan-in).
   A straight line means "the same line of history, continuing."
-- **Label placement is deliberate, not automatic.** A `label` renders to the
-  `right` of its node by default (a short tick, then text) — or `below`,
-  centered, when the node sits to the side of the main spine.
+- **Label placement is a request, not a guarantee.** A `label` renders to the
+  `right` of its node by default (a short tick, then text), or `below`,
+  centered, when you ask for it — but the renderer will override either
+  choice to keep the result legible (see below). Author for the common case;
+  don't hand-tune around edge cases the renderer already handles.
 
-## Two gotchas the sample gallery actually found
+## What the renderer guarantees, so you don't have to
 
-Building the first 10-diagram gallery against this renderer surfaced two real
-layout traps — know them before you author a spec:
+Three live tests against the shipped renderer found real ways a legible-looking
+spec still rendered as a mess. Each is now a structural guarantee, not an
+authoring rule — but understanding them explains why some specs render
+differently than their `row`/`col` values might suggest:
 
-1. **Same-row siblings need real column spacing.** Three nodes on `row: 0` at
-   `col: -1, 0, 1` (66px apart) will crowd or overlap their labels even with
-   `labelSide: "below"`. Space same-row siblings that carry labels **at least 2
-   columns apart** (e.g. `col: -2, 0, 2`).
-2. **Below-labels at the grid's outer edge need margin, which the renderer now
-   reserves automatically** — but keep labels to 2-3 words regardless. A label
-   wider than roughly 12 characters is a sign the node needs a shorter name,
-   not a wider canvas.
+1. **No same-row collision, regardless of authored spacing.** Column pitch
+   isn't a fixed 66px — it widens for the whole diagram to whatever its widest
+   label needs, so three labeled nodes at `col: 0, 1, 2` will never crowd each
+   other. You never need to manually space siblings apart; a short label
+   costs nothing, and one long label among short ones widens the whole grid
+   rather than only the pair that needs it.
+2. **No label ever sits under an edge that crosses it.** This was the subtler
+   bug: a right-side label sits at its node's own y — exactly where a
+   *horizontal* edge to a same-row neighbor runs, so the edge struck through
+   the text no matter how wide the columns were. Wider spacing doesn't fix a
+   problem on the wrong axis. Any label a same-row edge would cross now drops
+   below the line automatically. Practical effect: in a **horizontal chain**
+   (nodes connected left-to-right, edges running along their row), every
+   label except the last one typically renders below the line — that's
+   correct, not a fallback to apologize for.
+3. **The drawing displays larger than its native geometry.** Labels are drawn
+   at 11px in the SVG's own coordinate space, which reads smaller than
+   Bridge's 15px chat prose at 1:1 scale. The renderer displays the whole
+   figure at 1.35x so labels land near prose size — you don't need to inflate
+   anything yourself.
+
+Keep labels to 2-3 words regardless of all of the above — a label wider than
+roughly 12 characters is a sign the node needs a shorter name, not a system
+that will keep finding more space for it. `truncateLabel` caps at 18
+characters with an ellipsis as a hard backstop, not a target to write to.
 
 ## The DiagramSpec shape
 
@@ -109,9 +130,13 @@ Field reference:
   inline SVG that reproduces the same grammar directly — circles for nodes
   (`r="5"`, `r="6"` for heavy/fork nodes), `currentColor`/`var(--ring)` fills,
   halo rings (`r="11"`, solid for checkpoint, `stroke-dasharray="2.5 3"` for
-  tip) — at the same `ROW_STEP=56` / `COL_STEP=66` grid rhythm, wrapped in
+  tip), 56px row spacing — wrapped in
   `<figure><svg role="img" aria-label="…">…</svg><figcaption>…</figcaption></figure>`.
-  See `src/components/DiagramFigure.tsx` for the canonical geometry to copy.
+  Column spacing and label placement aren't fixed constants in the real
+  renderer (see "What the renderer guarantees" above) — when hand-authoring,
+  just apply that same judgment directly: widen columns for long labels, and
+  drop a label below the line if a horizontal edge would run through it.
+  See `src/components/DiagramFigure.tsx` for the canonical logic to mirror.
 - **A PR description**: screenshot the rendered figure (light and dark) rather
   than pasting raw JSON — reviewers judge diagrams by eye, not by schema.
 

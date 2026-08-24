@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Prompt Studio & Context Lens — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="prompt-studio">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">prompts</p>
+          <h1>Prompt Studio & Context Lens</h1>
+          <p class="lede">Edit Bridge's prompt sections per target, inspect exact compiled bytes, and measure what each section costs via leave-one-out accounting.</p>
+          <div class="prose">
+
+            <h2 id="h-what-is-prompt-studio">What is Prompt Studio</h2>
+            <p>Prompt Studio is the settings interface for tuning Bridge's internal prompts. It lives in the Desktop app's Settings pane and lets you edit, save, reset, and audit the revision history of every prompt section Bridge uses when speaking to agents — Orchestrator directives, delegation protocols, and worker contracts.</p>
+            <p>Each section has a default built-in text. When you override that text, it replaces the default for the current session and all future sessions until you reset it back. Every edit appends to an append-only revision history, so you can restore any prior version at any time. The compiled preview shows you exactly what bytes Bridge will send to an agent for those overrides, split between Bridge-authored material and provider-owned layers.</p>
+
+            <h2 id="h-targets-and-sections">Targets and sections</h2>
+            <p>Prompt Studio organizes sections by <strong>target</strong> — the agent role you are customizing:</p>
+            <ul>
+              <li><strong>Orchestrator</strong> — the top-level agent that coordinates tasks and routes work to workers. Includes <code>bridge_role</code> (role description) and <code>delegation_protocol</code> (how to invoke workers).</li>
+              <li><strong>Worker roles</strong> — Research, Implementation, Verification, Planning, Documentation. Each has a <code>worker_contract</code> describing its responsibilities and constraints.</li>
+              <li><strong>Direct session</strong> — shows read-only context (the rendering note explaining how Claude interprets the Bridge context format).</li>
+            </ul>
+            <p>A worker contract adjusts based on <strong>worker depth</strong> — how many layers of delegation remain available. The contract at depth 0 is different from depth 3; Bridge embeds the remaining depth budget into the language itself so each worker knows its scope.</p>
+            <p>When you navigate to a target, the sidebar lists its sections. Each row shows the section ID, a live byte-and-token estimate, and a badge when the section has been edited.</p>
+
+            <h2 id="h-section-states">Section states and editing</h2>
+            <p>Every section exists in exactly one of three states:</p>
+            <ul>
+              <li><strong>Default</strong> — using the built-in text. No badge. Revision history is empty or contains only prior edits that were reset.</li>
+              <li><strong>Overridden</strong> — you edited the text and saved it. Badge appears. This state is persisted in Bridge's configuration store.</li>
+              <li><strong>Deleted</strong> — you deleted the section entirely. It contributes no bytes to the compiled prompt. A distinct visual treatment marks this state.</li>
+            </ul>
+            <p>To edit, select a section and use the code editor (CodeMirror 6 with markdown syntax highlighting). The editor preserves your unsaved draft if you navigate away and return; unsaved changes do not auto-save and do not silently discard.</p>
+            <p>While editing, lint warnings appear inline if your text would drop a required marker — for example, a <code>delegation_protocol</code> override must include the `bridge-delegate` marker, or agents cannot invoke workers. Warnings warn and explain but do not block save; you can save a deliberately minimal version if needed.</p>
+
+            <h2 id="h-revisions">Revision history and restore</h2>
+            <p>Every time you save, delete, or reset a section, Bridge appends a revision entry capturing the operation, new state, timestamp, and exact text (if the state is Overridden). The revision history is append-only and bounded to the most recent 50 revisions in the Studio view; older revisions remain addressable by ID and can be restored.</p>
+            <p>The history panel shows each revision chronologically with a restore action. Restoring a prior revision creates a new entry (marked with the <code>restore</code> operation) that makes the section adopt that prior text again. History never branches and never rewrites — every edit is a new entry.</p>
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Resetting a section to its default does not erase the override from history — it appends a Reset operation. Later restores can bring the override back.</p>
+            </div>
+
+            <h2 id="h-compiled-preview">Compiled preview</h2>
+            <p>The preview panel compiles your overrides into the exact bytes Bridge will use in the next turn. The panel splits into two regions:</p>
+            <ul>
+              <li><strong>Exact Bridge bytes</strong> — the stable prefix wrapped in <code>&lt;bridge-stable-prompt&gt;</code> tags, built only from the resolved sections (overrides applied, deletions omitted). Labeled exact, with byte count and token estimate (bytes ÷ 4, rounded up). Also shows a hash and prefix ID for cache identity tracking.</li>
+              <li><strong>Provider layers</strong> — downstream material contributed by the provider adapter (base prompt, tools, runtime context). Each row is labeled by its source: <code>reported</code> (the provider told us the bytes), <code>measured</code> (Bridge observed them), <code>estimated</code> (a labelled approximation), or <code>unavailable</code> (nothing defensible). Until an adapter capture exists, all provider-base rows are <code>unavailable</code> with a reason.</li>
+            </ul>
+            <p>The preview also shows a cache-impact indicator: if the stable prefix hash changed since the last preview load, it signals that provider caches may rebuild on the next turn. Any provider cache effect is labeled estimated unless telemetry proves it measured.</p>
+
+            <h2 id="h-context-lens">Context Lens: exact prompt accounting</h2>
+            <p>Context Lens measures the exact byte cost of every element in Bridge's compiled prompt, enabling you to see which sections drive the most overhead and make targeted edits. Unlike raw token counts, Context Lens attributes every single byte — punctuation, keys, separators — to the specific element that caused it.</p>
+            <p>The accounting data is stored alongside each compiled prompt in Bridge's database (the <code>prompt_compilations</code> table) and surfaces both per-section byte counts and per-region summaries. This is observability metadata only; it does not change what Bridge sends to agents.</p>
+
+            <h2 id="h-accounting-method">Leave-one-out delta serialization</h2>
+            <p>Context Lens uses a precise attribution method called <strong>leave-one-out delta serialization</strong>. For each section or element in the prompt:</p>
+            <ol>
+              <li>Serialize the full envelope with all elements included.</li>
+              <li>Serialize the envelope again with that one element removed.</li>
+              <li>The attributed bytes = full size − removed size.</li>
+            </ol>
+            <p>This single-pass method charges JSON escaping, key names, colons, commas, and quotes directly to the element that triggered them, without reimplementing serde_json logic. An element that contains a newline or quote character will have more attributed bytes than its raw text length, because the escaping cost is included.</p>
+            <p>Empty or deleted sections produce no accounting entries — they are already filtered out before serialization and thus do not appear in the accounting records.</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">example</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>Full: <span class="tok-string">{"sections": [{"id": "role", "text": "Be helpful."}]}</span>
+Without role: <span class="tok-string">{"sections": []}</span>
+Attributed to role: 48 bytes (includes id name, comma, braces, quotes, escapes)</code></pre></div>
+            </div>
+
+            <h2 id="h-accounting-regions">Attribution regions</h2>
+            <p>The compiled prompt splits into three regions, each with its own accounting entries:</p>
+            <ul>
+              <li><strong>Stable region</strong> — one entry per surviving element in <code>StableEnvelope</code>:
+                <ul>
+                  <li>Role (kind: <code>role</code>)</li>
+                  <li>Each stable section (kind: <code>stable_section</code>), with section ID and serialized byte count</li>
+                  <li>Each tool schema (kind: <code>tool_schema</code>)</li>
+                  <li>Each project rule (kind: <code>project_rule</code>)</li>
+                </ul>
+              </li>
+              <li><strong>Variable region</strong> — one entry per surviving named text in <code>VariableEnvelope</code> (task context, session metadata, runtime memory, etc.)</li>
+              <li><strong>Envelope overhead</strong> — explicit entries for bytes that belong to no content:
+                <ul>
+                  <li>Stable envelope tags (<code>&lt;bridge-stable-prompt&gt;</code>, <code>&lt;/bridge-stable-prompt&gt;</code>)</li>
+                  <li>Variable envelope tags</li>
+                  <li>JSON punctuation (braces, brackets, commas, colons) not charged to any element</li>
+                  <li>The two-byte <code>\n\n</code> separator between regions</li>
+                </ul>
+              </li>
+            </ul>
+            <p>The sum of all entries in all regions equals the total compiled prompt length exactly: Σ(stable) + Σ(variable) + Σ(overhead) + 2 (separator) = total bytes.</p>
+
+            <h2 id="h-storage-and-telemetry">Storage and telemetry</h2>
+            <p>Context Lens data is persisted per compilation (per turn) in the <code>prompt_compilations</code> table:</p>
+            <ul>
+              <li><code>sections_json</code> — the full ordered list of accounting entries (camelCase serde)</li>
+              <li><code>stable_bytes</code> — length of the stable prefix</li>
+              <li><code>variable_bytes</code> — length of the variable suffix</li>
+              <li><code>stable_token_estimate</code>, <code>variable_token_estimate</code> — bytes ÷ 4 (rounded up), with a source label</li>
+              <li><code>token_estimate_source</code> — labels the method (e.g., <code>bytes_div4_v1</code> for the current formula)</li>
+            </ul>
+            <p>Legacy database rows created before this feature retain NULL for these columns and remain readable. The cache identity fields (<code>prefix_hash</code>, <code>prefix_id</code>, <code>prefix_bytes</code>) are unchanged by accounting — they remain byte-for-byte identical to before, ensuring provider cache reuse is unaffected.</p>
+
+            <h2 id="h-why-this-matters">Why exact accounting matters</h2>
+            <p>Prompt size is a real cost lever: larger prompts mean higher API bills, slower response time, and more context burn in multi-turn conversations. Without exact attribution, you cannot tell whether a section is bloated or whether the overhead itself is the bottleneck. Context Lens reveals the true cost of each element so you can make informed edits — delete unnecessary sections, trim verbose policies, or accept a larger cost if that section genuinely drives value.</p>
+            <p>The leave-one-out method is precise enough to catch escaping overhead (a section with many quote characters costs more than its text alone suggests) and low-level enough to attribute every JSON character, making it trustworthy for cost tracking and optimization.</p>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../assets/shell.js"></script>
+</body>
+</html>

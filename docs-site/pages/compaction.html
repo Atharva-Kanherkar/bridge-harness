@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Compaction & resume — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="compaction">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">core concepts</p>
+          <h1>Compaction & resume</h1>
+          <p class="lede">When Bridge reattaches to a session, it names exactly how much continuity survived &mdash; a live process, a native provider resume, or a checkpoint it verified independently before trusting it &mdash; and it never lets one pass for another.</p>
+
+          <figure class="diagram-figure">
+            <svg viewBox="0 0 320 170" role="img" aria-label="Diagram: Bridge's resume cascade falls from a live process to a native provider resume to a verified checkpoint as each option becomes unavailable, while fresh sits apart as a deliberate starting state rather than a fourth fallback." style="color:var(--fg)">
+              <g fill="none" stroke="currentColor" stroke-width="1.75" opacity="0.45">
+                <line x1="100" y1="36" x2="100" y2="80"></line>
+                <line x1="100" y1="92" x2="100" y2="136"></line>
+              </g>
+              <line x1="204" y1="6" x2="204" y2="160" stroke="currentColor" stroke-width="1.25" stroke-dasharray="2 4" opacity="0.2"></line>
+              <circle cx="100" cy="30" r="6" fill="var(--ring)"></circle>
+              <circle cx="100" cy="86" r="6" fill="var(--ring)"></circle>
+              <circle cx="100" cy="142" r="6" fill="var(--ring)"></circle>
+              <circle cx="100" cy="142" r="11" fill="none" stroke="var(--ring)" stroke-width="1.5" opacity="0.55"></circle>
+              <circle cx="240" cy="86" r="6" fill="var(--ring)"></circle>
+              <g style="font-family:var(--font-mono); font-size:11px;">
+                <line x1="108" y1="30" x2="120" y2="30" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                <text x="126" y="33.5" fill="var(--ring)">hot</text>
+                <line x1="108" y1="86" x2="120" y2="86" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                <text x="126" y="89.5" fill="var(--ring)">native</text>
+                <line x1="108" y1="142" x2="120" y2="142" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                <text x="126" y="145.5" fill="var(--ring)">checkpoint</text>
+                <line x1="248" y1="86" x2="260" y2="86" stroke="var(--ring)" stroke-width="1.5" opacity="0.6"></line>
+                <text x="266" y="89.5" fill="var(--ring)">fresh</text>
+              </g>
+            </svg>
+            <figcaption>Hot and native either hold or they don't. checkpoint_restored is what's left once Bridge has independently verified a session's own checkpoint. Fresh isn't a rung on this ladder &mdash; it's what a task gets when it's deliberately started with no prior conversation to bring back.</figcaption>
+          </figure>
+
+          <div class="prose">
+            <h2 id="h-context">Three kinds of context</h2>
+            <p>Bridge tracks three things that all sound like "the conversation" and are not the same. Stored history is every entry the <a href="session-forest.html">session forest</a> has recorded &mdash; immutable, append-only, and independent of whether anyone is currently looking at it. Provider-native context is whatever thread or session state the underlying Codex, Claude, or OpenCode process itself is holding. Projected restoration context is what Bridge actively builds and hands back when it reattaches to a session without a live connection to reuse. Persisting an entry into stored history does not mean it has been injected into a provider thread &mdash; the three can drift apart, and a resume mode is really just a name for how far apart they were at the moment Bridge had to reconcile them.</p>
+
+            <h2 id="h-modes">Resume modes</h2>
+            <p>Whenever Bridge needs to reattach to a session it isn't already holding a live connection to, the reattachment resolves to exactly one of four modes:</p>
+
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Mode</th><th>Meaning</th></tr></thead>
+                <tbody>
+                  <tr><td><code>hot</code></td><td>The adapter process is still running.</td></tr>
+                  <tr><td><code>native</code></td><td>The provider can resume its stored thread or session ID.</td></tr>
+                  <tr><td><code>checkpoint_restored</code></td><td>Native resume is unavailable or failed, so Bridge starts fresh with a validated projection.</td></tr>
+                  <tr><td><code>fresh</code></td><td>The task intentionally starts without prior conversation context.</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p><code>hot</code> is the trivial case: if the adapter process never stopped, there's nothing to reconcile &mdash; provider-native context and Bridge's live connection are the same thing, and no resume logic runs at all. Otherwise Bridge tries native resume, and whether that's even attempted depends on what the installed harness supports: a harness without it is skipped outright, and one that has it but fails gets recorded as a failed attempt before Bridge falls back to a checkpoint. That fallback, <code>checkpoint_restored</code>, isn't raw history replayed verbatim &mdash; it's a projected restoration context built from a checkpoint Bridge has already independently verified (see <a href="#h-verification">Verifying a checkpoint</a>, below). <code>fresh</code> stands apart from this whole cascade: it isn't what a session gets when the other three fail, it's what a task gets when it's deliberately started with no prior conversation to bring back.</p>
+
+            <p>The recording matters because a freshly-started process and a successfully native-resumed one can look identical from the outside &mdash; both are just a provider running and answering messages. Bridge never labels a fresh process as natively resumed, and a failed native attempt stays on the record even after the checkpoint fallback that follows it succeeds. The mode names what actually happened underneath, not what the surface looks like.</p>
+
+            <h2 id="h-ownership">Who compacts, and when</h2>
+            <p>Deciding when a checkpoint is needed is Rust's job, not the agent's: a compaction controller in the host process decides to trigger compaction, but the session being compacted authors the checkpoint itself. That split is deliberate &mdash; the session being compacted is the one that owns its decisions, its risks, and its incomplete work, so it's also the one positioned to describe them. The same boundary reappears one level up the tree: an orchestrator only ever receives typed worker results and checkpoints from the workers it spawns, never their raw transcripts. Whatever an orchestrator acts on has already passed through this same self-authored, then independently verified, summary step.</p>
+
+            <p>Compaction triggers on context pressure, at phase boundaries, before suspension or a model downgrade, before a risky native resume, or on manual request. It's suppressed while a tool call or an approval is in flight, for short-lived workers that already have a valid final result, and when nothing meaningful happened since the last boundary &mdash; compaction that would just restate the previous checkpoint doesn't run.</p>
+
+            <p>A checkpoint, once committed, is an immutable forest entry like any other &mdash; the raw events underneath it are never deleted or rewritten, only summarized in front of. A checkpoint that fails validation gets exactly one same-session repair attempt. If the process that would own that repair is already dead, a recovery worker produces the checkpoint instead, and that result is explicitly marked reconstructed, so nothing downstream mistakes a reconstruction for the original session's own account of itself.</p>
+
+            <h2 id="h-verification">Verifying a checkpoint</h2>
+            <p>A checkpoint can be perfectly well-formed JSON and still be wrong &mdash; it's the compacted session's own account of itself, and schema validity alone doesn't say whether that account is complete. So before a checkpoint boundary is committed, Rust independently re-derives what it should contain: it scans the active SQLite branch back to the previous completed compaction, deduplicates the durable worker decisions and file evidence from that window, and checks that the session's checkpoint actually contains every one of them. Schema-invalid and incomplete-but-well-formed checkpoints share the same fate &mdash; one same-session repair attempt, and if the repair still doesn't hold up, the boundary fails closed instead of being committed anyway.</p>
+
+            <p>Structurally, a checkpoint is nothing more than the same forest entry shape as everything else, carrying two extra facts:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">forest entry</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"evt_c771"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"parent"</span><span class="tok-punct">:</span> <span class="tok-string">"evt_a13f"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"kind"</span><span class="tok-punct">:</span> <span class="tok-string">"assistant_message"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"visibility"</span><span class="tok-punct">:</span> <span class="tok-string">"context"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"checkpoint"</span><span class="tok-punct">:</span> <span class="tok-num">true</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"reconstructed"</span><span class="tok-punct">:</span> <span class="tok-num">false</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <p>A checkpoint that passes gets its evidence counts committed in the same atomic write as the checkpoint itself, as a <code>checkpoint.evidence_verified</code> audit event &mdash; the verification result and the boundary it verifies can never fall out of sync, because they were never two separate writes to begin with. Reconstructed checkpoints &mdash; the ones a recovery worker builds when the original session is dead &mdash; carry that provenance forward explicitly rather than being folded in as if self-authored. It's also what makes <code>checkpoint_restored</code> trustworthy enough to resume from: the mode's own definition calls it a "validated projection," and this independent re-derivation is exactly what earns that word.</p>
+
+            <h2 id="h-storage">Where this actually lives</h2>
+            <p>Everything this page has been describing lives, physically, in one file: <code>bridge.db</code> holds the correctness-critical state &mdash; session entries and heads, worker leases and queues, approvals, usage, and the outbox. Bridge is explicit about what this is and isn't: durable local history, not a tamper-proof or replicated evidence ledger.</p>
+
+            <p>Provider telemetry is kept separate, in its own <code>bridge-telemetry.db</code>. Normalized spans are batched in only after their semantic transactions commit, so a telemetry writer lock or failure can't delay, roll back, or relabel the correctness-critical state next door &mdash; observability isn't allowed to become a way to corrupt the record it's observing.</p>
+
+            <p>On top of both, Bridge exports a transactionally consistent SQLite snapshot at startup and every 15 minutes, under <code>history-snapshots/</code>. Each export carries a versioned manifest with its filename, creation time, and a SHA-256 checksum; verification recomputes that checksum, so disk corruption or an accidental edit becomes visible instead of silent. These snapshots reduce the risk of losing everything to one bad file &mdash; they are not a backup by themselves. Copying the snapshot directory to another device is still the user's own responsibility.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Don't confuse a snapshot with a checkpoint. A snapshot is a periodic, checksum-verified copy of the whole database, guarding against disk corruption. A checkpoint is a single verified forest entry summarizing one session's own history. They run on different clocks, guard against different failures, and neither substitutes for the other.</p>
+            </div>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

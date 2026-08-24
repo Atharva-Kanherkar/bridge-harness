@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>bridge exec --json — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="cli-exec">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">reference</p>
+          <h1>bridge exec --json</h1>
+          <p class="lede">The one-shot entry point for CI: hand it a prompt, get newline-delimited JSON back, no daemon babysitting required.</p>
+
+          <div class="prose">
+            <h2 id="h-example">Example</h2>
+            <p>Every line of output is a complete, independently-parseable JSON object &mdash; pipe it straight into <code>jq</code> or a test harness.</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-muted">$</span> bridge exec --json <span class="tok-string">"run the test suite and summarize failures"</span>
+<span class="tok-punct">{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"session_started"</span><span class="tok-punct">,</span><span class="tok-attr">"session_id"</span><span class="tok-punct">:</span><span class="tok-string">"ses_4c1a"</span><span class="tok-punct">}</span>
+<span class="tok-punct">{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"agent_message"</span><span class="tok-punct">,</span><span class="tok-attr">"text"</span><span class="tok-punct">:</span><span class="tok-string">"Running `bun run test`&hellip;"</span><span class="tok-punct">}</span>
+<span class="tok-punct">{</span><span class="tok-attr">"type"</span><span class="tok-punct">:</span><span class="tok-string">"result"</span><span class="tok-punct">,</span><span class="tok-attr">"status"</span><span class="tok-punct">:</span><span class="tok-string">"ok"</span><span class="tok-punct">,</span><span class="tok-attr">"duration_ms"</span><span class="tok-punct">:</span><span class="tok-num">48213</span><span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <h2 id="h-flags">Flags</h2>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><code>--json</code></td><td>boolean</td><td>false</td><td>Emit newline-delimited JSON instead of formatted text</td></tr>
+                  <tr><td><code>--harness</code></td><td>string</td><td>codex</td><td>Which adapter to run: codex, claude, or opencode</td></tr>
+                  <tr><td><code>--worktree</code></td><td>path</td><td>—</td><td>Run against an existing worktree instead of creating one</td></tr>
+                  <tr><td><code>--timeout</code></td><td>duration</td><td>10m</td><td>Kill the session if it runs past this</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h2 id="h-learning">A second verb: scheduled learning runs</h2>
+            <p><code>bridge learning run</code> is the other CLI entry point — an external cron job wakes the adaptive-learning job on a schedule instead of a human waiting on a prompt. See <a href="memory-and-learning.html">Memory & adaptive learning</a> for what that job actually does.</p>
+
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>A session killed by <code>--timeout</code> does not clean up its worktree automatically &mdash; remove it yourself if you don't need it.</p>
+            </div>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>
