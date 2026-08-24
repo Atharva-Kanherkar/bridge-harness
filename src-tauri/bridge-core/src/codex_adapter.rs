@@ -1,6 +1,10 @@
 use crate::{
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
     binary,
+    context_inventory::{
+        AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
+        ContextSegmentObservation,
+    },
     delegation::WriteMode,
     BridgeError,
 };
@@ -22,6 +26,7 @@ pub struct CodexRuntime {
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
     sandbox_policy: Option<Value>,
+    context_inventory: Mutex<Vec<AdapterContextInventory>>,
     stopped: bool,
     stderr_tail: crate::adapters::StderrTail,
 }
@@ -123,15 +128,17 @@ fn launch(
     )?;
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     write_value(&writer, &json!({"method":"initialized"}))?;
-    let (method, params) = if let Some(thread_id) = resume_thread_id {
+    let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id {
         (
             "thread/resume",
             thread_resume_params(thread_id, cwd, model, instructions, write_mode),
+            ContextLifecyclePhase::Resume,
         )
     } else {
         (
             "thread/start",
             thread_start_params(cwd, model, effort, instructions, write_mode),
+            ContextLifecyclePhase::Start,
         )
     };
     write_value(&writer, &json!({"method":method,"id":2,"params":params}))?;
@@ -154,6 +161,7 @@ fn launch(
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
             sandbox_policy,
+            context_inventory: Mutex::new(codex_context_inventory(lifecycle_phase)?),
             stopped: false,
             stderr_tail,
         },
@@ -314,7 +322,12 @@ impl CodexRuntime {
                 application_context,
                 self.sandbox_policy.as_ref(),
             ),
-        )
+        )?;
+        crate::context_inventory::record_runtime_inventory(
+            &self.context_inventory,
+            codex_context_inventory(ContextLifecyclePhase::PerTurn)?,
+        );
+        Ok(())
     }
     pub fn interrupt(&self) -> Result<(), BridgeError> {
         let turn_id = self
@@ -375,6 +388,9 @@ impl AdapterRuntime for CodexRuntime {
     fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
         self.current_turn.clone()
     }
+    fn context_inventory(&self) -> Vec<AdapterContextInventory> {
+        self.context_inventory.lock().unwrap().clone()
+    }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text, None)
     }
@@ -403,6 +419,55 @@ impl AdapterRuntime for CodexRuntime {
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
     }
+}
+
+pub(crate) fn codex_context_inventory(
+    lifecycle_phase: ContextLifecyclePhase,
+) -> Result<Vec<AdapterContextInventory>, BridgeError> {
+    let observations = || {
+        vec![
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::ProviderBaseInstructions,
+                match lifecycle_phase {
+                    ContextLifecyclePhase::Start => "Codex app-server does not expose the provider base instructions combined with thread/start",
+                    ContextLifecyclePhase::Resume => "Codex app-server does not expose the provider base instructions retained or recomputed by thread/resume",
+                    ContextLifecyclePhase::PerTurn => "Codex app-server does not expose the provider base instructions presented to turn/start",
+                },
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::ToolSchemas,
+                "Codex app-server does not report provider-owned tool schemas presented to the model",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::McpDynamicTools,
+                "Codex app-server does not report which MCP or dynamic tools are presented to this turn",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::SkillsPlugins,
+                "Codex app-server does not report which skills or plugins contribute model context",
+            ),
+            ContextSegmentObservation::unavailable(
+                ContextSegmentClass::AgentDefinitions,
+                "Codex app-server does not report provider-owned agent definitions presented to the model",
+            ),
+        ]
+    };
+    let mut inventories = Vec::new();
+    if lifecycle_phase != ContextLifecyclePhase::PerTurn {
+        inventories.push(AdapterContextInventory::new(
+            "codex",
+            ContextInventoryScope::Catalog,
+            lifecycle_phase,
+            observations(),
+        )?);
+    }
+    inventories.push(AdapterContextInventory::new(
+        "codex",
+        ContextInventoryScope::TurnPresented,
+        lifecycle_phase,
+        observations(),
+    )?);
+    Ok(inventories)
 }
 
 impl Drop for CodexRuntime {
@@ -468,6 +533,7 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_inventory::{ContextInventoryScope, ContextObservationProvenance};
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());
@@ -479,6 +545,34 @@ mod tests {
             lock_writer(&writer, "Codex"),
             Err(BridgeError::Adapter(_))
         ));
+    }
+
+    #[test]
+    fn codex_context_inventory_covers_start_resume_and_per_turn() {
+        let start = thread_start_params("/tmp/work", None, None, Some("bridge"), None);
+        assert_eq!(start["instructions"], "bridge");
+        assert_eq!(start["developerInstructions"], "bridge");
+        let resume = thread_resume_params("thread", "/tmp/work", None, Some("bridge"), None);
+        assert!(resume.get("instructions").is_none());
+        assert_eq!(resume["developerInstructions"], "bridge");
+
+        for phase in [
+            ContextLifecyclePhase::Start,
+            ContextLifecyclePhase::Resume,
+            ContextLifecyclePhase::PerTurn,
+        ] {
+            let inventories = codex_context_inventory(phase).unwrap();
+            assert!(inventories
+                .iter()
+                .any(|item| item.scope == ContextInventoryScope::TurnPresented));
+            assert!(inventories.iter().flat_map(|item| &item.observations).all(
+                |observation| matches!(
+                    observation.provenance,
+                    ContextObservationProvenance::Unavailable { ref reason }
+                        if !reason.is_empty()
+                )
+            ));
+        }
     }
 
     #[test]
