@@ -117,14 +117,14 @@ export function ComposerContextStrip({
         ref={branchMenu.triggerRef}
         aria-haspopup="menu"
         aria-expanded={branchMenu.open}
-        disabled={locked || !branchAvailable || branchBusy}
+        disabled={locked || !branchAvailable}
         onClick={() => {
-          onRequestBranches();
+          if (!branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
         className={cn(
           "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors",
-          !locked && branchAvailable && !branchBusy && "hover:bg-accent hover:text-foreground",
+          !locked && branchAvailable && "hover:bg-accent hover:text-foreground",
           branchMenu.open && "bg-accent text-foreground",
           (locked || !branchAvailable || branchBusy) && "opacity-70",
         )}
@@ -133,8 +133,8 @@ export function ComposerContextStrip({
         <span className="min-w-0 truncate">{workspace?.branch || "No branch"}</span>
       </button>
       <MenuPanel controller={branchMenu} label="Branch">
-        {branchBusy && <p className="px-3 py-2 text-[12px] text-muted-foreground">Loading branches…</p>}
-        {!branchBusy && branchError && <p className="px-3 py-2 text-[12px] text-destructive">{branchError}</p>}
+        {branchBusy && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-muted-foreground">Loading branches…</p>}
+        {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-destructive">{branchError}</p>}
         {!branchBusy && !branchError && branches.map(branch => (
           <MenuItem
             key={branch}
@@ -149,7 +149,7 @@ export function ComposerContextStrip({
           />
         ))}
         {!branchBusy && !branchError && branches.length === 0 && (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">No local branches</p>
+          <p role="status" className="px-3 py-2 text-[12px] text-muted-foreground">No local branches</p>
         )}
       </MenuPanel>
 

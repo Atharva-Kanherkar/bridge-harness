@@ -47,7 +47,11 @@ export function useMenuPanel<T extends HTMLElement>({ width, height }: { width: 
       close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -75,12 +79,64 @@ export function MenuPanel<T extends HTMLElement>({
   className?: string;
   children: ReactNode;
 }) {
+  useEffect(() => {
+    if (!controller.open) return;
+    const panel = controller.panelRef.current;
+    if (!panel) return;
+    let frame: number | undefined;
+    const focusFirstItem = () => {
+      if (panel.contains(document.activeElement)) return;
+      if (document.activeElement !== controller.triggerRef.current && document.activeElement !== document.body) return;
+      panel.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])')?.focus();
+    };
+    const scheduleFocus = () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(focusFirstItem);
+    };
+    const observer = new MutationObserver(scheduleFocus);
+    observer.observe(panel, { childList: true, subtree: true });
+    scheduleFocus();
+    return () => {
+      observer.disconnect();
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
+  }, [controller.open, controller.panelRef, controller.triggerRef]);
+
   if (!controller.open) return null;
   return createPortal(
     <div
       ref={controller.panelRef}
       role="menu"
       aria-label={label}
+      onClickCapture={event => {
+        const item = (event.target as Element).closest<HTMLElement>('[role^="menuitem"]');
+        if (!item || item.hasAttribute("disabled")) return;
+        window.requestAnimationFrame(() => controller.triggerRef.current?.focus());
+      }}
+      onKeyDown={event => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          controller.close();
+          window.requestAnimationFrame(() => controller.triggerRef.current?.focus());
+          return;
+        }
+        const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([disabled])')];
+        if (!items.length) return;
+        const current = Math.max(0, items.indexOf(document.activeElement as HTMLElement));
+        const next = event.key === "ArrowDown"
+          ? (current + 1) % items.length
+          : event.key === "ArrowUp"
+          ? (current - 1 + items.length) % items.length
+          : event.key === "Home"
+          ? 0
+          : event.key === "End"
+          ? items.length - 1
+          : null;
+        if (next === null) return;
+        event.preventDefault();
+        items[next]?.focus();
+      }}
       style={{ left: controller.anchor.left, top: controller.anchor.top, width: controller.width }}
       className={cn("fixed z-50 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg", className)}
     >
@@ -116,9 +172,10 @@ export function MenuItem({
       role={role}
       aria-checked={role === "menuitem" ? undefined : !!checked}
       disabled={disabled}
+      tabIndex={-1}
       onClick={onClick}
       className={cn(
-        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors disabled:opacity-40",
+        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40",
         destructive ? "text-destructive hover:bg-destructive/10" : "hover:bg-accent",
       )}
     >

@@ -669,6 +669,9 @@ pub fn start_session(
     model: Option<String>,
 ) -> Result<BridgeState, BridgeError> {
     let state = core;
+    state.workspace_path(&workspace_id)?;
+    let workspace_operation = state.workspace_operation(&workspace_id);
+    let _workspace_operation = workspace_operation.lock().unwrap();
     // An explicit chat choice wins. Without one, the persisted Standard
     // orchestrator profile remains the default.
     let selection = if let Some(harness) = harness {
@@ -1192,6 +1195,12 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?
     };
+    let workspace_operation = workspace_id
+        .as_deref()
+        .map(|workspace_id| state.workspace_operation(workspace_id));
+    let _workspace_operation = workspace_operation
+        .as_ref()
+        .map(|operation| operation.lock().unwrap());
     let is_orchestrator = kind == "orchestrator";
     let cwd = match cwd_col.filter(|value| !value.is_empty()) {
         Some(value) => value,

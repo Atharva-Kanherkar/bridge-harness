@@ -84,6 +84,10 @@ pub struct BridgeCore {
     /// runtimes map — is what keeps a concurrent start from racing a
     /// teardown/commit window and orphaning a live adapter.
     pub lifecycle_claims: Mutex<HashMap<String, &'static str>>,
+    /// Serializes filesystem-changing operations with session startup per
+    /// workspace. A branch switch must not race an adapter launch or editor
+    /// write against the same checkout.
+    workspace_operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// The composer typeahead's warm hidden session and fallback cooldowns.
     /// See `suggestion_engine` for why this lives on `BridgeCore` rather than
     /// being started fresh per request: process-start latency on every
@@ -222,6 +226,16 @@ impl BridgeCore {
         })
     }
 
+    pub(crate) fn workspace_operation(&self, workspace_id: &str) -> Arc<Mutex<()>> {
+        Arc::clone(
+            self.workspace_operations
+                .lock()
+                .unwrap()
+                .entry(workspace_id.to_owned())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    }
+
     /// A runtime around in-memory stores with no adapters, no discovery, and
     /// a dormant browser supervisor — for exercising domain methods in tests.
     #[cfg(test)]
@@ -259,6 +273,7 @@ impl BridgeCore {
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events: EventBus::new(),
             lifecycle_claims: Mutex::new(HashMap::new()),
+            workspace_operations: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
         }
     }
@@ -358,6 +373,7 @@ impl BridgeCore {
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events,
             lifecycle_claims: Mutex::new(HashMap::new()),
+            workspace_operations: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
         })
     }

@@ -111,6 +111,63 @@ describe("ComposerContextStrip", () => {
     expect(onSelectBranch).toHaveBeenCalledWith("main");
   });
 
+  it("moves focus through menu items with the keyboard and restores the trigger", async () => {
+    mount();
+    const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("bridge-harness"))!;
+    act(() => trigger.click());
+    await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
+
+    const menu = document.querySelector<HTMLElement>('[role="menu"][aria-label="Repository"]')!;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
+    expect(document.activeElement).toBe(items[0]);
+
+    act(() => {
+      items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[1]);
+
+    act(() => {
+      items[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
+    expect(document.querySelector('[role="menu"][aria-label="Repository"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("focuses branches that arrive after the menu opens", async () => {
+    mount({ branches: [] });
+    const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("feat/cursor-sidebar-dev"))!;
+    act(() => trigger.click());
+    mount({ branches: [], branchBusy: true });
+    await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
+
+    mount({ branches: ["feat/cursor-sidebar-dev", "main"], branchBusy: false });
+    await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
+    const firstBranch = document.querySelector<HTMLButtonElement>(
+      '[role="menu"][aria-label="Branch"] [role="menuitemradio"]',
+    );
+    expect(document.activeElement).toBe(firstBranch);
+  });
+
+  it("restores the branch trigger when loading is dismissed with Escape", async () => {
+    mount({ branches: [] });
+    const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("feat/cursor-sidebar-dev"))!;
+    act(() => {
+      trigger.focus();
+      trigger.click();
+    });
+    mount({ branches: [], branchBusy: true });
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await act(async () => new Promise(resolve => setTimeout(resolve, 20)));
+    expect(document.querySelector('[role="menu"][aria-label="Branch"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("does not switch the workspace root while using an isolated worktree", () => {
     const { onRequestBranches } = mount({ worktree: true });
     const branch = [...container.querySelectorAll<HTMLButtonElement>("button")]

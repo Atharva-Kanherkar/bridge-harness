@@ -189,6 +189,15 @@ describe("BridgeSidebar action rows", () => {
     click(container.querySelector('button[aria-label="New folder"]')!);
     expect(onOpenProjects).toHaveBeenCalledOnce();
   });
+
+  it("disables New Chat while a session is being created", () => {
+    const onOpenNewChat = vi.fn();
+    mount({ newChatBusy: true, onOpenNewChat });
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="New Chat"]')!;
+    expect(button.disabled).toBe(true);
+    click(button);
+    expect(onOpenNewChat).not.toHaveBeenCalled();
+  });
 });
 
 describe("mobile drawer scrim", () => {

@@ -97,7 +97,7 @@ pub fn checkout_branch(
         )));
     }
     if available.current.as_deref() != Some(branch) {
-        run(worktree, ["switch", branch])?;
+        run(worktree, ["switch", "--", branch])?;
     }
     list_branches(worktree)
 }
@@ -1179,6 +1179,15 @@ mod tests {
         let switched = checkout_branch(&repo, "feature", false).unwrap();
         assert_eq!(switched.current.as_deref(), Some("feature"));
         assert!(checkout_branch(&repo, "--detach", false).is_err());
+    }
+
+    #[test]
+    fn branch_switch_treats_an_option_shaped_ref_as_a_branch() {
+        let (_fixture, repo) = repository();
+        git(&repo, &["update-ref", "refs/heads/--detach", "HEAD"]);
+
+        let switched = checkout_branch(&repo, "--detach", false).unwrap();
+        assert_eq!(switched.current.as_deref(), Some("--detach"));
     }
 
     #[test]

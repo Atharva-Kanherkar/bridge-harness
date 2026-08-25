@@ -158,17 +158,20 @@ function ActionRow({
   onClick,
   collapsed,
   active = false,
+  disabled = false,
 }: {
   icon: LucideIcon;
   label: string;
   onClick: () => void;
   collapsed: boolean;
   active?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       title={label}
       aria-label={label}
       aria-current={active ? "page" : undefined}
@@ -176,6 +179,7 @@ function ActionRow({
         "flex items-center rounded-md text-[13px] tracking-[-0.008em] transition-colors",
         collapsed ? "mx-auto size-9 justify-center" : "h-7 w-full gap-2.5 px-2",
         active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
+        disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
       )}
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -236,6 +240,7 @@ export type BridgeSidebarProps = {
   missionControlActive: boolean;
   settingsActive: boolean;
   accountName: string;
+  newChatBusy?: boolean;
   /** Drawer state below the sm breakpoint, where the rail is off-canvas. */
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
@@ -267,6 +272,7 @@ export function BridgeSidebar({
   missionControlActive,
   settingsActive,
   accountName,
+  newChatBusy = false,
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
@@ -486,7 +492,7 @@ export function BridgeSidebar({
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
         <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
-          <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} onClick={onOpenNewChat} />
+          <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} disabled={newChatBusy} onClick={onOpenNewChat} />
           <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
           <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={onOpenAutomations} active={automationsActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />

@@ -97,7 +97,7 @@ export function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
-    stack: [{ view: "workspace", sessionId: null }],
+    stack: [{ view: "workspace", sessionId: null, paradigm: "single" }],
     index: 0,
   });
   const skipNavRecord = useRef(false);
@@ -257,20 +257,20 @@ export function App() {
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
 
   useEffect(() => {
-    const place: AppPlace = { view, sessionId: selectedSessionId ?? null };
+    const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
     if (skipNavRecord.current) {
       skipNavRecord.current = false;
       return;
     }
     setNavPlaces(current => recordPlace(current.stack, current.index, place));
-  }, [view, selectedSessionId]);
+  }, [view, selectedSessionId, paradigm]);
 
   const applyPlace = useCallback((place: AppPlace) => {
     skipNavRecord.current = true;
     setView(place.view);
     setSelectedSessionId(place.sessionId ?? undefined);
+    setParadigm(place.paradigm);
     if (place.view === "workspace") {
-      setParadigm("single");
       setActiveTab("agent");
       setExpandedWorkerId(undefined);
     }
@@ -353,6 +353,8 @@ export function App() {
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [branchBusy, setBranchBusy] = useState(false);
   const [branchError, setBranchError] = useState<string | null>(null);
+  const branchRequestGeneration = useRef(0);
+  const newChatPendingRef = useRef(false);
   useEffect(() => {
     if (!session) { setWorktreeOn(false); return; }
     const tracked = worktreeBySessionRef.current.get(session.id);
@@ -830,22 +832,46 @@ export function App() {
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
   async function startChatOrShortcut(text?: string) {
-    if (text && await openHarnessShortcut(text)) return;
-    await openNewChat(text);
+    if (newChatPendingRef.current) return;
+    newChatPendingRef.current = true;
+    try {
+      if (text && await openHarnessShortcut(text)) return;
+      const workspaceId = resolveNewChatWorkspaceId({
+        activeWorkspaceId: welcomeWorkspaceId,
+        lastWorkspaceId: readLastWorkspaceId(),
+        workspaces: state.workspaces,
+      });
+      if (!workspaceId) {
+        await openNewChat(text);
+        return;
+      }
+      const draft = text?.trim() ?? "";
+      if (draft) pendingWelcomeMessageRef.current = draft;
+      const createdId = await newWorkspaceSession(false, workspaceId);
+      if (!createdId) pendingWelcomeMessageRef.current = null;
+    } finally {
+      newChatPendingRef.current = false;
+    }
   }
 
   async function startChatInCurrentRepo() {
-    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
-    const workspaceId = resolveNewChatWorkspaceId({
-      activeWorkspaceId: session?.workspaceId,
-      lastWorkspaceId: readLastWorkspaceId(),
-      workspaces: state.workspaces,
-    });
-    if (!workspaceId) {
-      await openNewChat();
-      return;
+    if (newChatPendingRef.current) return;
+    newChatPendingRef.current = true;
+    try {
+      if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+      const workspaceId = resolveNewChatWorkspaceId({
+        activeWorkspaceId: session?.workspaceId,
+        lastWorkspaceId: readLastWorkspaceId(),
+        workspaces: state.workspaces,
+      });
+      if (!workspaceId) {
+        await openNewChat();
+        return;
+      }
+      await newWorkspaceSession(false, workspaceId);
+    } finally {
+      newChatPendingRef.current = false;
     }
-    await newWorkspaceSession(false, workspaceId);
   }
 
   async function retargetWorkspace(workspaceId: string, createWorktree: boolean) {
@@ -857,36 +883,43 @@ export function App() {
   }
 
   async function requestWorkspaceBranches(workspaceId: string) {
-    if (branchBusy && branchWorkspaceId === workspaceId) return;
+    const generation = ++branchRequestGeneration.current;
     setBranchWorkspaceId(workspaceId);
     setBranchBusy(true);
     setBranchError(null);
     try {
       const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+      if (branchRequestGeneration.current !== generation) return;
       setWorkspaceBranches(result.branches);
     } catch (error) {
+      if (branchRequestGeneration.current !== generation) return;
       setWorkspaceBranches([]);
       setBranchError(errorMessage(error));
     } finally {
-      setBranchBusy(false);
+      if (branchRequestGeneration.current === generation) setBranchBusy(false);
     }
   }
 
   async function switchWorkspaceBranch(workspaceId: string, branch: string) {
+    const generation = ++branchRequestGeneration.current;
     setBranchWorkspaceId(workspaceId);
     setBranchBusy(true);
     setBranchError(null);
     setError(undefined);
     try {
-      setState(await bridgeApi.checkoutWorkspaceBranch(workspaceId, branch));
+      const next = await bridgeApi.checkoutWorkspaceBranch(workspaceId, branch);
+      if (branchRequestGeneration.current !== generation) return;
+      setState(next);
       const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+      if (branchRequestGeneration.current !== generation) return;
       setWorkspaceBranches(result.branches);
     } catch (error) {
+      if (branchRequestGeneration.current !== generation) return;
       const message = errorMessage(error);
       setBranchError(message);
       setError(message);
     } finally {
-      setBranchBusy(false);
+      if (branchRequestGeneration.current === generation) setBranchBusy(false);
     }
   }
 
@@ -1202,6 +1235,7 @@ export function App() {
       missionControlActive={view === "workspace" && paradigm === "grid"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
+      newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenProjects={() => setView("projects")}
       onOpenAutomations={() => setView("automations")}
