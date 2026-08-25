@@ -148,7 +148,7 @@ describe("dock persistence", () => {
 
   it("falls back to the default pane on an unknown pane id", () => {
     const storage = memoryStorage({
-      "bridge.dock.v1.ws-1": JSON.stringify({ open: false, width: 500, pane: "browser", expanded: false }),
+      "bridge.dock.v1.ws-1": JSON.stringify({ open: false, width: 500, pane: "tasks", expanded: false }),
     });
     expect(readDockState("ws-1", storage).pane).toBe("changes");
   });

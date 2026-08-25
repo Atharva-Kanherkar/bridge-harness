@@ -25,6 +25,9 @@ export type DockPaneDescriptor = {
   unavailableReason?: string;
   /** Count badge (e.g. dirty files). Rendered whether or not the pane is active. */
   badge?: number;
+  /** A state that needs the human — waiting_for_you, a pending approval, a
+   *  failure. Rendered as a pulsing warning dot on the tab and the rail. */
+  alert?: boolean;
 };
 
 export type SessionDockProps = {
@@ -126,7 +129,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     title={`${pane.label}  ⌥⌘${index + 1}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
                     className={cn(
-                      "flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium transition-colors",
+                      "relative flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium transition-colors",
                       active ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
                       !pane.available && !active && "opacity-40",
                     )}
@@ -135,6 +138,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     {active && <span className="pr-0.5">{pane.label}</span>}
                     {!!pane.badge && pane.available && (
                       <span className="rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{pane.badge}</span>
+                    )}
+                    {pane.alert && pane.available && (
+                      <span data-testid={`dock-alert-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-0 top-0 h-[5px] w-[5px] rounded-full bg-warning" />
                     )}
                   </button>
                 );
@@ -185,8 +191,11 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                   )}
                 >
                   <Icon size={15} strokeWidth={1.7} aria-hidden="true" />
-                  {!!pane.badge && pane.available && (
+                  {!!pane.badge && pane.available && !pane.alert && (
                     <span className="pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-muted-foreground/70" />
+                  )}
+                  {pane.alert && pane.available && (
+                    <span data-testid={`dock-alert-rail-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-warning" />
                   )}
                 </button>
               );

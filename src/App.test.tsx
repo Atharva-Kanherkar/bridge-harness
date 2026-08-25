@@ -328,7 +328,7 @@ describe("the dock in the session view", () => {
   it("opens the transcript with the session's replayed events, in repo sessions and direct chats", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit4", key: "4" });
+    await key({ ...chord, code: "Digit5", key: "5" });
     await settle(3);
     expect(container.textContent).toContain("tool.started");
 
@@ -338,7 +338,7 @@ describe("the dock in the session view", () => {
     await settle();
     const scratch = chatRows().find(row => row.title.includes("Transcript scratch"))!;
     await click(scratch);
-    await key({ ...chord, code: "Digit4", key: "4" });
+    await key({ ...chord, code: "Digit5", key: "5" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
     expect(dockAside()!.textContent).toContain("events");
@@ -351,7 +351,7 @@ describe("the dock in the session view", () => {
     };
     await mountApp();
     await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit4", key: "4" });
+    await key({ ...chord, code: "Digit5", key: "5" });
     await settle(3);
     const entriesTab = [...dockAside()!.querySelectorAll("button")].find(button => button.textContent === "entries")!;
     await click(entriesTab);
@@ -376,6 +376,59 @@ describe("the dock in the session view", () => {
 
     const after = await bridgeApi.replaySessionEvents("session-1", all[0].sequence, undefined, false);
     expect(after.every(event => event.sequence > all[0].sequence)).toBe(true);
+  });
+
+  // Contract: testing/feat-dock-browser.md §3.
+  it("opens the browser pane from the toolbar menu and keeps it across pane switches", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector('button[aria-label="Session actions"]')!);
+    const item = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.includes("Browser"))!;
+    await click(item);
+    await settle(2);
+
+    const browserTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Browser")!;
+    expect(browserTab.getAttribute("aria-selected")).toBe("true");
+    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "Connect your browser once");
+    const before = surface();
+    expect(before).toBeTruthy();
+
+    await key({ ...chord, code: "Digit1", key: "1" });
+    expect(surface()).toBe(before);
+  });
+
+  it("gives direct chats a browser pane, not an excuse", async () => {
+    await mountApp();
+    await act(async () => {
+      await bridgeApi.createChat("codex", null, "Browser scratch");
+    });
+    await settle();
+    await click(chatRows().find(row => row.title.includes("Browser scratch"))!);
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(2);
+    expect(dockAside()!.textContent).not.toContain("needs a repository");
+    expect(dockAside()!.textContent).toContain("Connect your browser once");
+  });
+
+  it("raises waiting_for_you onto the switcher while another pane is active", async () => {
+    const waiting = {
+      transportConnected: true, extensionId: "ext", extensionPath: "/ext",
+      nativeHostInstalled: true, nativeHostManifestPath: "/m",
+      tabs: [{ id: 1, title: "Example", domain: "example.com", url: "https://example.com", attached: true }],
+      lease: { id: "lease-1", tabId: 1, domain: "example.com", permission: "read_only", grantedAt: "now", expiresAt: null },
+      status: "waiting_for_you", captureActive: false, captureError: null, screenshot: null,
+      screenshotRedactedRegions: 0, elements: [], viewport: null, promptInjectionSuspected: false,
+      tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
+      promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
+    };
+    const spy = vi.spyOn(bridgeApi, "browserBridgeState").mockResolvedValue(waiting as unknown as Awaited<ReturnType<typeof bridgeApi.browserBridgeState>>);
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(3);
+    await key({ ...chord, code: "Digit1", key: "1" });
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
+    spy.mockRestore();
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {

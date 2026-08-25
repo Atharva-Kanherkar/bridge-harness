@@ -182,6 +182,14 @@ describe("SessionDock", () => {
     expect(railChanges.querySelector("span.rounded-full")).not.toBeNull();
   });
 
+  it("marks an alerting pane on the tab and the rail", () => {
+    const panes = PANES.map(pane => pane.id === "terminal" ? { ...pane, alert: true } : pane);
+    mount({ state: open(), panes });
+    expect(container.querySelector('[data-testid="dock-alert-terminal"]')).not.toBeNull();
+    mount({ state: { ...defaultDockState(), visited: [] }, panes });
+    expect(container.querySelector('[data-testid="dock-alert-rail-terminal"]')).not.toBeNull();
+  });
+
   it("conceals everything without unmounting when hidden by fullscreen", () => {
     const state = open();
     mount({ state });

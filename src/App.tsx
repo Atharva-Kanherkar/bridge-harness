@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -20,6 +20,7 @@ import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
+import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
@@ -164,7 +165,7 @@ export function App() {
   const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [recallOpen, setRecallOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
@@ -342,6 +343,7 @@ export function App() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in." },
+    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
@@ -1453,8 +1455,8 @@ export function App() {
           model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
           dockOpen={dock.open}
           onToggleDock={() => dispatchDock({ type: "toggle" })}
-          browserOpen={browserOpen}
-          onToggleBrowser={() => setBrowserOpen(value => !value)}
+          browserOpen={dock.open && dock.pane === "browser"}
+          onToggleBrowser={() => dispatchDock({ type: "open-pane", pane: "browser" })}
           fullscreen={fullscreen}
           onToggleFullscreen={toggleLayoutFullscreen}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
@@ -1643,6 +1645,11 @@ export function App() {
             onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
           >
             {pane => {
+              if (pane === "browser") return <BrowserSurface
+                visible={dock.open && dock.pane === "browser" && !fullscreen}
+                onError={setError}
+                onSupervisionChange={setBrowserSupervision}
+              />;
               if (pane === "transcript") return <TranscriptPane
                 key={session.id}
                 sessionId={session.id}
@@ -1668,7 +1675,6 @@ export function App() {
               return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id}/></Suspense>;
             }}
           </SessionDock>
-          {browserOpen && <BrowserSurface onClose={() => setBrowserOpen(false)} onError={setError} />}
         </section>
       </> : <Welcome
         adapters={adapters}
