@@ -19,7 +19,7 @@ use crate::context_inventory::{
     ContextSegmentClass,
 };
 use crate::model::SessionEntry;
-use crate::{context_inventory, session_forest, store, BridgeError};
+use crate::{session_forest, store, BridgeError};
 
 /// The projection window used until Bridge grows a real per-session
 /// `context_window_tokens` source; mirrors `restoration.rs`. The value is
@@ -170,8 +170,15 @@ fn flatten_inventories(inventories: &[AdapterContextInventory]) -> Vec<ContextBr
         let presented = inventory.scope == ContextInventoryScope::TurnPresented;
         match best.iter_mut().find(|(_, existing)| existing.adapter_id == inventory.adapter_id) {
             Some((already_presented, existing)) => {
-                if presented && !*already_presented {
-                    *already_presented = true;
+                // `record_runtime_inventory` appends one turn-presented
+                // inventory per turn and never rewrites, so the list runs
+                // oldest to newest. A newer presented inventory therefore
+                // supersedes the turn we would otherwise report — keeping the
+                // first one would pin the breakdown to turn 1 for the life of
+                // the session. A catalog re-report still loses to any turn
+                // already observed.
+                if presented || !*already_presented {
+                    *already_presented = presented;
                     *existing = inventory;
                 }
             }
@@ -242,12 +249,31 @@ fn totals(segments: &[ContextBreakdownSegment]) -> ContextBreakdownTotals {
     totals
 }
 
+/// A fingerprint of one session's live adapter observations. Content-derived
+/// rather than a counter, so the digest moves when the observations that
+/// reach the breakdown actually differ — and stays put when a runtime
+/// re-reports the same catalog. In-process state, so it is not persisted
+/// across restarts (documented limitation).
+fn inventory_fingerprint(inventories: &[AdapterContextInventory]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    inventories.len().hash(&mut hasher);
+    // The observations carry no `Hash`, but they are `Serialize`, and this is
+    // exactly the state the breakdown reads.
+    if let Ok(encoded) = serde_json::to_string(inventories) {
+        encoded.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// The opaque change token behind the breakdown. Store-derived inputs come
-/// from indexed lookups; live adapter observations contribute an in-process
-/// revision counter (documented limitation: not persisted across restarts).
+/// from indexed lookups; live adapter observations contribute a fingerprint of
+/// *this session's* inventories, so a turn on one session never invalidates
+/// another session's digest.
 pub fn context_breakdown_digest(
     db: &Connection,
     session_id: &str,
+    inventories: &[AdapterContextInventory],
 ) -> Result<String, BridgeError> {
     // Same existence check the full breakdown performs, so both surfaces
     // agree on unknown sessions.
@@ -266,8 +292,8 @@ pub fn context_breakdown_digest(
         |row| row.get(0),
     )?;
     Ok(format!(
-        "v1:{store_part}:{}",
-        context_inventory::runtime_inventory_revision()
+        "v1:{store_part}:{:016x}",
+        inventory_fingerprint(inventories)
     ))
 }
 
@@ -279,7 +305,7 @@ pub fn context_breakdown(
     session_id: &str,
     inventories: &[AdapterContextInventory],
 ) -> Result<ContextBreakdownResult, BridgeError> {
-    let digest = context_breakdown_digest(db, session_id)?;
+    let digest = context_breakdown_digest(db, session_id, inventories)?;
     let branch = session_forest::SessionForest::new(db)
         .active_branch(session_id)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -350,12 +376,15 @@ pub fn context_breakdown(
     })
 }
 
+/// The cheap half of breakdown polling. Takes the same live observations as
+/// [`context_breakdown`] so both surfaces agree on the token.
 pub fn context_breakdown_digest_result(
     db: &Connection,
     session_id: &str,
+    inventories: &[AdapterContextInventory],
 ) -> Result<ContextBreakdownDigestResult, BridgeError> {
     Ok(ContextBreakdownDigestResult {
-        digest: context_breakdown_digest(db, session_id)?,
+        digest: context_breakdown_digest(db, session_id, inventories)?,
     })
 }
 
@@ -374,6 +403,50 @@ mod tests {
         core.db.lock().unwrap()
             .query_row("SELECT id FROM sessions", [], |row| row.get(0))
             .unwrap()
+    }
+
+    /// One adapter runtime's inventory, shaped the way the adapters record it:
+    /// a startup catalog or a turn-presented snapshot covering every class.
+    fn inventory_with(
+        adapter_id: &str,
+        scope: ContextInventoryScope,
+        tokens: u64,
+    ) -> AdapterContextInventory {
+        let phase = match scope {
+            ContextInventoryScope::Catalog => {
+                crate::context_inventory::ContextLifecyclePhase::Start
+            }
+            ContextInventoryScope::TurnPresented => {
+                crate::context_inventory::ContextLifecyclePhase::PerTurn
+            }
+        };
+        AdapterContextInventory::new(
+            adapter_id,
+            scope,
+            phase,
+            ContextSegmentClass::ALL
+                .map(|class| {
+                    crate::context_inventory::ContextSegmentObservation::estimated(
+                        class,
+                        std::iter::empty::<&str>(),
+                        crate::context_inventory::ContextObservedSize::bounded(
+                            None,
+                            None,
+                            Some(tokens),
+                        ),
+                        "test",
+                    )
+                })
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    fn tool_schema_tokens(segments: &[ContextBreakdownSegment]) -> Option<i64> {
+        segments
+            .iter()
+            .find(|segment| segment.segment_class == "toolSchemas")
+            .and_then(|segment| segment.tokens)
     }
 
     fn seed_worker_and_orchestrator(core: &BridgeCore) -> (String, String) {
@@ -399,7 +472,7 @@ mod tests {
         let (_scratch, core) = fixture();
         let db = core.db.lock().unwrap();
         assert!(context_breakdown(&db, "missing", &[]).is_err());
-        assert!(context_breakdown_digest(&db, "missing").is_err());
+        assert!(context_breakdown_digest(&db, "missing", &[]).is_err());
     }
 
     #[test]
@@ -457,31 +530,122 @@ mod tests {
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let session_id = only_session_id(&core);
         let db = core.db.lock().unwrap();
-        let first = context_breakdown(&db, &session_id, &[]).unwrap();
-        let second = context_breakdown(&db, &session_id, &[]).unwrap();
+        // Two adapters so the sort has real ties to break, plus a superseded
+        // turn so the flatten step contributes to the ordering.
+        let inventories = [
+            inventory_with("codex", ContextInventoryScope::Catalog, 1),
+            inventory_with("claude", ContextInventoryScope::TurnPresented, 2),
+            inventory_with("codex", ContextInventoryScope::TurnPresented, 3),
+        ];
+        let first = context_breakdown(&db, &session_id, &inventories).unwrap();
+        let second = context_breakdown(&db, &session_id, &inventories).unwrap();
         assert_eq!(first.segments, second.segments);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap(),
+            "the whole payload is byte-identical on unchanged state"
+        );
+        // Origins stay grouped in rank order regardless of insertion order.
+        let ranks: Vec<u8> = first.segments.iter().map(|s| origin_rank(s.origin)).collect();
+        assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     #[test]
     fn context_breakdown_caps_segments_at_limit() {
-        let mut flooded: Vec<ContextBreakdownSegment> = (0..100)
-            .map(|index| ContextBreakdownSegment {
-                origin: ContextBreakdownOrigin::AdapterInventory,
-                segment_class: format!("class{:03}", index),
-                names: vec![],
-                state: ContextBreakdownState::Reported,
-                method: None,
-                reason: None,
-                item_count: None,
-                bytes: None,
-                tokens: Some(index),
-                capped: false,
+        let (_scratch, core) = fixture();
+        core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        let db = core.db.lock().unwrap();
+        // Fourteen runtimes x five classes floods well past the cap, on top of
+        // the conversation and compilation segments.
+        let inventories: Vec<AdapterContextInventory> = (0..14)
+            .map(|index| {
+                inventory_with(
+                    &format!("adapter-{index:02}"),
+                    ContextInventoryScope::TurnPresented,
+                    index,
+                )
             })
             .collect();
-        flooded.sort_by(|left, right| left.segment_class.cmp(&right.segment_class));
-        flooded.truncate(MAX_CONTEXT_BREAKDOWN_SEGMENTS as usize);
-        assert_eq!(flooded.len(), MAX_CONTEXT_BREAKDOWN_SEGMENTS as usize);
-        assert_eq!(flooded.last().unwrap().segment_class, "class063");
+        let breakdown = context_breakdown(&db, &session_id, &inventories).unwrap();
+
+        assert_eq!(
+            breakdown.segments.len(),
+            MAX_CONTEXT_BREAKDOWN_SEGMENTS as usize,
+            "candidates past the cap are truncated"
+        );
+        // Truncation runs after the sort, so the lowest origin ranks keep
+        // their place: Bridge's own accounting never loses to a flood of
+        // adapter observations.
+        assert!(breakdown
+            .segments
+            .iter()
+            .any(|segment| segment.origin == ContextBreakdownOrigin::Conversation));
+        assert_eq!(
+            breakdown
+                .segments
+                .iter()
+                .filter(|segment| segment.origin == ContextBreakdownOrigin::PromptCompilation)
+                .count(),
+            2,
+            "both compilation splits survive the cap"
+        );
+        // Totals describe what was actually returned, not the pre-cap set.
+        assert_eq!(
+            breakdown.totals.tokens,
+            Some(
+                breakdown
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.state != ContextBreakdownState::Unavailable)
+                    .filter_map(|segment| segment.tokens)
+                    .sum()
+            )
+        );
+        // And truncation is deterministic, not a function of which call ran.
+        let again = context_breakdown(&db, &session_id, &inventories).unwrap();
+        assert_eq!(breakdown.segments, again.segments);
+    }
+
+    #[test]
+    fn context_breakdown_uses_the_latest_turn_over_earlier_observations() {
+        // `record_runtime_inventory` appends one turn-presented inventory per
+        // turn and never rewrites, so a live session accumulates
+        // [catalog, turn 1, turn 2, ...] under a single adapter id. The
+        // breakdown has to describe the turn that just ran.
+        let catalog = inventory_with("codex", ContextInventoryScope::Catalog, 1);
+        let first_turn = inventory_with("codex", ContextInventoryScope::TurnPresented, 10);
+        let latest_turn = inventory_with("codex", ContextInventoryScope::TurnPresented, 20);
+
+        assert_eq!(
+            tool_schema_tokens(&flatten_inventories(&[
+                catalog.clone(),
+                first_turn.clone(),
+                latest_turn.clone(),
+            ])),
+            Some(20),
+            "the newest turn-presented inventory wins, not the first one seen"
+        );
+        // Before any turn has run, the startup catalog is all there is.
+        assert_eq!(
+            tool_schema_tokens(&flatten_inventories(&[catalog.clone()])),
+            Some(1)
+        );
+        // A catalog re-report never displaces a turn already observed.
+        assert_eq!(
+            tool_schema_tokens(&flatten_inventories(&[first_turn, latest_turn, catalog])),
+            Some(20)
+        );
+        // One adapter collapses to one observation per class, not one per
+        // recorded inventory.
+        assert_eq!(
+            flatten_inventories(&[
+                inventory_with("codex", ContextInventoryScope::Catalog, 1),
+                inventory_with("codex", ContextInventoryScope::TurnPresented, 10),
+            ])
+            .len(),
+            ContextSegmentClass::ALL.len()
+        );
     }
 
     #[test]
@@ -566,8 +730,8 @@ mod tests {
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let session_id = only_session_id(&core);
         let db = core.db.lock().unwrap();
-        let baseline = context_breakdown_digest(&db, &session_id).unwrap();
-        assert_eq!(baseline, context_breakdown_digest(&db, &session_id).unwrap());
+        let baseline = context_breakdown_digest(&db, &session_id, &[]).unwrap();
+        assert_eq!(baseline, context_breakdown_digest(&db, &session_id, &[]).unwrap());
 
         // Active-branch change moves the digest.
         store::append_session_entry(
@@ -581,7 +745,7 @@ mod tests {
             Some(5),
         )
         .unwrap();
-        let after_branch = context_breakdown_digest(&db, &session_id).unwrap();
+        let after_branch = context_breakdown_digest(&db, &session_id, &[]).unwrap();
         assert_ne!(after_branch, baseline, "active-branch changes move the digest");
 
         // Prompt compilation recording moves the digest.
@@ -609,7 +773,7 @@ mod tests {
             token_estimate_source: Some(crate::prompt_compiler::TOKEN_ESTIMATE_SOURCE.into()),
         };
         store::record_prompt_compilation(&db, &record).unwrap();
-        let after_compilation = context_breakdown_digest(&db, &session_id).unwrap();
+        let after_compilation = context_breakdown_digest(&db, &session_id, &[]).unwrap();
         assert_ne!(after_compilation, after_branch, "compilations move the digest");
 
         // Prompt-section revisions move the digest.
@@ -618,30 +782,37 @@ mod tests {
             [],
         )
         .unwrap();
-        let after_revision = context_breakdown_digest(&db, &session_id).unwrap();
+        let after_revision = context_breakdown_digest(&db, &session_id, &[]).unwrap();
         assert_ne!(after_revision, after_compilation, "config revisions move the digest");
 
-        // Live adapter observations move the digest through the revision counter.
-        let before_observation = context_breakdown_digest(&db, &session_id).unwrap();
-        let inventory = AdapterContextInventory::new(
-            "claude",
-            ContextInventoryScope::TurnPresented,
-            crate::context_inventory::ContextLifecyclePhase::PerTurn,
-            ContextSegmentClass::ALL
-                .map(|class| {
-                    crate::context_inventory::ContextSegmentObservation::estimated(
-                        class,
-                        std::iter::empty::<&str>(),
-                        crate::context_inventory::ContextObservedSize::bounded(None, Some(10), Some(2)),
-                        "test",
-                    )
-                })
-                .to_vec(),
-        )
-        .unwrap();
-        context_inventory::record_runtime_inventory(&std::sync::Mutex::new(Vec::new()), [inventory]);
-        let after_observation = context_breakdown_digest(&db, &session_id).unwrap();
+        // Live adapter observations move the digest, and they do it from this
+        // session's own inventories rather than a process-wide counter.
+        let before_observation = context_breakdown_digest(&db, &session_id, &[]).unwrap();
+        let observed = [inventory_with("claude", ContextInventoryScope::TurnPresented, 2)];
+        let after_observation = context_breakdown_digest(&db, &session_id, &observed).unwrap();
         assert_ne!(after_observation, before_observation, "observations move the digest");
+        // Re-reading the same observations is a no-op, so a poll on unchanged
+        // state still short-circuits.
+        assert_eq!(
+            after_observation,
+            context_breakdown_digest(&db, &session_id, &observed).unwrap()
+        );
+        // A later turn's observations move it again.
+        assert_ne!(
+            after_observation,
+            context_breakdown_digest(
+                &db,
+                &session_id,
+                &[inventory_with("claude", ContextInventoryScope::TurnPresented, 3)]
+            )
+            .unwrap(),
+            "a new turn's observations are not the previous turn's"
+        );
+        // Both surfaces report the same token for the same inputs.
+        assert_eq!(
+            context_breakdown(&db, &session_id, &observed).unwrap().digest,
+            after_observation
+        );
 
         // And the recorded compilation surfaces as labelled segments.
         let breakdown = context_breakdown(&db, &session_id, &[]).unwrap();
@@ -654,4 +825,5 @@ mod tests {
         assert_eq!(stable.method.as_deref(), Some(crate::prompt_compiler::TOKEN_ESTIMATE_SOURCE));
         assert_eq!(stable.tokens, Some(75));
     }
+
 }

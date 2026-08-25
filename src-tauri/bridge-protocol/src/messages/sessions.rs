@@ -118,6 +118,8 @@ pub struct ContextBreakdownTotals {
     pub bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<i64>,
+    /// How many returned segments are `unavailable` — segments, not distinct
+    /// sources: one silent source contributes one entry per class it covers.
     pub unavailable_sources: u32,
 }
 

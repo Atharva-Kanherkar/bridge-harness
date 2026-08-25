@@ -210,6 +210,7 @@
           ]
         },
         "unavailableSources": {
+          "description": "How many returned segments are `unavailable` — segments, not distinct sources: one silent source contributes one entry per class it covers.",
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
