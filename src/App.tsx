@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LayoutGrid, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -10,12 +10,11 @@ import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, H
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
-import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
+import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
@@ -41,6 +40,9 @@ import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
+import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
+import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
+import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
@@ -53,6 +55,7 @@ import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 
+const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
@@ -92,7 +95,16 @@ export function App() {
   const [health, setHealth] = useState<Health>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
-  const [view, setView] = useState<"workspace" | "work" | "projects" | "marketplace" | "settings">("workspace");
+  const [view, setView] = useState<AppView>("workspace");
+  const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
+    stack: [{ view: "workspace", sessionId: null, paradigm: "single" }],
+    index: 0,
+  });
+  const skipNavRecord = useRef(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("bridge.sidebar.collapsed") === "1"; }
+    catch { return false; }
+  });
   // The Work board. Held here rather than inside WorkView so the rail can show a
   // count while a conversation is on screen. Returning to the board does re-read, on
   // purpose: a fact you just acted on may be gone, and showing it again would be
@@ -114,10 +126,11 @@ export function App() {
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
-  // Fullscreen is a property of the workspace surface, not of one tab: it
-  // drops the sidebar and the session header so the active tab gets the whole
-  // window. The tab strip stays, because it is also the way back out.
+  // Fullscreen only squares the native frame. The sidebar and canvas keep the
+  // same side-by-side geometry as windowed mode; native fullscreen and zoom
+  // arrive as `data-flush-window` from the shell.
   const [fullscreen, setFullscreen] = useState(false);
+  const [flushWindow, setFlushWindow] = useState(isFlushWindowDocument);
   /// The worker whose full activity feed is open over the chat. Owned here, not
   /// in the conversation, because the overlay covers the whole session pane and
   /// has to survive the transcript re-rendering underneath it.
@@ -127,13 +140,14 @@ export function App() {
   // diffs, and — now that both tabs can edit — unsaved text.
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(["agent"]));
   useEffect(() => { setVisitedTabs(previous => previous.has(activeTab) ? previous : new Set(previous).add(activeTab)); }, [activeTab]);
-  const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | "memory" | null>(null);
+  const [modal, setModal] = useState<"workspace" | "orchestrator" | "router" | "memory" | null>(null);
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [memoryDisclosureOpen, setMemoryDisclosureOpen] = useState(false);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
+  const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
@@ -241,6 +255,43 @@ export function App() {
   }, [reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
+
+  useEffect(() => {
+    const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
+    if (skipNavRecord.current) {
+      skipNavRecord.current = false;
+      return;
+    }
+    setNavPlaces(current => recordPlace(current.stack, current.index, place));
+  }, [view, selectedSessionId, paradigm]);
+
+  const applyPlace = useCallback((place: AppPlace) => {
+    skipNavRecord.current = true;
+    setView(place.view);
+    setSelectedSessionId(place.sessionId ?? undefined);
+    setParadigm(place.paradigm);
+    if (place.view === "workspace") {
+      setActiveTab("agent");
+      setExpandedWorkerId(undefined);
+    }
+  }, []);
+
+  const goBack = useCallback(() => {
+    if (navPlaces.index <= 0) return;
+    const index = navPlaces.index - 1;
+    applyPlace(navPlaces.stack[index]);
+    setNavPlaces(current => ({ ...current, index }));
+  }, [applyPlace, navPlaces]);
+
+  const goForward = useCallback(() => {
+    if (navPlaces.index >= navPlaces.stack.length - 1) return;
+    const index = navPlaces.index + 1;
+    applyPlace(navPlaces.stack[index]);
+    setNavPlaces(current => ({ ...current, index }));
+  }, [applyPlace, navPlaces]);
+
+  const canBack = navPlaces.index > 0;
+  const canForward = navPlaces.index < navPlaces.stack.length - 1;
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -289,6 +340,31 @@ export function App() {
     [expandedWorkerId, state.sessions],
   );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  const conversationStarted = useMemo(() => {
+    if (!session) return false;
+    if (session.activeTurnId) return true;
+    if (pendingForSession.length > 0) return true;
+    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    return durable.some(item => item.type === "message" && item.role === "user");
+  }, [forest, pendingForSession.length, session]);
+  const [worktreeOn, setWorktreeOn] = useState(false);
+  const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
+  const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
+  const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
+  const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  const branchRequestGeneration = useRef(0);
+  const newChatPendingRef = useRef(false);
+  useEffect(() => {
+    if (!session) { setWorktreeOn(false); return; }
+    const tracked = worktreeBySessionRef.current.get(session.id);
+    if (tracked !== undefined) { setWorktreeOn(tracked); return; }
+    setWorktreeOn(!!session.cwd && !!workspace?.path && session.cwd !== workspace.path);
+  }, [session, workspace?.path]);
+  useEffect(() => {
+    setWorkspaceBranchCurrent(workspace?.branch ?? null);
+  }, [workspace?.id, workspace?.branch]);
   // Read from config rather than held in component state: the badge has to agree
   // with what the host stored, including after another window changed it.
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>();
@@ -550,7 +626,15 @@ export function App() {
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
-  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); setExpandedWorkerId(undefined); }
+  function openSession(id: string) {
+    setView("workspace");
+    setParadigm("single");
+    setActiveTab("agent");
+    setSelectedSessionId(id);
+    setExpandedWorkerId(undefined);
+    const opened = state.sessions.find(candidate => candidate.id === id);
+    if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
+  }
 
   // Reading the board is the whole of what opening Work does: one call, no session
   // selected, no model, no git, no network.
@@ -703,33 +787,41 @@ export function App() {
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
-  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor) {
-    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
-    setView("workspace");
-    const currentAdapter = session?.kind === "direct"
-      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
-      : undefined;
-    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-    const harness = (preferred?.id as Harness) ?? "codex";
-    const model = harnessOverride
-      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
-      : currentAdapter
-      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
-      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
-    const draft = initialMessage?.trim() ?? "";
-    if (draft) pendingWelcomeMessageRef.current = draft;
-    setBusy(true); setError(undefined);
-    try {
-      const next = await bridgeApi.createChat(harness, model, null);
-      const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
-      setState(next);
-      if (created) setSelectedSessionId(created.id);
-    } catch (e) {
-      pendingWelcomeMessageRef.current = null;
-      setError(errorMessage(e));
+  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false) {
+    if (!alreadyLocked) {
+      if (newChatPendingRef.current) return;
+      newChatPendingRef.current = true;
     }
-    finally { setBusy(false); }
+    try {
+      if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+      setView("workspace");
+      const currentAdapter = session?.kind === "direct"
+        ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
+        : undefined;
+      const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
+      const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+      const harness = (preferred?.id as Harness) ?? "codex";
+      const model = harnessOverride
+        ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
+        : currentAdapter
+        ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
+        : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+      const draft = initialMessage?.trim() ?? "";
+      if (draft) pendingWelcomeMessageRef.current = draft;
+      setBusy(true); setError(undefined);
+      try {
+        const next = await bridgeApi.createChat(harness, model, null);
+        const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
+        setState(next);
+        if (created) setSelectedSessionId(created.id);
+      } catch (e) {
+        pendingWelcomeMessageRef.current = null;
+        setError(errorMessage(e));
+      }
+      finally { setBusy(false); }
+    } finally {
+      if (!alreadyLocked) newChatPendingRef.current = false;
+    }
   }
 
   // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
@@ -737,7 +829,7 @@ export function App() {
   // handing it the rest of the text as its first message. Returns whether
   // the text was a shortcut at all, so the caller knows whether to fall back
   // to its own normal send path.
-  async function openHarnessShortcut(text: string): Promise<boolean> {
+  async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<boolean> {
     const shortcut = parseHarnessShortcut(text);
     if (!shortcut) return false;
     const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
@@ -746,24 +838,109 @@ export function App() {
       setError(`${adapter.label} isn't available${adapter.unavailableReason ? ` — ${adapter.unavailableReason}` : ""}.`);
       return true;
     }
-    await openNewChat(shortcut.rest, adapter);
+    await openNewChat(shortcut.rest, adapter, alreadyLocked);
     return true;
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
   async function startChatOrShortcut(text?: string) {
-    if (text && await openHarnessShortcut(text)) return;
-    await openNewChat(text);
+    if (newChatPendingRef.current) return;
+    newChatPendingRef.current = true;
+    try {
+      if (text && await openHarnessShortcut(text, true)) return;
+      const workspaceId = resolveNewChatWorkspaceId({
+        activeWorkspaceId: welcomeWorkspaceId,
+        lastWorkspaceId: readLastWorkspaceId(),
+        workspaces: state.workspaces,
+      });
+      if (!workspaceId) {
+        await openNewChat(text, undefined, true);
+        return;
+      }
+      const draft = text?.trim() ?? "";
+      if (draft) pendingWelcomeMessageRef.current = draft;
+      const createdId = await newWorkspaceSession(false, workspaceId, true);
+      if (!createdId) pendingWelcomeMessageRef.current = null;
+    } finally {
+      newChatPendingRef.current = false;
+    }
   }
 
-  // The new-chat dialog asks the two questions once; this routes its answer.
-  async function startChat({ workspaceId, worktree }: NewChatChoice) {
-    if (workspaceId) {
-      await newWorkspaceSession(worktree, workspaceId);
-      return;
+  async function startChatInCurrentRepo() {
+    if (newChatPendingRef.current) return;
+    newChatPendingRef.current = true;
+    try {
+      if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+      const workspaceId = resolveNewChatWorkspaceId({
+        activeWorkspaceId: session?.workspaceId,
+        lastWorkspaceId: readLastWorkspaceId(),
+        workspaces: state.workspaces,
+      });
+      if (!workspaceId) {
+        await openNewChat(undefined, undefined, true);
+        return;
+      }
+      await newWorkspaceSession(false, workspaceId, true);
+    } finally {
+      newChatPendingRef.current = false;
     }
-    setModal(null);
-    await openNewChat();
+  }
+
+  async function retargetWorkspace(workspaceId: string, createWorktree: boolean) {
+    const previousId = session && forest !== undefined && !conversationStarted ? session.id : undefined;
+    const createdId = await newWorkspaceSession(createWorktree, workspaceId);
+    if (previousId && createdId && previousId !== createdId) {
+      try { setState(await bridgeApi.stopSession(previousId)); } catch { /* the empty chat we replaced */ }
+    }
+  }
+
+  async function requestWorkspaceBranches(workspaceId: string) {
+    const generation = ++branchRequestGeneration.current;
+    setBranchWorkspaceId(workspaceId);
+    setBranchBusy(true);
+    setBranchError(null);
+    try {
+      const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+      if (branchRequestGeneration.current !== generation) return;
+      setWorkspaceBranches(result.branches);
+      setWorkspaceBranchCurrent(result.current ?? null);
+    } catch (error) {
+      if (branchRequestGeneration.current !== generation) return;
+      setWorkspaceBranches([]);
+      setBranchError(errorMessage(error));
+    } finally {
+      if (branchRequestGeneration.current === generation) setBranchBusy(false);
+    }
+  }
+
+  async function switchWorkspaceBranch(workspaceId: string, branch: string) {
+    const generation = ++branchRequestGeneration.current;
+    setBranchWorkspaceId(workspaceId);
+    setBranchBusy(true);
+    setBranchError(null);
+    setError(undefined);
+    try {
+      const next = await bridgeApi.checkoutWorkspaceBranch(workspaceId, branch);
+      if (branchRequestGeneration.current !== generation) return;
+      setState(next);
+      const switched = next.workspaces.find(item => item.id === workspaceId)?.branch ?? branch;
+      setWorkspaceBranchCurrent(switched);
+      try {
+        const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+        if (branchRequestGeneration.current !== generation) return;
+        setWorkspaceBranches(result.branches);
+        setWorkspaceBranchCurrent(result.current ?? null);
+      } catch {
+        // Checkout already committed; a stale menu is not a failed switch.
+      }
+    } catch (error) {
+      if (branchRequestGeneration.current !== generation) return;
+      const message = errorMessage(error);
+      setBranchError(message);
+      setError(message);
+    } finally {
+      if (branchRequestGeneration.current === generation) setBranchBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -778,20 +955,33 @@ export function App() {
     setPendingWorkspaceId(workspaceId);
     setModal("orchestrator");
   }
-  async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string) {
-    const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
-    if (!workspaceId) return;
-    setBusy(true); setError(undefined);
+  async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string, alreadyLocked = false) {
+    if (!alreadyLocked) {
+      if (newChatPendingRef.current) return;
+      newChatPendingRef.current = true;
+    }
     try {
-      const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
-      const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
-      setState(next);
-      // Land in the new agent's chat rather than leaving the user looking at the
-      // card or dialog they came from.
-      if (created) openSession(created.id);
-      setModal(null); setPendingWorkspaceId(undefined);
-    } catch (e) { setError(errorMessage(e)); }
-    finally { setBusy(false); }
+      const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
+      if (!workspaceId) return;
+      setBusy(true); setError(undefined);
+      try {
+        const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
+        const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
+        writeLastWorkspaceId(workspaceId);
+        setState(next);
+        // Land in the new agent's chat rather than leaving the user looking at the
+        // card or dialog they came from.
+        if (created) {
+          worktreeBySessionRef.current.set(created.id, createWorktree);
+          openSession(created.id);
+        }
+        setModal(null); setPendingWorkspaceId(undefined);
+        return created?.id;
+      } catch (e) { setError(errorMessage(e)); }
+      finally { setBusy(false); }
+    } finally {
+      if (!alreadyLocked) newChatPendingRef.current = false;
+    }
   }
   async function changeChatModel(harness: Harness, model: string | null) {
     if (!session) return;
@@ -1036,43 +1226,83 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    setLayoutFullscreenDocument(fullscreen || flushWindow);
+  }, [fullscreen, flushWindow]);
 
+  useEffect(() => {
+    notifyLayoutFullscreen(fullscreen);
+  }, [fullscreen]);
+
+  useEffect(() => {
+    const sync = () => setFlushWindow(isFlushWindowDocument());
+    sync();
+    document.documentElement.addEventListener(FLUSH_WINDOW_EVENT, sync);
+    return () => document.documentElement.removeEventListener(FLUSH_WINDOW_EVENT, sync);
+  }, []);
+
+  const toggleLayoutFullscreen = useCallback(() => {
+    setFullscreen(value => !value);
+  }, []);
+
+  const chromeFullscreen = fullscreen || flushWindow;
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  return <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background text-foreground">
-
-    {!fullscreen && <AppTitleBar
-      title={view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}
-      navOpen={navOpen}
-      onOpenNav={() => setNavOpen(true)}
-      actions={<>
-        <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
-        {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
-        <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />
-      </>}
-    />}
-
-    <div className="relative flex min-h-0 flex-1">
-    {!fullscreen && <BridgeSidebar
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "automations" ? "Automations" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
+  const titleBarActions = <>
+    <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
+    <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />
+  </>;
+  const sidebar = (
+    <BridgeSidebar
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
-      workBoardActive={view === "work"}
-      workNeedsYouCount={needsYouCount(workBoard?.facts ?? [])}
       projectsActive={view === "projects"}
-      marketplaceActive={view === "marketplace"}
+      automationsActive={view === "automations"}
+      missionControlActive={view === "workspace" && paradigm === "grid"}
+      workActive={view === "work"}
       settingsActive={view === "settings"}
-      onOpenNewChat={() => setModal("chat")}
-      onOpenWorkBoard={openWorkBoard}
+      accountName={localAccountName(health.database, workspace?.path)}
+      newChatBusy={busy}
+      onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenProjects={() => setView("projects")}
-      onOpenMarketplace={() => setView("marketplace")}
+      onOpenAutomations={() => setView("automations")}
+      onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
+      onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setModal("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
-    />}
+      collapsed={sidebarCollapsed}
+      onCollapsedChange={setSidebarCollapsed}
+      showWindowNav
+      canBack={canBack}
+      canForward={canForward}
+      onBack={goBack}
+      onForward={goForward}
+    />
+  );
+  const resolvedWelcomeWorkspaceId = resolveNewChatWorkspaceId({
+    activeWorkspaceId: welcomeWorkspaceId,
+    lastWorkspaceId: readLastWorkspaceId(),
+    workspaces: state.workspaces,
+  });
+  const welcomeWorkspace = state.workspaces.find(item => item.id === resolvedWelcomeWorkspaceId) ?? null;
+
+  return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
+    {sidebar}
+    <div className="u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+    <AppTitleBar
+      flush
+      hideBrand
+      title={chromeTitle}
+      navOpen={navOpen}
+      onOpenNav={() => setNavOpen(true)}
+      actions={titleBarActions}
+    />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl" />
@@ -1096,14 +1326,14 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening automations…"/>}><AutomationsPanel onBrowseCatalog={() => setView("marketplace")} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
         fullscreen={fullscreen}
-        onToggleFullscreen={() => setFullscreen(value => !value)}
+        onToggleFullscreen={toggleLayoutFullscreen}
         onFocusSession={openSession}
         onSteer={steerWorker}
       /> : session ? <>
@@ -1121,7 +1351,7 @@ export function App() {
           browserOpen={browserOpen}
           onToggleBrowser={() => setBrowserOpen(value => !value)}
           fullscreen={fullscreen}
-          onToggleFullscreen={() => setFullscreen(value => !value)}
+          onToggleFullscreen={toggleLayoutFullscreen}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
           onToggleRecall={() => {
             setActiveTab("agent");
@@ -1242,6 +1472,20 @@ export function App() {
                       </button>)}
                     </div>
                   </div>}
+                  <ComposerContextStrip
+                    workspaces={state.workspaces}
+                    workspace={workspace ?? null}
+                    worktree={worktreeOn}
+                    locked={conversationStarted || forest === undefined}
+                    branches={branchWorkspaceId === workspace?.id ? workspaceBranches : []}
+                    currentBranch={branchWorkspaceId === workspace?.id ? workspaceBranchCurrent : workspace?.branch ?? null}
+                    branchBusy={branchWorkspaceId === workspace?.id && branchBusy}
+                    branchError={branchWorkspaceId === workspace?.id ? branchError : null}
+                    onSelectWorkspace={id => { if (id === workspace?.id) return; void retargetWorkspace(id, worktreeOn); }}
+                    onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
+                    onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
+                    onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
+                  />
                   {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Talk to a harness directly</span>
@@ -1294,6 +1538,20 @@ export function App() {
         modelSetup={modelSetup}
         canStartChat={adaptersReady}
         busy={busy}
+        workspaces={state.workspaces}
+        workspace={welcomeWorkspace}
+        worktree={false}
+        branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
+        currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
+        branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
+        branchError={branchWorkspaceId === welcomeWorkspace?.id ? branchError : null}
+        onSelectWorkspace={id => { writeLastWorkspaceId(id); setWelcomeWorkspaceId(id); }}
+        onRequestBranches={() => { if (welcomeWorkspace) void requestWorkspaceBranches(welcomeWorkspace.id); }}
+        onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
+        onToggleWorktree={draft => {
+          if (draft) pendingWelcomeMessageRef.current = draft;
+          if (resolvedWelcomeWorkspaceId) void newWorkspaceSession(true, resolvedWelcomeWorkspaceId);
+        }}
         onStartChat={text => void startChatOrShortcut(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
@@ -1315,14 +1573,6 @@ export function App() {
       );
     })()}
 
-    <NewChatDialog
-      open={modal === "chat"}
-      workspaces={state.workspaces}
-      initialWorkspaceId={pendingWorkspaceId ?? null}
-      busy={busy}
-      onClose={() => { setModal(null); setPendingWorkspaceId(undefined); }}
-      onStart={choice => void startChat(choice)}
-    />
     <WorkspaceCreateDialog
       open={modal === "workspace"}
       title={title}
@@ -1349,6 +1599,16 @@ function PanelLoading({ label }: { label: string }) {
   return <div role="status" className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">{label}</div>;
 }
 
+function localAccountName(...paths: Array<string | null | undefined>): string {
+  for (const path of paths) {
+    if (!path) continue;
+    const macOrLinux = path.match(/^\/(?:Users|home)\/([^/]+)/);
+    if (macOrLinux?.[1]) return macOrLinux[1];
+    const windows = path.match(/^[A-Za-z]:\\Users\\([^\\]+)/i);
+    if (windows?.[1]) return windows[1];
+  }
+  return "Local user";
+}
 
 function modelDisplayName(adapters: import("./types").AdapterDescriptor[], harness: Harness, model?: string | null): string {
   const adapter = adapters.find(item => item.id === harness);
@@ -1591,7 +1851,25 @@ function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types
   return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-muted-foreground">{tierLabel}<ChevronDown size={14} className="text-muted-foreground/70" aria-hidden="true" /></span>;
 }
 
-function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; canStartChat: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
+function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+  adapters: import("./types").AdapterDescriptor[];
+  modelSetup: ModelSetupState;
+  busy: boolean;
+  canStartChat: boolean;
+  onStartChat: (text?: string) => void;
+  onNewWorkspace: () => void;
+  workspaces: Workspace[];
+  workspace: Workspace | null;
+  worktree: boolean;
+  branches: string[];
+  currentBranch: string | null;
+  branchBusy: boolean;
+  branchError: string | null;
+  onSelectWorkspace: (id: string) => void;
+  onRequestBranches: () => void;
+  onSelectBranch: (branch: string) => void;
+  onToggleWorktree: (draft?: string) => void;
+}) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
   const submit = () => {
@@ -1602,6 +1880,20 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
   };
   return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
     <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
+    {workspaces.length > 0 && <ComposerContextStrip
+      workspaces={workspaces}
+      workspace={workspace}
+      worktree={worktree}
+      locked={busy}
+      branches={branches}
+      currentBranch={currentBranch}
+      branchBusy={branchBusy}
+      branchError={branchError}
+      onSelectWorkspace={onSelectWorkspace}
+      onRequestBranches={onRequestBranches}
+      onSelectBranch={onSelectBranch}
+      onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
+    />}
     <ComposerPill
       layout="hero"
       value={draft}

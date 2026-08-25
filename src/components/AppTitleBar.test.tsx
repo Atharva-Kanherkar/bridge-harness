@@ -48,14 +48,29 @@ describe("AppTitleBar", () => {
     expect(text).toContain("Orchestrator");
   });
 
-  it("leaves the traffic lights their corner", () => {
+  it("leaves the traffic lights their corner in a windowed Tauri frame", () => {
     mount();
     expect(header().className).toContain("pl-24");
+    expect(header().className).toContain("u-traffic-inset");
+  });
+
+  it("can sit flush beside a sidebar without a hairline", () => {
+    mount({ flush: true, hideBrand: true });
+    expect(header().className).not.toContain("border-b");
+    expect(header().className).not.toContain("pl-24");
+    expect(header().className).not.toContain("u-traffic-inset");
+    expect(header().textContent).not.toContain("bridge");
   });
 
   it("insets trailing chrome so nested controls can be concentric with the window", () => {
     mount();
     expect(header().className).toContain("pr-[var(--window-control-inset)]");
+  });
+
+  it("drops the trailing window-control inset when flush, because the right edge is the rail seam", () => {
+    mount({ flush: true });
+    expect(header().className).not.toContain("pr-[var(--window-control-inset)]");
+    expect(header().className).toContain("pr-3");
   });
 
   it("opens navigation from the mobile toggle", () => {

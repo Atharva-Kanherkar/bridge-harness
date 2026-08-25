@@ -21,7 +21,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
 
 // Every command below delegates to `bridge_core::api` — the host-agnostic body
 // of each protocol method, shared with the `bridged` daemon. The shell's only
@@ -1343,6 +1343,31 @@ async fn refresh_workspace(
 }
 
 #[tauri::command]
+async fn list_workspace_branches(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::WorkspaceBranches, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace branch list", move || {
+        api::list_workspace_branches(&core, &workspace_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn checkout_workspace_branch(
+    workspace_id: String,
+    branch: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<BridgeState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace branch checkout", move || {
+        api::checkout_workspace_branch(&core, &workspace_id, &branch)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn archive_workspace(
     workspace_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -1401,8 +1426,22 @@ fn select_host(
     host: &std::sync::OnceLock<HostMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(window) = app.get_webview_window("main") {
-        window_chrome::position_traffic_lights(&window.as_ref().window());
+        let window = window.as_ref().window();
+        window_chrome::position_traffic_lights(&window);
+        window_chrome::apply_wallpaper_tint(&window);
+        window_chrome::sync_fullscreen_chrome(&window);
     }
+    let handle = app.handle().clone();
+    let _ = app.listen("bridge-layout-fullscreen", move |event| {
+        let fullscreen = window_chrome::parse_layout_fullscreen_payload(event.payload());
+        let main_handle = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            window_chrome::set_layout_fullscreen(fullscreen);
+            if let Some(window) = main_handle.get_webview_window("main") {
+                window_chrome::sync_fullscreen_chrome(&window.as_ref().window());
+            }
+        });
+    });
     let data = app.path().app_data_dir()?;
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
@@ -1679,6 +1718,8 @@ pub fn run() {
             resolve_approval,
             stop_session,
             refresh_workspace,
+            list_workspace_branches,
+            checkout_workspace_branch,
             archive_workspace,
             workspace_changes
         ]);
@@ -1696,6 +1737,10 @@ pub fn run() {
                     | tauri::WindowEvent::ThemeChanged(_)
             ) {
                 window_chrome::position_traffic_lights(window);
+                window_chrome::sync_fullscreen_chrome(window);
+            }
+            if matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
+                window_chrome::apply_wallpaper_tint(window);
             }
         })
         .invoke_handler(move |invoke| {

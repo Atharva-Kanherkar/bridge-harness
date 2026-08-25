@@ -51,6 +51,8 @@ methods![
     (ReadWorkspaceFile, "workspaces", "read_workspace_file"),
     (WriteWorkspaceFile, "workspaces", "write_workspace_file"),
     (RefreshWorkspace, "workspaces", "refresh_workspace"),
+    (ListWorkspaceBranches, "workspaces", "list_workspace_branches"),
+    (CheckoutWorkspaceBranch, "workspaces", "checkout_workspace_branch"),
     (ArchiveWorkspace, "workspaces", "archive_workspace"),
     (WorkspaceChanges, "workspaces", "workspace_changes"),
     // sessions

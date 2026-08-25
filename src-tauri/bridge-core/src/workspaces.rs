@@ -143,16 +143,26 @@ impl BridgeCore {
     }
 
     /// Record the result of a Git status scan produced by [`git::stats`].
+    /// When `branch` is set, the stored checkout name is refreshed too so a
+    /// switch made in the terminal is not stuck on the previous chip.
     pub fn record_workspace_git_stats(
         &self,
         workspace_id: &str,
         (dirty, additions, deletions): (i64, i64, i64),
+        branch: Option<&str>,
     ) -> Result<BridgeState, BridgeError> {
         let db = self.db.lock().unwrap();
-        db.execute(
-            "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
-            params![workspace_id, dirty, additions, deletions],
-        )?;
+        if let Some(branch) = branch {
+            db.execute(
+                "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4,branch=?5 WHERE id=?1",
+                params![workspace_id, dirty, additions, deletions, branch],
+            )?;
+        } else {
+            db.execute(
+                "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
+                params![workspace_id, dirty, additions, deletions],
+            )?;
+        }
         store::state(&db)
     }
 
@@ -269,10 +279,7 @@ mod tests {
             &repo,
             &["config", "user.email", "bridge-test@example.invalid"],
         );
-        git(
-            &repo,
-            &["config", "commit.gpgsign", "false"],
-        );
+        git(&repo, &["config", "commit.gpgsign", "false"]);
         git(&repo, &["config", "user.name", "Bridge Test"]);
         std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
         git(&repo, &["add", "."]);
@@ -433,7 +440,7 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM workspaces", [], |row| row.get(0))
             .unwrap();
-        core.record_workspace_git_stats(&workspace_id, (3, 10, 2))
+        core.record_workspace_git_stats(&workspace_id, (3, 10, 2), None)
             .unwrap();
         let (dirty, adds, dels): (i64, i64, i64) = core
             .db
@@ -449,7 +456,7 @@ mod tests {
         // The refresh race: a workspace archived between the path resolve and
         // the stats write updates zero rows and still returns a snapshot.
         assert!(core
-            .record_workspace_git_stats("already-archived", (1, 1, 1))
+            .record_workspace_git_stats("already-archived", (1, 1, 1), None)
             .is_ok());
     }
 

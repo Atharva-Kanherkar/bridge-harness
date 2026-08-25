@@ -6,22 +6,6 @@ import { harnessLabel } from "../utils";
 // problem, not a scrolling problem — this module owns that logic so the
 // component stays presentation.
 
-/** Which half of the app a chat belongs to: a plain conversation, or work inside
- * a project. The rail shows one or the other, never both interleaved. */
-export type ChatScope = "work" | "code";
-
-export const CHAT_SCOPE_KEY = "bridge.sidebar.scope";
-
-export function readChatScope(): ChatScope {
-  if (typeof localStorage === "undefined") return "work";
-  return localStorage.getItem(CHAT_SCOPE_KEY) === "code" ? "code" : "work";
-}
-
-export function writeChatScope(scope: ChatScope): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(CHAT_SCOPE_KEY, scope);
-}
-
 /** The session kind a briefing run uses. Mirrors
  * `bridge_core::work_briefing_config::BRIEFING_SESSION_KIND`. */
 export const BRIEFING_SESSION_KIND = "briefing";
@@ -52,15 +36,6 @@ export function visibleChats(chats: Session[]): Session[] {
   return chats.filter(chat => !isHiddenSession(chat));
 }
 
-/** A chat belongs to Code when it runs inside a project, Work when it does not. */
-export function chatScope(chat: Session): ChatScope {
-  return chat.workspaceId ? "code" : "work";
-}
-
-export function inScope(chats: Session[], scope: ChatScope): Session[] {
-  return chats.filter(chat => chatScope(chat) === scope);
-}
-
 export type ChatGroupBy = "date" | "project" | "agent" | "status" | "none";
 export type ChatSortBy = "recency" | "name";
 export type ChatStatusFilter = "all" | "active" | "waiting" | "failed";
@@ -77,7 +52,7 @@ export type ChatGroup = { key: string; label: string; chats: Session[] };
 
 export const CHAT_VIEW_KEY = "bridge.sidebar.chatView";
 
-export const DEFAULT_CHAT_VIEW: ChatView = { status: "all", agent: "all", groupBy: "date", sortBy: "recency" };
+export const DEFAULT_CHAT_VIEW: ChatView = { status: "all", agent: "all", groupBy: "project", sortBy: "recency" };
 
 /** Rows shown per group before a "Show more" control takes over. */
 export const GROUP_ROW_CAP = 12;
@@ -142,6 +117,18 @@ export function chatTimestamp(chat: Session): number | null {
   if (!raw) return null;
   const value = Date.parse(raw);
   return Number.isFinite(value) ? value : null;
+}
+
+/** Compact age for a chat row. Null means the row should omit the time entirely. */
+export function chatListTime(at: number | null, now: number): string | null {
+  if (at === null || !Number.isFinite(at)) return null;
+  const seconds = Math.max(0, Math.floor((now - at) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function startOfDay(value: number): number {
@@ -236,7 +223,7 @@ function mostRecent(chats: Session[]): number {
   return chats.reduce((latest, chat) => Math.max(latest, chatTimestamp(chat) ?? Number.NEGATIVE_INFINITY), Number.NEGATIVE_INFINITY);
 }
 
-const NO_PROJECT_KEY = "__no_project__";
+export const NO_PROJECT_GROUP_KEY = "__no_project__";
 const UNDATED_KEY = "__earlier__";
 
 export function groupChats(
@@ -265,13 +252,13 @@ export function groupChats(
 
   if (groupBy === "project") {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
-    const buckets = bucketBy(chats, chat => chat.workspaceId ?? NO_PROJECT_KEY);
+    const buckets = bucketBy(chats, chat => chat.workspaceId ?? NO_PROJECT_GROUP_KEY);
     const projects = [...buckets.keys()]
-      .filter(key => key !== NO_PROJECT_KEY)
+      .filter(key => key !== NO_PROJECT_GROUP_KEY)
       .map(key => ({ key, label: titles.get(key) ?? "Unknown project", chats: sortChats(buckets.get(key)!, sortBy) }));
     projects.sort((a, b) => (sortBy === "name" ? a.label.localeCompare(b.label) : mostRecent(b.chats) - mostRecent(a.chats)));
-    const loose = buckets.get(NO_PROJECT_KEY);
-    return loose ? [...projects, { key: NO_PROJECT_KEY, label: "No project", chats: sortChats(loose, sortBy) }] : projects;
+    const loose = buckets.get(NO_PROJECT_GROUP_KEY);
+    return loose ? [...projects, { key: NO_PROJECT_GROUP_KEY, label: "No project", chats: sortChats(loose, sortBy) }] : projects;
   }
 
   if (groupBy === "agent") {

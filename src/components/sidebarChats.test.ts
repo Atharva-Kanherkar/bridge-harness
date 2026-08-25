@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -54,6 +54,22 @@ describe("chatTimestamp", () => {
     expect(chatTimestamp(chat("b", { startedAt: null, endedAt: at(2026, 8, 17) }))).toBe(Date.parse(at(2026, 8, 17)));
     expect(chatTimestamp(chat("c", { startedAt: null, endedAt: null }))).toBeNull();
     expect(chatTimestamp(chat("d", { startedAt: "not a date" }))).toBeNull();
+  });
+});
+
+describe("chatListTime", () => {
+  const now = Date.parse("2026-08-19T16:00:00Z");
+
+  it("buckets compact ages at the edges", () => {
+    expect(chatListTime(now - 1_000, now)).toBe("now");
+    expect(chatListTime(now - 4 * 60_000, now)).toBe("4m");
+    expect(chatListTime(now - 2 * 3_600_000, now)).toBe("2h");
+    expect(chatListTime(now - 3 * 86_400_000, now)).toBe("3d");
+  });
+
+  it("omits a missing or invalid timestamp so the row can stay quiet", () => {
+    expect(chatListTime(null, now)).toBeNull();
+    expect(chatListTime(Number.NaN, now)).toBeNull();
   });
 });
 
@@ -207,19 +223,6 @@ describe("agentOptions", () => {
   });
 });
 
-describe("chat scope", () => {
-  it("puts a chat with a workspace under Code and one without under Work", () => {
-    expect(chatScope(chat("a", { workspaceId: "ws-1" }))).toBe("code");
-    expect(chatScope(chat("b", { workspaceId: null }))).toBe("work");
-  });
-
-  it("splits a mixed list without dropping anything", () => {
-    const chats = [chat("a", { workspaceId: "ws-1" }), chat("b"), chat("c", { workspaceId: "ws-2" })];
-    expect(inScope(chats, "code").map(item => item.id)).toEqual(["a", "c"]);
-    expect(inScope(chats, "work").map(item => item.id)).toEqual(["b"]);
-  });
-});
-
 describe("chat view persistence", () => {
   beforeEach(() => {
     const store = new Map<string, string>();
@@ -242,7 +245,7 @@ describe("chat view persistence", () => {
 
   it("falls back per field on an unknown value", () => {
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "bogus", agent: "codex", groupBy: "nope", sortBy: "name" }));
-    expect(readChatView()).toEqual({ status: "all", agent: "codex", groupBy: "date", sortBy: "name" });
+    expect(readChatView()).toEqual({ status: "all", agent: "codex", groupBy: "project", sortBy: "name" });
   });
 
   it("falls back wholesale on unparseable storage", () => {
@@ -250,12 +253,8 @@ describe("chat view persistence", () => {
     expect(readChatView()).toEqual(DEFAULT_CHAT_VIEW);
   });
 
-  it("round-trips the scope and defaults to Work", () => {
-    expect(readChatScope()).toBe("work");
-    writeChatScope("code");
-    expect(readChatScope()).toBe("code");
-    localStorage.setItem(CHAT_SCOPE_KEY, "nonsense");
-    expect(readChatScope()).toBe("work");
+  it("defaults groupBy to project", () => {
+    expect(DEFAULT_CHAT_VIEW.groupBy).toBe("project");
   });
 });
 
@@ -293,10 +292,6 @@ describe("hidden sessions", () => {
     const visible = visibleChats(chats);
     expect(visible).not.toContain(briefing);
     expect(visible.map(item => item.id)).toEqual(["plain", "orchestrated"]);
-    // And the two scopes it could hide behind.
-    for (const scope of ["work", "code"] as const) {
-      expect(visibleChats(inScope(chats, scope))).not.toContain(briefing);
-    }
   });
 
   it("names the same kinds the backend does", () => {
@@ -304,12 +299,5 @@ describe("hidden sessions", () => {
     // becomes visible in the rail, which is the one place it must never appear.
     expect(BRIEFING_SESSION_KIND).toBe("briefing");
     expect(SUGGESTION_SESSION_KIND).toBe("suggestion");
-  });
-
-  it("keeps a briefing run out of scope filtering too", () => {
-    // Belt to the App-level filter: a caller that reached inScope directly must not get
-    // one back either.
-    const chats = [chat("plain"), chat("briefing", BRIEFING_SESSION_KIND)];
-    expect(visibleChats(inScope(chats, "work")).map(item => item.id)).toEqual(["plain"]);
   });
 });

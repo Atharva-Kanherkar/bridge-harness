@@ -5,10 +5,10 @@ import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
-import { CHAT_SCOPE_KEY, CHAT_VIEW_KEY, readChatView } from "./sidebarChats";
+import { CHAT_VIEW_KEY } from "./sidebarChats";
 
 // The static suite covers what the rail renders. This one covers what it does:
-// folding a group, switching scope, and following the chat that just opened.
+// folding a group and following the chat that just opened.
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -32,19 +32,22 @@ const workspace = { id: "ws-1", title: "harness", branch: "main", status: "ready
 
 const noop = () => {};
 
+const DATE_VIEW = JSON.stringify({ status: "all", agent: "all", groupBy: "date", sortBy: "recency" });
+
 const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps => ({
   chats: [session("plain", { title: "Japan relocation" }), session("project", { title: "Sidebar redesign", workspaceId: "ws-1" })],
   workspaces: [workspace],
   activeSessionId: undefined,
-  workBoardActive: false,
-  workNeedsYouCount: 0,
   projectsActive: false,
-  marketplaceActive: false,
+  automationsActive: false,
+  missionControlActive: false,
   settingsActive: false,
+  accountName: "cestercian",
   onOpenNewChat: noop,
-  onOpenWorkBoard: () => {},
   onOpenProjects: noop,
-  onOpenMarketplace: noop,
+  onOpenAutomations: noop,
+  onOpenMissionControl: noop,
+  onOpenWorkBoard: noop,
   onOpenMemory: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
@@ -61,7 +64,6 @@ function mount(overrides: Partial<BridgeSidebarProps> = {}) {
 }
 
 const text = () => container.textContent ?? "";
-const scopeTab = (label: string) => container.querySelector<HTMLButtonElement>(`[role="tab"][aria-label="${label}"]`)!;
 const groupHeader = (label: string) =>
   [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-expanded") !== null && button.textContent?.includes(label))!;
 const click = (element: Element) => {
@@ -73,7 +75,7 @@ const click = (element: Element) => {
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   // This jsdom instance has no storage of its own, and the rail reads persisted
-  // width/collapse/scope during render.
+  // width/collapse/view during render.
   const store = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
@@ -97,6 +99,7 @@ afterEach(() => {
 
 describe("BridgeSidebar group folding", () => {
   it("hides a group's chats but keeps its header and count", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
     mount();
     expect(text()).toContain("Japan relocation");
     const header = groupHeader("Today");
@@ -113,133 +116,35 @@ describe("BridgeSidebar group folding", () => {
   });
 
   it("forgets folds when the grouping changes under them", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
     mount();
     click(groupHeader("Today"));
     expect(text()).not.toContain("Japan relocation");
-    // Switching scope re-keys every group, so a stale fold must not survive.
-    click(scopeTab("Code"));
-    click(scopeTab("Work"));
+    click(container.querySelector('[aria-label="Filter and group chats"]')!);
+    click([...document.querySelectorAll("[role='menuitem']")].find(item => item.textContent?.includes("Group by"))!);
+    click([...document.querySelectorAll("[role='menuitemradio']")].find(button => button.textContent?.includes("Project"))!);
     expect(text()).toContain("Japan relocation");
   });
 });
 
-describe("BridgeSidebar scope switching", () => {
-  it("shows plain chats under Work and project chats under Code", () => {
+describe("BridgeSidebar repositories list", () => {
+  it("shows plain chats and project chats in the same list", () => {
     mount();
     expect(text()).toContain("Japan relocation");
-    expect(text()).not.toContain("Sidebar redesign");
-
-    click(scopeTab("Code"));
     expect(text()).toContain("Sidebar redesign");
-    expect(text()).not.toContain("Japan relocation");
-    expect(localStorage.getItem(CHAT_SCOPE_KEY)).toBe("code");
-  });
-
-  it("follows the chat that just opened into its own scope", () => {
-    mount();
-    expect(scopeTab("Work").getAttribute("aria-selected")).toBe("true");
-    // A project chat opened from the projects screen must not vanish into a list
-    // the rail is not showing.
-    mount({ activeSessionId: "project" });
-    expect(scopeTab("Code").getAttribute("aria-selected")).toBe("true");
-    expect(text()).toContain("Sidebar redesign");
-  });
-
-  it("follows a plain chat back to Work", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    mount({ activeSessionId: "project" });
-    expect(scopeTab("Code").getAttribute("aria-selected")).toBe("true");
-    mount({ activeSessionId: "plain" });
-    expect(scopeTab("Work").getAttribute("aria-selected")).toBe("true");
-  });
-
-  it("corrects a project grouping carried into Work, where nothing has a project", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
-    mount();
-    // Code groups by project name.
-    expect(text()).toContain("harness");
-
-    click(scopeTab("Work"));
-    // Work falls back to day headers instead of one "No project" bucket, and the
-    // correction is persisted so the two never disagree.
-    expect(text()).toContain("Today");
-    expect(text()).not.toContain("No project");
-    expect(readChatView().groupBy).toBe("date");
-  });
-
-  it("leaves a manual switch alone once it has followed a chat", () => {
-    mount({ activeSessionId: "plain" });
-    click(scopeTab("Code"));
-    // A poll re-renders with the same active id; the manual choice must hold.
-    mount({ activeSessionId: "plain" });
-    expect(scopeTab("Code").getAttribute("aria-selected")).toBe("true");
-  });
-});
-
-// The Work board is the surface behind the pill, so the pill is what opens it and
-// the rail's own row is how you get back to it from a chat.
-describe("BridgeSidebar and the Work board", () => {
-  it("opens the board when the pill flips to Work", () => {
-    const onOpenWorkBoard = vi.fn();
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    mount({ onOpenWorkBoard });
-    expect(onOpenWorkBoard).not.toHaveBeenCalled();
-    act(() => scopeTab("Work").click());
-    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
-  });
-
-  it("does not open the board when the pill flips to Code", () => {
-    // Code's surface is a conversation. The rail already follows whichever chat is
-    // active, so flipping to Code must not reach for the board.
-    const onOpenWorkBoard = vi.fn();
-    localStorage.setItem(CHAT_SCOPE_KEY, "work");
-    mount({ onOpenWorkBoard });
-    act(() => scopeTab("Code").click());
-    expect(onOpenWorkBoard).not.toHaveBeenCalled();
-  });
-
-  it("marks the Needs you row as the current page while the board is open", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "work");
-    mount({ workBoardActive: true });
-    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("Needs you"));
-    expect(row?.getAttribute("aria-current")).toBe("page");
-  });
-
-  it("leaves the row uncurrent once a chat is open", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "work");
-    mount({ workBoardActive: false });
-    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("Needs you"));
-    expect(row?.getAttribute("aria-current")).toBeNull();
-  });
-
-  it("shows a count only when something needs you", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "work");
-    mount({ workNeedsYouCount: 5 });
-    expect(text()).toContain("Needs you5");
-    // A zero would be a number that is always there, which is a number nobody reads.
-    mount({ workNeedsYouCount: 0 });
-    expect(text()).toContain("Needs you");
-    expect(text()).not.toContain("Needs you0");
-  });
-
-  it("hides the row entirely in Code, where the board is not the surface", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    mount();
+    expect(text()).toContain("Repositories");
     expect(text()).not.toContain("Needs you");
   });
 
-  it("returns to the board when the row is clicked", () => {
-    const onOpenWorkBoard = vi.fn();
-    localStorage.setItem(CHAT_SCOPE_KEY, "work");
-    mount({ onOpenWorkBoard, workBoardActive: false });
-    const row = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("Needs you"))!;
-    act(() => row.click());
-    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
+  it("keeps the active chat visible after a re-render", () => {
+    mount({ activeSessionId: "project" });
+    expect(text()).toContain("Sidebar redesign");
+    mount({ activeSessionId: "plain" });
+    expect(text()).toContain("Japan relocation");
   });
+});
+
+describe("BridgeSidebar account actions", () => {
   it("the memory row opens account memory without a workspace", () => {
     const onOpenMemory = vi.fn();
     mount({ workspaces: [], onOpenMemory });
@@ -247,6 +152,55 @@ describe("BridgeSidebar and the Work board", () => {
       .find(button => button.textContent === "Memory")!;
     act(() => row.click());
     expect(onOpenMemory).toHaveBeenCalledOnce();
+  });
+});
+
+describe("BridgeSidebar action rows", () => {
+  it("fires the matching handler from each action row", () => {
+    const onOpenNewChat = vi.fn();
+    const onOpenAutomations = vi.fn();
+    const onOpenMissionControl = vi.fn();
+    const onOpenWorkBoard = vi.fn();
+    const onOpenSettings = vi.fn();
+    mount({ onOpenNewChat, onOpenAutomations, onOpenMissionControl, onOpenWorkBoard, onOpenSettings });
+    click(container.querySelector('button[aria-label="New Chat"]')!);
+    click(container.querySelector('button[aria-label="Automations"]')!);
+    click(container.querySelector('button[aria-label="Mission Control"]')!);
+    click(container.querySelector('button[aria-label="Work board"]')!);
+    click(container.querySelector('button[aria-label="Open settings for cestercian"]')!);
+    expect(onOpenNewChat).toHaveBeenCalledOnce();
+    expect(onOpenAutomations).toHaveBeenCalledOnce();
+    expect(onOpenMissionControl).toHaveBeenCalledOnce();
+    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("opens the filter from the Search row and closes it on Escape", () => {
+    mount();
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
+    click(container.querySelector('button[aria-label="Search"]')!);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Filter chats and projects"]')!;
+    expect(input).toBeTruthy();
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
+  });
+
+  it("opens Projects from the new-folder control", () => {
+    const onOpenProjects = vi.fn();
+    mount({ onOpenProjects });
+    click(container.querySelector('button[aria-label="New folder"]')!);
+    expect(onOpenProjects).toHaveBeenCalledOnce();
+  });
+
+  it("disables New Chat while a session is being created", () => {
+    const onOpenNewChat = vi.fn();
+    mount({ newChatBusy: true, onOpenNewChat });
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="New Chat"]')!;
+    expect(button.disabled).toBe(true);
+    click(button);
+    expect(onOpenNewChat).not.toHaveBeenCalled();
   });
 });
 

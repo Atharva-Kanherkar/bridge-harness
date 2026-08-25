@@ -35,7 +35,7 @@ tauri-build = { version = "2", features = [] }
 bridge-core = { path = "bridge-core" }
 bridge-protocol = { path = "bridge-protocol" }
 bridge-client = { path = "bridge-client" }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 serde = { workspace = true }
@@ -62,4 +62,6 @@ incremental = false
 # The traffic lights are an AppKit detail; tao already builds these, so naming
 # them here costs nothing and keeps window_chrome.rs off raw objc_msgSend.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "objc2-quartz-core"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }

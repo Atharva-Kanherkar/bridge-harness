@@ -44,7 +44,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// TCC-protected paths and ad-hoc signing). Defaulted on decode, so a 1.4
 /// client still reads a 1.3 daemon's health — the bump only records that a
 /// daemon serving 1.4 emits it.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 4 };
+///
+/// **1.5 adds workspace branch listing and checkout.** A new desktop must not
+/// accept an older daemon and discover the missing methods only after the user
+/// opens the branch menu.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 5 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

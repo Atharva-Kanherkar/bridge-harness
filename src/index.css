@@ -145,26 +145,26 @@
 .dark {
     color-scheme: dark;
 
-    --sidebar: #191918;
-    --background: #212120;
-    --card: #2a2a28;
-    --popover: #323230;
+    --sidebar: #121211;
+    --background: #171716;
+    --card: #1f1f1e;
+    --popover: #262624;
 
     --foreground: #ececea;
     --card-foreground: #ececea;
     --popover-foreground: #ececea;
     --muted-foreground: #a8a8a3;
 
-    --border: #31312f;
-    --input: #3f3f3c;
-    --muted: #2f2f2d;
-    --secondary: #2a2a28;
+    --border: #232321;
+    --input: #30302e;
+    --muted: #212120;
+    --secondary: #1f1f1e;
     --secondary-foreground: #ececea;
     --accent: color-mix(in srgb, #ececea 6%, transparent);
     --accent-foreground: #ececea;
 
     --primary: #ececea;
-    --primary-foreground: #212120;
+    --primary-foreground: #171716;
 
     --ring: #6a9bcc;
     --scrim: rgb(0 0 0 / 0.62);
@@ -178,7 +178,7 @@
     --destructive: #e5695e;
     --destructive-foreground: #210f0d;
 
-    --code: #171716;
+    --code: #0e0e0d;
     --code-foreground: #ececea;
     --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
 
@@ -194,10 +194,28 @@
     --sidebar-foreground: #a8a8a3;
     --sidebar-accent: color-mix(in srgb, #ececea 6%, transparent);
     --sidebar-accent-foreground: #ececea;
-    --sidebar-border: #2b2b29;
+    --sidebar-border: #1e1e1c;
     --sidebar-primary: #ececea;
-    --sidebar-primary-foreground: #212120;
+    --sidebar-primary-foreground: #171716;
     --sidebar-ring: #6a9bcc;
+}
+
+/* Unlayered so this beats `:root { --window-radius: 16px }`. Fullscreen is a
+   flush rectangle; chip radius stays 10pt because there is no window arc to
+   stay concentric with. */
+html[data-fullscreen],
+html[data-flush-window] {
+    --window-radius: 0px;
+    --radius-window: 0px;
+    --radius-window-control: 10px;
+}
+
+/* Traffic-light inset (`pl-24`) is only real in a windowed Tauri frame.
+   Vite, and native macOS fullscreen (lights auto-hide), sit the panel on
+   the left edge. Unlayered so this beats the utility. */
+html:not([data-tauri]) .u-traffic-inset,
+html[data-native-fullscreen] .u-traffic-inset {
+    padding-left: 0.5rem;
 }
 
 @layer base {
@@ -216,6 +234,13 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    }
+  /* Desktop-only: let AppKit's Sidebar material (and wallpaper tint) show
+     through. Vite in Chrome never sets data-tauri, so it stays opaque. */
+  html[data-tauri],
+  html[data-tauri] body,
+  html[data-tauri] #root {
+    background: transparent;
     }
   code, kbd, samp, pre {
     font-family: var(--font-mono);
@@ -322,6 +347,28 @@
   .rounded-window,
   .rounded-window-control {
     corner-shape: squircle;
+  }
+}
+
+/* Desktop-only: native Sidebar material sits behind the webview, and only the
+   rail lets it through. The rail keeps a light token wash over the material —
+   high fills multiply the wallpaper wash away (90% left 10% of an already
+   subtle signal and read as solid), while a bare material reads too raw. The
+   canvas stays solid: against a near-black ground even a few percent of the
+   material lifts it to a grey haze. These live in utilities so they beat
+   `bg-sidebar` / `bg-background`. Vite in Chrome never sets data-tauri, so it
+   stays fully opaque. */
+@layer utilities {
+  html[data-tauri] .u-app-shell {
+    background: transparent;
+  }
+  html[data-tauri] .u-vibrancy-sidebar {
+    background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
+  }
+  html[data-tauri] .u-vibrancy-canvas {
+    /* Keep the reading surface dark and legible while allowing AppKit's
+       wallpaper tint and blur to reach the canvas, not only the sidebar. */
+    background-color: color-mix(in srgb, var(--color-background) 82%, transparent);
   }
 }
 

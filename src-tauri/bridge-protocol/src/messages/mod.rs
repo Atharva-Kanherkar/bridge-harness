@@ -152,6 +152,8 @@ typed_methods![
     (ReadWorkspaceFile, ReadWorkspaceFileParams, ReadWorkspaceFileResult),
     (WriteWorkspaceFile, WriteWorkspaceFileParams, WriteWorkspaceFileResult),
     (RefreshWorkspace, RefreshWorkspaceParams, BridgeState),
+    (ListWorkspaceBranches, ListWorkspaceBranchesParams, ListWorkspaceBranchesResult),
+    (CheckoutWorkspaceBranch, CheckoutWorkspaceBranchParams, BridgeState),
     (ArchiveWorkspace, ArchiveWorkspaceParams, BridgeState),
     (WorkspaceChanges, WorkspaceChangesParams, WorkspaceChangesResult),
     // sessions

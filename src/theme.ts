@@ -12,7 +12,7 @@ export const THEME_STORAGE_KEY = "bridge.theme";
 /** Window background per mode, kept in sync with `--background` in index.css. */
 const THEME_COLOR: Record<ResolvedTheme, string> = {
   light: "#fafaf9",
-  dark: "#212120",
+  dark: "#171716",
 };
 
 export function isThemePreference(value: unknown): value is ThemePreference {
@@ -58,6 +58,9 @@ export function applyTheme(preference: ThemePreference, prefersDark = systemPref
 
   document.documentElement.classList.toggle("dark", resolved === "dark");
   document.documentElement.dataset.theme = resolved;
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    document.documentElement.dataset.tauri = "";
+  }
 
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", THEME_COLOR[resolved]);

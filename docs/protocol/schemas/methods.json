@@ -72,6 +72,20 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "list_workspace_branches",
+      "domain": "workspaces",
+      "method": "workspaces/list_workspace_branches",
+      "paramsSchema": "list-workspace-branches-params.json",
+      "resultSchema": "list-workspace-branches-result.json"
+    },
+    {
+      "command": "checkout_workspace_branch",
+      "domain": "workspaces",
+      "method": "workspaces/checkout_workspace_branch",
+      "paramsSchema": "checkout-workspace-branch-params.json",
+      "resultSchema": "bridge-state.json"
+    },
+    {
       "command": "archive_workspace",
       "domain": "workspaces",
       "method": "workspaces/archive_workspace",
@@ -907,7 +921,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 4
+    "minor": 5
   },
   "reserved": {
     "cancel": "$/cancel",

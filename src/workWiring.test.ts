@@ -86,23 +86,25 @@ describe("the shell knows about Work", () => {
     expect(APP).toContain('view === "work" ? "Work"');
   });
 
-  it("hands the rail the board's state and the way back to it", () => {
-    expect(APP).toContain('workBoardActive={view === "work"}');
-    expect(APP).toContain("workNeedsYouCount={needsYouCount(");
+  it("keeps the Needs-you count off the rail and opens Work from Work board", () => {
     expect(APP).toContain("onOpenWorkBoard={openWorkBoard}");
+    expect(APP).not.toContain("workBoardActive");
+    expect(APP).not.toContain("workNeedsYouCount");
+    expect(APP).not.toContain('import { needsYouCount } from "./components/workFacts";');
+    expect(SIDEBAR).toContain("onOpenWorkBoard");
+    expect(SIDEBAR).toContain("Work board");
+    expect(SIDEBAR).not.toContain("Needs you");
   });
 
-  it("keeps Work out of the footer nav, where it would be a second meaning", () => {
-    // Work is the pill, not a destination beside Projects. Two rail entries reading
-    // "Work" — one a chat filter, one a screen — is the confusion this avoids.
+  it("does not revive the Work/Code scope switch", () => {
     const footer = SIDEBAR.slice(SIDEBAR.indexOf("onOpenProjects}"));
-    expect(footer).not.toContain('"Work"');
+    expect(footer).not.toContain('aria-label="Work"');
+    expect(SIDEBAR).toContain('label="Work board"');
   });
 
-  it("counts what needs you without mounting the board", () => {
-    // The rail shows a count while a conversation is on screen, so the count comes
-    // from a plain function rather than from the board being rendered.
-    expect(APP).toContain('import { needsYouCount } from "./components/workFacts";');
+  it("counts what needs you on the board itself, not a rail badge", () => {
+    expect(APP).not.toContain('import { needsYouCount } from "./components/workFacts";');
+    expect(SIDEBAR).not.toContain("workNeedsYouCount");
   });
 });
 

@@ -146,10 +146,10 @@ describe("SessionToolbar", () => {
     expect(browser.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("leaves the traffic lights their corner in fullscreen", () => {
+  it("does not reserve the traffic-light corner; the title bar above owns it", () => {
     mount({ fullscreen: true });
     const row = container.firstElementChild as HTMLElement;
-    expect(row.className).toContain("pl-24");
+    expect(row.className).not.toContain("pl-24");
     expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
   });
 

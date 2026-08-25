@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -33,5 +35,34 @@ describe("ChatModelControl", () => {
     await act(async () => opus.click());
     expect(onChange).toHaveBeenCalledWith("claude", "opus");
     await act(async () => root.unmount());
+  });
+});
+
+// The Cursor sidebar mock rendered invented repos and no session list. The
+// real rail is the only rail; this guard keeps the mock from coming back.
+describe("shell flags", () => {
+  it("ships the real rail, not the Cursor sidebar mock", () => {
+    const source = readFileSync(join(__dirname, "App.tsx"), "utf8");
+    expect(source).not.toContain("SHOW_CURSOR_SIDEBAR_MOCK");
+    expect(source).not.toContain("CursorSidebarMock");
+    expect(source).not.toContain("RightRailPreview");
+    expect(source).not.toContain("NewChatDialog");
+    expect(source).toContain("BridgeSidebar");
+    expect(source).toContain("chromeFullscreen");
+    expect(source).toContain("data-flush-window");
+    expect(source).toContain("setLayoutFullscreenDocument");
+    expect(source).toContain("notifyLayoutFullscreen");
+    expect(source).not.toContain("chromeFullscreen && <AppTitleBar");
+    expect(source).not.toContain("WindowHistoryChevrons");
+    expect(source).not.toContain("WindowPanelButton");
+    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Mission Control"');
+    expect(source).toContain("showWindowNav");
+    expect(source).toContain("flex h-[100dvh] flex-row");
+  });
+
+  it("does not statically import the look-at preview in the production entry", () => {
+    const source = readFileSync(join(__dirname, "main.tsx"), "utf8");
+    expect(source).not.toMatch(/^import \{ RightRailPreview \}/m);
+    expect(source).toContain('import("./previews/RightRailPreview")');
   });
 });
