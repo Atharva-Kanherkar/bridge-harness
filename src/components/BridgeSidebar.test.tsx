@@ -251,12 +251,19 @@ describe("BridgeSidebar without the projects tree", () => {
   });
 
   it("offers Projects in the footer and marks it active when that screen is open", () => {
-    // Read the Projects button out of the markup rather than matching across it.
-    const projectsButton = (html: string) => html.split("<button").find(chunk => chunk.includes("Projects")) ?? "";
+    const projectsButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Projects"')) ?? "";
     expect(projectsButton(render())).toBeTruthy();
-    expect(projectsButton(render())).not.toContain("bg-accent text-foreground");
-    // Same active treatment Marketplace and Settings get.
-    expect(projectsButton(render({ projectsActive: true }))).toContain("bg-accent text-foreground");
+    expect(projectsButton(render())).not.toContain("aria-current");
+    expect(projectsButton(render({ projectsActive: true }))).toContain('aria-current="page"');
+  });
+
+  it("keeps Marketplace and Settings off the footer; those live on Automations and Customize", () => {
+    const html = render();
+    expect(html).toContain("Projects");
+    expect(html).toContain("Memory");
+    expect(html).not.toContain("Marketplace");
+    expect(html).not.toContain("Settings");
+    expect(html).not.toContain("Yashaswi");
   });
 
   it("still labels project groups, which is why it keeps the workspaces prop", () => {
