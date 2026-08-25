@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ChevronRight, Code2, FolderGit2, LayoutGrid, ListChecks, MessagesSquare, Package, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
+import { Bot, ChevronRight, Code2, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, ListChecks, MessagesSquare, Package, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
@@ -7,8 +7,11 @@ import { harnessLabel } from "../utils";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import {
   GROUP_ROW_CAP,
+  NO_PROJECT_GROUP_KEY,
   agentOptions,
+  chatListTime,
   chatName,
+  chatTimestamp,
   filterChats,
   groupChats,
   chatScope,
@@ -47,11 +50,26 @@ function StatusDot({ status }: { status: SessionStatus }) {
   return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color)} />;
 }
 
-function ChatRow({ chat, active, collapsed, onClick }: { chat: Session; active: boolean; collapsed: boolean; onClick: () => void }) {
+function ChatRow({
+  chat,
+  active,
+  collapsed,
+  indented,
+  branch,
+  time,
+  onClick,
+}: {
+  chat: Session;
+  active: boolean;
+  collapsed: boolean;
+  indented: boolean;
+  branch: string | null | undefined;
+  time: string | null;
+  onClick: () => void;
+}) {
   const name = chatName(chat);
-  // Harness and model used to sit under every title, which is what made the list
-  // read as a wall. They stay one hover away, and on the active row only.
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
+  const onBranch = !!branch;
   return (
     <button
       type="button"
@@ -59,15 +77,16 @@ function ChatRow({ chat, active, collapsed, onClick }: { chat: Session; active: 
       title={detail}
       className={cn(
         "flex w-full items-center text-left font-sans transition-colors active:scale-[0.99]",
-        collapsed ? "h-9 justify-center rounded-md px-0" : "h-7 gap-2 rounded-md px-2 text-[13px] tracking-[-0.006em]",
-        active ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        collapsed ? "h-9 justify-center rounded-md px-0" : cn("h-[26px] gap-1.5 rounded-md pr-2 text-[13px] tracking-[-0.008em]", indented ? "pl-7" : "pl-2"),
+        active ? "bg-accent font-medium text-foreground" : "text-foreground/80 hover:bg-accent/70 hover:text-foreground",
       )}
     >
       <StatusDot status={chat.status} />
       {!collapsed && (
         <>
           <span className="min-w-0 flex-1 truncate">{name}</span>
-          {active && chat.model && <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{chat.model}</span>}
+          {onBranch && <GitBranch size={11} strokeWidth={1.7} className="shrink-0 text-ring" aria-label="On a git branch" />}
+          {time && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/65">{time}</span>}
         </>
       )}
     </button>
@@ -126,14 +145,26 @@ function SectionLabel({ children, action }: { children: React.ReactNode; action?
   );
 }
 
-function GroupLabel({ label, count, folded, onToggle }: { label: string; count: number; folded: boolean; onToggle: () => void }) {
+function GroupLabel({
+  label,
+  count,
+  folded,
+  icon: Icon,
+  onToggle,
+}: {
+  label: string;
+  count: number;
+  folded: boolean;
+  icon?: LucideIcon;
+  onToggle: () => void;
+}) {
   return (
     <button
       type="button"
       onClick={onToggle}
       aria-expanded={!folded}
       title={folded ? `Show ${label}` : `Hide ${label}`}
-      className="sticky top-0 z-[1] flex h-6 w-full items-center gap-1.5 rounded-md bg-sidebar px-2 text-left transition-colors hover:bg-accent"
+      className="sticky top-0 z-[1] flex h-7 w-full items-center gap-2 rounded-md bg-sidebar px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors hover:bg-accent"
     >
       <ChevronRight
         size={11}
@@ -141,8 +172,23 @@ function GroupLabel({ label, count, folded, onToggle }: { label: string; count: 
         aria-hidden="true"
         className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
       />
-      <span className="min-w-0 truncate text-[11px] text-muted-foreground/80">{label}</span>
+      {Icon && <Icon size={14} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+      <span className="min-w-0 truncate">{label}</span>
       <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/60">{count}</span>
+    </button>
+  );
+}
+
+function RailIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      {children}
     </button>
   );
 }
@@ -415,6 +461,10 @@ export function BridgeSidebar({
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
   }, [workspaces]);
+  const workspaceById = useMemo(
+    () => new Map(workspaces.map(workspace => [workspace.id, workspace])),
+    [workspaces],
+  );
   const visible = useMemo(
     () => filterChats(scoped, { query, status: view.status, agent: view.agent, workspaceTitle }),
     [scoped, query, view.status, view.agent, workspaceTitle],
@@ -532,8 +582,15 @@ export function BridgeSidebar({
 
         <div className="flex-1 overflow-y-auto">
           {!collapsed && (
-            <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />}>
-              Chats
+            <SectionLabel action={
+              <span className="flex items-center gap-0.5">
+                <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />
+                <RailIconButton label="New folder" onClick={onOpenProjects}>
+                  <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
+                </RailIconButton>
+              </span>
+            }>
+              {scope === "code" ? "Repositories" : "Chats"}
             </SectionLabel>
           )}
 
@@ -544,6 +601,9 @@ export function BridgeSidebar({
             // Folding needs a header to unfold from, so the icon rail never folds.
             const folded = !collapsed && !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
+            const projectIcon = view.groupBy === "project"
+              ? (group.key === NO_PROJECT_GROUP_KEY ? Home : Folder)
+              : undefined;
             return (
               <div key={group.key}>
                 {!collapsed && group.label && (
@@ -551,17 +611,30 @@ export function BridgeSidebar({
                     label={group.label}
                     count={group.chats.length}
                     folded={folded}
+                    icon={projectIcon}
                     onToggle={() => toggleFold(group.key)}
                   />
                 )}
                 {rows.map(chat => (
-                  <ChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={collapsed} onClick={() => onOpenSession(chat.id)} />
+                  <ChatRow
+                    key={chat.id}
+                    chat={chat}
+                    active={chat.id === activeSessionId}
+                    collapsed={collapsed}
+                    indented={!!group.label}
+                    branch={chat.workspaceId ? workspaceById.get(chat.workspaceId)?.branch : undefined}
+                    time={chatListTime(chatTimestamp(chat), now)}
+                    onClick={() => onOpenSession(chat.id)}
+                  />
                 ))}
                 {capped && !folded && (
                   <button
                     type="button"
                     onClick={() => setShownInFull(current => new Set(current).add(group.key))}
-                    className="flex h-6 w-full items-center rounded-md px-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    className={cn(
+                      "flex h-6 w-full items-center rounded-md text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                      group.label ? "pl-7" : "px-2",
+                    )}
                   >
                     Show {group.chats.length - GROUP_ROW_CAP} more
                   </button>

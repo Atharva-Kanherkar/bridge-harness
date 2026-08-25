@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, CHAT_SCOPE_KEY, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatScope, chatTimestamp, dayLabel, filterChats, groupChats, inScope, isHiddenSession, readChatScope, readChatView, statusBucket, visibleChats, writeChatScope, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -54,6 +54,22 @@ describe("chatTimestamp", () => {
     expect(chatTimestamp(chat("b", { startedAt: null, endedAt: at(2026, 8, 17) }))).toBe(Date.parse(at(2026, 8, 17)));
     expect(chatTimestamp(chat("c", { startedAt: null, endedAt: null }))).toBeNull();
     expect(chatTimestamp(chat("d", { startedAt: "not a date" }))).toBeNull();
+  });
+});
+
+describe("chatListTime", () => {
+  const now = Date.parse("2026-08-19T16:00:00Z");
+
+  it("buckets compact ages at the edges", () => {
+    expect(chatListTime(now - 1_000, now)).toBe("now");
+    expect(chatListTime(now - 4 * 60_000, now)).toBe("4m");
+    expect(chatListTime(now - 2 * 3_600_000, now)).toBe("2h");
+    expect(chatListTime(now - 3 * 86_400_000, now)).toBe("3d");
+  });
+
+  it("omits a missing or invalid timestamp so the row can stay quiet", () => {
+    expect(chatListTime(null, now)).toBeNull();
+    expect(chatListTime(Number.NaN, now)).toBeNull();
   });
 });
 

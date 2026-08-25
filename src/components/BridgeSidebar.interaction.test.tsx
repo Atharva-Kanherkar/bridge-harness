@@ -274,4 +274,11 @@ describe("BridgeSidebar action rows", () => {
     });
     expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
   });
+
+  it("opens Projects from the new-folder control", () => {
+    const onOpenProjects = vi.fn();
+    mount({ onOpenProjects });
+    click(container.querySelector('button[aria-label="New folder"]')!);
+    expect(onOpenProjects).toHaveBeenCalledOnce();
+  });
 });

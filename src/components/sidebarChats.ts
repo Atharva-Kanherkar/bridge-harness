@@ -144,6 +144,18 @@ export function chatTimestamp(chat: Session): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** Compact age for a chat row. Null means the row should omit the time entirely. */
+export function chatListTime(at: number | null, now: number): string | null {
+  if (at === null || !Number.isFinite(at)) return null;
+  const seconds = Math.max(0, Math.floor((now - at) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
 function startOfDay(value: number): number {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);
@@ -236,7 +248,7 @@ function mostRecent(chats: Session[]): number {
   return chats.reduce((latest, chat) => Math.max(latest, chatTimestamp(chat) ?? Number.NEGATIVE_INFINITY), Number.NEGATIVE_INFINITY);
 }
 
-const NO_PROJECT_KEY = "__no_project__";
+export const NO_PROJECT_GROUP_KEY = "__no_project__";
 const UNDATED_KEY = "__earlier__";
 
 export function groupChats(
@@ -265,13 +277,13 @@ export function groupChats(
 
   if (groupBy === "project") {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
-    const buckets = bucketBy(chats, chat => chat.workspaceId ?? NO_PROJECT_KEY);
+    const buckets = bucketBy(chats, chat => chat.workspaceId ?? NO_PROJECT_GROUP_KEY);
     const projects = [...buckets.keys()]
-      .filter(key => key !== NO_PROJECT_KEY)
+      .filter(key => key !== NO_PROJECT_GROUP_KEY)
       .map(key => ({ key, label: titles.get(key) ?? "Unknown project", chats: sortChats(buckets.get(key)!, sortBy) }));
     projects.sort((a, b) => (sortBy === "name" ? a.label.localeCompare(b.label) : mostRecent(b.chats) - mostRecent(a.chats)));
-    const loose = buckets.get(NO_PROJECT_KEY);
-    return loose ? [...projects, { key: NO_PROJECT_KEY, label: "No project", chats: sortChats(loose, sortBy) }] : projects;
+    const loose = buckets.get(NO_PROJECT_GROUP_KEY);
+    return loose ? [...projects, { key: NO_PROJECT_GROUP_KEY, label: "No project", chats: sortChats(loose, sortBy) }] : projects;
   }
 
   if (groupBy === "agent") {
