@@ -55,6 +55,7 @@ describe("shell flags", () => {
     expect(source).not.toContain("chromeFullscreen && <AppTitleBar");
     expect(source).not.toContain("WindowHistoryChevrons");
     expect(source).not.toContain("WindowPanelButton");
+    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Mission Control"');
     expect(source).toContain("showWindowNav");
     expect(source).toContain("flex h-[100dvh] flex-row");
   });

@@ -137,6 +137,17 @@ describe("BridgeSidebar theming", () => {
     expect(html).not.toMatch(/bg-\[#|bg-white\/|backdrop-blur/);
   });
 
+  it("uses the chat-row accent for the active repository instead of an opaque black header", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
+    const html = render({
+      activeSessionId: "chat-1",
+      chats: [session("chat-1", { workspaceId: "workspace-1" })],
+    });
+    const repository = html.split("<button").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    expect(repository).toContain("bg-accent");
+    expect(repository).not.toContain("bg-sidebar ");
+  });
+
   it("carries session status on semantic tokens", () => {
     const html = render({
       chats: [

@@ -101,12 +101,14 @@ function GroupLabel({
   label,
   count,
   folded,
+  active,
   icon: Icon,
   onToggle,
 }: {
   label: string;
   count: number;
   folded: boolean;
+  active: boolean;
   icon?: LucideIcon;
   onToggle: () => void;
 }) {
@@ -116,7 +118,10 @@ function GroupLabel({
       onClick={onToggle}
       aria-expanded={!folded}
       title={folded ? `Show ${label}` : `Hide ${label}`}
-      className="sticky top-0 z-[1] flex h-7 w-full items-center gap-2 rounded-md bg-sidebar px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors hover:bg-accent"
+      className={cn(
+        "sticky top-0 z-[1] flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
+        active ? "bg-accent font-medium" : "bg-accent/70",
+      )}
     >
       <ChevronRight
         size={11}
@@ -523,6 +528,7 @@ export function BridgeSidebar({
                     label={group.label}
                     count={group.chats.length}
                     folded={folded}
+                    active={group.chats.some(chat => chat.id === activeSessionId)}
                     icon={projectIcon}
                     onToggle={() => toggleFold(group.key)}
                   />
