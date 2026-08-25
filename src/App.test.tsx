@@ -4,7 +4,25 @@ import { join } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+// xterm paints to canvas, which jsdom lacks; the pane's own suite covers the
+// terminal wiring, and here it only needs to mount.
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    options: Record<string, unknown> = {};
+    open() {}
+    loadAddon() {}
+    dispose() {}
+    onData() { return { dispose() {} }; }
+    write() {}
+    writeln() {}
+  },
+}));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+
 import { App, ChatModelControl } from "./App";
+// Pre-resolve the lazy pane chunks so Suspense settles inside act().
+import "./components/TerminalPane";
+import "./components/CodePanel";
 import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
 
@@ -437,6 +455,21 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit1", key: "1" });
     expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
     spy.mockRestore();
+  });
+
+  // Contract: testing/feat-dock-terminal.md §4.
+  it("opens the multi-shell terminal pane on the third chord", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit3", key: "3" });
+    await settle(4);
+    if (!dockAside()!.querySelector('button[aria-label="New shell"]')) {
+      const html = dockAside()!.innerHTML;
+      const at = html.indexOf("min-h-0 flex-1");
+      console.log("PANE HTML:", html.slice(at, at + 700));
+    }
+    expect(dockAside()!.querySelector('button[aria-label="New shell"]')).not.toBeNull();
+    expect(dockAside()!.textContent).toContain("MB scrollback");
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {

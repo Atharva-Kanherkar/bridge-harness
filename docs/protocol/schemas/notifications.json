@@ -31,6 +31,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "terminal-exited"
+    },
+    {
+      "delivery": "transient",
       "notification": "account-usage"
     },
     {

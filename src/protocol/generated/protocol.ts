@@ -58,6 +58,8 @@ export type BridgeMethod =
   | "terminal/open_terminal"
   | "terminal/write_terminal"
   | "terminal/resize_terminal"
+  | "terminal/close_terminal"
+  | "terminal/list_terminals"
   | "slash/list_slash_commands"
   | "slash/resolve_slash_command"
   | "completion/create_completion_plan"
@@ -192,6 +194,8 @@ export const BRIDGE_METHODS = [
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
   { method: "terminal/resize_terminal", domain: "terminal", command: "resize_terminal" },
+  { method: "terminal/close_terminal", domain: "terminal", command: "close_terminal" },
+  { method: "terminal/list_terminals", domain: "terminal", command: "list_terminals" },
   { method: "slash/list_slash_commands", domain: "slash", command: "list_slash_commands" },
   { method: "slash/resolve_slash_command", domain: "slash", command: "resolve_slash_command" },
   { method: "completion/create_completion_plan", domain: "completion", command: "create_completion_plan" },
@@ -283,6 +287,7 @@ export type BridgeNotification =
   | "learning-job-changed"
   | "memory-changed"
   | "session-output"
+  | "terminal-exited"
   | "account-usage"
   | "stream-lagged";
 
@@ -294,6 +299,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "learning-job-changed", delivery: "transient" },
   { notification: "memory-changed", delivery: "transient" },
   { notification: "session-output", delivery: "transient" },
+  { notification: "terminal-exited", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
@@ -378,6 +384,8 @@ export interface BridgeMethodParams {
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
   "terminal/resize_terminal": ResizeTerminalParams;
+  "terminal/close_terminal": CloseTerminalParams;
+  "terminal/list_terminals": ListTerminalsParams;
   "slash/list_slash_commands": undefined;
   "slash/resolve_slash_command": ResolveSlashCommandParams;
   "completion/create_completion_plan": CreateCompletionPlanParams;
@@ -514,6 +522,8 @@ export interface BridgeMethodResults {
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
   "terminal/resize_terminal": UnitResult;
+  "terminal/close_terminal": UnitResult;
+  "terminal/list_terminals": ListTerminalsResult;
   "slash/list_slash_commands": SlashCommandsResult;
   "slash/resolve_slash_command": SlashCommandResolveResult;
   "completion/create_completion_plan": CompletionSummary;
@@ -1805,18 +1815,34 @@ export interface ResolveApprovalParams {
 }
 
 export interface OpenTerminalParams {
+  terminalId: string;
   workspaceId: string;
 }
 
 export interface WriteTerminalParams {
   data: string;
+  terminalId: string;
   workspaceId: string;
 }
 
 export interface ResizeTerminalParams {
   cols: number;
   rows: number;
+  terminalId: string;
   workspaceId: string;
+}
+
+export interface CloseTerminalParams {
+  terminalId: string;
+  workspaceId: string;
+}
+
+export interface ListTerminalsParams {
+  workspaceId: string;
+}
+
+export interface ListTerminalsResult {
+  terminalIds: string[];
 }
 
 export type SlashCommandsResult = SlashCommand[];

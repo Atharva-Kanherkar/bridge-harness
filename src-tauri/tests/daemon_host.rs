@@ -188,6 +188,7 @@ fn daemon_notifications_reach_the_webview_with_unchanged_names_and_payloads() {
         .events
         .publish(bridge_core::events::CoreEvent::SessionOutput {
             session_id: "s1".into(),
+            terminal_id: "t1".into(),
             data: "hello".into(),
         });
     daemon.daemon.core.events.publish(bridge_core::events::CoreEvent::StateChanged);

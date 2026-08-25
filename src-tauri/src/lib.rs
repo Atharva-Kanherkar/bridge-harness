@@ -989,19 +989,45 @@ async fn start_chat(
 #[tauri::command]
 async fn open_terminal(
     workspace_id: String,
+    terminal_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
     let core = state.inner().clone();
-    blocking("Terminal open", move || api::open_terminal(&core, &workspace_id)).await
+    blocking("Terminal open", move || {
+        api::open_terminal(&core, &workspace_id, &terminal_id)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn write_terminal(
     workspace_id: String,
+    terminal_id: String,
     data: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::write_terminal(state.inner(), &workspace_id, &data)
+    api::write_terminal(state.inner(), &workspace_id, &terminal_id, &data)
+}
+
+#[tauri::command]
+async fn close_terminal(
+    workspace_id: String,
+    terminal_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Terminal close", move || {
+        api::close_terminal(&core, &workspace_id, &terminal_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_terminals(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<String>, BridgeError> {
+    Ok(api::list_terminals(state.inner(), &workspace_id))
 }
 
 #[tauri::command]
@@ -1330,11 +1356,12 @@ async fn resolve_approval(
 #[tauri::command]
 async fn resize_terminal(
     workspace_id: String,
+    terminal_id: String,
     rows: u16,
     cols: u16,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::resize_terminal(state.inner(), &workspace_id, rows, cols)
+    api::resize_terminal(state.inner(), &workspace_id, &terminal_id, rows, cols)
 }
 
 #[tauri::command]
@@ -1707,6 +1734,8 @@ pub fn run() {
             open_terminal,
             write_terminal,
             resize_terminal,
+            close_terminal,
+            list_terminals,
             prepare_turn,
             send_turn,
             submit_input,
