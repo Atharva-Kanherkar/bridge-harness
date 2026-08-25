@@ -68,7 +68,7 @@ floating panel, stacked bar, ranked legend, drill-down rows).
 
 ## Unit Tests
 
-`src/contextBreakdown.test.ts`:
+`src/contextBreakdown.test.tsx`:
 
 - `segments_rank_available_by_size_then_unavailable_last` — ordering rule §5.
 - `unavailable_remainder_is_occupied_minus_known_and_never_negative` — §4.
