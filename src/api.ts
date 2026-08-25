@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
   ManagedAgentList,
@@ -383,6 +383,26 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null };
   mockForests[sessionId] = created;
   return structuredClone(created);
+}
+function mockContextBreakdown(sessionId: string): ContextBreakdownResult {
+  const reason = "no prompt compilation recorded";
+  const inventoryReason = "adapter runtime has not reported context inventory";
+  return {
+    sessionId,
+    segments: [
+      { origin: "conversation", segmentClass: "conversation", names: [], state: "estimated", method: "bridge-context-projector", itemCount: 2, tokens: 900, capped: false },
+      { origin: "promptCompilation", segmentClass: "prompt-stable", names: [], state: "unavailable", reason, capped: false },
+      { origin: "promptCompilation", segmentClass: "prompt-variable", names: [], state: "unavailable", reason, capped: false },
+      { origin: "adapterInventory", segmentClass: "agentDefinitions", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "mcpDynamicTools", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "providerBaseInstructions", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "skillsPlugins", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "toolSchemas", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+    ],
+    totals: { tokens: 900, unavailableSources: 7 },
+    conversation: { entryCount: 2, renderedEntryCount: 2, tokenEstimate: 900, contextPressure: 1, contextWindowTokens: 128000 },
+    digest: `mock-breakdown-${sessionId}`,
+  };
 }
 function snapshot() { return structuredClone(mockState); }
 function emitState() { stateListeners.forEach(listener => listener()); }
@@ -932,6 +952,10 @@ export const bridgeApi = {
   // Tens of bytes per poll instead of the entire history; equal digests mean
   // sessionForest would return unchanged store content.
   sessionForestDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
+  contextBreakdown: (sessionId: string): Promise<ContextBreakdownResult> => isTauri() ? call("sessions/get_context_breakdown", { sessionId }) : Promise.resolve(mockContextBreakdown(sessionId)),
+  // Same change-token contract as sessionForestDigest, scoped to breakdown
+  // inputs: compilations, config revisions, adapter observations, branch.
+  contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */
   replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => isTauri() ? call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]> : Promise.resolve([]),

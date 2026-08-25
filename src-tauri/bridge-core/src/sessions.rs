@@ -445,6 +445,48 @@ impl BridgeCore {
         session_forest_digest(&db, session_id)
     }
 
+    /// The bounded, source-labelled context breakdown for one session. Live
+    /// adapter observations are gathered under the adapter lock, then merged
+    /// with store-derived sources without holding the store lock.
+    pub fn context_breakdown(
+        &self,
+        session_id: &str,
+    ) -> Result<bridge_protocol::messages::ContextBreakdownResult, BridgeError> {
+        let inventories = self.session_context_inventories(session_id);
+        let db = self.db.lock().unwrap();
+        crate::context_breakdown::context_breakdown(&db, session_id, &inventories)
+    }
+
+    /// The cheap half of breakdown polling; same inputs as
+    /// [`BridgeCore::context_breakdown`], including the live observations —
+    /// the digest reads this session's own inventories so a turn elsewhere
+    /// never invalidates it.
+    pub fn context_breakdown_digest(
+        &self,
+        session_id: &str,
+    ) -> Result<bridge_protocol::messages::ContextBreakdownDigestResult, BridgeError> {
+        let inventories = self.session_context_inventories(session_id);
+        let db = self.db.lock().unwrap();
+        crate::context_breakdown::context_breakdown_digest_result(
+            &db,
+            session_id,
+            &inventories,
+        )
+    }
+
+    /// One session's live adapter observations, read under the adapter lock
+    /// and released before any store work.
+    fn session_context_inventories(
+        &self,
+        session_id: &str,
+    ) -> Vec<crate::context_inventory::AdapterContextInventory> {
+        let adapters = self.adapters.lock().unwrap();
+        adapters
+            .get(session_id)
+            .map(|runtime| runtime.context_inventory())
+            .unwrap_or_default()
+    }
+
     /// Interrupt the session's active turn on its live adapter runtime.
     pub fn interrupt_turn(&self, session_id: &str) -> Result<(), BridgeError> {
         let adapters = self.adapters.lock().unwrap();

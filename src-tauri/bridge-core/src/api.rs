@@ -256,6 +256,8 @@ pub struct ForestDigest {
     pub digest: String,
 }
 
+pub use bridge_protocol::messages::{ContextBreakdownDigestResult, ContextBreakdownResult};
+
 /// The cheap half of forest polling: an opaque token that changes whenever
 /// `get_session_forest` would return different store-derived content.
 pub fn get_session_forest_digest(
@@ -265,6 +267,23 @@ pub fn get_session_forest_digest(
     Ok(ForestDigest {
         digest: core.session_forest_digest(session_id)?,
     })
+}
+
+/// The bounded, source-labelled context breakdown for one session.
+pub fn get_context_breakdown(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<wire::ContextBreakdownResult, BridgeError> {
+    core.context_breakdown(session_id)
+}
+
+/// The cheap half of breakdown polling: an opaque token covering prompt
+/// compilations, config revisions, adapter observations, and branch changes.
+pub fn get_context_breakdown_digest(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<wire::ContextBreakdownDigestResult, BridgeError> {
+    core.context_breakdown_digest(session_id)
 }
 
 pub fn get_session_forest(

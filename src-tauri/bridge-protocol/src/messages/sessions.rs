@@ -10,6 +10,10 @@ use super::common::HarnessId;
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
 pub const MAX_REPLAY_EVENT_LIMIT: u32 = 1_000;
 
+/// Hard cap on the segments returned by `sessions/get_context_breakdown`.
+/// Ordering is deterministic, so truncation is stable across recomputes.
+pub const MAX_CONTEXT_BREAKDOWN_SEGMENTS: u32 = 64;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GetSessionForestParams {
@@ -31,6 +35,141 @@ pub struct GetSessionForestDigestParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionForestDigestResult {
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetContextBreakdownParams {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetContextBreakdownDigestParams {
+    pub session_id: String,
+}
+
+/// `sessions/get_context_breakdown_digest`'s result: an opaque change token
+/// for one session's context breakdown. Equal digests mean the breakdown
+/// would be unchanged; the token covers prompt compilations, prompt-section
+/// revisions, adapter context observations, and active-branch changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownDigestResult {
+    pub digest: String,
+}
+
+/// Where a breakdown segment's numbers come from. Every segment names its
+/// source so clients never have to guess attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextBreakdownOrigin {
+    Conversation,
+    PromptCompilation,
+    AdapterInventory,
+}
+
+/// Availability of one segment, mirroring the adapter inventory provenance
+/// vocabulary. `unavailable` segments carry a reason and contribute nothing
+/// to totals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextBreakdownState {
+    Reported,
+    Measured,
+    Estimated,
+    Unavailable,
+}
+
+/// One bounded, source-labelled slice of a session's context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownSegment {
+    pub origin: ContextBreakdownOrigin,
+    pub segment_class: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    pub state: ContextBreakdownState,
+    /// Estimation method when `state` is `estimated`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// Why nothing could be observed when `state` is `unavailable`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<i64>,
+    /// True when a value was clamped to the observation bounds upstream.
+    pub capped: bool,
+}
+
+/// Sums over available segments only. A unit is `None` when no available
+/// segment observed it — absence is preserved instead of zero-filling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownTotals {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<i64>,
+    /// How many returned segments are `unavailable` — segments, not distinct
+    /// sources: one silent source contributes one entry per class it covers.
+    pub unavailable_sources: u32,
+}
+
+/// The projected conversation state behind the breakdown, computed from
+/// `SessionForest::active_branch` followed by `ContextProjector`. This is
+/// compacted context, not the uncompacted active token estimate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownConversation {
+    pub entry_count: u32,
+    pub rendered_entry_count: u32,
+    pub token_estimate: i64,
+    pub context_pressure: i64,
+    pub context_window_tokens: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restoration_boundary_entry_id: Option<String>,
+}
+
+/// Change since the previous valid compaction snapshot on the active branch.
+/// `null` on the result when no valid compaction exists yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownDelta {
+    pub boundary_entry_id: String,
+    pub first_retained_entry_id: String,
+    pub source_agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub tokens_before: i64,
+    pub current_token_estimate: i64,
+    pub growth_tokens: i64,
+}
+
+/// `sessions/get_context_breakdown`'s result: a capped, stably ordered
+/// breakdown merging conversation projection, Bridge prompt accounting, and
+/// live adapter context observations. Every segment preserves its source and
+/// availability state; nothing is fabricated when a source cannot report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBreakdownResult {
+    pub session_id: String,
+    pub segments: Vec<ContextBreakdownSegment>,
+    pub totals: ContextBreakdownTotals,
+    pub conversation: ContextBreakdownConversation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_delta: Option<ContextBreakdownDelta>,
     pub digest: String,
 }
 
@@ -311,6 +450,94 @@ mod tests {
         }]);
         assert_eq!(serde_json::to_value(&result).unwrap()[0]["data"][0]["line"], 1);
         assert_eq!(round_trip(&result), result);
+    }
+
+    #[test]
+    fn context_breakdown_payloads_round_trip_and_reject_unknown_fields() {
+        let params = GetContextBreakdownParams { session_id: "s-1".into() };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"sessionId": "s-1"})
+        );
+        assert_eq!(round_trip(&params), params);
+        assert!(serde_json::from_value::<GetContextBreakdownParams>(json!({
+            "sessionId": "s-1",
+            "session_id": "s-1"
+        }))
+        .is_err());
+
+        let digest_params = GetContextBreakdownDigestParams { session_id: "s-1".into() };
+        assert_eq!(round_trip(&digest_params), digest_params);
+
+        let segment = ContextBreakdownSegment {
+            origin: ContextBreakdownOrigin::AdapterInventory,
+            segment_class: "toolSchemas".into(),
+            names: vec!["shell".into()],
+            state: ContextBreakdownState::Estimated,
+            method: Some("catalog".into()),
+            reason: None,
+            item_count: Some(12),
+            bytes: None,
+            tokens: Some(340),
+            capped: false,
+        };
+        let wire = serde_json::to_value(&segment).unwrap();
+        assert_eq!(wire["state"], "estimated");
+        assert_eq!(wire["origin"], "adapterInventory");
+        assert!(wire.get("bytes").is_none(), "absent units stay off the wire");
+        assert_eq!(round_trip(&segment), segment);
+
+        let unavailable = ContextBreakdownSegment {
+            names: Vec::new(),
+            state: ContextBreakdownState::Unavailable,
+            reason: Some("no prompt compilation recorded".into()),
+            method: None,
+            ..segment.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&unavailable).unwrap()["reason"],
+            "no prompt compilation recorded"
+        );
+
+        let result = ContextBreakdownResult {
+            session_id: "s-1".into(),
+            segments: vec![segment],
+            totals: ContextBreakdownTotals {
+                item_count: Some(12),
+                bytes: None,
+                tokens: Some(340),
+                unavailable_sources: 1,
+            },
+            conversation: ContextBreakdownConversation {
+                entry_count: 7,
+                rendered_entry_count: 5,
+                token_estimate: 900,
+                context_pressure: 3,
+                context_window_tokens: 128_000,
+                model: Some("stub-standard".into()),
+                effort: None,
+                restoration_boundary_entry_id: None,
+            },
+            compaction_delta: Some(ContextBreakdownDelta {
+                boundary_entry_id: "b-1".into(),
+                first_retained_entry_id: "r-1".into(),
+                source_agent: "orchestrator".into(),
+                reason: Some("manual".into()),
+                tokens_before: 500,
+                current_token_estimate: 900,
+                growth_tokens: 400,
+            }),
+            digest: "v1:test".into(),
+        };
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["compactionDelta"]["tokensBefore"], 500);
+        assert_eq!(wire["conversation"]["contextWindowTokens"], 128_000);
+        assert_eq!(round_trip(&result), result);
+    }
+
+    #[test]
+    fn context_breakdown_segment_cap_constant_is_stable() {
+        assert_eq!(MAX_CONTEXT_BREAKDOWN_SEGMENTS, 64);
     }
 
     #[test]
