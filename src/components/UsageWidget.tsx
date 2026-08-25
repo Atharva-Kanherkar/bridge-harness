@@ -1,7 +1,9 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Gauge, X } from "lucide-react";
+import { AlertTriangle, Gauge, Layers, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
+import { useContextBreakdown } from "../contextBreakdown";
+import { ContextBreakdownPanel } from "./ContextBreakdown";
 
 /** Details panel padding; inner cards use panel radius minus this so the arcs share a center. */
 const PANEL_PAD = "p-2.5";
@@ -20,6 +22,8 @@ export interface UsageWidgetProps {
   cacheDiagnostics?: CacheDiagnostic[];
   contextPercent?: number;
   contextSource?: MetricSource;
+  focusedSessionId?: string | null;
+  onOpenPromptStudio?: (segmentClass: string) => void;
 }
 
 function sourceLabel(source: MetricSource): string {
@@ -52,11 +56,13 @@ function UsageBar({ used }: { used: number }) {
   </span>;
 }
 
-export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured" }: UsageWidgetProps) {
+export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured", focusedSessionId = null, onOpenPromptStudio }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const pressure = contextPressure(contextPercent);
+  const breakdownState = useContextBreakdown(focusedSessionId, open && showBreakdown);
   const projections = PROVIDERS.map(provider => {
     const projection = projectUsageExhaustion(samples[provider.id] ?? []);
     return projection ? { provider, projection } : null;
@@ -101,6 +107,12 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
 
     <div id="usage-health-panel" role="dialog" aria-label="Usage health details" className={`absolute right-0 top-full z-50 pt-2 transition-all duration-150 ${open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0"}`}>
       <div className={cn("u-overlay-strong max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl", PANEL_PAD)}>
+        {showBreakdown && focusedSessionId ? <ContextBreakdownPanel
+          state={breakdownState}
+          sessionId={focusedSessionId}
+          onClose={() => setShowBreakdown(false)}
+          onOpenPromptStudio={onOpenPromptStudio}
+        /> : <>
         <div className="mb-2.5 flex items-center gap-2 px-0.5">
           <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
@@ -119,6 +131,9 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
             {pressure.percent != null && <SourceBadge source={contextSource} />}
           </div>
           <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">{pressure.explanation}</p>
+          {focusedSessionId && <button type="button" onClick={() => setShowBreakdown(true)} aria-haspopup="dialog" className="mt-2 inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[9.5px] font-medium text-ring transition-colors hover:bg-accent">
+            <Layers size={10} aria-hidden="true" />Open context breakdown
+          </button>}
         </section>
 
         <section className="mt-3" aria-label="Prompt cache diagnostics">
@@ -139,6 +154,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, samples = {}, hist
           </div>
           {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No measured work-unit history yet.</p>}
         </section>
+        </>}
       </div>
     </div>
   </div>;

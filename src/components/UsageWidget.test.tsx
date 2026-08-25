@@ -80,4 +80,12 @@ describe("UsageWidget", () => {
     expect(html).toContain("Showing 6 of 7 recent prompt groups.");
     expect(html).toContain("Restore: Checkpoint restored");
   });
+
+  it("offers the breakdown entry only with a focused session, and keeps the panel unmounted by default", () => {
+    const withSession = renderToStaticMarkup(<UsageWidget usage={{}} contextPercent={76} contextSource="measured" focusedSessionId="session-a" />);
+    expect(withSession).toContain("Open context breakdown");
+    expect(withSession).not.toContain("reconciling");
+    const noSession = renderToStaticMarkup(<UsageWidget usage={{}} contextPercent={76} contextSource="measured" />);
+    expect(noSession).not.toContain("Open context breakdown");
+  });
 });
