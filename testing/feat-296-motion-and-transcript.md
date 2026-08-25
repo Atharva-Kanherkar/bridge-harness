@@ -77,6 +77,11 @@ A typed reader over one `ConversationItem`. Pure, no React.
 | 3.9 | `additions`/`deletions`/`durationMs` | surfaced as numbers, `undefined` when absent or unparseable |
 | 3.10 | Status | `"running"` for `inProgress`/`streaming`, `"failed"`, `"completed"`, else `"idle"` |
 
+Found while implementing, and folded in: the *durable* projection typed
+`file_change.*` as plain `activity` while the live reducer typed it as `diff`, so
+a patch replayed from history came back as a generic tool row with no diff at
+all. Both agree now, and `projectSessionConversation` gets a case for it.
+
 ### `PatchView` hunk folding in `src/components/DiffView.tsx`
 
 | # | Behaviour | Assertion |
@@ -98,7 +103,13 @@ A typed reader over one `ConversationItem`. Pure, no React.
 | 3.20 | An expanded command shows the `❯` prompt line and the output on the code ground | prompt glyph present, command text present |
 | 3.21 | Reads and searches render as flat rows under an uppercase group label | label text "Explored" present; those rows carry no card border |
 | 3.22 | Edits and commands render as bordered cards | the row's wrapper carries `border` |
-| 3.23 | `mockConversation.ts` exercises the new rendering | `bun run dev` preview shows an inline diff and an exit chip (manual) |
+| 3.23 | The dev preview exercises the new rendering | `bun run dev` shows an inline diff, a fold bar, an "Explored" label and an exit chip (manual) |
+
+Note on 3.23: `src/mockConversation.ts` is an unwired design fixture — nothing
+imports it — and outside Tauri `api.ts` stubs `onAgentEvent`/`replaySessionEvents`
+to nothing, so `bun run dev` renders a session purely from its **forest
+entries**. The preview fixture therefore lives in `api.ts`'s `demoEntries`;
+`mockConversation.ts` is updated to match so the two fixtures do not disagree.
 
 ## Gates
 

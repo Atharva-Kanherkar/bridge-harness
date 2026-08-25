@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
+import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { pickGreeting } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
@@ -163,115 +163,37 @@ function StatusGlyph({ live, failed, succeeded }: { live: boolean; failed: boole
 
 /* ── Tool-call presentation ─────────────────────────────────────────────── */
 
-type ActionVerb = "edit" | "read" | "run" | "search" | "tool";
+// The row is achromatic on purpose: the tool glyph identifies the action, and
+// colour is left to the things that carry meaning — diffstats, exit codes and
+// failures. Reading the call apart lives in `conversation.ts`; all that is left
+// here is choosing an icon for the verb it reports.
+const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
+  pencil: <Pencil size={12}/>,
+  "file-plus": <FilePlus2 size={12}/>,
+  file: <FileText size={12}/>,
+  terminal: <SquareTerminal size={12}/>,
+  search: <Search size={12}/>,
+  globe: <Globe size={12}/>,
+  fork: <GitFork size={12}/>,
+  list: <ListChecks size={12}/>,
+  wrench: <Wrench size={12}/>,
+};
 
-// The row is achromatic on purpose: the tool icon identifies the action, and
-// color is left to the things that carry meaning — diffstats and failures.
-interface ToolInfo {
-  verb: ActionVerb;
-  icon: React.ReactNode;
-  doing: string;
-  done: string;
-  target?: string;
-  detail?: string;
-}
-
-const VERB_DONE: Record<ActionVerb, string> = {
+const VERB_DONE: Record<ToolVerb, string> = {
   edit: "edited files", read: "read files", run: "ran commands", search: "searched the web", tool: "used tools",
 };
-const VERB_DOING: Record<ActionVerb, string> = {
+const VERB_DOING: Record<ToolVerb, string> = {
   edit: "editing files", read: "reading files", run: "running commands", search: "searching the web", tool: "using tools",
 };
 
-function str(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function baseName(path: string): string {
-  const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);
-  return parts[parts.length - 1] || path;
-}
-
-function fileTarget(input: Record<string, unknown>): { target?: string; detail?: string } {
-  const path = str(input.file_path) ?? str(input.notebook_path) ?? str(input.path);
-  return path ? { target: baseName(path), detail: path } : {};
-}
-
-/** Map a conversation item from either provider to a pretty tool card. */
-function toolInfo(item: ConversationItem): ToolInfo {
-  const data = item.data;
-  const input = (data.input && typeof data.input === "object" ? data.input : {}) as Record<string, unknown>;
-  const name = str(data.name);
-  const dataType = String(data.type ?? "");
-  const title = item.title ?? "";
-
-  // Claude tool_use blocks: name + input.
-  if (name) {
-    const key = name.toLowerCase();
-    if (key === "bash" || key === "shell") {
-      const command = str(input.command);
-      return { verb: "run", icon: <SquareTerminal size={12}/>, doing: "Running", done: "Ran", target: command ?? (title || "command"), detail: command };
-    }
-    if (key === "read") {
-      const { target, detail } = fileTarget(input);
-      return { verb: "read", icon: <FileText size={12}/>, doing: "Reading", done: "Read", target: target ?? "file", detail };
-    }
-    if (key === "edit" || key === "multiedit" || key === "notebookedit") {
-      const { target, detail } = fileTarget(input);
-      return { verb: "edit", icon: <Pencil size={12}/>, doing: "Editing", done: "Edited", target: target ?? "file", detail };
-    }
-    if (key === "write") {
-      const { target, detail } = fileTarget(input);
-      return { verb: "edit", icon: <FilePlus2 size={12}/>, doing: "Writing", done: "Wrote", target: target ?? "file", detail };
-    }
-    if (key === "grep" || key === "glob") {
-      const pattern = str(input.pattern);
-      return { verb: "search", icon: <Search size={12}/>, doing: "Searching", done: "Searched", target: pattern ? `“${pattern}”` : "files", detail: str(input.path) };
-    }
-    if (key === "websearch") {
-      return { verb: "search", icon: <Globe size={12}/>, doing: "Searching the web", done: "Searched the web", target: str(input.query) };
-    }
-    if (key === "webfetch") {
-      return { verb: "search", icon: <Globe size={12}/>, doing: "Fetching", done: "Fetched", target: str(input.url) };
-    }
-    if (key === "task") {
-      return { verb: "tool", icon: <GitFork size={12}/>, doing: "Delegating", done: "Delegated", target: str(input.description) };
-    }
-    if (key === "todowrite") {
-      return { verb: "tool", icon: <ListChecks size={12}/>, doing: "Updating tasks", done: "Updated tasks" };
-    }
-    if (key.startsWith("mcp__")) {
-      const parts = name.replace(/^mcp__/, "").split("__");
-      const server = parts[0] ?? name;
-      const tool = parts.slice(1).join(" ").replaceAll("_", " ") || name;
-      return { verb: "tool", icon: <Wrench size={12}/>, doing: `Using ${server}`, done: `Used ${server}`, target: tool };
-    }
-    return { verb: "tool", icon: <Wrench size={12}/>, doing: `Using ${name}`, done: `Used ${name}`, target: title || undefined };
-  }
-
-  // Codex-shaped items.
-  if (item.type === "diff" || dataType.includes("patch") || dataType.includes("fileChange")) {
-    const path = str(data.path) ?? (title || undefined);
-    return { verb: "edit", icon: <Pencil size={12}/>, doing: "Editing", done: "Edited", target: path ? baseName(path) : "files", detail: path };
-  }
-  if (dataType === "readFile" || /^read /i.test(title)) {
-    const path = str(data.path) ?? title.replace(/^read /i, "");
-    return { verb: "read", icon: <FileText size={12}/>, doing: "Reading", done: "Read", target: path ? baseName(path) : "file", detail: path || undefined };
-  }
-  if (dataType === "commandExecution" || data.command) {
-    const command = str(data.command) ?? (title || undefined);
-    return { verb: "run", icon: <SquareTerminal size={12}/>, doing: "Running", done: "Ran", target: command ?? "command", detail: command };
-  }
-  if (dataType === "webSearch") {
-    return { verb: "search", icon: <Globe size={12}/>, doing: "Searching the web", done: "Searched the web", target: title || undefined };
-  }
-  return { verb: "tool", icon: <Wrench size={12}/>, doing: "Using a tool", done: "Used a tool", target: title || undefined };
-}
+/// Reads and searches earn less ink than writes: they stay flat rows under a
+/// group label, while an edit or a command becomes a card with a body.
+const FLAT_VERBS = new Set<ToolVerb>(["read", "search"]);
 
 function summarize(items: ConversationItem[], live: boolean): string {
-  const seen: ActionVerb[] = [];
+  const seen: ToolVerb[] = [];
   for (const item of items) {
-    const verb = toolInfo(item).verb;
+    const verb = toolCallDisplay(item).verb;
     if (!seen.includes(verb)) seen.push(verb);
   }
   const table = live ? VERB_DOING : VERB_DONE;
@@ -280,95 +202,156 @@ function summarize(items: ConversationItem[], live: boolean): string {
   return live ? `${sentence}…` : sentence;
 }
 
-/** The expandable payload behind a tool row: explicit output, else the item text. */
-function toolOutput(item: ConversationItem): string {
-  const direct = str(item.data.aggregatedOutput) ?? str(item.data.output);
-  if (direct) return direct;
-  const text = item.text ?? "";
-  if (!text.trim()) return "";
-  if (item.title && text.trim() === item.title.trim()) return "";
-  return text;
+/// `exit 0` / `exit 2`, wherever the provider actually reports one — so a
+/// command's outcome stops hiding inside a checkmark. Absent everywhere else:
+/// an unreported exit code is not the same fact as a zero one.
+function ExitChip({ code }: { code: number }) {
+  return <span className={cn("shrink-0 rounded-full border border-border px-1.5 py-px text-[10px]", code === 0 ? "text-success" : "text-destructive")}>exit {code}</span>;
 }
 
-function DiffPatch({ patch, path }: { patch: string; path?: string }) {
-  return <PatchView patch={patch.slice(-8000)} path={path ?? ""} className="max-h-[320px] px-1" />;
+/// A command the way a terminal shows one: a `❯` prompt line carrying what ran,
+/// and the output dimmed a step below it on the code ground.
+function TerminalBlock({ command, output }: { command?: string; output?: string }) {
+  return <div className="bg-code font-mono text-[11.5px] leading-[1.7]">
+    {command && <div className="flex gap-2 px-3.5 pb-1 pt-2.5">
+      <span className="shrink-0 select-none font-semibold text-success" aria-hidden="true">❯</span>
+      <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">{command}</span>
+    </div>}
+    {output && <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-[30px] text-muted-foreground">{output.slice(-6000)}</pre>}
+  </div>;
 }
 
-/// One tool call, one collapsed monospace row: what ran on the left, what it
-/// cost on the right. Expanding reveals the raw output or patch underneath.
+/// The quiet header over a run of reads and searches. Exploration is context,
+/// not a step, so it gets one label and a hairline rather than a card each.
+function GroupLabel({ children }: { children: ReactNode }) {
+  return <div className="mb-1 flex items-center gap-2 pl-0.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground/70">
+    {children}
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
+  </div>;
+}
+
+/// One tool call in three layers: a glanceable summary row, the body it opens
+/// into, and — for a patch — the remaining hunks one more click away.
+///
+/// An edit opens itself. The transcript used to make a diff something you had to
+/// go looking for twice — expand the group, then expand the row — and even then
+/// the patch was sliced to its last 8,000 characters, which cut hunks in half
+/// and left the gutter lying about line numbers. What the model wrote is the
+/// most important thing on the screen, so it is what the row shows by default.
 function ActionRow({ item }: { item: ConversationItem }) {
-  const [open, setOpen] = useState(false);
-  const live = item.status === "inProgress" || item.status === "streaming";
-  const failed = item.status === "failed";
-  const succeeded = !live && !failed && item.status === "completed";
-  const info = toolInfo(item);
-  const output = toolOutput(item);
-  const additions = Number(item.data.additions ?? NaN);
-  const deletions = Number(item.data.deletions ?? NaN);
-  const durationMs = Number(item.data.durationMs ?? NaN);
-  const label = `${live ? info.doing : info.done}${info.target ? ` ${info.target}` : ""}`;
-  const detail = info.detail && info.detail !== info.target ? info.detail : undefined;
+  const call = toolCallDisplay(item);
+  const live = call.status === "running";
+  const failed = call.status === "failed";
+  const succeeded = call.status === "completed";
+  const body = call.patch ? "patch" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
+  // `null` is "nobody has decided yet", which is not the same as closed: a patch
+  // arriving mid-stream should still open the row, while a reader who collapsed
+  // one keeps it collapsed.
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  const open = (toggled ?? !!call.patch) && !!body;
+  // Reads and searches earn a flat row; writes and commands earn a card.
+  const card = !FLAT_VERBS.has(call.verb);
+  const label = `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
+  const path = call.path && call.path !== call.target ? call.path : undefined;
   return (
     // No `initial`/`animate` of its own: the row inherits both from the group
     // that reveals it, which is what produces the stagger.
     <motion.div className="min-w-0" variants={ROW_VARIANTS}>
-      <button
-        type="button"
-        className="group/row flex w-full min-w-0 items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-left font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent disabled:cursor-default disabled:hover:bg-transparent"
-        disabled={!output}
-        onClick={() => output && setOpen(value => !value)}
-      >
-        <span className="shrink-0 text-muted-foreground/70" aria-hidden="true">{info.icon}</span>
-        <span className={`truncate ${live ? "text-foreground" : ""}`}>{label}</span>
-        {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
-        {detail && <span className="hidden min-w-0 flex-1 truncate text-muted-foreground/70 sm:block">{detail}</span>}
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          {info.verb === "edit" && Number.isFinite(additions) && (
-            <span><b className="font-medium text-success">+{additions}</b> <b className="font-medium text-destructive">−{deletions}</b></span>
+      <div className={cn("min-w-0", card && "overflow-hidden rounded-lg border border-border bg-card")}>
+        <button
+          type="button"
+          className={cn(
+            "group/row flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent disabled:cursor-default disabled:hover:bg-transparent",
+            !card && "rounded-lg",
           )}
-          {Number.isFinite(durationMs) && !live && <span className="text-muted-foreground/70">{Math.max(1, Math.round(durationMs / 1000))}s</span>}
-          <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>
-          {output && <ChevronRight size={12} className={`text-muted-foreground/70 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true"/>}
-        </span>
-      </button>
-      <Disclosure open={open && !!output}>
-        <div className="mb-2 mt-0.5 overflow-hidden rounded-lg border border-border bg-code">
-          {looksLikeDiff(output)
-            ? <DiffPatch patch={output} path={info.verb === "edit" || info.verb === "read" ? info.detail : undefined}/>
-            : <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground">{output.slice(-6000)}</pre>}
-        </div>
-      </Disclosure>
+          disabled={!body}
+          onClick={() => body && setToggled(!open)}
+        >
+          <span className="shrink-0 text-muted-foreground/70" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
+          <span className={cn("truncate", live && "text-foreground")}>{label}</span>
+          {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
+          {path && <span className="hidden min-w-0 flex-1 truncate text-muted-foreground/70 sm:block">{path}</span>}
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            {call.verb === "edit" && call.additions !== undefined && (
+              <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
+            )}
+            {call.exitCode !== undefined && <ExitChip code={call.exitCode}/>}
+            {call.durationMs !== undefined && !live && <span className="text-muted-foreground/70">{Math.max(1, Math.round(call.durationMs / 1000))}s</span>}
+            <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>
+            {body && <ChevronRight size={12} className={cn("text-muted-foreground/70 transition-transform", open && "rotate-90")} aria-hidden="true"/>}
+          </span>
+        </button>
+        <Disclosure open={open} className={cn(card && "border-t border-border")}>
+          {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[420px] px-1" foldAfterHunks={1}/>}
+          {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
+          {body === "output" && (looksLikeDiff(call.output ?? "")
+            ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
+            : <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground">{(call.output ?? "").slice(-6000)}</pre>)}
+        </Disclosure>
+      </div>
     </motion.div>
   );
 }
 
+/// A run of consecutive rows that belong together: exploration under one label,
+/// everything else on its own. *Consecutive*, never sorted — reordering the
+/// transcript to tidy it would destroy the one thing it is for.
+type ActionChunk =
+  | { kind: "explored"; key: string; items: ConversationItem[] }
+  | { kind: "row"; key: string; item: ConversationItem };
+
+function chunkActions(items: ConversationItem[]): ActionChunk[] {
+  const out: ActionChunk[] = [];
+  for (const item of items) {
+    if (!FLAT_VERBS.has(toolCallDisplay(item).verb)) {
+      out.push({ kind: "row", key: item.key, item });
+      continue;
+    }
+    const last = out[out.length - 1];
+    if (last?.kind === "explored") { last.items.push(item); continue; }
+    out.push({ kind: "explored", key: `explored-${item.key}`, items: [item] });
+  }
+  return out;
+}
+
 function ActivityGroup({ items }: { items: ConversationItem[] }) {
   const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
-  const [open, setOpen] = useState(false);
-  const expanded = open || live;
+  // A group holding a diff opens itself: a patch the reader has to go digging
+  // for is not an inline patch.
+  const carriesPatch = items.some(item => !!toolCallDisplay(item).patch);
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  const expanded = live || (toggled ?? carriesPatch);
   // Rows revealed together arrive one after another at the same 40ms cadence the
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
+  const chunks = useMemo(() => chunkActions(items), [items]);
   return (
     <div className="my-2.5 min-w-0">
       <button
         type="button"
         className="group inline-flex max-w-full items-center gap-2 rounded-lg px-1 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground"
-        onClick={() => setOpen(value => !value)}
+        onClick={() => setToggled(!expanded)}
       >
         {live ? <PulseDot size={7}/> : <Check size={12} className="shrink-0 text-muted-foreground/70" aria-hidden="true"/>}
-        <span className={`truncate ${live ? "text-foreground" : ""}`}>{summarize(items, live)}</span>
-        <ChevronDown size={13} className={`shrink-0 text-muted-foreground/70 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true"/>
+        <span className={cn("truncate", live && "text-foreground")}>{summarize(items, live)}</span>
+        <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/70 transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
       </button>
       <Disclosure open={expanded}>
         <motion.div
-          className="mt-1 grid min-w-0 gap-1"
+          className="mt-1 grid min-w-0 gap-1.5"
           initial="hidden"
           animate="shown"
           variants={{ hidden: {}, shown: {} }}
           transition={stagger}
         >
-          {items.map(item => <ActionRow key={item.key} item={item}/>)}
+          {chunks.map(chunk => chunk.kind === "row"
+            ? <ActionRow key={chunk.key} item={chunk.item}/>
+            : <div key={chunk.key} className="min-w-0">
+                <GroupLabel>Explored</GroupLabel>
+                <div className="grid min-w-0 gap-0.5">
+                  {chunk.items.map(item => <ActionRow key={item.key} item={item}/>)}
+                </div>
+              </div>)}
         </motion.div>
       </Disclosure>
     </div>
