@@ -122,11 +122,15 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
  * That turns the one genuinely dangerous case — a human and an agent editing
  * the same file — into a visible choice instead of a silent lost update.
  */
-export function CodePanel({ workspaceId, visible = true, onSaved }: {
+export function CodePanel({ workspaceId, visible = true, reveal, onSaved }: {
   workspaceId: string;
   /** False while another tab is showing: the panel stays mounted, but its
    *  shortcuts must not steal ⌘P and ⌘S from whatever is on screen. */
   visible?: boolean;
+  /** An outside request — a diff row, later a chat mention — to open a file
+   *  here. The nonce is the request identity: one open per nonce, so a
+   *  re-render with the same request does not re-activate the tab. */
+  reveal?: { path: string; nonce: number };
   onSaved?: () => void;
 }) {
   const [paths, setPaths] = useState<string[]>([]);
@@ -185,6 +189,15 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
       loading.current.delete(path);
     }
   }, [open, workspaceId]);
+
+  // One open per reveal nonce. The ref carries the last honoured request so a
+  // re-render with the same reveal object is inert.
+  const revealSeen = useRef(0);
+  useEffect(() => {
+    if (!reveal || reveal.nonce === revealSeen.current) return;
+    revealSeen.current = reveal.nonce;
+    void openFile(reveal.path);
+  }, [reveal, openFile]);
 
   const closeFile = useCallback((path: string) => {
     // Retire any load still in flight for this path along with the tab.

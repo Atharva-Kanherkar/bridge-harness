@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Quote } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COLORIZE_DEBOUNCE_MS, colorizePatch, highlightPatch, type DiffRow, type DiffRowKind } from "./highlight";
+
+/** A hunk's span in the new file, read from its own @@ header. */
+export type HunkRange = { start: number; end: number };
+
+const HUNK_NEW_RANGE = /@@+ (?:-\d+(?:,\d+)? )?\+(\d+)(?:,(\d+))? @@/;
+
+function hunkRange(row: DiffRow): HunkRange | undefined {
+  const match = HUNK_NEW_RANGE.exec(row.html);
+  if (!match) return undefined;
+  const start = Number(match[1]);
+  const count = match[2] === undefined ? 1 : Number(match[2]);
+  return { start, end: start + Math.max(count, 1) - 1 };
+}
 
 /** Row tint, marker glyph and marker colour for each kind of diff line. */
 const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass: string }> = {
@@ -12,11 +25,12 @@ const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass
   context: { tint: "", marker: "", markerClass: "" },
 };
 
-function DiffLine({ row, numbered }: { row: DiffRow; numbered: boolean }) {
+function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: boolean; onQuoteHunk?: (range: HunkRange) => void }) {
   const style = ROW_STYLE[row.kind];
+  const range = row.kind === "hunk" && onQuoteHunk ? hunkRange(row) : undefined;
   // The gutter is pinned so the numbers and the +/− marker survive a
   // horizontal scroll through a long line.
-  return <div className="flex">
+  return <div className="group/hunk flex">
     <span className="sticky left-0 z-10 flex shrink-0 select-none bg-code">
       {numbered && <>
         <span className="w-9 px-1.5 text-right text-[10.5px] tabular-nums text-muted-foreground/40">{row.oldLine ?? ""}</span>
@@ -26,6 +40,16 @@ function DiffLine({ row, numbered }: { row: DiffRow; numbered: boolean }) {
     </span>
     <span className={cn("flex-1 whitespace-pre pl-1.5 pr-3", style.tint)}>
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
+      {range && <button
+        type="button"
+        onClick={() => onQuoteHunk?.(range)}
+        aria-label={`Reference lines ${range.start}-${range.end} in the composer`}
+        title="Reference this hunk in the composer"
+        className="ml-2 hidden h-4 items-center gap-1 rounded px-1 align-middle text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:inline-flex group-hover/hunk:inline-flex"
+      >
+        <Quote size={9} strokeWidth={1.8} aria-hidden="true" />
+        quote
+      </button>}
     </span>
   </div>;
 }
@@ -62,7 +86,7 @@ export function splitHunks(rows: DiffRow[]): DiffRow[][] {
  * taking over the transcript — and it beats slicing the patch to a character
  * budget, which cut hunks in half and left the gutter lying about line numbers.
  */
-export function PatchView({ patch, path = "", className, foldAfterHunks }: { patch: string; path?: string; className?: string; foldAfterHunks?: number }) {
+export function PatchView({ patch, path = "", className, foldAfterHunks, onQuoteHunk }: { patch: string; path?: string; className?: string; foldAfterHunks?: number; onQuoteHunk?: (range: HunkRange) => void }) {
   // `rows` is derived at render time, not reset by an effect: an effect only
   // runs after commit, so a naive `useEffect`-driven reset would show one
   // real paint of the *previous* patch's coloured rows under the *new*
@@ -100,7 +124,7 @@ export function PatchView({ patch, path = "", className, foldAfterHunks }: { pat
   return <div className={cn("stx flex flex-col overflow-hidden font-mono text-[11.5px] leading-[1.6]", className)}>
     <div className="min-h-0 flex-1 overflow-auto py-2">
       <div className="w-max min-w-full">
-        {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} />)}
+        {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}
       </div>
     </div>
     {hiddenHunks > 0 && <button

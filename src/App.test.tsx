@@ -268,6 +268,37 @@ describe("the dock in the session view", () => {
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
   });
 
+  // Contract: testing/feat-dock-changes.md §5.
+  it("quotes a file and a hunk from the diff into the composer", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit1", key: "1" });
+    await settle(3);
+
+    const dock = dockAside()!;
+    await click(dock.querySelector('button[aria-label="Reference src-tauri/bridge-core/src/policy.rs in the composer"]')!);
+    const textarea = composer()!;
+    expect(textarea.value).toContain("@src-tauri/bridge-core/src/policy.rs");
+    expect(document.activeElement).toBe(textarea);
+
+    await click(dock.querySelector('button[aria-expanded="false"]')!);
+    await click(dock.querySelector('button[aria-label="Reference lines 10-30 in the composer"]')!);
+    expect(textarea.value).toMatch(/lines 10-30 $/);
+  });
+
+  it("opens a file from the diff in the Code pane", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit1", key: "1" });
+    await settle(3);
+
+    await click(dockAside()!.querySelector('button[aria-label="Open src-tauri/bridge-core/src/policy.rs in the Code pane"]')!);
+    await settle(4);
+    const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
+    expect(codeTab.getAttribute("aria-selected")).toBe("true");
+    expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src-tauri/bridge-core/src/policy.rs")).toBe(true);
+  });
+
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");

@@ -74,6 +74,29 @@ afterEach(async () => {
 });
 
 describe("CodePanel", () => {
+  it("honours a reveal request: the file opens and its tab is active", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    const tab = [...container.querySelectorAll("button")].find(node => node.getAttribute("title") === "src/App.tsx");
+    expect(tab).toBeTruthy();
+    expect(read).toHaveBeenCalledWith("w", "src/App.tsx");
+  });
+
+  it("fires one activation per reveal nonce", async () => {
+    read.mockImplementation(async (_workspace, path) => ({ path, content: "const a = 1;", sha256: `sha-${path}`, tooLarge: false, binary: false, sizeBytes: 12 }));
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    expect(read).toHaveBeenCalledTimes(1);
+
+    await click(rowNamed("README.md"));
+    const activeTab = () => [...container.querySelectorAll('[class*="group/tab"]')].find(node => node.className.includes("bg-code"))?.querySelector("button[title]")?.getAttribute("title");
+    expect(activeTab()).toBe("README.md");
+
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    expect(activeTab()).toBe("README.md");
+
+    await render({ reveal: { path: "src/App.tsx", nonce: 2 } });
+    expect(activeTab()).toBe("src/App.tsx");
+  });
+
   it("builds a tree from the workspace file list, directories first", async () => {
     await render();
     expect(rows().map(node => node.textContent?.trim())).toEqual(["src", "README.md"]);
