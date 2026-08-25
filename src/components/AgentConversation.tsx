@@ -388,6 +388,15 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
   const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
+  // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
+  // an earlier pending message lands as a real message, the bubbles after it
+  // keep their identity — one ghost fades, and no survivor flips its text.
+  const seenPending = new Map<string, number>();
+  const pendingRows = optimistic.map(text => {
+    const occurrence = seenPending.get(text) ?? 0;
+    seenPending.set(text, occurrence + 1);
+    return { key: `pending-${text}:${occurrence}`, text };
+  });
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
@@ -402,7 +411,13 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           not replay their entrance. Only what actually arrives afterwards rises
           into place — which is the difference between a transcript that breathes
           and one that flashes on every switch. */}
-      <AnimatePresence initial={false}>
+      {/* Keyed by session: a switch replaces the whole tree in one commit.
+          Unkeyed, every old row's exit played at once — the scroll height
+          doubled against `ScrollFollow` and hundreds of rows animated
+          simultaneously on a long transcript. Within one session, genuine
+          removals (a resolved optimistic bubble, the working shimmer) still
+          get their exit. */}
+      <AnimatePresence initial={false} key={session?.id ?? "preview"}>
         {renderedItems.map(entry => entry.kind === "group"
           ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items}/></TranscriptRow>
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
@@ -415,7 +430,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             >
               <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
-        {optimistic.map((text, index) => <TranscriptRow key={`pending-${index}`}><div className={BUBBLE}>{text}</div></TranscriptRow>)}
+        {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}>{row.text}</div></TranscriptRow>)}
         {working && !streaming && <TranscriptRow key="working"><div className="flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div></TranscriptRow>}
       </AnimatePresence>
     </div>

@@ -138,8 +138,50 @@ describe("tool row disclosure", () => {
   });
 });
 
-describe("alerts and approvals", () => {
-  it("gives an error item the alert role and its described title", () => {
+describe("session switches and optimistic bubbles", () => {
+  it("replaces the transcript atomically on a session switch instead of animating every old row out", async () => {
+    // Real durations here: the defect this guards is *timing-shaped*. Under
+    // skipped animations an unkeyed presence also drops its ghosts between
+    // acts, and the regression would be invisible.
+    mount([event(1, "message.completed", { role: "user", text: "First session message" })]);
+    const next = { ...session, id: "s2" };
+    MotionGlobalConfig.skipAnimations = false;
+    try {
+      // A synchronous switch: the old transcript must not linger through exit
+      // frames — keyed presence replaces the tree in one commit. Distinct
+      // item ids, so the incoming row is genuinely a different child.
+      mount([event(42, "message.completed", { role: "user", text: "Second session message" })], { session: next });
+      expect(host.textContent).not.toContain("First session message");
+      expect(host.textContent).toContain("Second session message");
+    } finally {
+      MotionGlobalConfig.skipAnimations = true;
+    }
+    await settle();
+    expect(host.textContent).not.toContain("First session message");
+  });
+
+  it("keeps a later optimistic bubble in place when an earlier one lands as real", async () => {
+    const bubblesWith = (text: string) =>
+      [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')].filter(node => node.textContent === text);
+    mount([], { working: true, pendingMessages: ["alpha", "beta"] });
+    const beta = bubblesWith("beta");
+    expect(beta).toHaveLength(1);
+
+    // "alpha" becomes a real message; its ghost leaves, but "beta" must not
+    // move, flip its text, or be the thing that fades.
+    mount([event(1, "message.completed", { role: "user", text: "alpha" })], { pendingMessages: ["beta"] });
+    expect(bubblesWith("beta")).toHaveLength(1);
+    expect(bubblesWith("beta")[0]).toBe(beta[0]);
+    // The leaving ghost is the resolved "alpha" — the real message plus its
+    // fading twin, until the exit lands.
+    expect(bubblesWith("alpha")).toHaveLength(2);
+    await settle();
+    expect(bubblesWith("alpha")).toHaveLength(1);
+    expect(bubblesWith("beta")).toHaveLength(1);
+  });
+});
+
+describe("alerts and approvals", () => {  it("gives an error item the alert role and its described title", () => {
     mount([event(1, "error", { status: "failed", text: "Adapter exited with status 1" })]);
     const alert = host.querySelector('[role="alert"]');
     expect(alert).not.toBeNull();
