@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyErrorKind, describeError, providerFromText, usageResetHint } from "./errors";
+import { classifyErrorKind, describeError, errorMessage, providerFromText, usageResetHint } from "./errors";
 import type { UsageSnapshot } from "./usage";
 
 const snapshot = (usedPercent: number, resetsInSeconds?: number, label = "Weekly"): UsageSnapshot => ({
@@ -62,6 +62,35 @@ describe("usageResetHint", () => {
     expect(usageResetHint(null)).toBeUndefined();
     expect(usageResetHint({ windows: [], source: "reported", capturedAt: "2026-07-16T10:00:00Z" })).toBeUndefined();
     expect(usageResetHint(snapshot(100))).toBeUndefined();
+  });
+});
+
+describe("errorMessage", () => {
+  it("unwraps the daemon-host error envelope object to its message", () => {
+    expect(
+      errorMessage({ code: 1001, kind: "git", message: "Git: fatal: not a git repository" }),
+    ).toBe("Git: fatal: not a git repository");
+  });
+
+  it("unwraps the same envelope when it arrives as a JSON string", () => {
+    const envelope =
+      '{"code":1001,"kind":"git","message":"Git: fatal: not a git repository (or any of the parent directories): .git"}';
+    expect(errorMessage(envelope)).toBe(
+      "Git: fatal: not a git repository (or any of the parent directories): .git",
+    );
+  });
+
+  it("leaves plain strings, Errors, and non-envelope values alone", () => {
+    expect(errorMessage("plain failure")).toBe("plain failure");
+    expect(errorMessage(new Error("thrown"))).toBe("thrown");
+    expect(errorMessage(42)).toBe("42");
+  });
+
+  it("falls back to the raw text when the envelope carries no usable message", () => {
+    expect(errorMessage('{"code":1001,"kind":"git"}')).toBe('{"code":1001,"kind":"git"}');
+    expect(errorMessage({ code: 1001 })).toBe("[object Object]");
+    expect(errorMessage('{"message":"   "}')).toBe('{"message":"   "}');
+    expect(errorMessage("{not json")).toBe("{not json");
   });
 });
 

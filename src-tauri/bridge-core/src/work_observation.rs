@@ -500,6 +500,83 @@ mod tests {
         assert_eq!(stored, divergence, "the cache holds exactly what the caller was told");
     }
 
+    /// Issue #306: the board showed a fresh measurement of the workspace root
+    /// while the card's action failed with "not a git repository", because the
+    /// action ran git in the session's cwd. A workspace session must be
+    /// measured at its workspace root no matter where its cwd points.
+    #[test]
+    fn a_measurement_for_a_workspace_session_measures_the_workspace_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let repository = data_dir.join("repo");
+        std::fs::create_dir_all(&repository).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "test@bridge.invalid"],
+            vec!["config", "user.name", "Bridge Test"],
+            vec!["commit", "--allow-empty", "-q", "-m", "root"],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&repository)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+        // The session runs somewhere that is not a repository at all — the
+        // exact shape of the scratch-dir cwd that produced the issue.
+        let elsewhere = data_dir.join("scratch");
+        std::fs::create_dir(&elsewhere).unwrap();
+
+        {
+            let db = store::open(&data_dir.join("bridge.db")).unwrap();
+            db.execute_batch(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Bridge','/tmp/p','now');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+                     VALUES('s',NULL,'codex','Codex','idle','reported');",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','Task','main',?1,'idle','now')",
+                params![repository.to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("UPDATE sessions SET workspace_id='w',cwd=?1 WHERE id='s'", params![elsewhere.to_string_lossy()]).unwrap();
+        }
+
+        let core = Arc::new(
+            crate::BridgeCore::boot(crate::BootConfig {
+                data_dir: data_dir.to_path_buf(),
+                browser_extension_path: data_dir.join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+        let divergence = crate::api::workspace_base_divergence(&core, "s", false)
+            .expect("the workspace root is a repository and must measure");
+
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repository)
+            .output()
+            .unwrap();
+        assert_eq!(
+            divergence.head.as_deref(),
+            Some(String::from_utf8_lossy(&head.stdout).trim()),
+            "the reading describes the workspace root, not the session cwd"
+        );
+
+        // The board must now hold the workspace root's reading — the same
+        // directory the observer measures — instead of a failure.
+        let db = core.db.lock().unwrap();
+        let (status, payload, _, _) = cached(&db);
+        assert_eq!(status, "ok");
+        let stored: git::BaseBranchDivergence =
+            serde_json::from_str(&payload.expect("payload")).unwrap();
+        assert_eq!(stored, divergence);
+    }
+
     #[test]
     fn a_workspace_is_due_when_it_has_never_been_observed_or_its_reading_has_aged() {
         let db = memory_db();
