@@ -79,4 +79,18 @@ describe("AppTitleBar", () => {
     mount({ actions: <button type="button">Mission Control</button> });
     expect(header().textContent).toContain("Mission Control");
   });
+
+  it("puts trailing nav after the title so fullscreen can sit chevrons on the right", () => {
+    mount({ trailingNav: <button type="button" aria-label="Back">Back</button> });
+    const title = header().querySelector("p")!;
+    const back = header().querySelector('button[aria-label="Back"]')!;
+    expect(title.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("puts leading chrome before the title so fullscreen can sit the panel on the left", () => {
+    mount({ leading: <button type="button" aria-label="Hide sidebar">Panel</button> });
+    const title = header().querySelector("p")!;
+    const panel = header().querySelector('button[aria-label="Hide sidebar"]')!;
+    expect(panel.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });

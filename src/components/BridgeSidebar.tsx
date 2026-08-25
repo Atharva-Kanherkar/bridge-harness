@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, PanelLeft, Pin, Plus, Search, Settings2, X } from "lucide-react";
+import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, Pin, Plus, Search, Settings2, X } from "lucide-react";
+import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
@@ -191,6 +192,15 @@ export type BridgeSidebarProps = {
   onOpenMemory: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** When set, the rail uses this collapse state instead of its own. */
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  /** Panel + history chevrons. Hidden when those controls live on the title bar. */
+  showWindowNav?: boolean;
+  canBack?: boolean;
+  canForward?: boolean;
+  onBack?: () => void;
+  onForward?: () => void;
 };
 
 export function BridgeSidebar({
@@ -211,9 +221,22 @@ export function BridgeSidebar({
   onOpenMemory,
   onOpenSettings,
   onOpenSession,
+  collapsed: collapsedProp,
+  onCollapsedChange,
+  showWindowNav = true,
+  canBack = false,
+  canForward = false,
+  onBack,
+  onForward,
 }: BridgeSidebarProps) {
   const [width, setWidth] = useState(readWidth);
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1");
+  const [internalCollapsed, setInternalCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1");
+  const collapsed = collapsedProp ?? internalCollapsed;
+  const setCollapsed = useCallback((next: boolean | ((value: boolean) => boolean)) => {
+    const resolved = typeof next === "function" ? next(collapsed) : next;
+    if (onCollapsedChange) onCollapsedChange(resolved);
+    else setInternalCollapsed(resolved);
+  }, [collapsed, onCollapsedChange]);
   const [resizing, setResizing] = useState(false);
   const [skipWidthTransition, setSkipWidthTransition] = useState(false);
   const [view, setView] = useState<ChatView>(readChatView);
@@ -287,7 +310,7 @@ export function BridgeSidebar({
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => setSkipWidthTransition(false));
     });
-  }, []);
+  }, [setCollapsed]);
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
@@ -401,34 +424,26 @@ export function BridgeSidebar({
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
 
-      <div className={cn("flex min-h-0 h-full flex-col", collapsed ? "px-2 py-3" : "px-2 py-3")}>
-        <div
-          className={cn(
-            "mb-3 flex h-7 shrink-0 items-center",
-            collapsed ? "justify-start pl-0.5" : "justify-between",
-          )}
-          data-tauri-drag-region="deep"
-        >
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            <PanelLeft className={cn("h-4 w-4 transition-transform duration-200", collapsed && "rotate-180")} strokeWidth={1.75} />
-          </button>
-          {!collapsed && (
-            <RailIconButton
-              label={searchOpen ? "Close search" : "Search chats"}
-              onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-            >
-              {searchOpen
-                ? <X size={14} strokeWidth={1.7} aria-hidden="true" />
-                : <Search size={14} strokeWidth={1.7} aria-hidden="true" />}
-            </RailIconButton>
-          )}
-        </div>
-
+      {showWindowNav && (
+        collapsed ? (
+          <div className="flex h-11 shrink-0 items-center justify-center" data-tauri-drag-region="deep">
+            <WindowPanelButton collapsed={collapsed} onToggleCollapsed={toggleCollapsed} />
+          </div>
+        ) : (
+          <div className="flex h-11 shrink-0 items-center gap-0.5 pr-2 pl-24" data-tauri-drag-region="deep">
+            <WindowNavButtons
+              spread
+              collapsed={collapsed}
+              onToggleCollapsed={toggleCollapsed}
+              canBack={canBack}
+              canForward={canForward}
+              onBack={onBack ?? (() => {})}
+              onForward={onForward ?? (() => {})}
+            />
+          </div>
+        )
+      )}
+      <div className={cn("flex min-h-0 flex-1 flex-col px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
         <ScopeSwitch scope={scope} collapsed={collapsed} onChange={changeScope} />
 
         <div className="mb-4 shrink-0">
@@ -500,7 +515,19 @@ export function BridgeSidebar({
 
         <div className="flex-1 overflow-y-auto">
           {!collapsed && (
-            <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />}>
+            <SectionLabel action={
+              <span className="flex items-center gap-0.5">
+                <RailIconButton
+                  label={searchOpen ? "Close search" : "Search chats"}
+                  onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+                >
+                  {searchOpen
+                    ? <X size={14} strokeWidth={1.7} aria-hidden="true" />
+                    : <Search size={14} strokeWidth={1.7} aria-hidden="true" />}
+                </RailIconButton>
+                <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />
+              </span>
+            }>
               Chats
             </SectionLabel>
           )}
