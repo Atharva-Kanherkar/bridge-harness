@@ -100,6 +100,20 @@
       "resultSchema": "session-forest-digest-result.json"
     },
     {
+      "command": "get_context_breakdown",
+      "domain": "sessions",
+      "method": "sessions/get_context_breakdown",
+      "paramsSchema": "get-context-breakdown-params.json",
+      "resultSchema": "context-breakdown-result.json"
+    },
+    {
+      "command": "get_context_breakdown_digest",
+      "domain": "sessions",
+      "method": "sessions/get_context_breakdown_digest",
+      "paramsSchema": "get-context-breakdown-digest-params.json",
+      "resultSchema": "context-breakdown-digest-result.json"
+    },
+    {
       "command": "replay_session_events",
       "domain": "sessions",
       "method": "sessions/replay_session_events",
