@@ -1,28 +1,19 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Code2, FileCode2, MessageSquareText, TerminalSquare } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionToolbar, type SessionToolbarProps } from "./SessionToolbar";
 
 let container: HTMLDivElement;
 let root: Root;
 
-const REPO_TABS = [
-  { id: "agent", label: "Agent", icon: MessageSquareText },
-  { id: "changes", label: "Changes", icon: FileCode2, badge: 2 },
-  { id: "code", label: "Code", icon: Code2 },
-  { id: "terminal", label: "Terminal", icon: TerminalSquare },
-];
-
 const noop = () => {};
 
 const props = (overrides: Partial<SessionToolbarProps> = {}): SessionToolbarProps => ({
   title: "Orchestrator",
-  tabs: REPO_TABS,
-  activeTab: "agent",
-  onTabChange: noop,
   model: "Claude Opus",
+  dockOpen: false,
+  onToggleDock: noop,
   browserOpen: false,
   onToggleBrowser: noop,
   fullscreen: false,
@@ -36,8 +27,6 @@ function mount(overrides: Partial<SessionToolbarProps> = {}) {
   });
 }
 
-const tabs = () => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
-const tabByLabel = (label: string) => tabs().find(tab => tab.getAttribute("aria-label") === label)!;
 const overflow = () => container.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!;
 const menu = () => document.querySelector<HTMLElement>('[role="menu"]');
 const click = (element: Element) => {
@@ -69,37 +58,27 @@ describe("SessionToolbar", () => {
     expect(container.textContent).not.toContain("Orchestrator · Claude");
   });
 
-  it("labels only the active tab but names every one for assistive tech", () => {
-    mount({ activeTab: "code" });
-    expect(tabByLabel("Code").textContent).toContain("Code");
-    expect(tabByLabel("Terminal").textContent).not.toContain("Terminal");
-    expect(tabs().map(tab => tab.getAttribute("aria-label"))).toEqual(["Agent", "Changes", "Code", "Terminal"]);
-    expect(tabs().filter(tab => tab.getAttribute("aria-selected") === "true").map(tab => tab.getAttribute("aria-label"))).toEqual(["Code"]);
-  });
-
-  it("keeps the changed-file count on the Changes tab while it is inactive", () => {
-    mount({ activeTab: "agent" });
-    expect(tabByLabel("Changes").textContent).toContain("2");
-  });
-
-  it("drops the segmented control for a session with a single panel", () => {
-    mount({ tabs: [REPO_TABS[0]] });
+  it("carries no tablist — the panel switcher lives in the dock now", () => {
+    mount();
     expect(container.querySelector('[role="tablist"]')).toBeNull();
-    expect(container.querySelector("h1")!.textContent).toBe("Orchestrator");
   });
 
-  it("reports a tab press", () => {
-    const onTabChange = vi.fn();
-    mount({ onTabChange });
-    click(tabByLabel("Terminal"));
-    expect(onTabChange).toHaveBeenCalledWith("terminal");
+  it("offers the dock toggle and reflects its state", () => {
+    const onToggleDock = vi.fn();
+    mount({ onToggleDock });
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle dock"]')!;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    click(toggle);
+    expect(onToggleDock).toHaveBeenCalledTimes(1);
+    mount({ dockOpen: true });
+    expect(container.querySelector('button[aria-label="Toggle dock"]')!.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("carries the model and nothing else as quiet context", () => {
     mount();
     expect(container.textContent).toContain("Claude Opus");
     // The branch and its dirty count were the line the user asked to lose; the
-    // count already rides on the Changes tab.
+    // count rides on the dock's Changes tab.
     expect(container.textContent).not.toContain("isolated worktree");
     expect(container.textContent).not.toContain("changed");
     expect(container.textContent).not.toMatch(/codex\/|feat\//);

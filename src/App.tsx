@@ -17,6 +17,8 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
+import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
+import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { MissionControl } from "./components/MissionControl";
@@ -125,7 +127,7 @@ export function App() {
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
-  const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
+  const [dockSectionWidth, setDockSectionWidth] = useState(1280);
   // Fullscreen only squares the native frame. The sidebar and canvas keep the
   // same side-by-side geometry as windowed mode; native fullscreen and zoom
   // arrive as `data-flush-window` from the shell.
@@ -138,8 +140,6 @@ export function App() {
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
-  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(["agent"]));
-  useEffect(() => { setVisitedTabs(previous => previous.has(activeTab) ? previous : new Set(previous).add(activeTab)); }, [activeTab]);
   const [modal, setModal] = useState<"workspace" | "orchestrator" | "router" | "memory" | null>(null);
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
@@ -271,7 +271,6 @@ export function App() {
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
     if (place.view === "workspace") {
-      setActiveTab("agent");
       setExpandedWorkerId(undefined);
     }
   }, []);
@@ -312,6 +311,31 @@ export function App() {
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
+
+  // The dock is a workspace possession: width, active pane, and expand state
+  // belong to the tree being worked on, so direct chats key by session instead.
+  const dockKey = workspace?.id ?? session?.id;
+  const [dock, dispatchDock] = useDockLayout(dockKey);
+  const dockRef = useRef(dock);
+  dockRef.current = dock;
+  const dockSheet = dockSectionWidth < DOCK_SHEET_THRESHOLD;
+  const dockSectionRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const element = dockSectionRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number" && width > 0) setDockSectionWidth(width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [session?.id]);
+  const dockPanes: DockPaneDescriptor[] = [
+    { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
+    { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
+    { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in." },
+  ];
+  const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
   // A focused worker is watchable, its approvals are resolvable, and it can be
   // steered — the composer says "steer", not "message", because the worker still
   // answers to the objective its orchestrator gave it.
@@ -629,7 +653,6 @@ export function App() {
   function openSession(id: string) {
     setView("workspace");
     setParadigm("single");
-    setActiveTab("agent");
     setSelectedSessionId(id);
     setExpandedWorkerId(undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
@@ -1228,16 +1251,44 @@ export function App() {
   // and this is an in-window layout change, not a window state change.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      const chord = event.altKey && (event.metaKey || event.ctrlKey);
+      if (chord && event.key.toLowerCase() === "f") {
         event.preventDefault();
         setFullscreen(value => !value);
-      } else if (event.key === "Escape") {
-        setFullscreen(false);
+        return;
+      }
+      // The dock's chords live beside ⌥⌘F: 0 toggles, digits pick a pane by
+      // switcher order, return expands. Digits go by physical code because ⌥
+      // rewrites the printed key on macOS.
+      if (chord && (event.code === "Digit0" || event.key === "0")) {
+        event.preventDefault();
+        dispatchDock({ type: "toggle" });
+        return;
+      }
+      if (chord && event.key === "Enter") {
+        event.preventDefault();
+        dispatchDock({ type: "toggle-expanded" });
+        return;
+      }
+      if (chord) {
+        const digit = /^Digit([1-9])$/.exec(event.code)?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : undefined);
+        const pane = digit ? DOCK_PANES[Number(digit) - 1] : undefined;
+        if (pane) {
+          event.preventDefault();
+          dispatchDock({ type: "open-pane", pane });
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        // An expanded dock is the nearer layer: the first Escape restores it,
+        // the next one leaves fullscreen.
+        if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
+        else setFullscreen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [dispatchDock]);
 
   useEffect(() => {
     setLayoutFullscreenDocument(fullscreen || flushWindow);
@@ -1352,29 +1403,24 @@ export function App() {
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
-          tabs={hasRepo ? [
-            { id: "agent", label: "Agent", icon: MessageSquareText },
-            { id: "changes", label: "Changes", icon: FileCode2, badge: workspace?.dirtyFiles || undefined },
-            { id: "code", label: "Code", icon: Code2 },
-            { id: "terminal", label: "Terminal", icon: TerminalSquare },
-          ] : [{ id: "agent", label: "Agent", icon: MessageSquareText }]}
-          activeTab={activeTab}
-          onTabChange={id => setActiveTab(id as typeof activeTab)}
           model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
+          dockOpen={dock.open}
+          onToggleDock={() => dispatchDock({ type: "toggle" })}
           browserOpen={browserOpen}
           onToggleBrowser={() => setBrowserOpen(value => !value)}
           fullscreen={fullscreen}
           onToggleFullscreen={toggleLayoutFullscreen}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
           onToggleRecall={() => {
-            setActiveTab("agent");
+            // Recall reads the conversation, so an expanded pane steps aside first.
+            if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
             setRecallOpen(open => !open);
           }}
           recallOpen={recallOpen}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
         />
-        <section className="flex-1 min-h-0 overflow-hidden flex relative">
+        <section ref={dockSectionRef} className="flex-1 min-h-0 overflow-hidden flex relative">
           {/* The chat's own panel, expanded. Rendered over the session pane
               rather than navigating away, because the reason to look at a
               worker's full feed is usually to decide something in the
@@ -1389,8 +1435,8 @@ export function App() {
               onSteer={steerWorker}
             />
           </div>}
-          <div className="flex-1 min-w-0 flex flex-col relative">
-            {(activeTab === "agent" || !hasRepo) && <>
+          <div className={cn("flex-1 min-w-0 flex flex-col relative", dockExpandedVisible && "hidden")}>
+            <>
               {recallOpen && (
                 <SessionRecallSearch
                   sessionId={session.id}
@@ -1536,14 +1582,28 @@ export function App() {
                   />
                 </div>}
               </div>
-            </>}
-            {hasRepo && workspace && visitedTabs.has("changes") && <div className={cn("absolute inset-0", activeTab !== "changes" && "hidden")}><ChangesPanel key={workspace.id} workspace={workspace}/></div>}
-            {hasRepo && workspace && visitedTabs.has("code") && <div className={cn("absolute inset-0", activeTab !== "code" && "hidden")}>{/* Keyed on the workspace: these panels hold open buffers and relative
-                  paths, and neither survives a change of tree. Without it a save
-                  would aim the old path at the new workspace. */}
-              <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={activeTab === "code"} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense></div>}
-            {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
+            </>
           </div>
+          <SessionDock
+            state={dock}
+            panes={dockPanes}
+            availableWidth={dockSectionWidth}
+            sheet={dockSheet}
+            concealed={fullscreen}
+            onAction={dispatchDock}
+            onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
+          >
+            {pane => {
+              if (!workspace) return null;
+              /* Keyed on the workspace: these panes hold open buffers, shells,
+                 and relative paths, and none of that survives a change of tree.
+                 Without the key a save would aim the old path at the new
+                 workspace. */
+              if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} />;
+              if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
+              return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id}/></Suspense>;
+            }}
+          </SessionDock>
           {browserOpen && <BrowserSurface onClose={() => setBrowserOpen(false)} onError={setError} />}
         </section>
       </> : <Welcome
@@ -1855,7 +1915,6 @@ function ChangesPanel({ workspace }: { workspace: Workspace }) {
       </>}
   </div>;
 }
-function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="max-w-[720px] px-8 py-[22px]">{events.length ? events.map(e => <article key={e.id} className="flex gap-3 py-[13px] border-b border-border text-muted-foreground"><CircleDot size={14} aria-hidden="true" /><div><b className="text-foreground text-[11px] font-medium tracking-[0.02em] capitalize">{e.kind.replaceAll(".", " ")}</b><p className="text-[12.5px] my-1 text-foreground">{e.body}</p><small className="font-mono text-[10.5px] text-muted-foreground/65">{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="text-muted-foreground text-[12.5px] p-7">No events for this workspace yet.</div>}</div>; }
 function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState }) {
   const profile = resolveProfileOption("standard_orchestrator", modelSetup, adapters);
   const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
