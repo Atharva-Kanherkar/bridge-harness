@@ -65,6 +65,28 @@ describe("session forest conversation projection",()=>{
     expect(()=>projectSessionConversation([future],"future")).toThrow("Unsupported semantic event schema version 3");
   });
 
+  it("renders a model switch with the fidelity it reports",()=>{
+    const items=projectSessionConversation([
+      entry("m1",null,"session.model_changed",{role:"system",status:"ready",title:"Chat model changed",text:"Chat runtime changed from codex/stub-fast to claude/opus. The next message starts a fresh provider session — carried forward: summary + 2 decisions + 3 files.",data:{previousHarness:"codex",harness:"claude",model:"opus",freshProviderSession:true,carriedContext:{summary:true,decisions:2,filesTouched:3,recentEntries:4}}},1),
+    ],"m1");
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("activity");
+    expect(items[0].title).toBe("Chat model changed");
+    expect(items[0].text).toContain("carried forward: summary + 2 decisions + 3 files");
+  });
+
+  it("renders a carried handoff brief inside the new chat's transcript",()=>{
+    const items=projectSessionConversation([
+      entry("h1",null,"handoff.brief",{text:"Bridge checkpoint-restoration context (stored history, not native provider resume):\nuser.message: we chose the SQLite token store",sourceSessionId:"source",sourceHarness:"claude"},1),
+      entry("h2","h1","user.message",{text:"what store did we pick?"},2),
+    ],"h2");
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe("activity");
+    expect(items[0].title).toBe("Handoff brief");
+    expect(items[0].text).toContain("SQLite token store");
+    expect(items[1].text).toBe("what store did we pick?");
+  });
+
   it("maps checkpoint, compaction, and branch summary entries to dedicated cards",()=>{
     const cards=[
       entry("e1",null,"checkpoint",{summary:"Saved state"},1),
