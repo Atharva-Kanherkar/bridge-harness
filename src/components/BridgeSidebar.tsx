@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ChevronRight, Code2, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, ListChecks, MessagesSquare, Package, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
+import { Bot, ChevronRight, Code2, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, ListChecks, MessagesSquare, Pin, Search, SquarePen, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
@@ -653,59 +653,9 @@ export function BridgeSidebar({
           )}
         </div>
 
-        <div className={cn("mt-2 shrink-0 border-t border-sidebar-border pt-2", collapsed && "flex flex-col items-center")}>
-          <button
-            type="button"
-            onClick={onOpenProjects}
-            title={collapsed ? "Projects" : undefined}
-            className={cn(
-              "flex shrink-0 items-center rounded-md transition-colors",
-              collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
-              projectsActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <FolderGit2 size={14} strokeWidth={1.6} aria-hidden="true" />
-            {!collapsed && "Projects"}
-          </button>
-          <button
-            type="button"
-            onClick={onOpenMarketplace}
-            title={collapsed ? "Marketplace" : undefined}
-            className={cn(
-              "mt-0.5 flex shrink-0 items-center rounded-md transition-colors",
-              collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
-              marketplaceActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <Package size={14} strokeWidth={1.6} aria-hidden="true" />
-            {!collapsed && "Marketplace"}
-          </button>
-          <button
-            type="button"
-            onClick={onOpenMemory}
-            title={collapsed ? "Memory" : undefined}
-            className={cn(
-              "mt-0.5 flex shrink-0 items-center rounded-md transition-colors",
-              collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
-              "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <Pin size={14} strokeWidth={1.6} aria-hidden="true" />
-            {!collapsed && "Memory"}
-          </button>
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            title={collapsed ? "Settings" : undefined}
-            className={cn(
-              "mt-0.5 flex shrink-0 items-center rounded-md transition-colors",
-              collapsed ? "h-9 w-9 justify-center" : "h-7 w-full gap-2 px-2 text-[11px] font-medium",
-              settingsActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            <Settings2 size={14} strokeWidth={1.6} aria-hidden="true" />
-            {!collapsed && "Settings"}
-          </button>
+        <div className={cn("mt-1 shrink-0 pt-1.5", collapsed && "flex flex-col items-center")}>
+          <ActionRow icon={FolderGit2} label="Projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
+          <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
         </div>
       </div>
 
