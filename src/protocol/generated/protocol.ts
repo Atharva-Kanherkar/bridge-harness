@@ -23,6 +23,8 @@ export type BridgeMethod =
   | "workspaces/workspace_changes"
   | "sessions/get_session_forest"
   | "sessions/get_session_forest_digest"
+  | "sessions/get_context_breakdown"
+  | "sessions/get_context_breakdown_digest"
   | "sessions/replay_session_events"
   | "sessions/activate_session_entry"
   | "sessions/create_chat"
@@ -154,6 +156,8 @@ export const BRIDGE_METHODS = [
   { method: "workspaces/workspace_changes", domain: "workspaces", command: "workspace_changes" },
   { method: "sessions/get_session_forest", domain: "sessions", command: "get_session_forest" },
   { method: "sessions/get_session_forest_digest", domain: "sessions", command: "get_session_forest_digest" },
+  { method: "sessions/get_context_breakdown", domain: "sessions", command: "get_context_breakdown" },
+  { method: "sessions/get_context_breakdown_digest", domain: "sessions", command: "get_context_breakdown_digest" },
   { method: "sessions/replay_session_events", domain: "sessions", command: "replay_session_events" },
   { method: "sessions/activate_session_entry", domain: "sessions", command: "activate_session_entry" },
   { method: "sessions/create_chat", domain: "sessions", command: "create_chat" },
@@ -337,6 +341,8 @@ export interface BridgeMethodParams {
   "workspaces/workspace_changes": WorkspaceChangesParams;
   "sessions/get_session_forest": GetSessionForestParams;
   "sessions/get_session_forest_digest": GetSessionForestDigestParams;
+  "sessions/get_context_breakdown": GetContextBreakdownParams;
+  "sessions/get_context_breakdown_digest": GetContextBreakdownDigestParams;
   "sessions/replay_session_events": ReplaySessionEventsParams;
   "sessions/activate_session_entry": ActivateSessionEntryParams;
   "sessions/create_chat": CreateChatParams;
@@ -470,6 +476,8 @@ export interface BridgeMethodResults {
   "workspaces/workspace_changes": WorkspaceChangesResult;
   "sessions/get_session_forest": SessionForestSnapshot;
   "sessions/get_session_forest_digest": SessionForestDigestResult;
+  "sessions/get_context_breakdown": ContextBreakdownResult;
+  "sessions/get_context_breakdown_digest": ContextBreakdownDigestResult;
   "sessions/replay_session_events": ReplaySessionEventsResult;
   "sessions/activate_session_entry": SessionForestSnapshot;
   "sessions/create_chat": BridgeState;
@@ -698,6 +706,51 @@ export interface CompletionSummary {
 }
 
 export type CompletionVerdict = "verifying" | "changes_requested" | "verified" | "waived" | "failed" | "superseded";
+
+export interface ContextBreakdownConversation {
+  contextPressure: number;
+  contextWindowTokens: number;
+  effort?: string | null;
+  entryCount: number;
+  model?: string | null;
+  renderedEntryCount: number;
+  restorationBoundaryEntryId?: string | null;
+  tokenEstimate: number;
+}
+
+export interface ContextBreakdownDelta {
+  boundaryEntryId: string;
+  currentTokenEstimate: number;
+  firstRetainedEntryId: string;
+  growthTokens: number;
+  reason?: string | null;
+  sourceAgent: string;
+  tokensBefore: number;
+}
+
+export type ContextBreakdownOrigin = "conversation" | "promptCompilation" | "adapterInventory";
+
+export interface ContextBreakdownSegment {
+  bytes?: number | null;
+  capped: boolean;
+  itemCount?: number | null;
+  method?: string | null;
+  names?: string[];
+  origin: ContextBreakdownOrigin;
+  reason?: string | null;
+  segmentClass: string;
+  state: ContextBreakdownState;
+  tokens?: number | null;
+}
+
+export type ContextBreakdownState = "reported" | "measured" | "estimated" | "unavailable";
+
+export interface ContextBreakdownTotals {
+  bytes?: number | null;
+  itemCount?: number | null;
+  tokens?: number | null;
+  unavailableSources: number;
+}
 
 export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
 
@@ -1538,6 +1591,27 @@ export interface GetSessionForestDigestParams {
 }
 
 export interface SessionForestDigestResult {
+  digest: string;
+}
+
+export interface GetContextBreakdownParams {
+  sessionId: string;
+}
+
+export interface ContextBreakdownResult {
+  compactionDelta?: ContextBreakdownDelta | null;
+  conversation: ContextBreakdownConversation;
+  digest: string;
+  segments: ContextBreakdownSegment[];
+  sessionId: string;
+  totals: ContextBreakdownTotals;
+}
+
+export interface GetContextBreakdownDigestParams {
+  sessionId: string;
+}
+
+export interface ContextBreakdownDigestResult {
   digest: string;
 }
 

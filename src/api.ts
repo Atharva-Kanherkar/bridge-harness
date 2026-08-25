@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
   ManagedAgentList,
@@ -101,6 +101,25 @@ const MOCK_PROMPT_MAX_DEPTH = 1; // delegation::DEFAULT_MAX_DEPTH
 // bounded history window so views cannot grow without limit.
 const MOCK_PROMPT_MAX_REVISIONS_IN_VIEW = 50;
 const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
+
+/// The patch the mock transcript's edit carries. Two hunks, so the dev preview
+/// shows the first inline and folds the second behind the fold bar.
+const MOCK_PATCH = [
+  "@@ -18,8 +18,11 @@ export class TokenStore {",
+  "   async read(scope: Scope): Promise<Token | null> {",
+  "-    const row = await this.db.get(scope.id);",
+  "-    return row ? JSON.parse(row.value) : null;",
+  "+    // One read, one parse: the old pair of awaits could observe a write",
+  "+    // landing between them and hand back a token for the previous scope.",
+  "+    const row = await this.db.getScoped(scope);",
+  "+    if (!row) return null;",
+  "+    return Token.parse(row.value);",
+  "   }",
+  "@@ -44,4 +47,5 @@ export class TokenStore {",
+  "   async revoke(scope: Scope): Promise<void> {",
+  "+    await this.db.deleteScoped(scope);",
+  "   }",
+].join("\n");
 
 const MOCK_PROMPT_DEFAULTS: Record<PromptTargetChoice, { id: string; text: string }[]> = {
   orchestrator: [
@@ -272,6 +291,7 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   ]
 };
 
+
 function agentEvent(id: number, sessionId: string, kind: string, fields: Partial<AgentEvent> = {}): AgentEvent {
   return { id, sessionId, sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: { adapter: "fake" }, createdAt: new Date().toISOString(), ...fields };
 }
@@ -296,7 +316,13 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-9b", "session-1", 11, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install to add the renderer dependencies?", data: { childBlocked: true, childSessionId: "session-1w", label: "Implementation · strong", objective: "Render Mermaid, math, and sandboxed HTML inline in chat", command: "bun install", cwd: "/tmp/bridge/worker-1w", ownedPaths: ["src/components/**"], orchestratorNotified: true } }, "entry-8b"),
   // A workspace far behind its base branch, with the counts and the choice.
   forestEntry("entry-10b", "session-1", 12, "workspace.stale_base", { role: "system", status: "warning", title: "Workspace is 67 commits behind origin/main", text: "this workspace is 67 commit(s) behind and 1 ahead of origin/main, measured against a freshly fetched ref; that ref's newest commit is 0 day(s) old", data: { staleBase: true, phase: "workspace_open", choices: ["refresh", "continue"], divergence: { baseRef: "origin/main", baseCommit: "90ce51c", head: "2b43aaad9b36", branch: "bridge/task", ahead: 1, behind: 67, refAgeSeconds: 3600, fetchAttempted: true, fetched: true, dirty: false, unavailableReason: null } } }, "entry-9b"),
-  forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
+  // A read, a diff-bearing edit and a command that reports its exit code, so
+  // `bun run dev` exercises the inline patch, the hunk fold bar, the "Explored"
+  // group label and the exit chip — not only the shapes that predate them.
+  forestEntry("entry-11b", "session-1", 13, "tool.completed", { status: "completed", title: "Read tokenStore.ts", data: { type: "readFile", path: "src/auth/tokenStore.ts" } }, "entry-10b"),
+  forestEntry("entry-12b", "session-1", 14, "file_change.completed", { status: "completed", title: "tokenStore.ts", data: { path: "src/auth/tokenStore.ts", additions: 9, deletions: 4, durationMs: 400, patch: MOCK_PATCH } }, "entry-11b"),
+  forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
+  forestEntry("entry-raw", "session-1", 16, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-13b")
 ];
 const mockMemoryRecords: MemoryRecord[] = [];
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };
@@ -358,6 +384,26 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null };
   mockForests[sessionId] = created;
   return structuredClone(created);
+}
+function mockContextBreakdown(sessionId: string): ContextBreakdownResult {
+  const reason = "no prompt compilation recorded";
+  const inventoryReason = "adapter runtime has not reported context inventory";
+  return {
+    sessionId,
+    segments: [
+      { origin: "conversation", segmentClass: "conversation", names: [], state: "estimated", method: "bridge-context-projector", itemCount: 2, tokens: 900, capped: false },
+      { origin: "promptCompilation", segmentClass: "prompt-stable", names: [], state: "unavailable", reason, capped: false },
+      { origin: "promptCompilation", segmentClass: "prompt-variable", names: [], state: "unavailable", reason, capped: false },
+      { origin: "adapterInventory", segmentClass: "agentDefinitions", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "mcpDynamicTools", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "providerBaseInstructions", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "skillsPlugins", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+      { origin: "adapterInventory", segmentClass: "toolSchemas", names: [], state: "unavailable", reason: inventoryReason, capped: false },
+    ],
+    totals: { tokens: 900, unavailableSources: 7 },
+    conversation: { entryCount: 2, renderedEntryCount: 2, tokenEstimate: 900, contextPressure: 1, contextWindowTokens: 128000 },
+    digest: `mock-breakdown-${sessionId}`,
+  };
 }
 function snapshot() { return structuredClone(mockState); }
 function emitState() { stateListeners.forEach(listener => listener()); }
@@ -907,6 +953,10 @@ export const bridgeApi = {
   // Tens of bytes per poll instead of the entire history; equal digests mean
   // sessionForest would return unchanged store content.
   sessionForestDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
+  contextBreakdown: (sessionId: string): Promise<ContextBreakdownResult> => isTauri() ? call("sessions/get_context_breakdown", { sessionId }) : Promise.resolve(mockContextBreakdown(sessionId)),
+  // Same change-token contract as sessionForestDigest, scoped to breakdown
+  // inputs: compilations, config revisions, adapter observations, branch.
+  contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */
   replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => isTauri() ? call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]> : Promise.resolve([]),

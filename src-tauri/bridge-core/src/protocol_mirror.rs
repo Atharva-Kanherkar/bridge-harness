@@ -1046,6 +1046,53 @@ fn result_payloads_mirror_core() {
     assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
         digest: "v1:42:2026-08-20T00:00:00Z".into(),
     });
+    assert_mirrors::<wire::GetContextBreakdownParams>(&wire::GetContextBreakdownParams {
+        session_id: "s-1".into(),
+    });
+    assert_mirrors::<wire::ContextBreakdownDigestResult>(&wire::ContextBreakdownDigestResult {
+        digest: "v1:7:3/2:1:5/4/now:0".into(),
+    });
+    assert_mirrors::<wire::ContextBreakdownResult>(&wire::ContextBreakdownResult {
+        session_id: "s-1".into(),
+        segments: vec![wire::ContextBreakdownSegment {
+            origin: wire::ContextBreakdownOrigin::AdapterInventory,
+            segment_class: "toolSchemas".into(),
+            names: vec!["shell".into()],
+            state: wire::ContextBreakdownState::Estimated,
+            method: Some("catalog".into()),
+            reason: None,
+            item_count: Some(12),
+            bytes: None,
+            tokens: Some(340),
+            capped: false,
+        }],
+        totals: wire::ContextBreakdownTotals {
+            item_count: Some(12),
+            bytes: None,
+            tokens: Some(340),
+            unavailable_sources: 1,
+        },
+        conversation: wire::ContextBreakdownConversation {
+            entry_count: 7,
+            rendered_entry_count: 5,
+            token_estimate: 900,
+            context_pressure: 3,
+            context_window_tokens: 128_000,
+            model: Some("stub-standard".into()),
+            effort: None,
+            restoration_boundary_entry_id: None,
+        },
+        compaction_delta: Some(wire::ContextBreakdownDelta {
+            boundary_entry_id: "b-1".into(),
+            first_retained_entry_id: "r-1".into(),
+            source_agent: "orchestrator".into(),
+            reason: Some("manual".into()),
+            tokens_before: 500,
+            current_token_estimate: 900,
+            growth_tokens: 400,
+        }),
+        digest: "v1:test".into(),
+    });
     assert_mirrors::<wire::SanitizedTurn>(&crate::secret_interception::SanitizedTurn {
         text: "use {{bridge:secret:ref-1}}".into(),
         interceptions: vec![crate::secret_interception::SecretInterception {

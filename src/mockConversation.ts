@@ -21,10 +21,53 @@ export const MOCK_CONVERSATION: AgentEvent[] = [
   }),
 
   ev("tool.completed", { title: "Read lib.rs", data: { type: "readFile", path: "src-tauri/src/lib.rs" } }),
-  ev("file_change.completed", { title: "lib.rs", data: { path: "src-tauri/src/lib.rs", additions: 24, deletions: 3 } }),
-  ev("command.completed", { title: "bun run test", data: { type: "commandExecution", command: "bun run test", durationMs: 3000, aggregatedOutput: "bun test v1.1.34\n\n 92 pass\n 0 fail\n 153 expect() calls\nRan 92 tests across 14 files. [3.02s]" } }),
-  ev("file_change.completed", { title: "store.rs", data: { path: "src-tauri/src/store.rs", additions: 10, deletions: 2 } }),
-  ev("command.completed", { title: "git diff --stat", data: { type: "commandExecution", command: "git diff --stat && git diff -w -- src-tauri/src/lib.rs | rg '^@@'", durationMs: 400, aggregatedOutput: " src-tauri/src/lib.rs   | 27 ++++++++++++---\n src-tauri/src/store.rs | 12 ++++--\n 2 files changed, 34 insertions(+), 5 deletions(-)" } }),
+  ev("tool.completed", { title: "Grep resume_session", data: { name: "Grep", input: { pattern: "resume_session", path: "src-tauri/src" } } }),
+
+  // Two hunks, so the preview shows the first inline and folds the rest — the
+  // shape the transcript is designed around.
+  ev("file_change.completed", {
+    title: "lib.rs",
+    data: {
+      path: "src-tauri/src/lib.rs", additions: 24, deletions: 3, durationMs: 400,
+      patch: [
+        "@@ -118,7 +118,11 @@ impl Runtime {",
+        " fn resume_session(&self, id: SessionId) -> Result<Resumed> {",
+        "-    let state = self.store.lock().session_state(id)?;",
+        "-    let generation = self.store.lock().launch_generation()?;",
+        "+    // One lock, scoped: the fast path used to re-acquire a mutex it",
+        "+    // was already holding, which deadlocked on every hot resume.",
+        "+    let (state, generation) = self.store.lock_scoped(|db| {",
+        "+        Ok((db.session_state(id)?, db.launch_generation()?))",
+        "+    })?;",
+        "     Ok(Resumed::from(state))",
+        " }",
+        "@@ -204,6 +208,8 @@ impl Reader {",
+        "     fn on_eof(&self, session: SessionId) {",
+        "+        // An old reader must never tear down its replacement.",
+        "+        if self.generation != current_generation() { return; }",
+        "         self.mark_stopped(session);",
+        "     }",
+      ].join("\n"),
+    },
+  }),
+  ev("command.completed", { title: "bun run test", data: { type: "commandExecution", command: "bun run test", exitCode: 0, durationMs: 3000, aggregatedOutput: "bun test v1.1.34\n\n 92 pass\n 0 fail\n 153 expect() calls\nRan 92 tests across 14 files. [3.02s]" } }),
+  ev("file_change.completed", {
+    title: "store.rs",
+    data: {
+      path: "src-tauri/src/store.rs", additions: 10, deletions: 2, durationMs: 200,
+      patch: [
+        "@@ -61,7 +61,9 @@ impl Store {",
+        "-    pub fn lock(&self) -> MutexGuard<'_, Db> {",
+        "-        self.db.lock().expect(\"store mutex\")",
+        "+    pub fn lock_scoped<T>(&self, run: impl FnOnce(&Db) -> Result<T>) -> Result<T> {",
+        "+        let guard = self.db.lock().map_err(|_| Error::Poisoned)?;",
+        "+        run(&guard)",
+        "     }",
+      ].join("\n"),
+    },
+  }),
+  ev("command.failed", { title: "cargo clippy", status: "failed", data: { type: "commandExecution", command: "cargo clippy --workspace -- -D warnings", exitCode: 101, durationMs: 12000, aggregatedOutput: "error: this `let...else` may be rewritten with the `?` operator\n  --> src-tauri/src/lib.rs:124:9\n\nerror: aborting due to 1 previous error" } }),
+  ev("command.completed", { title: "git diff --stat", data: { type: "commandExecution", command: "git diff --stat", exitCode: 0, durationMs: 400, aggregatedOutput: " src-tauri/src/lib.rs   | 27 ++++++++++++---\n src-tauri/src/store.rs | 12 ++++--\n 2 files changed, 34 insertions(+), 5 deletions(-)" } }),
 
   ev("message.completed", {
     role: "assistant",

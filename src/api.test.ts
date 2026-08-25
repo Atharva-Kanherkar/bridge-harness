@@ -287,3 +287,27 @@ describe("suggested-task actions", () => {
     expect((await bridgeApi.listMemoryRecords("account:local")).records.some(record => record.id === saved.id)).toBe(false);
   });
 });
+
+describe("Context breakdown (issue #245)", () => {
+  it("serves a capped, source-labelled breakdown that keeps unavailability honest", async () => {
+    const breakdown = await bridgeApi.contextBreakdown("session-1");
+    expect(breakdown.sessionId).toBe("session-1");
+    const origins = new Set(breakdown.segments.map(segment => segment.origin));
+    expect(origins).toEqual(new Set(["conversation", "promptCompilation", "adapterInventory"]));
+    for (const segment of breakdown.segments) {
+      if (segment.state === "unavailable") {
+        expect(segment.reason?.length ?? 0).toBeGreaterThan(0);
+        expect(segment.tokens ?? segment.bytes ?? segment.itemCount).toBeUndefined();
+      }
+    }
+    expect(breakdown.totals.unavailableSources).toBeGreaterThan(0);
+    expect(breakdown.totals.tokens ?? 0).toBeGreaterThan(0);
+    expect(breakdown.conversation.contextWindowTokens).toBeGreaterThan(0);
+  });
+
+  it("gives the dedicated digest surface the same token as the full result", async () => {
+    const breakdown = await bridgeApi.contextBreakdown("session-1");
+    expect(await bridgeApi.contextBreakdownDigest("session-1")).toBe(breakdown.digest);
+    expect(breakdown.digest.length).toBeGreaterThan(0);
+  });
+});

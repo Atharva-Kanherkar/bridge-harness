@@ -36,12 +36,11 @@ export function WorkspaceCreateDialog({
     return () => window.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  if (!open) return null;
-
   const canSubmit = !busy && title.trim().length > 0;
 
   return (
     <CreateDialogShell
+      open={open}
       titleId="workspace-create-title"
       icon={<FolderGit2 className="h-4 w-4 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" />}
       title="New workspace"

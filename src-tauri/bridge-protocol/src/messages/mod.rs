@@ -159,6 +159,12 @@ typed_methods![
     // sessions
     (GetSessionForest, GetSessionForestParams, SessionForestSnapshot),
     (GetSessionForestDigest, GetSessionForestDigestParams, SessionForestDigestResult),
+    (GetContextBreakdown, GetContextBreakdownParams, ContextBreakdownResult),
+    (
+        GetContextBreakdownDigest,
+        GetContextBreakdownDigestParams,
+        ContextBreakdownDigestResult
+    ),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),

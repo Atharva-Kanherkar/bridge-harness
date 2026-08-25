@@ -376,6 +376,30 @@ async fn get_session_forest_digest(
 }
 
 #[tauri::command]
+async fn get_context_breakdown(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ContextBreakdownResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Context breakdown", move || {
+        api::get_context_breakdown(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_context_breakdown_digest(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ContextBreakdownDigestResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Context breakdown digest", move || {
+        api::get_context_breakdown_digest(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn create_completion_plan(
     session_id: String,
     acceptance_criteria: Vec<String>,
@@ -1602,6 +1626,8 @@ pub fn run() {
             get_state,
             get_session_forest,
             get_session_forest_digest,
+            get_context_breakdown,
+            get_context_breakdown_digest,
             replay_session_events,
             create_completion_plan,
             record_completion_check,

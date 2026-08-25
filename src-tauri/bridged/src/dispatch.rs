@@ -103,6 +103,14 @@ pub fn dispatch(
             let p: wire::GetSessionForestDigestParams = decode(method, params)?;
             reply(api::get_session_forest_digest(core, &p.session_id))
         }
+        MethodName::GetContextBreakdown => {
+            let p: wire::GetContextBreakdownParams = decode(method, params)?;
+            reply(api::get_context_breakdown(core, &p.session_id))
+        }
+        MethodName::GetContextBreakdownDigest => {
+            let p: wire::GetContextBreakdownDigestParams = decode(method, params)?;
+            reply(api::get_context_breakdown_digest(core, &p.session_id))
+        }
         MethodName::ReplaySessionEvents => {
             let p: wire::ReplaySessionEventsParams = decode(method, params)?;
             reply(api::replay_session_events(
@@ -720,6 +728,34 @@ mod tests {
         // rather than something quietly ignored.
         let error = dispatch(&core, MethodName::GetWorkBoard, Some(json!({})))
             .expect_err("params must be refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn context_breakdown_methods_route_and_enforce_their_params() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+
+        // Both methods route into the core surface; an unknown session is a
+        // server-side disagreement rather than a transport failure.
+        let error = dispatch(
+            &core,
+            MethodName::GetContextBreakdown,
+            Some(json!({"sessionId": "missing"})),
+        )
+        .expect_err("unknown sessions must error");
+        assert_eq!(error.code, ErrorCode::Database.code());
+
+        let error = dispatch(&core, MethodName::GetContextBreakdownDigest, None)
+            .expect_err("params are required");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+
+        let error = dispatch(
+            &core,
+            MethodName::GetContextBreakdown,
+            Some(json!({"sessionId": "s", "extra": 1})),
+        )
+        .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 }
