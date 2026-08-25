@@ -7,12 +7,25 @@
 
 use crate::{secret_interception, BridgeError};
 use serde::Serialize;
-use std::{collections::HashSet, sync::Mutex};
+use std::{
+    collections::HashSet,
+    sync::Mutex,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 pub const MAX_CONTEXT_ITEMS: usize = 128;
 pub const MAX_CONTEXT_NAME_BYTES: usize = 160;
 pub const MAX_CONTEXT_SIZE_VALUE: u64 = 1_000_000_000;
 pub const MAX_RUNTIME_CONTEXT_INVENTORIES: usize = 130;
+
+/// Monotonic count of recorded runtime observations. It exists so the
+/// context-breakdown digest can react to live adapter state, which is
+/// deliberately in-process and not persisted.
+static RUNTIME_INVENTORY_REVISION: AtomicU64 = AtomicU64::new(0);
+
+pub fn runtime_inventory_revision() -> u64 {
+    RUNTIME_INVENTORY_REVISION.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +336,7 @@ pub fn record_runtime_inventory(
         }
         target.push(inventory);
     }
+    RUNTIME_INVENTORY_REVISION.fetch_add(1, Ordering::Relaxed);
 }
 
 fn bounded_text(value: &str) -> (String, bool) {

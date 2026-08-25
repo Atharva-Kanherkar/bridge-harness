@@ -26,6 +26,7 @@ pub mod codex_adapter;
 pub mod compaction_controller;
 pub mod completion;
 pub mod context;
+pub mod context_breakdown;
 pub mod context_inventory;
 pub mod credential_broker;
 pub mod delegation;
