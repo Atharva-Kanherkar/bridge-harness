@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, setLayoutFullscreenDocument } from "./windowChrome";
 
@@ -18,5 +20,13 @@ describe("window chrome flags", () => {
     expect(isFlushWindowDocument()).toBe(true);
     document.documentElement.dispatchEvent(new Event(FLUSH_WINDOW_EVENT));
     document.documentElement.removeAttribute("data-flush-window");
+  });
+
+  it("routes the layout-fullscreen notify through api.ts", () => {
+    const api = readFileSync(join(__dirname, "api.ts"), "utf8");
+    const chrome = readFileSync(join(__dirname, "windowChrome.ts"), "utf8");
+    expect(api).toContain("bridge-layout-fullscreen");
+    expect(chrome).toContain("bridgeApi.notifyLayoutFullscreen");
+    expect(chrome).not.toContain("@tauri-apps/api/event");
   });
 });

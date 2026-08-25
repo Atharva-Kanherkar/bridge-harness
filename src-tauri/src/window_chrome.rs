@@ -30,6 +30,10 @@ pub const NS_VIEW_TAG_BLUR_VIEW: isize = 91376254;
 
 static LAYOUT_FULLSCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+pub fn parse_layout_fullscreen_payload(payload: &str) -> bool {
+    serde_json::from_str::<bool>(payload).unwrap_or(false)
+}
+
 /// In-window ⌥⌘F is not OS fullscreen, but it still has to be a rectangle.
 pub fn set_layout_fullscreen(on: bool) {
     LAYOUT_FULLSCREEN.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -48,7 +52,11 @@ pub fn sync_fullscreen_chrome<R: tauri::Runtime>(window: &tauri::Window<R>) {
     set_document_flush_window(window, flush, native);
 }
 
-fn set_document_flush_window<R: tauri::Runtime>(window: &tauri::Window<R>, flush: bool, native_fullscreen: bool) {
+fn set_document_flush_window<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    flush: bool,
+    native_fullscreen: bool,
+) {
     let js = format!(
         r#"document.documentElement.toggleAttribute("data-flush-window",{flush});document.documentElement.toggleAttribute("data-native-fullscreen",{native});document.documentElement.dispatchEvent(new Event("bridge-flush-window"));"#,
         flush = if flush { "true" } else { "false" },
@@ -63,7 +71,9 @@ fn set_document_flush_window<R: tauri::Runtime>(window: &tauri::Window<R>, flush
 pub fn position_traffic_lights<R: tauri::Runtime>(window: &tauri::Window<R>) {
     use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
 
-    let Ok(handle) = window.ns_window() else { return };
+    let Ok(handle) = window.ns_window() else {
+        return;
+    };
     if handle.is_null() {
         return;
     }
@@ -73,7 +83,8 @@ pub fn position_traffic_lights<R: tauri::Runtime>(window: &tauri::Window<R>) {
     let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
         return;
     };
-    let Some(miniaturize) = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+    let Some(miniaturize) = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
+    else {
         return;
     };
     let Some(zoom) = ns_window.standardWindowButton(NSWindowButton::ZoomButton) else {
@@ -113,7 +124,9 @@ pub fn position_traffic_lights<R: tauri::Runtime>(_window: &tauri::Window<R>) {
 pub fn apply_wallpaper_tint<R: tauri::Runtime>(window: &tauri::Window<R>) {
     use objc2_app_kit::{NSColor, NSWindow};
 
-    let Ok(handle) = window.ns_window() else { return };
+    let Ok(handle) = window.ns_window() else {
+        return;
+    };
     if handle.is_null() {
         return;
     }
@@ -133,12 +146,16 @@ fn apply_window_corner_radius<R: tauri::Runtime>(window: &tauri::Window<R>, radi
     use objc2::msg_send;
     use objc2_app_kit::NSWindow;
 
-    let Ok(handle) = window.ns_window() else { return };
+    let Ok(handle) = window.ns_window() else {
+        return;
+    };
     if handle.is_null() {
         return;
     }
     let ns_window: &NSWindow = unsafe { &*handle.cast::<NSWindow>() };
-    let Some(content) = ns_window.contentView() else { return };
+    let Some(content) = ns_window.contentView() else {
+        return;
+    };
 
     if let Some(blur) = content.viewWithTag(NS_VIEW_TAG_BLUR_VIEW) {
         // Private NSVisualEffectView setter — the same one window-vibrancy uses
@@ -176,5 +193,12 @@ mod tests {
     fn layout_fullscreen_can_toggle() {
         super::set_layout_fullscreen(true);
         super::set_layout_fullscreen(false);
+    }
+
+    #[test]
+    fn layout_fullscreen_payload_is_a_json_bool() {
+        assert!(super::parse_layout_fullscreen_payload("true"));
+        assert!(!super::parse_layout_fullscreen_payload("false"));
+        assert!(!super::parse_layout_fullscreen_payload("not-json"));
     }
 }

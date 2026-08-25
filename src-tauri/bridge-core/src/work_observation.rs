@@ -157,27 +157,28 @@ pub fn refresh_base_divergence(core: &Arc<BridgeCore>) {
         }
     };
     for (workspace_id, _) in due {
-        let operation = core.workspace_operation(&workspace_id);
-        let _operation = operation.lock().unwrap();
-        let path: Option<String> = core
-            .db
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT path FROM workspaces WHERE id=?1",
-                params![workspace_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .ok()
-            .flatten();
+        let path: Option<String> = {
+            let operation = core.workspace_operation(&workspace_id);
+            let _operation = operation.lock().unwrap();
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT path FROM workspaces WHERE id=?1",
+                    params![workspace_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+        };
         let Some(path) = path else {
             continue;
         };
         let path = std::path::PathBuf::from(path);
         // No fetch: the observer must not put the network on a background timer.
-        // The measurement says which ref it compared against and how old that ref
-        // is, so an offline reading is still an honest one.
+        // Git runs without the workspace operation lock so a slow status cannot
+        // stall checkout or chat start.
         let observation = if path.is_dir() {
             Ok(git::base_branch_divergence(&path, false))
         } else {

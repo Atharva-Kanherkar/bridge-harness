@@ -47,6 +47,7 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   onOpenProjects: noop,
   onOpenAutomations: noop,
   onOpenMissionControl: noop,
+  onOpenWorkBoard: noop,
   onOpenMemory: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
@@ -159,15 +160,18 @@ describe("BridgeSidebar action rows", () => {
     const onOpenNewChat = vi.fn();
     const onOpenAutomations = vi.fn();
     const onOpenMissionControl = vi.fn();
+    const onOpenWorkBoard = vi.fn();
     const onOpenSettings = vi.fn();
-    mount({ onOpenNewChat, onOpenAutomations, onOpenMissionControl, onOpenSettings });
+    mount({ onOpenNewChat, onOpenAutomations, onOpenMissionControl, onOpenWorkBoard, onOpenSettings });
     click(container.querySelector('button[aria-label="New Chat"]')!);
     click(container.querySelector('button[aria-label="Automations"]')!);
     click(container.querySelector('button[aria-label="Mission Control"]')!);
+    click(container.querySelector('button[aria-label="Work board"]')!);
     click(container.querySelector('button[aria-label="Open settings for cestercian"]')!);
     expect(onOpenNewChat).toHaveBeenCalledOnce();
     expect(onOpenAutomations).toHaveBeenCalledOnce();
     expect(onOpenMissionControl).toHaveBeenCalledOnce();
+    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 

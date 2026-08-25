@@ -454,6 +454,17 @@ pub fn fast_forward_to_base(
     worktree: &Path,
     session_active: bool,
 ) -> Result<BaseBranchDivergence, BridgeError> {
+    fast_forward_to_base_fetching(worktree, session_active, true)
+}
+
+/// Same as [`fast_forward_to_base`], but `allow_fetch` controls whether this
+/// call hits the network. Callers that already fetched outside a workspace
+/// lock should pass `false`.
+pub fn fast_forward_to_base_fetching(
+    worktree: &Path,
+    session_active: bool,
+    allow_fetch: bool,
+) -> Result<BaseBranchDivergence, BridgeError> {
     ensure_inactive(session_active, "refresh the workspace")?;
     if !is_repository(worktree) {
         // Before ensure_clean, whose raw git stderr ("fatal: not a git
@@ -464,7 +475,7 @@ pub fn fast_forward_to_base(
         ));
     }
     ensure_clean(worktree, "refresh the workspace")?;
-    let divergence = base_branch_divergence(worktree, true);
+    let divergence = base_branch_divergence(worktree, allow_fetch);
     let Some(base_ref) = divergence.base_ref.clone() else {
         return Err(BridgeError::Invalid(
             divergence

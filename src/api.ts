@@ -1395,6 +1395,13 @@ export const bridgeApi = {
     emitState();
     return snapshot();
   },
+  /** In-app ⌥⌘F. Not a protocol method — the shell listens on this event name. */
+  notifyLayoutFullscreen: (on: boolean): void => {
+    if (!isTauri()) return;
+    void import("@tauri-apps/api/event").then(({ emit }) => {
+      void emit("bridge-layout-fullscreen", on);
+    });
+  },
   archiveWorkspace: async (workspaceId: string): Promise<BridgeState> => {
     if (isTauri()) return call("workspaces/archive_workspace", { workspaceId });
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();

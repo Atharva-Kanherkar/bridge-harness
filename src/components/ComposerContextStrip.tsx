@@ -11,6 +11,8 @@ export type ComposerContextStripProps = {
   /** Repo menu and worktree toggle lock after the first user turn. */
   locked: boolean;
   branches: string[];
+  /** Git's HEAD name when it differs from the last stored `workspace.branch`. */
+  currentBranch?: string | null;
   branchBusy?: boolean;
   branchError?: string | null;
   onSelectWorkspace: (workspaceId: string) => void;
@@ -68,6 +70,7 @@ export function ComposerContextStrip({
   worktree,
   locked,
   branches,
+  currentBranch,
   branchBusy = false,
   branchError,
   onSelectWorkspace,
@@ -80,6 +83,7 @@ export function ComposerContextStrip({
   const hostMenu = useMenuPanel<HTMLButtonElement>({ width: 240, height: 180 });
   const worktreeAvailable = !!workspace?.projectId;
   const branchAvailable = worktreeAvailable && !worktree;
+  const displayedBranch = currentBranch || workspace?.branch || "No branch";
 
   return (
     <div className="mb-2 flex flex-nowrap items-center justify-center gap-0.5 overflow-x-auto px-3" aria-label="Chat context">
@@ -130,7 +134,7 @@ export function ComposerContextStrip({
         )}
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-        <span className="min-w-0 truncate">{workspace?.branch || "No branch"}</span>
+        <span className="min-w-0 truncate">{displayedBranch}</span>
       </button>
       <MenuPanel controller={branchMenu} label="Branch">
         {branchBusy && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-muted-foreground">Loading branches…</p>}
@@ -139,11 +143,11 @@ export function ComposerContextStrip({
           <MenuItem
             key={branch}
             role="menuitemradio"
-            checked={branch === workspace?.branch}
+            checked={branch === displayedBranch}
             label={branch}
             leading={<GitBranch size={13} aria-hidden="true" />}
             onClick={() => {
-              if (branch !== workspace?.branch) onSelectBranch(branch);
+              if (branch !== displayedBranch) onSelectBranch(branch);
               branchMenu.close();
             }}
           />

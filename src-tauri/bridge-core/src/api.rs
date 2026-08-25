@@ -220,6 +220,59 @@ pub fn read_workspace_file(
     workspace_files::read_file(Path::new(&root), path)
 }
 
+fn with_workspace_lock<T>(
+    core: &BridgeCore,
+    workspace_id: &str,
+    body: impl FnOnce() -> T,
+) -> T {
+    let operation = core.workspace_operation(workspace_id);
+    let _operation = operation.lock().unwrap();
+    body()
+}
+
+fn with_optional_workspace_lock<T>(
+    core: &BridgeCore,
+    workspace_id: Option<&str>,
+    body: impl FnOnce() -> T,
+) -> T {
+    let operation = workspace_id.map(|workspace_id| core.workspace_operation(workspace_id));
+    let _operation = operation.as_ref().map(|operation| operation.lock().unwrap());
+    body()
+}
+
+/// Snapshot the workspace path under the operation lock, then drop it so a
+/// slow read-only git command cannot stall checkout, writes, or chat start.
+fn locked_workspace_path(core: &BridgeCore, workspace_id: &str) -> Result<String, BridgeError> {
+    with_workspace_lock(core, workspace_id, || core.workspace_path(workspace_id))
+}
+
+/// Checkout must not move HEAD under a running agent, an open terminal, or a
+/// live chat that already has a user turn. An empty idle session (the new-chat
+/// strip before the first message) is allowed so the branch picker works.
+fn workspace_blocks_checkout(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<bool, BridgeError> {
+    let running: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND ended_at IS NULL AND status IN ('starting','working','waiting','ready','warm','resuming','restored','checkpointing'))",
+        params![workspace_id],
+        |row| row.get(0),
+    )?;
+    if running {
+        return Ok(true);
+    }
+    let history: bool = db.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sessions s
+            JOIN session_entries e ON e.session_id = s.id
+            WHERE s.workspace_id=?1 AND s.ended_at IS NULL AND e.kind='user.message'
+        )",
+        params![workspace_id],
+        |row| row.get(0),
+    )?;
+    Ok(history)
+}
+
 /// Write one workspace file, refusing the write if it changed on disk since
 /// the editor read it. Returns the new content hash.
 pub fn write_workspace_file(
@@ -230,24 +283,23 @@ pub fn write_workspace_file(
     base_sha256: Option<&str>,
 ) -> Result<workspace_files::WriteOutcome, BridgeError> {
     core.workspace_path(workspace_id)?;
-    let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
-    let root = core.workspace_path(workspace_id)?;
-    workspace_files::write_file(Path::new(&root), path, content, base_sha256)
+    with_workspace_lock(core, workspace_id, || {
+        let root = core.workspace_path(workspace_id)?;
+        workspace_files::write_file(Path::new(&root), path, content, base_sha256)
+    })
 }
 
 pub fn refresh_workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
 ) -> Result<BridgeState, BridgeError> {
-    // Resolve the path under the lock, but run Git entirely outside it so a
-    // slow status scan cannot delay message submission or streaming writes.
+    // Resolve the path under the lock, then run Git outside it so a slow
+    // status scan cannot delay checkout, message submission, or editor saves.
     core.workspace_path(workspace_id)?;
-    let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
-    let path = core.workspace_path(workspace_id)?;
+    let path = locked_workspace_path(core, workspace_id)?;
     let stats = git::stats(Path::new(&path))?;
-    core.record_workspace_git_stats(workspace_id, stats)
+    let branch = git::current_branch(Path::new(&path));
+    core.record_workspace_git_stats(workspace_id, stats, branch.as_deref())
 }
 
 pub fn list_workspace_branches(
@@ -255,9 +307,7 @@ pub fn list_workspace_branches(
     workspace_id: &str,
 ) -> Result<git::WorkspaceBranches, BridgeError> {
     core.workspace_path(workspace_id)?;
-    let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
-    let path = core.workspace_path(workspace_id)?;
+    let path = locked_workspace_path(core, workspace_id)?;
     git::list_branches(Path::new(&path))
 }
 
@@ -267,47 +317,45 @@ pub fn checkout_workspace_branch(
     branch: &str,
 ) -> Result<BridgeState, BridgeError> {
     core.workspace_path(workspace_id)?;
-    let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
-    let (path, mut active) = {
-        let db = core.db.lock().unwrap();
-        let path: String = db.query_row(
-            "SELECT path FROM workspaces WHERE id=?1",
-            params![workspace_id],
-            |row| row.get(0),
-        )?;
-        let active: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND ended_at IS NULL AND status IN ('starting','working','waiting','ready','warm','resuming','restored','checkpointing'))",
-            params![workspace_id],
-            |row| row.get(0),
-        )?;
-        (path, active)
-    };
-    active |= core
-        .runtimes
-        .lock()
-        .unwrap()
-        .contains_key(&format!("terminal:{workspace_id}"));
+    with_workspace_lock(core, workspace_id, || {
+        let (path, mut active) = {
+            let db = core.db.lock().unwrap();
+            let path: String = db.query_row(
+                "SELECT path FROM workspaces WHERE id=?1",
+                params![workspace_id],
+                |row| row.get(0),
+            )?;
+            let active = workspace_blocks_checkout(&db, workspace_id)?;
+            (path, active)
+        };
+        active |= core
+            .runtimes
+            .lock()
+            .unwrap()
+            .contains_key(&format!("terminal:{workspace_id}"));
 
-    let switched = git::checkout_branch(Path::new(&path), branch, active)?;
-    let (dirty, additions, deletions) = git::stats(Path::new(&path))?;
-    let current = switched.current.ok_or_else(|| {
-        BridgeError::Invalid("the selected branch left the workspace in detached HEAD state".into())
-    })?;
-    let mut db = core.db.lock().unwrap();
-    let transaction = db.transaction()?;
-    transaction.execute(
-        "UPDATE workspaces SET branch=?2,dirty_files=?3,additions=?4,deletions=?5 WHERE id=?1",
-        params![workspace_id, current, dirty, additions, deletions],
-    )?;
-    transaction.execute(
-        "DELETE FROM work_fact_cache WHERE kind=?1 AND cache_key=?2",
-        params![work::FACT_CACHE_BASE_DIVERGENCE, workspace_id],
-    )?;
-    transaction.commit()?;
-    drop(db);
-    core.events.publish(CoreEvent::StateChanged);
-    core.state_snapshot()
+        let switched = git::checkout_branch(Path::new(&path), branch, active)?;
+        let (dirty, additions, deletions) = git::stats(Path::new(&path))?;
+        let current = switched.current.ok_or_else(|| {
+            BridgeError::Invalid(
+                "the selected branch left the workspace in detached HEAD state".into(),
+            )
+        })?;
+        let mut db = core.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        transaction.execute(
+            "UPDATE workspaces SET branch=?2,dirty_files=?3,additions=?4,deletions=?5 WHERE id=?1",
+            params![workspace_id, current, dirty, additions, deletions],
+        )?;
+        transaction.execute(
+            "DELETE FROM work_fact_cache WHERE kind=?1 AND cache_key=?2",
+            params![work::FACT_CACHE_BASE_DIVERGENCE, workspace_id],
+        )?;
+        transaction.commit()?;
+        drop(db);
+        core.events.publish(CoreEvent::StateChanged);
+        core.state_snapshot()
+    })
 }
 
 /// The workspace's uncommitted changeset for the importance-first review UI:
@@ -319,9 +367,7 @@ pub fn workspace_changes(
     workspace_id: &str,
 ) -> Result<git::WorkspaceChangeset, BridgeError> {
     core.workspace_path(workspace_id)?;
-    let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
-    let path = core.workspace_path(workspace_id)?;
+    let path = locked_workspace_path(core, workspace_id)?;
     git::workspace_changeset(Path::new(&path))
 }
 
@@ -1763,20 +1809,12 @@ pub fn workspace_base_divergence(
         params![session_id],
         |row| row.get(0),
     )?;
-    let workspace_operation = workspace_id
-        .as_deref()
-        .map(|workspace_id| core.workspace_operation(workspace_id));
-    let _workspace_operation = workspace_operation
-        .as_ref()
-        .map(|operation| operation.lock().unwrap());
-    // Resolve under the lock, run Git outside it: a fetch can be slow. The
-    // workspace root, not the session cwd: the board's cached reading was
-    // measured there, and acting on a different directory would answer a
-    // question nobody asked (issue #306).
-    let path =
-        store::base_branch_path_for_session(&core.db.lock().unwrap(), session_id)?.ok_or_else(
-            || BridgeError::Invalid("this session has no connected repository".into()),
-        )?;
+    // Resolve under the lock, then drop it before Git: `fetch` has no timeout
+    // and must not stall checkout, writes, or chat start for this workspace.
+    let path = with_optional_workspace_lock(core, workspace_id.as_deref(), || {
+        store::base_branch_path_for_session(&core.db.lock().unwrap(), session_id)
+    })?
+    .ok_or_else(|| BridgeError::Invalid("this session has no connected repository".into()))?;
     let divergence = git::base_branch_divergence(&path, fetch);
     cache_base_divergence(core, session_id, &divergence);
     Ok(divergence)
@@ -1794,36 +1832,38 @@ pub fn refresh_workspace_base(
         params![session_id],
         |row| row.get(0),
     )?;
-    let workspace_operation = workspace_id
-        .as_deref()
-        .map(|workspace_id| core.workspace_operation(workspace_id));
-    let _workspace_operation = workspace_operation
-        .as_ref()
-        .map(|operation| operation.lock().unwrap());
-    let (path, mut active) = {
-        let db = core.db.lock().unwrap();
-        // Same directory the measurement was taken at: the workspace root for
-        // a workspace session, the session cwd only for a direct chat.
-        let path = store::base_branch_path_for_session(&db, session_id)?.ok_or_else(|| {
-            BridgeError::Invalid("this session has no connected repository".into())
-        })?;
-        let active: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE (id=?1 OR parent_session_id=?1) AND status IN ('starting','working','resuming','checkpointing'))",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(true);
-        (path, active)
-    };
-    if let Some(workspace_id) = workspace_id.as_deref() {
-        active |= core
-            .runtimes
-            .lock()
-            .unwrap()
-            .contains_key(&format!("terminal:{workspace_id}"));
-    }
-    let divergence = git::fast_forward_to_base(&path, active)?;
+    let path = with_optional_workspace_lock(core, workspace_id.as_deref(), || {
+        store::base_branch_path_for_session(&core.db.lock().unwrap(), session_id)
+    })?
+    .ok_or_else(|| BridgeError::Invalid("this session has no connected repository".into()))?;
+    // Fetch without the operation lock: `git fetch` has no timeout.
+    let _ = git::base_branch_divergence(&path, true);
+    let divergence = with_optional_workspace_lock(core, workspace_id.as_deref(), || {
+        let (path, mut active) = {
+            let db = core.db.lock().unwrap();
+            // Same directory the measurement was taken at: the workspace root for
+            // a workspace session, the session cwd only for a direct chat.
+            let path = store::base_branch_path_for_session(&db, session_id)?.ok_or_else(|| {
+                BridgeError::Invalid("this session has no connected repository".into())
+            })?;
+            let active: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE (id=?1 OR parent_session_id=?1) AND status IN ('starting','working','resuming','checkpointing'))",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(true);
+            (path, active)
+        };
+        if let Some(workspace_id) = workspace_id.as_deref() {
+            active |= core
+                .runtimes
+                .lock()
+                .unwrap()
+                .contains_key(&format!("terminal:{workspace_id}"));
+        }
+        git::fast_forward_to_base_fetching(&path, active, false)
+    })?;
     cache_base_divergence(core, session_id, &divergence);
     {
         let db = core.db.lock().unwrap();
@@ -1888,11 +1928,19 @@ pub fn adopt_worker_worktree(
     core: &Arc<BridgeCore>,
     session_id: &str,
 ) -> Result<worker_adoption::WorkerRepositoryBinding, BridgeError> {
-    let workspace_id: String = core.db.lock().unwrap().query_row(
-        "SELECT workspace_id FROM worker_worktree_adoptions WHERE session_id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?;
+    let workspace_id: String = core
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT workspace_id FROM worker_worktree_adoptions WHERE session_id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
+        })?;
     let workspace_operation = core.workspace_operation(&workspace_id);
     let _workspace_operation = workspace_operation.lock().unwrap();
     if core
@@ -1954,11 +2002,19 @@ pub fn discard_worker_worktree(
             "discarding a worker worktree requires a reason".into(),
         ));
     }
-    let workspace_id: String = core.db.lock().unwrap().query_row(
-        "SELECT workspace_id FROM worker_worktree_adoptions WHERE session_id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?;
+    let workspace_id: String = core
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT workspace_id FROM worker_worktree_adoptions WHERE session_id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
+        })?;
     let workspace_operation = core.workspace_operation(&workspace_id);
     let _workspace_operation = workspace_operation.lock().unwrap();
     let plan = {
@@ -2779,6 +2835,41 @@ mod tests {
             .unwrap();
         let error = super::checkout_workspace_branch(&core, "w", "blocked").unwrap_err();
         assert!(error.to_string().contains("session is active"), "{error}");
+
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='idle', ended_at=NULL WHERE id='warm'", [])
+            .unwrap();
+        let state = super::checkout_workspace_branch(&core, "w", "blocked").unwrap();
+        assert_eq!(
+            state.workspaces.iter().find(|workspace| workspace.id == "w").unwrap().branch,
+            Some("blocked".into())
+        );
+
+        core.db.lock().unwrap().execute_batch(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+             VALUES('talk','w','codex','Chat with history','idle','reported');
+             INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at)
+             VALUES('e1','talk',1,'user.message','{\"text\":\"hello\"}','now');",
+        ).unwrap();
+        let error = super::checkout_workspace_branch(&core, "w", "feature").unwrap_err();
+        assert!(error.to_string().contains("session is active"), "{error}");
+    }
+
+    #[test]
+    fn adopt_without_a_binding_is_a_domain_error() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let error = super::adopt_worker_worktree(&core, "missing-worker").unwrap_err();
+        assert!(
+            error.to_string().contains("no repository binding"),
+            "{error}"
+        );
+        match error {
+            crate::BridgeError::Invalid(_) => {}
+            other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 }
 

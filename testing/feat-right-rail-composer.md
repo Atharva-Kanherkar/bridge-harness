@@ -1,8 +1,8 @@
 # feat/right-rail-composer — Test Contract
 
-Move the sidebar to the right, drop Work/Code, open Automations (not the
-catalog) from the rail, and start New Chat in the current/last repo with a
-composer context strip.
+Ship the real left rail (windowed layout), drop the Work/Code scope switch,
+open Automations (not the catalog) from the rail, and start New Chat in the
+current/last repo with a composer context strip.
 
 This contract **supersedes**, by name:
 
@@ -25,39 +25,39 @@ Plan: `docs/plans/right-rail-and-composer.md`. PRs target
 
 - Cloud and SSH hosts are disabled menu rows.
 - Branches are real local Git refs. Listing is read-only; checkout refuses a
-  dirty workspace, an active session, remote-only refs, and isolated worktrees.
-- `WorkView` stays in the app; it is not a rail destination.
+  dirty workspace, a running or history-bearing session, remote-only refs, and
+  isolated worktrees. An empty idle session may switch branches.
+- `WorkView` is a rail destination labeled **Work board** (not the old Work/Code
+  scope switch, and not a Needs-you count badge).
 - `NewChatDialog` is deleted. Projects "+" still uses `OrchestratorCreateDialog`.
-- The look-at preview (`?preview=right-rail`) remains until a later cleanup;
+- The look-at preview (`?preview=right-rail`) is lazy-loaded from `main.tsx`;
   `App.tsx` never imports it.
 
 Locked §10 defaults: one host menu; worktree toggle chip; no "Run in Cloud"
-shortcut; Needs-you off the rail; "Browse catalog" on Automations; fullscreen
-is a flush rectangle.
+shortcut; Needs-you count off the rail; "Browse catalog" on Automations;
+fullscreen is a flush rectangle.
 
 ## Functional Behavior
 
-### Shell (right rail)
+### Shell (left rail)
 
-- Windowed: outer row is canvas then aside. Aside `right-0`, `border-l`,
-  drawer closed state `translate-x-full`.
-- Expanded windowed chrome strip: `h-11`, **no** `pl-24`, panel then chevrons
-  (`ml-auto`), `data-tauri-drag-region="deep"`.
-- Collapsed windowed chrome: panel centered, no chevrons, no `pl-24`.
+- Windowed: aside then canvas. Aside `left-0`, `border-r`, drawer closed state
+  `-translate-x-full`. Panel icon `PanelLeft`.
+- Expanded windowed chrome strip: `h-11`, `u-traffic-inset pl-24`, panel then
+  chevrons (`ml-auto`), `data-tauri-drag-region="deep"`.
+- Collapsed windowed chrome: the same traffic-light inset, panel only, no
+  chevrons. The expand button must not sit under the native traffic lights.
 - `showWindowNav={false}`: rail does not render panel or chevrons.
-- Resize handle on the rail's **left** edge. Dragging left grows the rail:
-  `startWidth - (clientX - startX)`.
-- Panel icon is `PanelRight`. Labels stay "Hide sidebar" / "Show sidebar".
-- Windowed `AppTitleBar` `flush`: `pl-24` (traffic lights live on the canvas).
-  It does **not** use `pr-[var(--window-control-inset)]`.
-- Fullscreen `AppTitleBar` (non-flush, full window width): keeps `pl-24` and
-  the trailing window-control inset. Panel is `leading`, chevrons `trailingNav`.
+- Resize handle on the rail's **right** edge.
+- Labels stay "Hide sidebar" / "Show sidebar".
+- Fullscreen chrome is flush (`data-fullscreen` / `data-flush-window`); the
+  in-app fullscreen control toggles only the layout flag, not native zoom.
 
 ### List
 
 - No `ScopeSwitch`, no `ChatScope`, no `bridge.sidebar.scope` reads/writes.
-- No Needs-you row. No `workBoardActive` / `workNeedsYouCount` / `onOpenWorkBoard`
-  on `BridgeSidebar`.
+- No Needs-you count badge. Work opens from the **Work board** action row
+  (`onOpenWorkBoard`), not from a Work/Code switch.
 - Section label is always `Repositories`.
 - `DEFAULT_CHAT_VIEW.groupBy` is `"project"`. A persisted `groupBy` is honored.
 - `allowProjectGrouping` is always true.
@@ -74,6 +74,7 @@ is a flush rectangle.
 | Mission Control | opens the agent grid |
 | Projects | `onOpenProjects` |
 | Memory | `onOpenMemory` |
+| Work board | `onOpenWorkBoard` |
 
 - Automations is current when `automationsActive`.
 - Projects and Memory sit directly below Mission Control.

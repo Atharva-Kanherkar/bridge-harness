@@ -351,6 +351,7 @@ export function App() {
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
+  const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [branchError, setBranchError] = useState<string | null>(null);
   const branchRequestGeneration = useRef(0);
@@ -361,6 +362,9 @@ export function App() {
     if (tracked !== undefined) { setWorktreeOn(tracked); return; }
     setWorktreeOn(!!session.cwd && !!workspace?.path && session.cwd !== workspace.path);
   }, [session, workspace?.path]);
+  useEffect(() => {
+    setWorkspaceBranchCurrent(workspace?.branch ?? null);
+  }, [workspace?.id, workspace?.branch]);
   // Read from config rather than held in component state: the badge has to agree
   // with what the host stored, including after another window changed it.
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>();
@@ -783,33 +787,41 @@ export function App() {
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
-  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor) {
-    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
-    setView("workspace");
-    const currentAdapter = session?.kind === "direct"
-      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
-      : undefined;
-    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-    const harness = (preferred?.id as Harness) ?? "codex";
-    const model = harnessOverride
-      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
-      : currentAdapter
-      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
-      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
-    const draft = initialMessage?.trim() ?? "";
-    if (draft) pendingWelcomeMessageRef.current = draft;
-    setBusy(true); setError(undefined);
-    try {
-      const next = await bridgeApi.createChat(harness, model, null);
-      const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
-      setState(next);
-      if (created) setSelectedSessionId(created.id);
-    } catch (e) {
-      pendingWelcomeMessageRef.current = null;
-      setError(errorMessage(e));
+  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false) {
+    if (!alreadyLocked) {
+      if (newChatPendingRef.current) return;
+      newChatPendingRef.current = true;
     }
-    finally { setBusy(false); }
+    try {
+      if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+      setView("workspace");
+      const currentAdapter = session?.kind === "direct"
+        ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
+        : undefined;
+      const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
+      const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+      const harness = (preferred?.id as Harness) ?? "codex";
+      const model = harnessOverride
+        ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
+        : currentAdapter
+        ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
+        : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+      const draft = initialMessage?.trim() ?? "";
+      if (draft) pendingWelcomeMessageRef.current = draft;
+      setBusy(true); setError(undefined);
+      try {
+        const next = await bridgeApi.createChat(harness, model, null);
+        const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
+        setState(next);
+        if (created) setSelectedSessionId(created.id);
+      } catch (e) {
+        pendingWelcomeMessageRef.current = null;
+        setError(errorMessage(e));
+      }
+      finally { setBusy(false); }
+    } finally {
+      if (!alreadyLocked) newChatPendingRef.current = false;
+    }
   }
 
   // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
@@ -817,7 +829,7 @@ export function App() {
   // handing it the rest of the text as its first message. Returns whether
   // the text was a shortcut at all, so the caller knows whether to fall back
   // to its own normal send path.
-  async function openHarnessShortcut(text: string): Promise<boolean> {
+  async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<boolean> {
     const shortcut = parseHarnessShortcut(text);
     if (!shortcut) return false;
     const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
@@ -826,7 +838,7 @@ export function App() {
       setError(`${adapter.label} isn't available${adapter.unavailableReason ? ` — ${adapter.unavailableReason}` : ""}.`);
       return true;
     }
-    await openNewChat(shortcut.rest, adapter);
+    await openNewChat(shortcut.rest, adapter, alreadyLocked);
     return true;
   }
   // Entry point for the Welcome screen's own composer, which has no session
@@ -835,19 +847,19 @@ export function App() {
     if (newChatPendingRef.current) return;
     newChatPendingRef.current = true;
     try {
-      if (text && await openHarnessShortcut(text)) return;
+      if (text && await openHarnessShortcut(text, true)) return;
       const workspaceId = resolveNewChatWorkspaceId({
         activeWorkspaceId: welcomeWorkspaceId,
         lastWorkspaceId: readLastWorkspaceId(),
         workspaces: state.workspaces,
       });
       if (!workspaceId) {
-        await openNewChat(text);
+        await openNewChat(text, undefined, true);
         return;
       }
       const draft = text?.trim() ?? "";
       if (draft) pendingWelcomeMessageRef.current = draft;
-      const createdId = await newWorkspaceSession(false, workspaceId);
+      const createdId = await newWorkspaceSession(false, workspaceId, true);
       if (!createdId) pendingWelcomeMessageRef.current = null;
     } finally {
       newChatPendingRef.current = false;
@@ -865,17 +877,17 @@ export function App() {
         workspaces: state.workspaces,
       });
       if (!workspaceId) {
-        await openNewChat();
+        await openNewChat(undefined, undefined, true);
         return;
       }
-      await newWorkspaceSession(false, workspaceId);
+      await newWorkspaceSession(false, workspaceId, true);
     } finally {
       newChatPendingRef.current = false;
     }
   }
 
   async function retargetWorkspace(workspaceId: string, createWorktree: boolean) {
-    const previousId = session && !conversationStarted ? session.id : undefined;
+    const previousId = session && forest !== undefined && !conversationStarted ? session.id : undefined;
     const createdId = await newWorkspaceSession(createWorktree, workspaceId);
     if (previousId && createdId && previousId !== createdId) {
       try { setState(await bridgeApi.stopSession(previousId)); } catch { /* the empty chat we replaced */ }
@@ -891,6 +903,7 @@ export function App() {
       const result = await bridgeApi.listWorkspaceBranches(workspaceId);
       if (branchRequestGeneration.current !== generation) return;
       setWorkspaceBranches(result.branches);
+      setWorkspaceBranchCurrent(result.current ?? null);
     } catch (error) {
       if (branchRequestGeneration.current !== generation) return;
       setWorkspaceBranches([]);
@@ -910,9 +923,16 @@ export function App() {
       const next = await bridgeApi.checkoutWorkspaceBranch(workspaceId, branch);
       if (branchRequestGeneration.current !== generation) return;
       setState(next);
-      const result = await bridgeApi.listWorkspaceBranches(workspaceId);
-      if (branchRequestGeneration.current !== generation) return;
-      setWorkspaceBranches(result.branches);
+      const switched = next.workspaces.find(item => item.id === workspaceId)?.branch ?? branch;
+      setWorkspaceBranchCurrent(switched);
+      try {
+        const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+        if (branchRequestGeneration.current !== generation) return;
+        setWorkspaceBranches(result.branches);
+        setWorkspaceBranchCurrent(result.current ?? null);
+      } catch {
+        // Checkout already committed; a stale menu is not a failed switch.
+      }
     } catch (error) {
       if (branchRequestGeneration.current !== generation) return;
       const message = errorMessage(error);
@@ -935,25 +955,33 @@ export function App() {
     setPendingWorkspaceId(workspaceId);
     setModal("orchestrator");
   }
-  async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string) {
-    const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
-    if (!workspaceId) return;
-    setBusy(true); setError(undefined);
+  async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string, alreadyLocked = false) {
+    if (!alreadyLocked) {
+      if (newChatPendingRef.current) return;
+      newChatPendingRef.current = true;
+    }
     try {
-      const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
-      const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
-      writeLastWorkspaceId(workspaceId);
-      setState(next);
-      // Land in the new agent's chat rather than leaving the user looking at the
-      // card or dialog they came from.
-      if (created) {
-        worktreeBySessionRef.current.set(created.id, createWorktree);
-        openSession(created.id);
-      }
-      setModal(null); setPendingWorkspaceId(undefined);
-      return created?.id;
-    } catch (e) { setError(errorMessage(e)); }
-    finally { setBusy(false); }
+      const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
+      if (!workspaceId) return;
+      setBusy(true); setError(undefined);
+      try {
+        const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
+        const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
+        writeLastWorkspaceId(workspaceId);
+        setState(next);
+        // Land in the new agent's chat rather than leaving the user looking at the
+        // card or dialog they came from.
+        if (created) {
+          worktreeBySessionRef.current.set(created.id, createWorktree);
+          openSession(created.id);
+        }
+        setModal(null); setPendingWorkspaceId(undefined);
+        return created?.id;
+      } catch (e) { setError(errorMessage(e)); }
+      finally { setBusy(false); }
+    } finally {
+      if (!alreadyLocked) newChatPendingRef.current = false;
+    }
   }
   async function changeChatModel(harness: Harness, model: string | null) {
     if (!session) return;
@@ -1213,6 +1241,9 @@ export function App() {
     return () => document.documentElement.removeEventListener(FLUSH_WINDOW_EVENT, sync);
   }, []);
 
+  const toggleLayoutFullscreen = useCallback(() => {
+    setFullscreen(value => !value);
+  }, []);
 
   const chromeFullscreen = fullscreen || flushWindow;
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
@@ -1233,6 +1264,7 @@ export function App() {
       projectsActive={view === "projects"}
       automationsActive={view === "automations"}
       missionControlActive={view === "workspace" && paradigm === "grid"}
+      workActive={view === "work"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
       newChatBusy={busy}
@@ -1240,6 +1272,7 @@ export function App() {
       onOpenProjects={() => setView("projects")}
       onOpenAutomations={() => setView("automations")}
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
+      onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setModal("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
@@ -1299,8 +1332,8 @@ export function App() {
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
-        fullscreen={chromeFullscreen}
-        onToggleFullscreen={() => setFullscreen(value => !value)}
+        fullscreen={fullscreen}
+        onToggleFullscreen={toggleLayoutFullscreen}
         onFocusSession={openSession}
         onSteer={steerWorker}
       /> : session ? <>
@@ -1317,8 +1350,8 @@ export function App() {
           model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
           browserOpen={browserOpen}
           onToggleBrowser={() => setBrowserOpen(value => !value)}
-          fullscreen={chromeFullscreen}
-          onToggleFullscreen={() => setFullscreen(value => !value)}
+          fullscreen={fullscreen}
+          onToggleFullscreen={toggleLayoutFullscreen}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
           onToggleRecall={() => {
             setActiveTab("agent");
@@ -1443,8 +1476,9 @@ export function App() {
                     workspaces={state.workspaces}
                     workspace={workspace ?? null}
                     worktree={worktreeOn}
-                    locked={conversationStarted}
+                    locked={conversationStarted || forest === undefined}
                     branches={branchWorkspaceId === workspace?.id ? workspaceBranches : []}
+                    currentBranch={branchWorkspaceId === workspace?.id ? workspaceBranchCurrent : workspace?.branch ?? null}
                     branchBusy={branchWorkspaceId === workspace?.id && branchBusy}
                     branchError={branchWorkspaceId === workspace?.id ? branchError : null}
                     onSelectWorkspace={id => { if (id === workspace?.id) return; void retargetWorkspace(id, worktreeOn); }}
@@ -1508,12 +1542,16 @@ export function App() {
         workspace={welcomeWorkspace}
         worktree={false}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
+        currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
         branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
         branchError={branchWorkspaceId === welcomeWorkspace?.id ? branchError : null}
         onSelectWorkspace={id => { writeLastWorkspaceId(id); setWelcomeWorkspaceId(id); }}
         onRequestBranches={() => { if (welcomeWorkspace) void requestWorkspaceBranches(welcomeWorkspace.id); }}
         onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
-        onToggleWorktree={() => { if (resolvedWelcomeWorkspaceId) void newWorkspaceSession(true, resolvedWelcomeWorkspaceId); }}
+        onToggleWorktree={draft => {
+          if (draft) pendingWelcomeMessageRef.current = draft;
+          if (resolvedWelcomeWorkspaceId) void newWorkspaceSession(true, resolvedWelcomeWorkspaceId);
+        }}
         onStartChat={text => void startChatOrShortcut(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
@@ -1813,7 +1851,7 @@ function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types
   return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-muted-foreground">{tierLabel}<ChevronDown size={14} className="text-muted-foreground/70" aria-hidden="true" /></span>;
 }
 
-function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
   adapters: import("./types").AdapterDescriptor[];
   modelSetup: ModelSetupState;
   busy: boolean;
@@ -1824,12 +1862,13 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
   workspace: Workspace | null;
   worktree: boolean;
   branches: string[];
+  currentBranch: string | null;
   branchBusy: boolean;
   branchError: string | null;
   onSelectWorkspace: (id: string) => void;
   onRequestBranches: () => void;
   onSelectBranch: (branch: string) => void;
-  onToggleWorktree: () => void;
+  onToggleWorktree: (draft?: string) => void;
 }) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
@@ -1845,14 +1884,15 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       workspaces={workspaces}
       workspace={workspace}
       worktree={worktree}
-      locked={false}
+      locked={busy}
       branches={branches}
+      currentBranch={currentBranch}
       branchBusy={branchBusy}
       branchError={branchError}
       onSelectWorkspace={onSelectWorkspace}
       onRequestBranches={onRequestBranches}
       onSelectBranch={onSelectBranch}
-      onToggleWorktree={onToggleWorktree}
+      onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
     />}
     <ComposerPill
       layout="hero"

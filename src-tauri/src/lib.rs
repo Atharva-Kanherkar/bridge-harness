@@ -1433,7 +1433,7 @@ fn select_host(
     }
     let handle = app.handle().clone();
     let _ = app.listen("bridge-layout-fullscreen", move |event| {
-        let fullscreen = event.payload().contains("true");
+        let fullscreen = window_chrome::parse_layout_fullscreen_payload(event.payload());
         let main_handle = handle.clone();
         let _ = handle.run_on_main_thread(move || {
             window_chrome::set_layout_fullscreen(fullscreen);

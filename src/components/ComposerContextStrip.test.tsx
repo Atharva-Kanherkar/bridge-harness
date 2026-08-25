@@ -98,6 +98,28 @@ describe("ComposerContextStrip", () => {
     expect(onToggleWorktree).toHaveBeenCalledOnce();
   });
 
+  it("checks Git HEAD rather than a stale stored branch name", () => {
+    const { onSelectBranch } = mount({
+      workspace: workspace({ branch: "feat/cursor-sidebar-dev" }),
+      currentBranch: "main",
+      branches: ["feat/cursor-sidebar-dev", "main"],
+    });
+    const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("main"))!;
+    act(() => trigger.click());
+    const menu = document.querySelector('[role="menu"][aria-label="Branch"]')!;
+    const current = [...menu.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "main" || button.textContent?.includes("main"))!;
+    act(() => current.click());
+    expect(onSelectBranch).not.toHaveBeenCalled();
+    act(() => trigger.click());
+    const menuAgain = document.querySelector('[role="menu"][aria-label="Branch"]')!;
+    const previous = [...menuAgain.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("feat/cursor-sidebar-dev"))!;
+    act(() => previous.click());
+    expect(onSelectBranch).toHaveBeenCalledWith("feat/cursor-sidebar-dev");
+  });
+
   it("loads local branches and switches to a selected branch", () => {
     const { onRequestBranches, onSelectBranch } = mount();
     const trigger = [...container.querySelectorAll<HTMLButtonElement>("button")]

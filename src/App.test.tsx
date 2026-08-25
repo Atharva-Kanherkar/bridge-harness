@@ -59,4 +59,10 @@ describe("shell flags", () => {
     expect(source).toContain("showWindowNav");
     expect(source).toContain("flex h-[100dvh] flex-row");
   });
+
+  it("does not statically import the look-at preview in the production entry", () => {
+    const source = readFileSync(join(__dirname, "main.tsx"), "utf8");
+    expect(source).not.toMatch(/^import \{ RightRailPreview \}/m);
+    expect(source).toContain('import("./previews/RightRailPreview")');
+  });
 });

@@ -13,6 +13,7 @@ export type MenuPanelController<T extends HTMLElement> = {
   triggerRef: RefObject<T>;
   panelRef: RefObject<HTMLDivElement>;
   width: number;
+  height: number;
   toggle: () => void;
   close: () => void;
 };
@@ -53,19 +54,23 @@ export function useMenuPanel<T extends HTMLElement>({ width, height }: { width: 
         window.requestAnimationFrame(() => triggerRef.current?.focus());
       }
     };
+    const onScroll = (event: Event) => {
+      if (panelRef.current?.contains(event.target as Node)) return;
+      close();
+    };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", close);
     };
   }, [open, close]);
 
-  return { open, anchor, triggerRef, panelRef, width, toggle, close };
+  return { open, anchor, triggerRef, panelRef, width, height, toggle, close };
 }
 
 export function MenuPanel<T extends HTMLElement>({
@@ -137,8 +142,13 @@ export function MenuPanel<T extends HTMLElement>({
         event.preventDefault();
         items[next]?.focus();
       }}
-      style={{ left: controller.anchor.left, top: controller.anchor.top, width: controller.width }}
-      className={cn("fixed z-50 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg", className)}
+      style={{
+        left: controller.anchor.left,
+        top: controller.anchor.top,
+        width: controller.width,
+        maxHeight: `min(${controller.height}px, calc(100dvh - 16px))`,
+      }}
+      className={cn("fixed z-50 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg", className)}
     >
       {children}
     </div>,

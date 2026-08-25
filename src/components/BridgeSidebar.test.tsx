@@ -45,6 +45,7 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   onOpenProjects: noop,
   onOpenAutomations: noop,
   onOpenMissionControl: noop,
+  onOpenWorkBoard: noop,
   onOpenMemory: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
@@ -121,11 +122,11 @@ describe("BridgeSidebar responsive rail", () => {
     expect(html).not.toContain("aria-label=\"Back\"");
   });
 
-  it("centers the panel on the collapsed rail and does not inset for traffic lights", () => {
+  it("keeps the collapsed panel clear of the traffic lights", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
     const html = render();
     expect(html).toContain("Show sidebar");
-    expect(html).not.toContain("pl-24");
+    expect(html).toContain("u-traffic-inset pl-24");
     expect(html).not.toContain("aria-label=\"Back\"");
   });
 });
@@ -314,6 +315,7 @@ describe("BridgeSidebar list", () => {
     expect(html).not.toContain('aria-label="Work"');
     expect(html).not.toContain('aria-label="Code"');
     expect(html).not.toContain("Needs you");
+    expect(html).toContain('aria-label="Work board"');
   });
 
   it("says how New Chat picks a repo when the list is empty", () => {
@@ -341,6 +343,7 @@ describe("BridgeSidebar action rows", () => {
     expect(html.indexOf("Automations")).toBeLessThan(html.indexOf("Mission Control"));
     expect(html.indexOf("Mission Control")).toBeLessThan(html.indexOf("Projects"));
     expect(html.indexOf("Projects")).toBeLessThan(html.indexOf("Memory"));
+    expect(html.indexOf("Memory")).toBeLessThan(html.indexOf("Work board"));
     expect(html).not.toContain("Customize");
     expect(html).not.toContain("Needs you");
   });
@@ -352,18 +355,20 @@ describe("BridgeSidebar action rows", () => {
   it("keeps those rows reachable as icon-only controls when collapsed", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
     const html = render();
-    for (const label of ["New Chat", "Search", "Automations", "Mission Control", "Projects", "Memory"]) {
+    for (const label of ["New Chat", "Search", "Automations", "Mission Control", "Projects", "Memory", "Work board"]) {
       expect(html).toContain(`aria-label="${label}"`);
     }
     expect(html).not.toContain(">New Chat<");
   });
 
-  it("marks Automations, Mission Control, and account settings current", () => {
+  it("marks Automations, Mission Control, Work board, and account settings current", () => {
     const automations = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Automations"')) ?? "";
     const missionControl = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Mission Control"')) ?? "";
+    const work = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Work board"')) ?? "";
     const account = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Open settings for cestercian"')) ?? "";
     expect(automations(render({ automationsActive: true }))).toContain('aria-current="page"');
     expect(missionControl(render({ missionControlActive: true }))).toContain('aria-current="page"');
+    expect(work(render({ workActive: true }))).toContain('aria-current="page"');
     expect(account(render({ settingsActive: true }))).toContain('aria-current="page"');
     expect(automations(render())).not.toContain("aria-current");
   });

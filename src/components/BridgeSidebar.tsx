@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
+import { Bot, ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
@@ -238,6 +238,7 @@ export type BridgeSidebarProps = {
   projectsActive: boolean;
   automationsActive: boolean;
   missionControlActive: boolean;
+  workActive?: boolean;
   settingsActive: boolean;
   accountName: string;
   newChatBusy?: boolean;
@@ -248,6 +249,7 @@ export type BridgeSidebarProps = {
   onOpenProjects: () => void;
   onOpenAutomations: () => void;
   onOpenMissionControl: () => void;
+  onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
   onOpenSettings: () => void;
@@ -270,6 +272,7 @@ export function BridgeSidebar({
   projectsActive,
   automationsActive,
   missionControlActive,
+  workActive = false,
   settingsActive,
   accountName,
   newChatBusy = false,
@@ -279,6 +282,7 @@ export function BridgeSidebar({
   onOpenProjects,
   onOpenAutomations,
   onOpenMissionControl,
+  onOpenWorkBoard,
   onOpenMemory,
   onOpenSettings,
   onOpenSession,
@@ -473,7 +477,7 @@ export function BridgeSidebar({
 
       {showWindowNav && (
         collapsed ? (
-          <div className="flex h-11 shrink-0 items-center justify-center" data-tauri-drag-region="deep">
+          <div className="flex h-11 shrink-0 items-center u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
             <WindowPanelButton collapsed={collapsed} onToggleCollapsed={toggleCollapsed} />
           </div>
         ) : (
@@ -498,6 +502,7 @@ export function BridgeSidebar({
           <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={FolderGit2} label="Projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
+          <ActionRow icon={ClipboardList} label="Work board" collapsed={collapsed} onClick={onOpenWorkBoard} active={workActive} />
         </div>
 
         {!collapsed && searchOpen && (
