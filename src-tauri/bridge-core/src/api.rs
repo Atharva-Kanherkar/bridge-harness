@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
-    completion, delegation, git, learning_job, learning_router, live_turn, marketplace,
+    completion, delegation, git, handoff, learning_job, learning_router, live_turn, marketplace,
     memory_ledger,
     model_profiles, opencode_adapter, prompt_studio, prompts, secret_interception,
     session_recall, session_supervisor,
@@ -534,6 +534,20 @@ pub fn update_chat_model(
     // The core publishes the durable agent event when the commit lands.
     core.commit_chat_model_change(change)?;
     core.state_snapshot()
+}
+
+/// Carry a source chat's projected context into another chat as a durable
+/// handoff brief — the `$harness` shortcut's way of giving the new sibling
+/// chat the conversation it was asked about. Best-effort: `carried` reports
+/// whether anything was carried.
+pub fn carry_session_handoff(
+    core: &Arc<BridgeCore>,
+    target_session_id: &str,
+    source_session_id: &str,
+) -> Result<wire::CarrySessionHandoffResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let carried = handoff::carry_brief(&db, target_session_id, source_session_id)?;
+    Ok(wire::CarrySessionHandoffResult { carried })
 }
 
 pub fn prepare_turn(

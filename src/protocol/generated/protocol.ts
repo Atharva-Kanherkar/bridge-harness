@@ -32,6 +32,7 @@ export type BridgeMethod =
   | "sessions/start_session"
   | "sessions/start_chat"
   | "sessions/update_chat_model"
+  | "sessions/carry_session_handoff"
   | "sessions/prepare_turn"
   | "sessions/send_turn"
   | "sessions/submit_input"
@@ -165,6 +166,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/start_session", domain: "sessions", command: "start_session" },
   { method: "sessions/start_chat", domain: "sessions", command: "start_chat" },
   { method: "sessions/update_chat_model", domain: "sessions", command: "update_chat_model" },
+  { method: "sessions/carry_session_handoff", domain: "sessions", command: "carry_session_handoff" },
   { method: "sessions/prepare_turn", domain: "sessions", command: "prepare_turn" },
   { method: "sessions/send_turn", domain: "sessions", command: "send_turn" },
   { method: "sessions/submit_input", domain: "sessions", command: "submit_input" },
@@ -350,6 +352,7 @@ export interface BridgeMethodParams {
   "sessions/start_session": StartSessionParams;
   "sessions/start_chat": StartChatParams;
   "sessions/update_chat_model": UpdateChatModelParams;
+  "sessions/carry_session_handoff": CarrySessionHandoffParams;
   "sessions/prepare_turn": PrepareTurnParams;
   "sessions/send_turn": SendTurnParams;
   "sessions/submit_input": SubmitInputParams;
@@ -485,6 +488,7 @@ export interface BridgeMethodResults {
   "sessions/start_session": BridgeState;
   "sessions/start_chat": BridgeState;
   "sessions/update_chat_model": BridgeState;
+  "sessions/carry_session_handoff": CarrySessionHandoffResult;
   "sessions/prepare_turn": SanitizedTurn;
   "sessions/send_turn": UnitResult;
   "sessions/submit_input": SubmitInputResult;
@@ -1654,6 +1658,15 @@ export interface UpdateChatModelParams {
   harness: HarnessId;
   model?: string | null;
   sessionId: string;
+}
+
+export interface CarrySessionHandoffParams {
+  sourceSessionId: string;
+  targetSessionId: string;
+}
+
+export interface CarrySessionHandoffResult {
+  carried: boolean;
 }
 
 export interface PrepareTurnParams {

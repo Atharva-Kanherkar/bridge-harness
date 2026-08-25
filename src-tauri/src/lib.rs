@@ -15,7 +15,7 @@ use bridge_core::{
     agent_config, automations, browser_bridge, marketplace, opencode_adapter,
     prompt_studio, secret_interception, skill_marketplace, slash,
 };
-use bridge_protocol::messages::PromptTargetChoice;
+use bridge_protocol::messages::{CarrySessionHandoffResult, PromptTargetChoice};
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use std::{
     path::PathBuf,
@@ -917,6 +917,21 @@ async fn update_chat_model(
     .await
 }
 
+/// Carry a source chat's projected context into another chat as a durable
+/// handoff brief (`$harness` shortcut). Best-effort; reports what happened.
+#[tauri::command]
+async fn carry_session_handoff(
+    target_session_id: String,
+    source_session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<CarrySessionHandoffResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Handoff carry", move || {
+        api::carry_session_handoff(&core, &target_session_id, &source_session_id)
+    })
+    .await
+}
+
 /// Enumerate slash commands + skills from every signed-in provider, so the UI
 /// can offer a labeled `/` menu.
 #[tauri::command]
@@ -1684,6 +1699,7 @@ pub fn run() {
             create_workspace_session,
             connect_workspace_folder,
             update_chat_model,
+            carry_session_handoff,
             list_slash_commands,
             resolve_slash_command,
             start_session,

@@ -1,8 +1,14 @@
 //! Portable, versioned continuation contract for cross-harness work.
 
-use crate::{model::ContinuationFidelity, BridgeError};
+use crate::{
+    model::ContinuationFidelity,
+    restoration,
+    session_forest::{EntryKind, SessionForest},
+    store, BridgeError,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 pub const HANDOFF_PACKET_SCHEMA_VERSION: u32 = 1;
 
@@ -65,6 +71,62 @@ pub fn record_fidelity(
     Ok(())
 }
 
+/// Project a source session's stored context into a different session as a
+/// durable, labelled [`EntryKind::HandoffBrief`] entry. This is how the
+/// `$harness` composer shortcut gives a brand-new sibling chat the
+/// conversation it was asked about: the new session's first cold start finds
+/// the brief on its own active branch and injects it as restoration context.
+///
+/// Best-effort by contract: anything uncarriable — self-carry, unknown
+/// session, an empty or unprojectable source branch — reports `Ok(false)` and
+/// leaves both forests untouched rather than failing the caller.
+pub fn carry_brief(
+    db: &Connection,
+    target_session_id: &str,
+    source_session_id: &str,
+) -> Result<bool, BridgeError> {
+    if target_session_id == source_session_id {
+        return Ok(false);
+    }
+    for session_id in [target_session_id, source_session_id] {
+        let exists: i64 = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if exists != 1 {
+            return Ok(false);
+        }
+    }
+    let Some(context) = restoration::checkpoint_context(db, source_session_id)? else {
+        return Ok(false);
+    };
+    let source_harness: String = db.query_row(
+        "SELECT harness FROM sessions WHERE id=?1",
+        params![source_session_id],
+        |row| row.get(0),
+    )?;
+    SessionForest::new(db)
+        .append(
+            target_session_id,
+            EntryKind::HandoffBrief,
+            json!({
+                "text": context,
+                "sourceSessionId": source_session_id,
+                "sourceHarness": source_harness,
+            }),
+        )
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        db,
+        "chat",
+        "chat.handoff_carried",
+        target_session_id,
+        &format!("Carried projected context from session {source_session_id}"),
+    )?;
+    Ok(true)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HandoffPacket {
@@ -114,6 +176,65 @@ mod tests {
         store,
     };
     use std::path::Path;
+
+    fn database(session_ids: &[&str]) -> Connection {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/handoff','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/handoff-w','idle','now')", []).unwrap();
+        for session_id in session_ids {
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,'w','codex','Chat','idle','reported')",
+                params![session_id],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES(?1,'fresh','now')",
+                params![session_id],
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn carry_handoff_projects_the_source_branch_into_the_target() {
+        let db = database(&["source", "target"]);
+        SessionForest::new(&db)
+            .append(
+                "source",
+                EntryKind::UserMessage,
+                json!({"text":"we chose the SQLite token store"}),
+            )
+            .unwrap();
+
+        assert!(carry_brief(&db, "target", "source").unwrap());
+
+        let entries = store::session_entries(&db, "target").unwrap();
+        let brief = entries.last().unwrap();
+        assert_eq!(brief.kind, "handoff.brief");
+        assert_eq!(brief.payload["sourceSessionId"], "source");
+        assert!(brief.payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("SQLite token store"));
+    }
+
+    #[test]
+    fn carry_handoff_refuses_self_unknown_and_empty_sources() {
+        let db = database(&["source", "target"]);
+        // Self-carry is refused without touching the forest.
+        assert!(!carry_brief(&db, "source", "source").unwrap());
+        // Unknown sessions are refused.
+        assert!(!carry_brief(&db, "target", "no-such-session").unwrap());
+        assert!(!carry_brief(&db, "no-such-session", "source").unwrap());
+        // An empty source branch has nothing to project.
+        assert!(!carry_brief(&db, "target", "source").unwrap());
+        assert!(store::session_entries(&db, "target").unwrap().is_empty());
+    }
 
     #[test]
     fn versioned_packet_requires_portable_handoff_fields() {

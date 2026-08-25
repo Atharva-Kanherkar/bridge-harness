@@ -177,6 +177,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "carry_session_handoff",
+      "domain": "sessions",
+      "method": "sessions/carry_session_handoff",
+      "paramsSchema": "carry-session-handoff-params.json",
+      "resultSchema": "carry-session-handoff-result.json"
+    },
+    {
       "command": "prepare_turn",
       "domain": "sessions",
       "method": "sessions/prepare_turn",
