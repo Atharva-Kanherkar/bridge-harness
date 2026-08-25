@@ -82,8 +82,18 @@ describe("CreateDialogShell", () => {
     render({ open: false });
     // The whole point of the change: closing no longer unmounts same-render.
     expect(dialog()).not.toBeNull();
+    // But while it fades it is already logically gone: no clicks land on it,
+    // and screen readers stop seeing it.
+    expect(dialog()?.className).toContain("pointer-events-none");
+    expect(dialog()?.getAttribute("aria-hidden")).toBe("true");
     await settle();
     expect(dialog()).toBeNull();
+  });
+
+  it("stays interactive while open", () => {
+    render({ dismissOnScrim: true });
+    expect(dialog()?.className).not.toContain("pointer-events-none");
+    expect(dialog()?.getAttribute("aria-hidden")).toBeNull();
   });
 
   it("leaves the entrance to Framer rather than the CSS class", () => {
