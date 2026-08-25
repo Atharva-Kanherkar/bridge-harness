@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -19,6 +19,7 @@ import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { ChangesPanel } from "./components/ChangesPanel";
+import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
@@ -341,6 +342,7 @@ export function App() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in." },
+    { id: "transcript", label: "Transcript", icon: Braces, available: true },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
   // Cross-pane intents. Quoting names what a message is about instead of
@@ -360,6 +362,14 @@ export function App() {
       return range ? `${mentioned}lines ${range.start}-${range.end} ` : mentioned;
     });
     composerRef.current?.focus();
+  }
+  function revealEntryInConversation(entryId: string) {
+    // The conversation sits beside the dock, so reveal scrolls and highlights
+    // rather than navigates — the same jump recall search uses.
+    setHighlightEntryId(entryId);
+    requestAnimationFrame(() => {
+      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
   }
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
@@ -1626,6 +1636,21 @@ export function App() {
             onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
           >
             {pane => {
+              if (pane === "transcript") return <TranscriptPane
+                key={session.id}
+                sessionId={session.id}
+                events={sessionEvents}
+                entries={forest?.entries}
+                head={forest?.head}
+                leaves={forest?.leaves}
+                loadOlder={request => bridgeApi.replaySessionEvents(
+                  session.id,
+                  request.tail ? 0 : Math.max(0, (request.beforeSequence ?? 1) - 1 - TRANSCRIPT_PAGE_SIZE),
+                  TRANSCRIPT_PAGE_SIZE,
+                  request.tail,
+                )}
+                onRevealEntry={revealEntryInConversation}
+              />;
               if (!workspace) return null;
               /* Keyed on the workspace: these panes hold open buffers, shells,
                  and relative paths, and none of that survives a change of tree.

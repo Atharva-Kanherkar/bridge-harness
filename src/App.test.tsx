@@ -324,6 +324,60 @@ describe("the dock in the session view", () => {
     expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src/App.tsx")).toBe(true);
   });
 
+  // Contract: testing/feat-dock-transcript.md §4.
+  it("opens the transcript with the session's replayed events, in repo sessions and direct chats", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(3);
+    expect(container.textContent).toContain("tool.started");
+
+    await act(async () => {
+      await bridgeApi.createChat("codex", null, "Transcript scratch");
+    });
+    await settle();
+    const scratch = chatRows().find(row => row.title.includes("Transcript scratch"))!;
+    await click(scratch);
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(2);
+    expect(dockAside()!.textContent).not.toContain("needs a repository");
+    expect(dockAside()!.textContent).toContain("events");
+  });
+
+  it("reveals a forest entry into the conversation", async () => {
+    const scrolled: string[] = [];
+    Element.prototype.scrollIntoView = function () {
+      scrolled.push((this as HTMLElement).id);
+    };
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(3);
+    const entriesTab = [...dockAside()!.querySelectorAll("button")].find(button => button.textContent === "entries")!;
+    await click(entriesTab);
+    const reveal = dockAside()!.querySelector<HTMLButtonElement>('button[aria-label^="Reveal entry"]')!;
+    const entryId = reveal.getAttribute("aria-label")!.match(/^Reveal entry (\S+) /)![1];
+    await click(reveal);
+    await act(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+    });
+    expect(scrolled).toContain(`forest-entry-${entryId}`);
+  });
+
+  it("serves per-session slices from the mock replay", async () => {
+    const all = await bridgeApi.replaySessionEvents("session-1", 0, undefined, false);
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.every(event => event.sessionId === "session-1")).toBe(true);
+    expect([...all].sort((a, b) => a.sequence - b.sequence)).toEqual(all);
+
+    const tail = await bridgeApi.replaySessionEvents("session-1", 0, 1, true);
+    expect(tail).toHaveLength(1);
+    expect(tail[0].sequence).toBe(all[all.length - 1].sequence);
+
+    const after = await bridgeApi.replaySessionEvents("session-1", all[0].sequence, undefined, false);
+    expect(after.every(event => event.sequence > all[0].sequence)).toBe(true);
+  });
+
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");

@@ -959,7 +959,12 @@ export const bridgeApi = {
   contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */
-  replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => isTauri() ? call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]> : Promise.resolve([]),
+  replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => {
+    if (isTauri()) return call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]>;
+    const all = mockState.agentEvents.filter(event => event.sessionId === sessionId && event.sequence > afterSequence).sort((a, b) => a.sequence - b.sequence);
+    const page = tail ? all.slice(Math.max(0, all.length - (limit ?? all.length))) : all.slice(0, limit ?? all.length);
+    return Promise.resolve(structuredClone(page));
+  },
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;
