@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_sessions_error_like_other_surfaces() {
+    fn get_context_breakdown_errors_for_unknown_session() {
         let (_scratch, core) = fixture();
         let db = core.db.lock().unwrap();
         assert!(context_breakdown(&db, "missing", &[]).is_err());
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_sessions_mark_every_source_unavailable_without_fabrication() {
+    fn context_breakdown_marks_unavailable_sources_without_fabrication() {
         let (_scratch, core) = fixture();
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let session_id = only_session_id(&core);
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn workers_direct_and_orchestrator_sessions_share_one_code_path() {
+    fn context_breakdown_computes_for_orchestrator_worker_and_direct_sessions() {
         let (_scratch, core) = fixture();
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let direct = only_session_id(&core);
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn ordering_is_stable_and_cap_truncates_deterministically() {
+    fn context_breakdown_orders_segments_stably() {
         let (_scratch, core) = fixture();
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let session_id = only_session_id(&core);
@@ -460,7 +460,10 @@ mod tests {
         let first = context_breakdown(&db, &session_id, &[]).unwrap();
         let second = context_breakdown(&db, &session_id, &[]).unwrap();
         assert_eq!(first.segments, second.segments);
+    }
 
+    #[test]
+    fn context_breakdown_caps_segments_at_limit() {
         let mut flooded: Vec<ContextBreakdownSegment> = (0..100)
             .map(|index| ContextBreakdownSegment {
                 origin: ContextBreakdownOrigin::AdapterInventory,
@@ -482,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_delta_comes_from_the_previous_valid_snapshot() {
+    fn context_breakdown_reports_compaction_delta_from_previous_snapshot() {
         let (_scratch, core) = fixture();
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let session_id = only_session_id(&core);
@@ -558,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn digest_is_stable_and_tracks_all_four_inputs() {
+    fn context_breakdown_digest_is_stable_and_tracks_all_four_inputs() {
         let (_scratch, core) = fixture();
         core.create_chat(&crate::model::Harness::Codex, None, None).unwrap();
         let session_id = only_session_id(&core);
