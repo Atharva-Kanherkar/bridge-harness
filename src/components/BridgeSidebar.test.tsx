@@ -148,6 +148,17 @@ describe("BridgeSidebar theming", () => {
     expect(repository).not.toContain("bg-sidebar ");
   });
 
+  it("lets repository groups scroll out instead of pinning the active repository", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
+    const html = render({
+      activeSessionId: "chat-1",
+      chats: [session("chat-1", { workspaceId: "workspace-1" })],
+    });
+    const repository = html.split("<button").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    expect(repository).not.toContain("sticky");
+    expect(repository).not.toContain("top-0");
+  });
+
   it("carries session status on semantic tokens", () => {
     const html = render({
       chats: [

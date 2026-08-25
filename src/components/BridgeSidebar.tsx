@@ -121,7 +121,7 @@ function GroupLabel({
       aria-expanded={!folded}
       title={folded ? `Show ${label}` : `Hide ${label}`}
       className={cn(
-        "sticky top-0 z-[1] flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
+        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
         active ? "bg-accent font-medium" : "bg-accent/70",
       )}
     >
