@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -33,5 +35,15 @@ describe("ChatModelControl", () => {
     await act(async () => opus.click());
     expect(onChange).toHaveBeenCalledWith("claude", "opus");
     await act(async () => root.unmount());
+  });
+});
+
+// The Cursor sidebar mock renders invented repos and no session list, so with
+// its flag on the shipped app loses the real chats and every route to the Work
+// board. Nothing else mounts App, so the flag is asserted from source here.
+describe("shell flags", () => {
+  it("ships the real rail, not the Cursor sidebar mock", () => {
+    const source = readFileSync(join(__dirname, "App.tsx"), "utf8");
+    expect(source).toContain("const SHOW_CURSOR_SIDEBAR_MOCK = false;");
   });
 });

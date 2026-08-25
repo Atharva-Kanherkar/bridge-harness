@@ -57,9 +57,6 @@ const MOCK_REPOS: MockRepo[] = [
 export type CursorSidebarMockProps = {
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
-  workBoardActive: boolean;
-  workNeedsYouCount: number;
-  onOpenWorkBoard: () => void;
   onOpenNewChat: () => void;
   onOpenProjects: () => void;
   onOpenMarketplace: () => void;

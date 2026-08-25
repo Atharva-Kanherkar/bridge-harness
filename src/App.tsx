@@ -11,8 +11,10 @@ import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { CursorSidebarMock } from "./components/CursorSidebarMock";
 
-/** Look-at mock for the Vite website. Flip to false to restore the real rail. */
-const SHOW_CURSOR_SIDEBAR_MOCK = true;
+/** Look-at mock for the Vite website. Never ships on: the mock rail carries invented
+ *  repos and no session list, so it hides the real chats and the Work board.
+ *  Flip to true locally to look at it, and flip it back before committing. */
+const SHOW_CURSOR_SIDEBAR_MOCK = false;
 import { HealthWarnings } from "./components/HealthWarnings";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
@@ -1048,9 +1050,6 @@ export function App() {
     {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <CursorSidebarMock
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
-      workBoardActive={view === "work"}
-      workNeedsYouCount={needsYouCount(workBoard?.facts ?? [])}
-      onOpenWorkBoard={openWorkBoard}
       onOpenNewChat={() => setModal("chat")}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
@@ -1068,7 +1067,7 @@ export function App() {
       </>}
     />}
 
-    <div className={cn("u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 bg-background", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-col" : "relative flex")}>
+    <div className={cn("u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 bg-background", SHOW_CURSOR_SIDEBAR_MOCK && "flex-col")}>
     {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <AppTitleBar
       flush
       hideBrand
