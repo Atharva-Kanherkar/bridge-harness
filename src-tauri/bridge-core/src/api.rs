@@ -530,10 +530,55 @@ pub fn update_chat_model(
     let Some(change) = core.plan_chat_model_change(session_id, harness, model)? else {
         return core.state_snapshot();
     };
+    summarise_for_switch(core, session_id);
     core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
     // The core publishes the durable agent event when the commit lands.
     core.commit_chat_model_change(change)?;
     core.state_snapshot()
+}
+
+/// Best-effort handoff brief: while the outgoing provider is still alive, ask
+/// it to summarise the conversation through the validated compaction pipeline
+/// so the incoming model inherits a typed summary instead of nothing.
+///
+/// Bounded by [`sessions::SWITCH_SUMMARY_TIMEOUT_SECONDS`] and forbidden from
+/// failing the switch: every skip, timeout, delivery failure, or invalid
+/// output simply leaves the mechanical projection (`start_chat`'s stored-
+/// history injection) as the carried context instead.
+fn summarise_for_switch(core: &Arc<BridgeCore>, session_id: &str) {
+    let request = match core.plan_switch_summary(session_id) {
+        Ok(Some(request)) => request,
+        _ => return,
+    };
+    if let Err(error) =
+        live_turn::send_internal_checkpoint_turn(core, session_id, &request.prompt)
+    {
+        let _ = core.cancel_switch_summary(
+            session_id,
+            &format!("model-switch summary could not be delivered: {error}"),
+            0,
+        );
+        return;
+    }
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(sessions::SWITCH_SUMMARY_TIMEOUT_SECONDS.max(0) as u64);
+    loop {
+        match core.switch_summary_outcome(&request) {
+            Ok(sessions::SwitchSummaryOutcome::Summarised)
+            | Ok(sessions::SwitchSummaryOutcome::Failed) => return,
+            Ok(sessions::SwitchSummaryOutcome::Pending) => {}
+            Err(_) => return,
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = core.cancel_switch_summary(
+                session_id,
+                "model-switch summary timed out; switch continued",
+                1,
+            );
+            return;
+        }
+        thread::sleep(std::time::Duration::from_millis(150));
+    }
 }
 
 /// Carry a source chat's projected context into another chat as a durable
