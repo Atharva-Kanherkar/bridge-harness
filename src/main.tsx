@@ -13,7 +13,7 @@ installExternalLinkHandler();
 
 // The right-hand dock mockup is a design surface — no runtime, no data — so it
 // stays out of the app's own routing. In the browser it answers to #dock; in the
-// desktop window, which has no address bar, ⌃⌥D swaps it in and back out.
+// desktop window, which has no address bar, ⌃⌥D or ⌘⇧D swaps it in and back out.
 function Root() {
   const [preview, setPreview] = useState(() => window.location.hash === "#dock");
 
@@ -22,7 +22,8 @@ function Root() {
     // reliable half of this test — but it is empty under synthetic input.
     const onKeyDown = (event: KeyboardEvent) => {
       const isD = event.code === "KeyD" || event.key === "d" || event.key === "D" || event.key === "∂";
-      if (event.ctrlKey && event.altKey && !event.metaKey && isD) {
+      const chord = (event.ctrlKey && event.altKey && !event.metaKey) || (event.metaKey && event.shiftKey && !event.ctrlKey);
+      if (chord && isD) {
         event.preventDefault();
         setPreview(value => !value);
       }
