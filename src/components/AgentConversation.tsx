@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, type ConversationItem } from "../conversation";
 import { pickGreeting } from "../greetings";
@@ -10,6 +11,7 @@ import { PatchView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { formatElapsed, harnessLabel } from "../utils";
 import { cn } from "@/lib/utils";
+import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
 import type { WorkerTone } from "./workerStatus";
 
@@ -55,7 +57,12 @@ function groupItems(items: ConversationItem[]): Rendered[] {
 
 /// The user's turn is the only bubble in the transcript; the agent answers
 /// straight onto the canvas. That asymmetry is what carries the hierarchy.
-const BUBBLE = "chat-message-enter ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-card px-3.5 py-2 text-[15px] leading-[1.7] tracking-[-0.006em] text-foreground";
+///
+/// The entrance used to live here as `chat-message-enter`. It now belongs to the
+/// `TranscriptRow` wrapper: a CSS animation replays on every remount and cannot
+/// be told "only the row that just arrived", which is exactly what a transcript
+/// needs.
+const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-card px-3.5 py-2 text-[15px] leading-[1.7] tracking-[-0.006em] text-foreground";
 /// Transcript-level notice: a quiet card that reads as a margin note.
 const NOTICE = "mb-4 rounded-lg border border-border border-l-2 bg-card px-3 py-2 text-xs text-muted-foreground";
 /// A decision the user has to make — approvals, adoptions, stale bases.
@@ -64,6 +71,95 @@ const PANEL = "my-4 min-w-0 overflow-hidden rounded-lg border border-border bord
 const WELL = "block rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-words overflow-x-auto text-foreground";
 const BTN_PRIMARY = "inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
 const BTN_SECONDARY = "inline-flex items-center gap-1.5 rounded-full border border-input px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
+
+/* ── Transcript motion ───────────────────────────────────────────────────
+   Three moves, and only three: a row arriving rises 6px into place, a
+   disclosure body animates its own height rather than snapping, and a status
+   glyph is swapped rather than replaced. Everything is duration-collapsed under
+   reduced motion by `useMotionTransition`. */
+
+/// One row of the transcript. Lives under an `AnimatePresence initial={false}`,
+/// so a row present on the first render appears without animating and only the
+/// rows that actually arrive later rise in — switching sessions must not replay
+/// the whole history.
+function TranscriptRow({ tone = "quiet", className, id, entryId, children }: {
+  tone?: "quiet" | "alert";
+  className?: string;
+  id?: string;
+  entryId?: string;
+  children: ReactNode;
+}) {
+  // An error has further to travel than an ordinary row: the extra 6px and the
+  // slightly longer settle are what make it read as an interruption without
+  // resorting to a shake, which this design system would wear badly.
+  const alert = tone === "alert";
+  const transition = useMotionTransition(alert ? MOTION_DURATION.reveal * 1.5 : MOTION_DURATION.reveal);
+  return (
+    <motion.div
+      id={id}
+      data-entry-id={entryId}
+      className={className}
+      layout="position"
+      initial={{ opacity: 0, y: alert ? 12 : 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      transition={transition}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/// A disclosure body that animates its own height open and closed.
+///
+/// The one thing CSS genuinely cannot do here: `height: auto` is not an
+/// animatable value, so tool output and activity groups used to snap.
+function Disclosure({ open, className, children }: { open: boolean; className?: string; children: ReactNode }) {
+  const transition = useMotionTransition();
+  return (
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.div
+          className={cn("overflow-hidden", className)}
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={transition}
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/// The one glyph that says what a tool call is doing right now.
+///
+/// Swapped through `AnimatePresence mode="wait"` so a run finishing reads as the
+/// spinner giving way to the tick, rather than one glyph being overwritten by
+/// another between two frames.
+function StatusGlyph({ live, failed, succeeded }: { live: boolean; failed: boolean; succeeded: boolean }) {
+  const transition = useMotionTransition(MOTION_DURATION.tick);
+  const state = live ? "live" : failed ? "failed" : succeeded ? "ok" : "idle";
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      {state !== "idle" && (
+        <motion.span
+          key={state}
+          className="flex shrink-0 items-center"
+          initial={{ opacity: 0, scale: 0.7 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.7 }}
+          transition={transition}
+        >
+          {state === "live" && <LoaderCircle size={12} className="animate-spin text-muted-foreground" aria-hidden="true"/>}
+          {state === "ok" && <Check size={12} className="text-success" aria-hidden="true"/>}
+          {state === "failed" && <X size={12} className="text-destructive" aria-hidden="true"/>}
+        </motion.span>
+      )}
+    </AnimatePresence>
+  );
+}
 
 /* ── Tool-call presentation ─────────────────────────────────────────────── */
 
@@ -213,7 +309,9 @@ function ActionRow({ item }: { item: ConversationItem }) {
   const label = `${live ? info.doing : info.done}${info.target ? ` ${info.target}` : ""}`;
   const detail = info.detail && info.detail !== info.target ? info.detail : undefined;
   return (
-    <div className="min-w-0">
+    // No `initial`/`animate` of its own: the row inherits both from the group
+    // that reveals it, which is what produces the stagger.
+    <motion.div className="min-w-0" variants={ROW_VARIANTS}>
       <button
         type="button"
         className="group/row flex w-full min-w-0 items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-left font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent disabled:cursor-default disabled:hover:bg-transparent"
@@ -229,20 +327,18 @@ function ActionRow({ item }: { item: ConversationItem }) {
             <span><b className="font-medium text-success">+{additions}</b> <b className="font-medium text-destructive">−{deletions}</b></span>
           )}
           {Number.isFinite(durationMs) && !live && <span className="text-muted-foreground/70">{Math.max(1, Math.round(durationMs / 1000))}s</span>}
-          {live && <LoaderCircle size={12} className="animate-spin text-muted-foreground" aria-hidden="true"/>}
-          {succeeded && <Check size={12} className="text-success" aria-hidden="true"/>}
-          {!live && failed && <X size={12} className="text-destructive" aria-hidden="true"/>}
+          <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>
           {output && <ChevronRight size={12} className={`text-muted-foreground/70 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true"/>}
         </span>
       </button>
-      {open && output && (
+      <Disclosure open={open && !!output}>
         <div className="mb-2 mt-0.5 overflow-hidden rounded-lg border border-border bg-code">
           {looksLikeDiff(output)
             ? <DiffPatch patch={output} path={info.verb === "edit" || info.verb === "read" ? info.detail : undefined}/>
             : <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground">{output.slice(-6000)}</pre>}
         </div>
-      )}
-    </div>
+      </Disclosure>
+    </motion.div>
   );
 }
 
@@ -250,6 +346,9 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
   const [open, setOpen] = useState(false);
   const expanded = open || live;
+  // Rows revealed together arrive one after another at the same 40ms cadence the
+  // CSS entrance used, so an expanding group unfolds instead of appearing whole.
+  const stagger = useMotionStagger();
   return (
     <div className="my-2.5 min-w-0">
       <button
@@ -261,10 +360,27 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
         <span className={`truncate ${live ? "text-foreground" : ""}`}>{summarize(items, live)}</span>
         <ChevronDown size={13} className={`shrink-0 text-muted-foreground/70 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true"/>
       </button>
-      {expanded && <div className="mt-1 grid min-w-0 gap-1">{items.map(item => <ActionRow key={item.key} item={item}/>)}</div>}
+      <Disclosure open={expanded}>
+        <motion.div
+          className="mt-1 grid min-w-0 gap-1"
+          initial="hidden"
+          animate="shown"
+          variants={{ hidden: {}, shown: {} }}
+          transition={stagger}
+        >
+          {items.map(item => <ActionRow key={item.key} item={item}/>)}
+        </motion.div>
+      </Disclosure>
     </div>
   );
 }
+
+/// Variants an `ActionRow` inherits from the group that reveals it. Declared
+/// once so the stagger and the row agree on what "hidden" means.
+const ROW_VARIANTS = {
+  hidden: { opacity: 0, y: 4 },
+  shown: { opacity: 1, y: 0 },
+};
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
@@ -299,19 +415,26 @@ export const AgentConversation = memo(function AgentConversation({ session, even
       {continuationFidelity === "projected_at_boundary" && <div role="status" className={`${NOTICE} border-l-info`}>Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
       {continuationFidelity === "projected_mid_turn" && <div role="alert" className={`${NOTICE} border-l-warning`}>Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
       {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
-      {renderedItems.map(entry => entry.kind === "group"
-        ? <ActivityGroup key={entry.key} items={entry.items}/>
-        : entry.kind === "raw-group" ? <RawEventGroup key={entry.key} items={entry.items}/>
-        : <div
-            key={entry.item.key}
-            id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
-            data-entry-id={entry.item.entryId}
-            className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
-          >
-            <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
-          </div>)}
-      {optimistic.map((text, index) => <div key={`pending-${index}`} className={BUBBLE}>{text}</div>)}
-      {working && !streaming && <div className="chat-message-enter flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div>}
+      {/* `initial={false}`: the rows already on screen when a session opens must
+          not replay their entrance. Only what actually arrives afterwards rises
+          into place — which is the difference between a transcript that breathes
+          and one that flashes on every switch. */}
+      <AnimatePresence initial={false}>
+        {renderedItems.map(entry => entry.kind === "group"
+          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items}/></TranscriptRow>
+          : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
+          : <TranscriptRow
+              key={entry.item.key}
+              tone={entry.item.type === "error" || entry.item.status === "failed" ? "alert" : "quiet"}
+              id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
+              entryId={entry.item.entryId}
+              className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
+            >
+              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
+            </TranscriptRow>)}
+        {optimistic.map((text, index) => <TranscriptRow key={`pending-${index}`}><div className={BUBBLE}>{text}</div></TranscriptRow>)}
+        {working && !streaming && <TranscriptRow key="working"><div className="flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div></TranscriptRow>}
+      </AnimatePresence>
     </div>
   </ScrollFollow>;
 });
@@ -424,7 +547,7 @@ function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker
   if (item.type === "message") {
     if (item.role === "user") return <div className={BUBBLE}>{item.text}</div>;
     // No bubble, no card: the agent writes straight onto the canvas.
-    return <div className="chat-message-enter group w-full min-w-0 text-foreground">
+    return <div className="group w-full min-w-0 text-foreground">
       {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}
       {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
         <button
@@ -444,17 +567,34 @@ function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
-  if (item.type === "error") {
-    const described = describeError(item.text, errorContext);
-    const isUsage = described.kind === "usage-limit";
-    // A rate limit is a wait, not a failure — it gets the tick. A real error
-    // is the one place a full wash is warranted.
-    return <div className={`my-4 flex min-w-0 gap-2.5 rounded-lg border border-l-2 p-3 ${isUsage ? "border-border border-l-warning bg-card text-warning" : "border-destructive/30 border-l-destructive bg-destructive/5 text-destructive"}`}>
-      {isUsage ? <Gauge size={14} className="mt-0.5 shrink-0" aria-hidden="true" /> : <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />}
-      <div className="min-w-0"><b className="text-[12px]">{described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{described.message}</p></div>
-    </div>;
-  }
+  if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
   return <ActivityGroup items={[item]}/>;
+}
+
+/// A failure, stated plainly.
+///
+/// The row it sits in already rises further than an ordinary one (see
+/// `TranscriptRow`'s alert tone). The only motion added here is the tick: it
+/// arrives a beat after the card, so the eye is drawn to the mark that says
+/// *what kind* of interruption this is. No shake — a graphite-and-paper
+/// transcript should not flinch.
+function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+  const described = describeError(item.text, errorContext);
+  const isUsage = described.kind === "usage-limit";
+  const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
+  // A rate limit is a wait, not a failure — it gets the tick. A real error
+  // is the one place a full wash is warranted.
+  return <div role="alert" className={`my-4 flex min-w-0 gap-2.5 rounded-lg border border-l-2 p-3 ${isUsage ? "border-border border-l-warning bg-card text-warning" : "border-destructive/30 border-l-destructive bg-destructive/5 text-destructive"}`}>
+    <motion.span
+      className="mt-0.5 flex shrink-0"
+      initial={{ opacity: 0, scale: 0.6 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={transition}
+    >
+      {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
+    </motion.span>
+    <div className="min-w-0"><b className="text-[12px]">{described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{described.message}</p></div>
+  </div>;
 }
 
 function ForestCard({ item }: { item: ConversationItem }) {
@@ -487,7 +627,7 @@ function Reasoning({ item }: { item: ConversationItem }) {
     const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
     const recent = lines.slice(-3);
     return (
-      <div className="chat-message-enter my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
+      <div className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
         <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground animate-[thinking-pulse_1.6s_ease-in-out_infinite]" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
           <span className="text-[12px] font-medium bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[thinking-shimmer_2s_linear_infinite]">Thinking…</span>
@@ -523,6 +663,7 @@ function PlanCard({ item }: { item: ConversationItem }) {
 }
 
 function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void }) {
+  const transition = useMotionTransition(MOTION_DURATION.tick);
   const pending = item.status === "pending";
   const accepted = item.status === "accept" || item.status === "acceptForSession";
   const scope = Array.isArray(item.data.requestedOwnedPaths) ? item.data.requestedOwnedPaths.map(String) : [];
@@ -543,13 +684,32 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
       : item.text && <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{item.text}</p>}
     {item.data.command ? <code className={`mt-2.5 mx-3.5 sm:mx-4 ${WELL}`}>{String(item.data.command)}</code> : null}
     {item.data.cwd ? <small className="block pt-1.5 px-3.5 text-muted-foreground/70 font-mono text-[10.5px] break-all sm:px-4">{String(item.data.cwd)}</small> : null}
-    {pending
-      ? <div className="flex flex-wrap justify-end gap-[7px] px-3.5 py-3 sm:px-4">
-          <button className={BTN_SECONDARY} onClick={() => onResolve(item.eventId, "decline")}><X size={12} aria-hidden="true" /> Decline</button>
-          {item.data.approvalType !== "delegation_path_scope" && <button className={BTN_SECONDARY} onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>}
-          <button className={BTN_PRIMARY} onClick={() => onResolve(item.eventId, "accept")}><Check size={12} aria-hidden="true" /> Allow once</button>
-        </div>
-      : <div className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-muted-foreground text-[11.5px] sm:px-4">{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {item.status}</div>}
+    {/* Resolving an approval swaps the actions for the outcome. `mode="wait"`
+        lets the buttons leave before the verdict arrives, so the card reads as
+        settling rather than as one row being overwritten by another. */}
+    <AnimatePresence mode="wait" initial={false}>
+      {pending
+        ? <motion.div
+            key="actions"
+            className="flex flex-wrap justify-end gap-[7px] px-3.5 py-3 sm:px-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={transition}
+          >
+            <button className={BTN_SECONDARY} onClick={() => onResolve(item.eventId, "decline")}><X size={12} aria-hidden="true" /> Decline</button>
+            {item.data.approvalType !== "delegation_path_scope" && <button className={BTN_SECONDARY} onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>}
+            <button className={BTN_PRIMARY} onClick={() => onResolve(item.eventId, "accept")}><Check size={12} aria-hidden="true" /> Allow once</button>
+          </motion.div>
+        : <motion.div
+            key="resolved"
+            className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-muted-foreground text-[11.5px] sm:px-4"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={transition}
+          >{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {item.status}</motion.div>}
+    </AnimatePresence>
   </div>;
 }
 

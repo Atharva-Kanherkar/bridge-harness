@@ -34,9 +34,11 @@ export const MOTION_STAGGER = 0.04;
  * A transition at `duration`, or an instant one when the user prefers reduced
  * motion. Call it at the top of any component that animates.
  */
-export function useMotionTransition(duration: number = MOTION_DURATION.reveal): Transition {
+export function useMotionTransition(duration: number = MOTION_DURATION.reveal, delay = 0): Transition {
   const reduced = useReducedMotion();
-  return reduced ? { duration: 0 } : { duration, ease: BRIDGE_EASE };
+  // The delay goes too: under reduced motion "instant" has to mean instant, not
+  // instant-after-a-pause.
+  return reduced ? { duration: 0 } : { duration, delay, ease: BRIDGE_EASE };
 }
 
 /** A stagger for a list revealed as a unit; flat under reduced motion. */
