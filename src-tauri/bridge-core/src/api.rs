@@ -256,6 +256,8 @@ pub struct ForestDigest {
     pub digest: String,
 }
 
+pub use bridge_protocol::messages::{ContextBreakdownDigestResult, ContextBreakdownResult};
+
 /// The cheap half of forest polling: an opaque token that changes whenever
 /// `get_session_forest` would return different store-derived content.
 pub fn get_session_forest_digest(
