@@ -22,6 +22,8 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
+import { TasksPane } from "./components/TasksPane";
+import { workerStatus } from "./components/workerStatus";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
@@ -168,6 +170,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
+  const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
   const [recallOpen, setRecallOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
@@ -341,14 +344,25 @@ export function App() {
     observer.observe(element);
     dockSectionObserver.current = observer;
   }, []);
+  const dockTaskBadge = useMemo(() => {
+    const statuses = (forest?.workerRuntimes ?? []).flatMap(runtime => {
+      const workerSession = visibleSessions.find(item => item.id === runtime.sessionId);
+      return workerSession ? [{ id: runtime.sessionId, status: workerStatus(workerSession, runtime) }] : [];
+    });
+    const running = statuses.filter(item => item.status.tone === "working").length + (terminalActivity?.running ?? 0);
+    const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
+    return { running, attention };
+  }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
     { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
+    { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
+
   // Cross-pane intents. Quoting names what a message is about instead of
   // describing it; revealing hands a file from the diff to the editor. The
   // nonce distinguishes "open it again" from a re-render.
@@ -1652,6 +1666,19 @@ export function App() {
             onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
           >
             {pane => {
+              if (pane === "tasks") return <TasksPane
+                key={session.id}
+                sessions={visibleSessions}
+                runtimes={forest?.workerRuntimes}
+                queue={forest?.workerQueue}
+                terminalActivity={terminalActivity}
+                acknowledged={acknowledgedTasks}
+                onAcknowledge={id => setAcknowledgedTasks(previous => new Set(previous).add(id))}
+                onOpenSession={openSession}
+                onExpandWorker={setExpandedWorkerId}
+                onRetryWorker={id => void retryWorkerTask(id)}
+                onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
+              />;
               if (pane === "browser") return <BrowserSurface
                 visible={dock.open && dock.pane === "browser" && !fullscreen}
                 onError={setError}

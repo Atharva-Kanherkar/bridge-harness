@@ -472,6 +472,28 @@ describe("the dock in the session view", () => {
     expect(dockAside()!.textContent).toContain("MB scrollback");
   });
 
+  // Contract: testing/feat-dock-tasks.md §4.
+  it("opens the tasks pane on the sixth chord with the live roster", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit6", key: "6" });
+    await settle(3);
+    const dock = dockAside()!;
+    expect(dock.textContent).toContain("WORKING");
+    expect(dock.textContent).toContain("implementation");
+    expect(dock.textContent).toContain("DONE");
+    expect(dock.textContent).toContain("Update the auth serializer");
+    expect(dock.textContent).toContain("owned_path_conflict");
+  });
+
+  it("carries the running count on the tasks descriptor before the pane ever mounts", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(dockToggle()!);
+    const tasksTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Tasks")!;
+    expect(tasksTab.textContent).toContain("1");
+  });
+
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
