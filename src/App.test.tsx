@@ -44,6 +44,8 @@ describe("ChatModelControl", () => {
 describe("shell flags", () => {
   it("ships the real rail, not the Cursor sidebar mock", () => {
     const source = readFileSync(join(__dirname, "App.tsx"), "utf8");
-    expect(source).toContain("const SHOW_CURSOR_SIDEBAR_MOCK = false;");
+    expect(source).not.toContain("SHOW_CURSOR_SIDEBAR_MOCK");
+    expect(source).not.toContain("CursorSidebarMock");
+    expect(source).toContain("BridgeSidebar");
   });
 });

@@ -99,6 +99,29 @@ describe("BridgeSidebar responsive rail", () => {
     // The handle is meaningless in the drawer, where width is fixed.
     expect(render()).toContain("hidden w-3 cursor-col-resize touch-none select-none sm:block");
   });
+
+  it("puts panel beside the traffic lights and chevrons on the right of that strip", () => {
+    const html = render();
+    expect(html).toContain("pl-24");
+    expect(html).toContain("Hide sidebar");
+    expect(html).toContain("ml-auto");
+    expect(html).toContain("aria-label=\"Back\"");
+    expect(html).toContain("aria-label=\"Forward\"");
+  });
+
+  it("hides those window controls when they live on the title bar", () => {
+    const html = render({ showWindowNav: false });
+    expect(html).not.toContain("Hide sidebar");
+    expect(html).not.toContain("aria-label=\"Back\"");
+  });
+
+  it("centers the panel on the collapsed rail and does not inset for traffic lights", () => {
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    const html = render();
+    expect(html).toContain("Show sidebar");
+    expect(html).not.toContain("pl-24");
+    expect(html).not.toContain("aria-label=\"Back\"");
+  });
 });
 
 describe("BridgeSidebar theming", () => {

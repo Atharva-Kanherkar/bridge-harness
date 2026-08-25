@@ -9,12 +9,7 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
-import { CursorSidebarMock } from "./components/CursorSidebarMock";
-
-/** Look-at mock for the Vite website. Never ships on: the mock rail carries invented
- *  repos and no session list, so it hides the real chats and the Work board.
- *  Flip to true locally to look at it, and flip it back before committing. */
-const SHOW_CURSOR_SIDEBAR_MOCK = false;
+import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
 import { ProjectsScreen } from "./components/ProjectsScreen";
@@ -47,6 +42,7 @@ import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
+import { recordPlace, type AppPlace } from "./navigationHistory";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
@@ -99,6 +95,15 @@ export function App() {
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<"workspace" | "work" | "projects" | "marketplace" | "settings">("workspace");
+  const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
+    stack: [{ view: "workspace", sessionId: null }],
+    index: 0,
+  });
+  const skipNavRecord = useRef(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("bridge.sidebar.collapsed") === "1"; }
+    catch { return false; }
+  });
   // The Work board. Held here rather than inside WorkView so the rail can show a
   // count while a conversation is on screen. Returning to the board does re-read, on
   // purpose: a fact you just acted on may be gone, and showing it again would be
@@ -120,9 +125,10 @@ export function App() {
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
-  // Fullscreen is a property of the workspace surface, not of one tab: it
-  // drops the sidebar and the session header so the active tab gets the whole
-  // window. The tab strip stays, because it is also the way back out.
+  // Fullscreen keeps the panel on the left and moves panel/history buttons to
+  // the right of a full-width title bar so the session can use the rest of the
+  // window. ⌥⌘F rather than ⌃⌘F: the latter is macOS's own native-fullscreen
+  // binding, and this is an in-window layout change, not a window state change.
   const [fullscreen, setFullscreen] = useState(false);
   /// The worker whose full activity feed is open over the chat. Owned here, not
   /// in the conversation, because the overlay covers the whole session pane and
@@ -247,6 +253,43 @@ export function App() {
   }, [reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
+
+  useEffect(() => {
+    const place: AppPlace = { view, sessionId: selectedSessionId ?? null };
+    if (skipNavRecord.current) {
+      skipNavRecord.current = false;
+      return;
+    }
+    setNavPlaces(current => recordPlace(current.stack, current.index, place));
+  }, [view, selectedSessionId]);
+
+  const applyPlace = useCallback((place: AppPlace) => {
+    skipNavRecord.current = true;
+    setView(place.view);
+    setSelectedSessionId(place.sessionId ?? undefined);
+    if (place.view === "workspace") {
+      setParadigm("single");
+      setActiveTab("agent");
+      setExpandedWorkerId(undefined);
+    }
+  }, []);
+
+  const goBack = useCallback(() => {
+    if (navPlaces.index <= 0) return;
+    const index = navPlaces.index - 1;
+    applyPlace(navPlaces.stack[index]);
+    setNavPlaces(current => ({ ...current, index }));
+  }, [applyPlace, navPlaces]);
+
+  const goForward = useCallback(() => {
+    if (navPlaces.index >= navPlaces.stack.length - 1) return;
+    const index = navPlaces.index + 1;
+    applyPlace(navPlaces.stack[index]);
+    setNavPlaces(current => ({ ...current, index }));
+  }, [applyPlace, navPlaces]);
+
+  const canBack = navPlaces.index > 0;
+  const canForward = navPlaces.index < navPlaces.stack.length - 1;
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
@@ -1046,41 +1089,15 @@ export function App() {
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  return <div className={cn("u-app-shell relative flex h-[100dvh] overflow-hidden text-foreground", SHOW_CURSOR_SIDEBAR_MOCK ? "flex-row" : "flex-col bg-background")}>
-    {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <CursorSidebarMock
-      mobileOpen={navOpen}
-      onCloseMobile={() => setNavOpen(false)}
-      onOpenNewChat={() => setModal("chat")}
-      onOpenProjects={() => setView("projects")}
-      onOpenMarketplace={() => setView("marketplace")}
-      onOpenSettings={() => setView("settings")}
-    />}
-
-    {!SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <AppTitleBar
-      title={view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}
-      navOpen={navOpen}
-      onOpenNav={() => setNavOpen(true)}
-      actions={<>
-        <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
-        {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
-        <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
-      </>}
-    />}
-
-    <div className={cn("u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 bg-background", SHOW_CURSOR_SIDEBAR_MOCK && "flex-col")}>
-    {SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <AppTitleBar
-      flush
-      hideBrand
-      title={view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge"}
-      navOpen={navOpen}
-      onOpenNav={() => setNavOpen(true)}
-      actions={<>
-        <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
-        {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
-        <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
-      </>}
-    />}
-    {!SHOW_CURSOR_SIDEBAR_MOCK && !fullscreen && <BridgeSidebar
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
+  const titleBarActions = <>
+    <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
+    {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
+    <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
+  </>;
+  const toggleSidebar = () => setSidebarCollapsed(value => !value);
+  const sidebar = (
+    <BridgeSidebar
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
@@ -1098,6 +1115,37 @@ export function App() {
       onOpenMemory={() => setModal("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
+      collapsed={sidebarCollapsed}
+      onCollapsedChange={setSidebarCollapsed}
+      showWindowNav={!fullscreen}
+      canBack={canBack}
+      canForward={canForward}
+      onBack={goBack}
+      onForward={goForward}
+    />
+  );
+
+  return <div className={cn("u-app-shell relative flex h-[100dvh] overflow-hidden text-foreground", fullscreen ? "flex-col bg-background" : "flex-row")}>
+    {fullscreen && <AppTitleBar
+      title={chromeTitle}
+      navOpen={navOpen}
+      onOpenNav={() => setNavOpen(true)}
+      hideBrand
+      leading={<WindowPanelButton collapsed={sidebarCollapsed} onToggleCollapsed={toggleSidebar} />}
+      trailingNav={<WindowHistoryChevrons canBack={canBack} canForward={canForward} onBack={goBack} onForward={goForward} />}
+      actions={titleBarActions}
+    />}
+    {!fullscreen && sidebar}
+
+    <div className={cn("u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 bg-background", fullscreen ? "flex-row" : "flex-col")}>
+    {fullscreen && sidebar}
+    {!fullscreen && <AppTitleBar
+      flush
+      hideBrand
+      title={chromeTitle}
+      navOpen={navOpen}
+      onOpenNav={() => setNavOpen(true)}
+      actions={titleBarActions}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
