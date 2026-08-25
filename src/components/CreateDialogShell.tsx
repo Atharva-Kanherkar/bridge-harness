@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MOTION_DURATION, useMotionTransition } from "../motion";
 
 /**
  * The chrome the two create dialogs share: scrim, floating panel, and a header
@@ -10,8 +12,17 @@ import { cn } from "@/lib/utils";
  * each dialog because they differ: the workspace dialog focuses its name field
  * and always closes on Escape, while the orchestrator dialog focuses an action
  * and ignores Escape while a worktree is being created.
+ *
+ * The shell also owns the open/closed *boundary*. It used to be each dialog's
+ * job — `if (!open) return null` — which meant every dialog animated in and then
+ * vanished on the same render it closed, because React had already unmounted the
+ * tree before any exit could play. Holding the boundary in one place gives every
+ * dialog built on the shell an exit for free.
  */
 export type CreateDialogShellProps = {
+  /** Whether the dialog is showing. The shell keeps the tree mounted while it
+   *  animates out, so callers must pass this instead of returning `null`. */
+  open: boolean;
   /** Id of the heading, wired to the dialog's `aria-labelledby`. */
   titleId: string;
   icon: ReactNode;
@@ -28,6 +39,7 @@ export type CreateDialogShellProps = {
 };
 
 export function CreateDialogShell({
+  open,
   titleId,
   icon,
   title,
@@ -39,16 +51,30 @@ export function CreateDialogShell({
   dismissOnScrim = false,
   children,
 }: CreateDialogShellProps) {
+  const transition = useMotionTransition(MOTION_DURATION.overlay);
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md sm:pt-[10vh]"
-      onClick={dismissOnScrim ? event => { if (event.target === event.currentTarget) onClose(); } : undefined}
-      onKeyDown={dismissOnScrim ? event => { if (event.key === "Escape") onClose(); } : undefined}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-    >
-      <div className="u-overlay-strong animate-page-enter flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl">
+    <AnimatePresence>
+      {open && <motion.div
+        className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md sm:pt-[10vh]"
+        onClick={dismissOnScrim ? event => { if (event.target === event.currentTarget) onClose(); } : undefined}
+        onKeyDown={dismissOnScrim ? event => { if (event.key === "Escape") onClose(); } : undefined}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={transition}
+      >
+        {/* The panel travels a little further than the scrim fades, so the
+            dialog reads as leaving rather than merely dimming. */}
+        <motion.div
+          className="u-overlay-strong flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl"
+          initial={{ opacity: 0, y: 10, scale: 0.985 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 6, scale: 0.99 }}
+          transition={transition}
+        >
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] border border-border bg-muted">
@@ -75,7 +101,8 @@ export function CreateDialogShell({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
-      </div>
-    </div>
+        </motion.div>
+      </motion.div>}
+    </AnimatePresence>
   );
 }

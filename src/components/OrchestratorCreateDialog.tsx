@@ -38,10 +38,9 @@ export function OrchestratorCreateDialog({
     return () => window.removeEventListener("keydown", handleKey);
   }, [busy, onClose, open]);
 
-  if (!open) return null;
-
   return (
     <CreateDialogShell
+      open={open}
       titleId="orchestrator-create-title"
       icon={<GitFork className="h-4 w-4 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" />}
       title="Create an isolated worktree?"
