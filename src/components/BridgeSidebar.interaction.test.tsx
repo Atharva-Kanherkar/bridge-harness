@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
@@ -246,5 +247,38 @@ describe("BridgeSidebar and the Work board", () => {
       .find(button => button.textContent === "Memory")!;
     act(() => row.click());
     expect(onOpenMemory).toHaveBeenCalledOnce();
+  });
+});
+
+describe("mobile drawer scrim", () => {
+  const scrim = () => container.querySelector<HTMLElement>('button[aria-label="Close navigation"]');
+
+  beforeEach(() => {
+    MotionGlobalConfig.skipAnimations = true;
+  });
+
+  afterEach(() => {
+    MotionGlobalConfig.skipAnimations = false;
+  });
+
+  it("fades out on close instead of blinking away", async () => {
+    mount({ mobileOpen: true });
+    expect(scrim()).not.toBeNull();
+
+    mount({ mobileOpen: false });
+    // Still mounted: AnimatePresence is holding it for its fade.
+    expect(scrim()).not.toBeNull();
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 40));
+    });
+    expect(scrim()).toBeNull();
+  });
+
+  it("keeps the drawer's own Tailwind slide rather than animating it in JS", () => {
+    mount({ mobileOpen: false });
+    const aside = container.querySelector("aside");
+    expect(aside?.className).toContain("transition-transform");
+    expect(aside?.className).toContain("-translate-x-full");
   });
 });

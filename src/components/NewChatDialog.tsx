@@ -56,10 +56,9 @@ export function NewChatDialog({
   const selected = useMemo(() => workspaces.find(item => item.id === workspaceId), [workspaces, workspaceId]);
   const worktreeAvailable = canWorktree(selected);
 
-  if (!open) return null;
-
   return (
     <CreateDialogShell
+      open={open}
       titleId="new-chat-title"
       icon={<MessageSquarePlus className="h-4 w-4 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" />}
       title="Start a chat"

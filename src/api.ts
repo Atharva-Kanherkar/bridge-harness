@@ -101,6 +101,25 @@ const MOCK_PROMPT_MAX_DEPTH = 1; // delegation::DEFAULT_MAX_DEPTH
 const MOCK_PROMPT_MAX_REVISIONS_IN_VIEW = 50;
 const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
 
+/// The patch the mock transcript's edit carries. Two hunks, so the dev preview
+/// shows the first inline and folds the second behind the fold bar.
+const MOCK_PATCH = [
+  "@@ -18,8 +18,11 @@ export class TokenStore {",
+  "   async read(scope: Scope): Promise<Token | null> {",
+  "-    const row = await this.db.get(scope.id);",
+  "-    return row ? JSON.parse(row.value) : null;",
+  "+    // One read, one parse: the old pair of awaits could observe a write",
+  "+    // landing between them and hand back a token for the previous scope.",
+  "+    const row = await this.db.getScoped(scope);",
+  "+    if (!row) return null;",
+  "+    return Token.parse(row.value);",
+  "   }",
+  "@@ -44,4 +47,5 @@ export class TokenStore {",
+  "   async revoke(scope: Scope): Promise<void> {",
+  "+    await this.db.deleteScoped(scope);",
+  "   }",
+].join("\n");
+
 const MOCK_PROMPT_DEFAULTS: Record<PromptTargetChoice, { id: string; text: string }[]> = {
   orchestrator: [
     { id: "bridge_role", text: "You are Bridge's starter orchestrator: a planner and router." },
@@ -271,6 +290,7 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   ]
 };
 
+
 function agentEvent(id: number, sessionId: string, kind: string, fields: Partial<AgentEvent> = {}): AgentEvent {
   return { id, sessionId, sequence: id, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: { adapter: "fake" }, createdAt: new Date().toISOString(), ...fields };
 }
@@ -295,7 +315,13 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-9b", "session-1", 11, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install to add the renderer dependencies?", data: { childBlocked: true, childSessionId: "session-1w", label: "Implementation · strong", objective: "Render Mermaid, math, and sandboxed HTML inline in chat", command: "bun install", cwd: "/tmp/bridge/worker-1w", ownedPaths: ["src/components/**"], orchestratorNotified: true } }, "entry-8b"),
   // A workspace far behind its base branch, with the counts and the choice.
   forestEntry("entry-10b", "session-1", 12, "workspace.stale_base", { role: "system", status: "warning", title: "Workspace is 67 commits behind origin/main", text: "this workspace is 67 commit(s) behind and 1 ahead of origin/main, measured against a freshly fetched ref; that ref's newest commit is 0 day(s) old", data: { staleBase: true, phase: "workspace_open", choices: ["refresh", "continue"], divergence: { baseRef: "origin/main", baseCommit: "90ce51c", head: "2b43aaad9b36", branch: "bridge/task", ahead: 1, behind: 67, refAgeSeconds: 3600, fetchAttempted: true, fetched: true, dirty: false, unavailableReason: null } } }, "entry-9b"),
-  forestEntry("entry-raw", "session-1", 13, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-10b")
+  // A read, a diff-bearing edit and a command that reports its exit code, so
+  // `bun run dev` exercises the inline patch, the hunk fold bar, the "Explored"
+  // group label and the exit chip — not only the shapes that predate them.
+  forestEntry("entry-11b", "session-1", 13, "tool.completed", { status: "completed", title: "Read tokenStore.ts", data: { type: "readFile", path: "src/auth/tokenStore.ts" } }, "entry-10b"),
+  forestEntry("entry-12b", "session-1", 14, "file_change.completed", { status: "completed", title: "tokenStore.ts", data: { path: "src/auth/tokenStore.ts", additions: 9, deletions: 4, durationMs: 400, patch: MOCK_PATCH } }, "entry-11b"),
+  forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
+  forestEntry("entry-raw", "session-1", 16, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-13b")
 ];
 const mockMemoryRecords: MemoryRecord[] = [];
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };

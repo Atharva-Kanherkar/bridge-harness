@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, PanelLeft, Pin, Plus, Search, Settings2, X } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
+import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import {
@@ -376,19 +378,30 @@ export function BridgeSidebar({
 
   const sidebarWidth = collapsed ? COLLAPSED_WIDTH : width;
   const animateWidth = !resizing && !skipWidthTransition;
+  const scrimTransition = useMotionTransition(MOTION_DURATION.overlay);
 
   return (
     <>
       {/* Below sm the rail is an off-canvas drawer, so narrow windows keep
           their navigation instead of losing it entirely. */}
-      {mobileOpen && (
-        <button
-          type="button"
-          className="fixed inset-0 z-30 bg-scrim sm:hidden"
-          onClick={onCloseMobile}
-          aria-label="Close navigation"
-        />
-      )}
+      {/* The drawer itself keeps its Tailwind `transition-transform` slide — it
+          stays mounted, so CSS can carry it both ways. The scrim is the half
+          that unmounts, which is why it needs AnimatePresence to fade out at
+          all instead of blinking away. */}
+      <AnimatePresence>
+        {mobileOpen && (
+          <motion.button
+            type="button"
+            className="fixed inset-0 z-30 bg-scrim sm:hidden"
+            onClick={onCloseMobile}
+            aria-label="Close navigation"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={scrimTransition}
+          />
+        )}
+      </AnimatePresence>
       <aside
         className={cn(
           "z-40 flex shrink-0 flex-col overflow-hidden font-sans antialiased",

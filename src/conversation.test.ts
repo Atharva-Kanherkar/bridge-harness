@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch } from "./conversation";
+import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -181,5 +181,140 @@ describe("worker delegation fold",()=>{
     expect(folded).toHaveLength(1);
     expect(folded[0].entryId).toBe("e1");
     expect(folded[0].data.delivered).toBe(true);
+  });
+});
+
+/* ── Tool-call display data ─────────────────────────────────────────────── */
+
+const call = (overrides: Partial<ConversationItem> = {}): ConversationItem => ({
+  key: "k", type: "activity", eventId: 1, sequence: 1, text: "", data: {}, ...overrides,
+});
+
+describe("toolCallDisplay", () => {
+  it("reads a Claude bash call as a command", () => {
+    const display = toolCallDisplay(call({ data: { name: "Bash", input: { command: "bun run test" } } }));
+    expect(display.verb).toBe("run");
+    expect(display.glyph).toBe("terminal");
+    expect(display.command).toBe("bun run test");
+  });
+
+  it("splits a file path into a target and a path", () => {
+    const display = toolCallDisplay(call({ data: { name: "Edit", input: { file_path: "src-tauri/src/lib.rs" } } }));
+    expect(display.verb).toBe("edit");
+    expect(display.target).toBe("lib.rs");
+    expect(display.path).toBe("src-tauri/src/lib.rs");
+  });
+
+  it("names a write distinctly from an edit", () => {
+    expect(toolCallDisplay(call({ data: { name: "Write", input: { file_path: "a/b.rs" } } })).done).toBe("Wrote");
+  });
+
+  it("reads a Codex command execution", () => {
+    const display = toolCallDisplay(call({ title: "bun test", data: { type: "commandExecution", command: "bun test" } }));
+    expect(display.verb).toBe("run");
+    expect(display.command).toBe("bun test");
+  });
+
+  describe("exit codes", () => {
+    it("reads camelCase", () => {
+      expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "x", exitCode: 0 } })).exitCode).toBe(0);
+    });
+
+    it("tolerates snake_case", () => {
+      expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "x", exit_code: 2 } })).exitCode).toBe(2);
+    });
+
+    it("looks inside a nested provider state", () => {
+      expect(toolCallDisplay(call({ data: { name: "Bash", state: { metadata: { exit: 127 } } } })).exitCode).toBe(127);
+    });
+
+    it("stays undefined when nothing reports one", () => {
+      // The chip has to degrade to nothing rather than render "exit NaN".
+      expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "x" } })).exitCode).toBeUndefined();
+    });
+
+    it("ignores an unparseable value", () => {
+      expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "x", exitCode: "boom" } })).exitCode).toBeUndefined();
+    });
+  });
+
+  describe("patches", () => {
+    const PATCH = "@@ -1,2 +1,2 @@\n-a\n+b";
+
+    it("takes the diff a file change carries", () => {
+      expect(toolCallDisplay(call({ type: "diff", data: { path: "a.rs", patch: PATCH } })).patch).toBe(PATCH);
+    });
+
+    it("joins per-file diffs in order", () => {
+      const display = toolCallDisplay(call({
+        type: "diff",
+        data: { changes: [{ path: "a.rs", diff: PATCH }, { path: "b.rs", diff: "@@ -9 +9 @@\n+c" }] },
+      }));
+      expect(display.patch).toBe(`${PATCH}\n@@ -9 +9 @@\n+c`);
+      expect(display.path).toBe("a.rs");
+    });
+
+    it("falls back to the body when the body is unmistakably a diff", () => {
+      expect(toolCallDisplay(call({ type: "diff", text: PATCH, data: { path: "a.rs" } })).patch).toBe(PATCH);
+    });
+
+    it("does not claim a patch from prose that merely has plus signs", () => {
+      expect(toolCallDisplay(call({ type: "diff", text: "+1 more thing\n+another", data: {} })).patch).toBeUndefined();
+    });
+
+    it("never claims one for a read, whose output is only ever output", () => {
+      const display = toolCallDisplay(call({ data: { name: "Read", input: { file_path: "a.rs" } }, text: PATCH }));
+      expect(display.patch).toBeUndefined();
+      expect(display.output).toBe(PATCH);
+    });
+  });
+
+  describe("diffstat and duration", () => {
+    it("surfaces numbers", () => {
+      const display = toolCallDisplay(call({ type: "diff", data: { additions: 24, deletions: 3, durationMs: 400 } }));
+      expect(display.additions).toBe(24);
+      expect(display.deletions).toBe(3);
+      expect(display.durationMs).toBe(400);
+    });
+
+    it("leaves them undefined when absent", () => {
+      const display = toolCallDisplay(call({ type: "diff", data: {} }));
+      expect(display.additions).toBeUndefined();
+      expect(display.durationMs).toBeUndefined();
+    });
+  });
+
+  describe("status", () => {
+    it.each([
+      ["inProgress", "running"],
+      ["streaming", "running"],
+      ["failed", "failed"],
+      ["error", "failed"],
+      ["completed", "completed"],
+      [undefined, "idle"],
+      ["pending", "idle"],
+    ] as const)("reads %s as %s", (status, expected) => {
+      expect(toolCallDisplay(call({ status, data: {} })).status).toBe(expected);
+    });
+  });
+
+  it("reads a durable file change as an edit carrying its diff", () => {
+    // The durable projection used to type `file_change.*` as plain activity, so
+    // a patch replayed from history came back as a generic tool row with no
+    // diff. The live reducer always typed it as one; both agree now.
+    const patch = "@@ -1,2 +1,2 @@\n-a\n+b";
+    const [item] = projectSessionConversation(
+      [entry("e1", null, "file_change.completed", { status: "completed", title: "lib.rs", data: { path: "src/lib.rs", additions: 2, deletions: 1, patch } }, 1)],
+      "e1",
+    );
+    expect(item.type).toBe("diff");
+    const display = toolCallDisplay(item);
+    expect(display.verb).toBe("edit");
+    expect(display.target).toBe("lib.rs");
+    expect(display.patch).toBe(patch);
+  });
+
+  it("does not mistake a title echoed as the body for output", () => {
+    expect(toolCallDisplay(call({ title: "bun test", text: "bun test", data: { type: "commandExecution" } })).output).toBeUndefined();
   });
 });
