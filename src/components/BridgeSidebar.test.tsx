@@ -208,6 +208,32 @@ describe("BridgeSidebar history", () => {
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "failed", agent: "all", groupBy: "date", sortBy: "recency" }));
     expect(render({ chats: [session("a", { status: "working" })] })).toContain("No chat matches this filter");
   });
+
+  it("labels the Code list Repositories and the Work list Chats", () => {
+    expect(render()).toContain("Chats");
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    expect(render()).toContain("Repositories");
+  });
+
+  it("indents rows under a group and shows a compact time", () => {
+    const html = render({
+      chats: [session("now", { title: "Today chat", startedAt: new Date(Date.now() - 2_000).toISOString() })],
+    });
+    expect(html).toContain("pl-7");
+    expect(html).toMatch(/>now</);
+  });
+
+  it("shows a git badge only when the chat's workspace has a branch", () => {
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    const chats = [session("branched", { title: "On main", workspaceId: "workspace-1" })];
+    expect(render({ chats })).toContain("On a git branch");
+    expect(render({ chats, workspaces: [{ ...workspace, branch: null }] })).not.toContain("On a git branch");
+  });
+
+  it("never renders a cloud/sync badge", () => {
+    expect(render()).not.toContain("Synced");
+    expect(render()).not.toContain("aria-label=\"Synced\"");
+  });
 });
 
 describe("BridgeSidebar without the projects tree", () => {
